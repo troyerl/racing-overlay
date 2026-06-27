@@ -146,6 +146,32 @@ def find_track_file(track_id, tracks_dir: str = "tracks") -> str | None:
     return None
 
 
+def save_learned_track(tracks_dir: str, track_id, points, name: str = "") -> str | None:
+    """Persist a learned track loop to tracks/<track_id>.json.
+
+    Written in the same schema load_track reads, so the next session at this
+    track loads it instantly instead of re-learning. Marked "learned": true so
+    it's distinguishable from a hand-made/official file (delete it to re-scan).
+    """
+    if track_id is None or not points:
+        return None
+    os.makedirs(tracks_dir, exist_ok=True)
+    path = os.path.join(tracks_dir, f"{track_id}.json")
+    data = {
+        "track_id": track_id,
+        "name": name or "",
+        "learned": True,
+        "points": [[round(float(x), 9), round(float(y), 9)] for x, y in points],
+        "start_finish": 0.0,
+        "corners": [],
+    }
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)  # atomic, so a crash mid-write can't corrupt the file
+    return path
+
+
 def load_track(path: str, n: int = 720):
     """Load a track file -> (points, start_finish_pct, corners, name)."""
     if path.lower().endswith(".svg"):

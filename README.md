@@ -114,7 +114,11 @@ in this priority order:
    builds even without GPS. The map appears as a rough loop part-way through your
    first lap and keeps sharpening; until then it shows a live "LEARNING TRACK…
    NN%" readout. (The dead-reckoned shape may be rotated/mirrored vs. reality,
-   but the layout is correct.)
+   but the layout is correct.) **Once a full loop is learned it's saved to
+   `tracks/<id>.json` (marked `"learned": true`)**, so the next time you load that
+   track it's picked up by step 1 instantly &mdash; no re-learning lap. To force a
+   fresh scan, hit **Rescan track now** on the Map tab of the settings window
+   (or delete the file); the new scan overwrites the saved one when complete.
 3. **Demo mode:** loads `tracks/_demo.json` immediately.
 
 ### Building the track library

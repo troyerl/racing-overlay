@@ -61,6 +61,8 @@ class AdvancedSimHUD:
 
         # Repaint + re-apply widget visibility when the config changes (editor UI).
         config.on_change(self._on_config_change)
+        # Let the settings UI trigger a fresh track scan on demand.
+        config.on_rescan(self._rescan_track)
 
         self._driver_cache: dict[int, dict] = {}
         # Engine/shift-light params from the session YAML (cached with drivers).
@@ -80,6 +82,10 @@ class AdvancedSimHUD:
         self._track_loaded = False        # a bundled track FILE is in use
         self._track_file_checked = False  # we've looked for a file for this track
         self._map_version = 0             # last learned-path version pushed
+        self._track_id = None             # current track's iRacing TrackID
+        self._learn_name = ""             # display name to stamp on a saved scan
+        self._track_saved = False         # we've persisted this learned scan
+        self._force_learn = False         # rescan: re-learn even if a file exists
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -739,16 +745,22 @@ class AdvancedSimHUD:
             weekend = self.ir["WeekendInfo"]
             if weekend:
                 self._track_file_checked = True
-                track_file = track_map.find_track_file(
-                    weekend.get("TrackID"), self.tracks_dir)
-                if track_file:
-                    try:
-                        pts, sf, corners, _ = track_map.load_track(track_file)
-                        self.map_widget.set_track(pts, sf, corners)
-                        self._track_loaded = True
-                        return
-                    except Exception:
-                        pass  # fall back to GPS learning
+                self._track_id = weekend.get("TrackID")
+                self._learn_name = (weekend.get("TrackDisplayName")
+                                    or weekend.get("TrackName") or "")
+                # On a rescan we skip the saved/bundled file and re-learn; the
+                # new scan then overwrites tracks/<id>.json when complete.
+                if not self._force_learn:
+                    track_file = track_map.find_track_file(
+                        self._track_id, self.tracks_dir)
+                    if track_file:
+                        try:
+                            pts, sf, corners, _ = track_map.load_track(track_file)
+                            self.map_widget.set_track(pts, sf, corners)
+                            self._track_loaded = True
+                            return
+                        except Exception:
+                            pass  # fall back to GPS learning
 
         # Learn the shape from the player's own GPS, showing a rough loop early
         # and refining it as more of the lap is sampled. If the sim doesn't
@@ -772,6 +784,36 @@ class AdvancedSimHUD:
             self.map_widget.set_path(b.path)
         elif not b.ready:
             self.map_widget.set_progress(b.coverage())
+
+        # Once the full loop is learned, persist it so we skip learning next time.
+        if b.complete and not self._track_saved:
+            self._track_saved = True
+            try:
+                track_map.save_learned_track(
+                    self.tracks_dir, self._track_id, b.path, self._learn_name)
+            except Exception:
+                pass
+
+    def _rescan_track(self) -> None:
+        """Forget the current (saved or loaded) scan and re-learn from scratch.
+
+        The freshly learned loop overwrites tracks/<id>.json on completion.
+        """
+        if self.demo:
+            return
+        self._force_learn = True
+        self._track_loaded = False
+        self._track_file_checked = False  # re-detect the track id next tick
+        self._track_saved = False
+        self._map_version = 0
+        self._path_builder = track_map.TrackPathBuilder()
+        # Reset dead-reckoning so the new scan starts from a clean origin.
+        self._dr_x = self._dr_y = 0.0
+        self._dr_t = None
+        self._dr_last_pct = None
+        # Clear the drawn map back to the "learning" placeholder.
+        self.map_widget.set_track(None)
+        self.map_widget.set_progress(0.0)
 
     def _dead_reckon(self, pct):
         """Integrate speed + heading into an (x, y) when GPS is unavailable.

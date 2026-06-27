@@ -343,6 +343,33 @@ def on_change(callback) -> None:
     _listeners.append(callback)
 
 
+# One-shot "rescan the track now" action, wired from the settings UI to the
+# running overlay. Kept separate from the persistent config so it never gets
+# written to overlay_config.json.
+_rescan_listeners: list = []
+
+
+def on_rescan(callback) -> None:
+    """Register a callback() fired when the user asks to rescan the track."""
+    _rescan_listeners.append(callback)
+
+
+def request_rescan() -> bool:
+    """Tell the running overlay to forget and re-learn the current track.
+
+    Returns True if a live overlay handled it, False if none is listening
+    (e.g. the editor was launched standalone with no overlay running).
+    """
+    handled = False
+    for cb in list(_rescan_listeners):
+        try:
+            cb()
+            handled = True
+        except Exception:
+            pass
+    return handled
+
+
 # The widget section currently painting. Shared font helpers use it to apply the
 # right per-widget text_scale without every call site passing a section. Safe
 # because Qt painting runs on a single (GUI) thread.

@@ -643,6 +643,19 @@ class ConfigEditor(QWidget):
         v.setContentsMargins(4, 4, 4, 4)
         v.setSpacing(7)
 
+        # The Map tab gets a one-shot action to re-learn the live track.
+        if path == ["map"]:
+            rescan = QPushButton("\u21BB  Rescan track now")
+            rescan.setObjectName("warn")
+            rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+            rescan.clicked.connect(self._rescan_track)
+            v.addWidget(rescan)
+            hint = QLabel("Re-learns the current track from your driving and "
+                          "overwrites its saved scan.")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #9aa3ad; font-size: 11px;")
+            v.addWidget(hint)
+
         # Scalars (and palette) first, then nested groups.
         for key, default_val in schema.items():
             if isinstance(default_val, dict):
@@ -756,6 +769,12 @@ class ConfigEditor(QWidget):
                 box.setVisible(own or id(box) in live_groups)
 
     # --- value changes ------------------------------------------------------
+
+    def _rescan_track(self) -> None:
+        if config.request_rescan():
+            self._flash("Rescanning track\u2026 drive a lap")
+        else:
+            self._flash("Start the overlay first to rescan")
 
     def _flash(self, msg: str) -> None:
         self.status.setText(msg)
