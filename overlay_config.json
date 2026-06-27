@@ -1,0 +1,13 @@
+{
+  "units": "imperial",
+  "dash": {
+    "center": {
+      "left": "speed_mph",
+      "right": "incidents"
+    },
+    "center_icons": {
+      "left": true,
+      "right": true
+    }
+  }
+}

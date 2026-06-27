@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime / user-generated state
+overlay_layout.json
+stderr.txt
+*.log
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Fetched track library (keep only the bundled demo track)
+/tracks/*
+!/tracks/_demo.json
