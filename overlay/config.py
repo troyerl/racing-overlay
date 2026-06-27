@@ -45,8 +45,11 @@ DEFAULTS: dict = {
     "table": {
         "corner_radius_frac": 0.05,
         "alt_row_shading": True,
-        "font_scale": 0.40,
+        "font_scale": 0.40,        # row text size (multiple of row height)
         "gap_font_scale": 1.12,
+        # Header / footer text size, independent of the row font above.
+        "header_font_scale": 1.0,
+        "footer_font_scale": 1.0,
         "row_ease_tau": 0.16,
         "fade_ease_tau": 0.12,
         "widths": {  # as multiples of row height
@@ -377,6 +380,26 @@ def request_rescan() -> bool:
     """
     handled = False
     for cb in list(_rescan_listeners):
+        try:
+            cb()
+            handled = True
+        except Exception:
+            pass
+    return handled
+
+
+_rescan_pit_listeners: list = []
+
+
+def on_rescan_pits(callback) -> None:
+    """Register a callback() fired when the user asks to re-learn just the pits."""
+    _rescan_pit_listeners.append(callback)
+
+
+def request_rescan_pits() -> bool:
+    """Tell the running overlay to forget and re-learn only the pit lane."""
+    handled = False
+    for cb in list(_rescan_pit_listeners):
         try:
             cb()
             handled = True

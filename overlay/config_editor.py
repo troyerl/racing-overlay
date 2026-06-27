@@ -646,7 +646,7 @@ class ConfigEditor(QWidget):
         v.setContentsMargins(4, 4, 4, 4)
         v.setSpacing(7)
 
-        # The Map tab gets a one-shot action to re-learn the live track.
+        # The Map tab gets one-shot actions to re-learn the live track / pits.
         if path == ["map"]:
             rescan = QPushButton("\u21BB  Rescan track now")
             rescan.setObjectName("warn")
@@ -654,10 +654,21 @@ class ConfigEditor(QWidget):
             rescan.clicked.connect(self._rescan_track)
             v.addWidget(rescan)
             hint = QLabel("Re-learns the current track from your driving and "
-                          "overwrites its saved scan.")
+                          "overwrites its saved scan (also clears the pit lane).")
             hint.setWordWrap(True)
             hint.setStyleSheet("color: #9aa3ad; font-size: 11px;")
             v.addWidget(hint)
+
+            rescan_pits = QPushButton("\u21BB  Rescan pits only")
+            rescan_pits.setObjectName("warn")
+            rescan_pits.setCursor(Qt.CursorShape.PointingHandCursor)
+            rescan_pits.clicked.connect(self._rescan_pits)
+            v.addWidget(rescan_pits)
+            hint2 = QLabel("Forgets just the pit lane; drive through the pits "
+                           "once to re-learn it.")
+            hint2.setWordWrap(True)
+            hint2.setStyleSheet("color: #9aa3ad; font-size: 11px;")
+            v.addWidget(hint2)
 
         # Scalars (and palette) first, then nested groups.
         for key, default_val in schema.items():
@@ -776,6 +787,12 @@ class ConfigEditor(QWidget):
     def _rescan_track(self) -> None:
         if config.request_rescan():
             self._flash("Rescanning track\u2026 drive a lap")
+        else:
+            self._flash("Start the overlay first to rescan")
+
+    def _rescan_pits(self) -> None:
+        if config.request_rescan_pits():
+            self._flash("Rescanning pit lane\u2026 drive through the pits")
         else:
             self._flash("Start the overlay first to rescan")
 

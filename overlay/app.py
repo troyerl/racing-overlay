@@ -63,6 +63,7 @@ class AdvancedSimHUD:
         config.on_change(self._on_config_change)
         # Let the settings UI trigger a fresh track scan on demand.
         config.on_rescan(self._rescan_track)
+        config.on_rescan_pits(self._rescan_pits)
 
         self._driver_cache: dict[int, dict] = {}
         # Engine/shift-light params from the session YAML (cached with drivers).
@@ -836,6 +837,27 @@ class AdvancedSimHUD:
         # Clear the drawn map back to the "learning" placeholder.
         self.map_widget.set_track(None)
         self.map_widget.set_progress(0.0)
+
+    def _rescan_pits(self) -> None:
+        """Forget just the learned pit lane and re-learn it on the next pit pass.
+
+        Leaves the track geometry intact; clears the pit data from the map and
+        strips it from the saved track file.
+        """
+        if self.demo:
+            return
+        self._pit_was_on = False
+        self._pit_enter_pct = None
+        self._pit_span = None
+        self._pit_speed_ms = 0.0
+        self._pit_s0 = self._pit_t0 = None
+        self.map_widget.clear_pit()
+        if self._track_id is not None:
+            try:
+                track_map.update_track_meta(
+                    self.tracks_dir, self._track_id, pit_span=None, pit_speed=None)
+            except Exception:
+                pass
 
     def _dead_reckon(self, pct):
         """Integrate speed + heading into an (x, y) when GPS is unavailable.

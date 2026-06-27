@@ -178,7 +178,9 @@ class BaseTable(QWidget):
             p.drawLine(int(x), int(y), int(x + w), int(y))
         d = self.data or {}
         slots = d.get("slots", {})
-        fs = h * 0.42
+        # Header and footer text size are configured independently of the rows.
+        mult = _tcfg().get(f"{group}_font_scale", 1.0) or 1.0
+        fs = h * 0.42 * mult
         items = []
         for pos in ("left", "center", "right"):
             key = gcfg.get(pos, "none")

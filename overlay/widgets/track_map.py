@@ -183,8 +183,8 @@ def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
     """Patch extra keys (e.g. pit_span, pit_speed) into an existing track file.
 
     Used to record pit data learned after the geometry was already saved/loaded.
-    No-op if the file doesn't exist yet (the data is written by
-    save_learned_track when the scan finishes instead).
+    A field whose value is None is removed from the file instead. No-op if the
+    file doesn't exist yet (the data is written by save_learned_track instead).
     """
     if track_id is None or not fields:
         return False
@@ -196,7 +196,11 @@ def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
             data = json.load(fh)
     except (OSError, ValueError):
         return False
-    data.update(fields)
+    for k, v in fields.items():
+        if v is None:
+            data.pop(k, None)
+        else:
+            data[k] = v
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
@@ -388,6 +392,13 @@ class TrackMapWidget(QWidget):
         self.pit_span = (float(span[0]), float(span[1])) if span else None
         if speed_ms:
             self.pit_speed_ms = float(speed_ms)
+        self.update()
+
+    def clear_pit(self) -> None:
+        """Forget the learned pit lane (used when rescanning the pits)."""
+        self.pit_span = None
+        self.pit_speed_ms = 0.0
+        self.pit_live_ms = None
         self.update()
 
     def set_pit_live(self, speed_ms) -> None:
