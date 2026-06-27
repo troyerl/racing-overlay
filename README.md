@@ -65,10 +65,16 @@ Quit) keeps it reachable afterward.
 Pushing to `main`/`master` runs the **`.github/workflows/release.yml`** pipeline
 on a Windows runner, which:
 
-1. stamps the version (`1.0.<run-number>`) and your repo into `overlay/version.py`,
+1. reads the version and release notes from the topmost section of
+   [`RELEASE.md`](RELEASE.md) and stamps that version + your repo into
+   `overlay/version.py`,
 2. builds the app with PyInstaller and packages a one-click **installer**
    (`Racing-Overlay-Setup-<version>.exe`) with [Inno Setup](https://jrsoftware.org/isinfo.php),
-3. **creates a git tag and a GitHub Release** and attaches the installer.
+3. **creates a git tag (`v<version>`) and a GitHub Release** using the
+   `RELEASE.md` notes and attaches the installer.
+
+To cut a new release, add a new `## <version> - <date>` section to the top of
+[`RELEASE.md`](RELEASE.md) describing the changes, then push.
 
 Anyone can then download that installer from the repo's Releases page and run it
 (per-user install, no admin needed). The installed app **checks GitHub for a
@@ -248,7 +254,11 @@ glows **fade/grow** smoothly instead of popping.
   **vertical bar per selected input**. Pick which inputs appear with
   `show_throttle` / `show_brake` / `show_clutch` — the selection drives *both*
   modes (e.g. throttle only, throttle + brake, or all three), and the brake
-  arc/bar flashes amber when **ABS** is active. An optional
+  arc/bar flashes amber when **ABS** is active. A minimal **flag bar** (toggle
+  `dash.show_flags`) waves across the very top from `SessionFlags` — its color is
+  the flag: **yellow** while a caution is out, **black** when you're
+  black-flagged, and **green** only briefly when racing resumes from a yellow,
+  clearing after `dash.flag_green_seconds` (wave rate `dash.flag_blink_hz`). An optional
   thin **delta bar** (`dash.show_delta_bar`) runs across the top — green to the
   right when you're faster than your best, red to the left when slower
   (`delta_bar_range` is the seconds at full deflection). Every content slot —

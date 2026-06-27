@@ -97,6 +97,10 @@ class AdvancedSimHUD:
         self._pit_speed_ms = 0.0
         self._pit_s0 = None  # speed/time samples for steady-cruise detection
         self._pit_t0 = None
+        # Flag state: remember whether we were under yellow so we can flash a
+        # brief green when racing resumes, and when that green window ends.
+        self._flag_was_yellow = False
+        self._green_until = 0.0
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -1025,6 +1029,39 @@ class AdvancedSimHUD:
             self._pit_enter_pct = None
         self._pit_was_on = on
 
+    # iRacing SessionFlags bitfield groups (irsdk_Flags).
+    _FLAG_YELLOW = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
+    _FLAG_BLACK = 0x00010000 | 0x00020000  # black flag + disqualify
+    _FLAG_GREEN = 0x00000004 | 0x00000400  # green + green-held
+
+    def _session_flag(self):
+        """Current flag to show: 'yellow', 'black', 'green' (briefly, on resume)
+        or None. Green only flashes for a few seconds when a yellow clears."""
+        raw = self.ir["SessionFlags"]
+        try:
+            sf = int(raw) & 0xFFFFFFFF
+        except (TypeError, ValueError):
+            sf = 0
+        now = self.ir["SessionTime"]
+        if not isinstance(now, (int, float)):
+            now = time.time()
+
+        yellow = bool(sf & self._FLAG_YELLOW)
+        black = bool(sf & self._FLAG_BLACK)
+        # Leaving a yellow (or an explicit green wave) opens the green window.
+        if self._flag_was_yellow and not yellow:
+            secs = float(config.CFG["dash"].get("flag_green_seconds", 3.0) or 3.0)
+            self._green_until = now + secs
+        self._flag_was_yellow = yellow
+
+        if black:
+            return "black"
+        if yellow:
+            return "yellow"
+        if now < self._green_until:
+            return "green"
+        return None
+
     def _update_dash(self, player, positions, car_lap) -> None:
         """Feed the dash a full telemetry snapshot."""
         total = self.ir["SessionLapsTotal"]
@@ -1063,6 +1100,8 @@ class AdvancedSimHUD:
             "best_lap": self.ir["LapBestLapTime"],
             "cur_lap": self.ir["LapCurrentLapTime"],
             "delta": self.ir["LapDeltaToSessionBest"],
+            "flag": (self._session_flag()
+                     if config.CFG["dash"].get("show_flags", True) else None),
         })
 
     def _fuel_laps(self):

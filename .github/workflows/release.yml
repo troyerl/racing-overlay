@@ -28,13 +28,28 @@ jobs:
           pip install -r requirements.txt
           pip install pyinstaller pillow
 
-      - name: Compute version
+      - name: Read version & notes from RELEASE.md
         id: ver
         shell: bash
         run: |
-          VERSION="1.0.${{ github.run_number }}"
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+          python - <<'PY'
+          import os, re
+          s = open("RELEASE.md", encoding="utf-8").read()
+          # The topmost "## <version> - <date>" section drives the release.
+          m = re.search(r'^##\s+(\d+\.\d+\.\d+)[^\n]*\n', s, re.M)
+          if not m:
+              raise SystemExit("No '## <version>' section found in RELEASE.md")
+          version = m.group(1)
+          nxt = re.search(r'^##\s+', s[m.end():], re.M)
+          body = (s[m.end(): m.end() + nxt.start()] if nxt else s[m.end():]).strip()
+          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as f:
+              f.write(body + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"version={version}\n")
+              f.write(f"tag=v{version}\n")
+          print("version:", version)
+          print(body)
+          PY
 
       - name: Stamp version and repo into the app
         shell: bash
@@ -72,5 +87,5 @@ jobs:
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: Racing Overlay ${{ steps.ver.outputs.version }}
-          generate_release_notes: true
+          body_path: RELEASE_NOTES.md
           files: installer_output/*.exe

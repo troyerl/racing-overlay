@@ -243,6 +243,16 @@ class FakeIRSDK:
             # Start at 14:00 and let the sim clock advance with real time.
             return (14 * 3600.0 + (time.time() - self._start)) % 86400.0
 
+        if key == "SessionFlags":
+            # Cycle green -> yellow (caution) -> green resume, with an occasional
+            # black flag, so the dash flag indicator is visible in demo.
+            cyc = (time.time() - self._start) % 45.0
+            if cyc < 6.0:
+                return 0x00004000 | 0x00008000   # caution + caution waving
+            if 30.0 <= cyc < 32.0:
+                return 0x00010000                # black flag
+            return 0x00000004                    # green
+
         if key == "PlayerCarMyIncidentCount":
             return 11
 

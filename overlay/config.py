@@ -215,6 +215,12 @@ DEFAULTS: dict = {
         # (throttle / brake / clutch bars with an ABS highlight).
         "center_mode": "ring",
         "show_position": True,
+        # Flag indicator (yellow / black / green) driven by SessionFlags. Green
+        # only flashes briefly when racing resumes out of a yellow, then clears
+        # after flag_green_seconds. flag_blink_hz is the wave/flash rate.
+        "show_flags": True,
+        "flag_green_seconds": 3.0,
+        "flag_blink_hz": 2.5,
         # A thin horizontal delta bar across the top (faster = green to the
         # right, slower = red to the left). delta_bar_range is the seconds at
         # full deflection.
@@ -261,6 +267,13 @@ DEFAULTS: dict = {
             "delta_faster": "#46df7a",
             "delta_slower": "#e23b3b",
             "delta_bar_track": "#333a42",
+            # Flag banner backgrounds + text.
+            "flag_yellow": "#ffd23a",
+            "flag_yellow_text": "#1a1400",
+            "flag_black": "#0a0a0a",
+            "flag_black_text": "#ffffff",
+            "flag_green": "#46df7a",
+            "flag_green_text": "#06210f",
         },
     },
     "map": {

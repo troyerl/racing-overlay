@@ -41,7 +41,7 @@ import math
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
 from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QLinearGradient,
-                         QPainter, QPen)
+                         QPainter, QPainterPath, QPen)
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
@@ -375,11 +375,23 @@ class DashWidget(QWidget):
         panels_top = m
         panels_bottom = h * 0.80   # the strip pill straddles below this line
 
-        # Optional delta bar across the very top; reserve space above the panels.
+        # Thin flag bar across the top; always reserve its strip (+ a small gap)
+        # so the layout stays put whether or not a flag is showing. Its right
+        # edge is finalized below to stop at the incident container, leaving the
+        # position box clear.
+        flag_top = None
+        flag_bar_h = 0.0
+        if c.get("show_flags", True):
+            flag_bar_h = max(6.0, h * 0.105)
+            flag_top = panels_top
+            panels_top += flag_bar_h + h * 0.03   # small gap below the bar
+
+        # Optional delta bar across the top; reserve space above the panels.
         if c.get("show_delta_bar", False):
             db_h = h * 0.05
-            self._draw_delta_bar(p, QRectF(m, m, (w - m) - m, db_h * 0.7), c, d)
-            panels_top = m + db_h
+            self._draw_delta_bar(p, QRectF(m, panels_top, (w - m) - m, db_h * 0.7),
+                                 c, d)
+            panels_top += db_h
         left_left = m
         right_edge = w - m
 
@@ -395,6 +407,13 @@ class DashWidget(QWidget):
             p9_w = top_h * 1.30
             p9_rect = QRectF(right_edge - p9_w, panels_top, p9_w, top_h)
             top_right = p9_rect.left() - hg
+
+        # Finalize the flag bar so it spans only to the incident container's edge
+        # (the top container's right edge), keeping the position box clear.
+        flag_rect = None
+        if flag_top is not None:
+            flag_rect = QRectF(left_left, flag_top, top_right - left_left,
+                               flag_bar_h)
 
         top_rect = QRectF(left_left, panels_top, top_right - left_left, top_h)
         bot_rect = QRectF(left_left, panels_top + top_h + gp,
@@ -450,8 +469,9 @@ class DashWidget(QWidget):
                       c.get("strip_right", "last_lap")]
         if any(k not in (None, "none") for k in strip_keys):
             pill_w = (right_edge - left_left) * 0.66
-            pill_h = h * 0.26
-            pill = QRectF(ring_cx - pill_w / 2, panels_bottom - pill_h * 0.28,
+            pill_h = h * 0.22
+            pill = QRectF(ring_cx - pill_w / 2,
+                          panels_bottom - pill_h * 0.28 + h * 0.02,
                           pill_w, pill_h)
             self._draw_strip(p, pill, strip_keys, d)
 
@@ -461,6 +481,67 @@ class DashWidget(QWidget):
                 self._draw_pedals(p, ring_cx, ring_cy, ring_d, c, d)
             else:
                 self._draw_ring(p, ring_cx, ring_cy, ring_d, c, d)
+
+        # --- flag bar (yellow / black / green) on top of everything ------
+        if flag_rect is not None:
+            self._draw_flag(p, flag_rect, c, d.get("flag"), ring_cx)
+
+    # -- flag bar ----------------------------------------------------------
+    def _draw_flag(self, p, rect, c, flag, center_x=None) -> None:
+        """A thin colored bar across the top of the dash with a label. Color +
+        text convey the flag (yellow / black / green); it waves by flashing."""
+        spec = {
+            "yellow": ("CAUTION", "flag_yellow", "flag_yellow_text"),
+            "black": ("BLACK FLAG", "flag_black", "flag_black_text"),
+            "green": ("GREEN", "flag_green", "flag_green_text"),
+        }.get(flag)
+        if spec is None:
+            return
+        label, bg_key, fg_key = spec
+        # "Wave" by flashing; keeps repaints flowing while the flag is shown.
+        hz = float(c.get("flag_blink_hz", 2.5) or 2.5)
+        on = (self._clock.elapsed() * hz / 1000.0) % 1.0 < 0.5
+        self._animating = True
+
+        bg = self._col(bg_key)
+        if not on:  # dim half of the wave
+            bg = bg.darker(180)
+        fg = self._col(fg_key)
+        r = rect.height() * 0.5
+
+        # base bar
+        p.setBrush(bg)
+        # A faint light edge defines the bar (and makes the black flag visible).
+        p.setPen(QPen(QColor(255, 255, 255, 45), 1))
+        p.drawRoundedRect(rect, r, r)
+
+        # diagonal slashes filling the bar (clipped to its rounded shape)
+        p.save()
+        clip = QPainterPath()
+        clip.addRoundedRect(rect, r, r)
+        p.setClipPath(clip)
+        hatch = QColor(fg)
+        hatch.setAlpha(70)
+        p.setPen(QPen(hatch, max(2.0, rect.height() * 0.16)))
+        step = rect.height() * 0.6
+        x = rect.left() - rect.height()
+        while x < rect.right() + rect.height():
+            p.drawLine(QPointF(x, rect.bottom()),
+                       QPointF(x + rect.height(), rect.top()))
+            x += step
+        p.restore()
+
+        # clear a rounded gap behind the text so the slashes frame it
+        font = self._font(rect.height() * 0.52, True)
+        tw = QFontMetricsF(font).horizontalAdvance(label)
+        pad = rect.height() * 0.6
+        cx = center_x if center_x is not None else rect.center().x()
+        gap = QRectF(cx - tw / 2 - pad, rect.top(), tw + pad * 2, rect.height())
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(bg)
+        p.drawRoundedRect(gap, gap.height() * 0.5, gap.height() * 0.5)
+
+        self._text_centered(p, QPointF(cx, rect.center().y()), font, label, fg)
 
     # -- shift / RPM bar (segmented) ---------------------------------------
     def _draw_shift(self, p, rect, c):
