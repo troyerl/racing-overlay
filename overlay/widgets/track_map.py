@@ -519,9 +519,11 @@ class TrackMapWidget(QWidget):
         lane.moveTo(pts[0])
         for q in pts[1:]:
             lane.lineTo(q)
-        pen = QPen(_mcol("pit"), max(3.0, mc.get("asphalt_width", 11) * 0.5))
-        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen = QPen(_mcol("pit"), 2.2)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setDashPattern([4, 3])  # short "slashed" dashes
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(pen)
         p.drawPath(lane)
@@ -552,7 +554,7 @@ class TrackMapWidget(QWidget):
         p.setBrush(_mcol("pit_over") if over else _mcol("pit"))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 4, 4)
-        p.setPen(QColor(255, 255, 255) if over else _mcol("pit_text"))
+        p.setPen(QColor(20, 20, 20) if over else _mcol("pit_text"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_corners(self, p: QPainter, tx) -> None:
@@ -578,9 +580,17 @@ class TrackMapWidget(QWidget):
     def _draw_cars(self, p: QPainter, tx) -> None:
         sz = max(5, round(8 * config.text_scale_for("map")))
         p.setFont(QFont(config.CFG.get("font_family", "Arial"), sz, QFont.Weight.Bold))
+        cc = tx(self._centroid)
+        off = _mcfg().get("asphalt_width", 11) * 0.85 + 3.0
         # Draw the player last so it sits on top of traffic.
-        for pct, label, color, is_player in sorted(self.cars, key=lambda c: c[3]):
+        for pct, label, color, is_player, on_pit in sorted(
+                self.cars, key=lambda c: c[3]):
             c = tx(self.path[self._index_for_pct(pct)])
+            # Cars on pit road sit on the inner pit lane, not the racing line.
+            if on_pit:
+                dx, dy = c.x() - cc.x(), c.y() - cc.y()
+                ln = math.hypot(dx, dy) or 1.0
+                c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
             r = 11.0 if is_player else 9.0
             p.setBrush(QColor(color))
             p.setPen(QPen(QColor(0, 0, 0), 2 if is_player else 1))

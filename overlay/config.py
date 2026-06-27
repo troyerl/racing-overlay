@@ -286,10 +286,11 @@ DEFAULTS: dict = {
             "player": "#46df7a",
             "corner_bg": "#0b0d11c8",
             "corner_text": "#d6dce2",
-            # Pit-lane highlight, its label text, and the over-limit warning color.
-            "pit": "#ffd23a",
-            "pit_text": "#0b0d11",
-            "pit_over": "#ff5b5b",
+            # Pit-lane highlight (thin red slashed line), its label text, and the
+            # over-limit warning color.
+            "pit": "#ff4d4d",
+            "pit_text": "#ffffff",
+            "pit_over": "#ffd23a",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",

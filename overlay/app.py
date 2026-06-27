@@ -92,6 +92,8 @@ class AdvancedSimHUD:
         self._pit_enter_pct = None
         self._pit_span = None
         self._pit_speed_ms = 0.0
+        self._pit_s0 = None  # speed/time samples for steady-cruise detection
+        self._pit_t0 = None
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -829,6 +831,8 @@ class AdvancedSimHUD:
         self._pit_enter_pct = None
         self._pit_span = None
         self._pit_speed_ms = 0.0
+        self._pit_s0 = None
+        self._pit_t0 = None
         # Clear the drawn map back to the "learning" placeholder.
         self.map_widget.set_track(None)
         self.map_widget.set_progress(0.0)
@@ -871,12 +875,17 @@ class AdvancedSimHUD:
         if config.CFG["map"].get("show_pit", True):
             self._learn_pit(player, lap_pct)
 
+        on_pit_arr = self.ir["CarIdxOnPitRoad"]
+        pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
         cars = []
         for idx, pct in enumerate(lap_pct):
             if pct is None or pct < 0.0 or pct > 1.0:
                 continue
             is_player = idx == player
-            if surface[idx] != oc.TRK_ON_TRACK and not is_player:
+            on_pit = (bool(on_pit_arr[idx]) if on_pit_arr and idx < len(on_pit_arr)
+                      else surface[idx] in pit_surf)
+            # Show cars that are on track or on pit road; skip garage/off-world.
+            if surface[idx] != oc.TRK_ON_TRACK and not on_pit and not is_player:
                 continue
             d = drivers.get(idx)
             num = str(d.get("CarNumber", "?")) if d else "?"
@@ -886,11 +895,35 @@ class AdvancedSimHUD:
                 if is_player
                 else palette[idx % len(palette)]
             )
-            cars.append((pct, num, color, is_player))
+            cars.append((pct, num, color, is_player, on_pit))
         self.map_widget.set_cars(cars)
 
     # iRacing EngineWarnings bitfield: pit speed limiter engaged.
     _PIT_LIMITER_BIT = 0x10
+
+    def _learn_pit_speed(self, speed) -> None:
+        """Estimate the pit speed limit while on pit road.
+
+        The limit is the speed held during the steady cruise down pit lane, so
+        we accept a sample when either the pit limiter is engaged or the speed
+        has been steady over a ~0.4s window (which rejects the entry braking and
+        exit acceleration). The running max of those is the limit.
+        """
+        if not isinstance(speed, (int, float)) or speed <= 3.0:
+            return
+        ew = self.ir["EngineWarnings"]
+        limiter = bool(ew and (int(ew) & self._PIT_LIMITER_BIT))
+        steady = False
+        t = self.ir["SessionTime"]
+        if isinstance(t, (int, float)):
+            if self._pit_t0 is None:
+                self._pit_s0, self._pit_t0 = speed, t
+            elif t - self._pit_t0 >= 0.4:
+                # < ~1.25 m/s change over the window => essentially constant.
+                steady = abs(speed - self._pit_s0) < 0.5
+                self._pit_s0, self._pit_t0 = speed, t
+        if (limiter or steady) and speed > self._pit_speed_ms:
+            self._pit_speed_ms = speed
 
     def _learn_pit(self, player, lap_pct) -> None:
         """Learn where pit road is (entry/exit lap pct) and its speed limit.
@@ -910,13 +943,13 @@ class AdvancedSimHUD:
         speed = self.ir["Speed"]
 
         if on:
-            ew = self.ir["EngineWarnings"]
-            limiter = bool(ew and (int(ew) & self._PIT_LIMITER_BIT))
-            if (limiter and isinstance(speed, (int, float))
-                    and speed > self._pit_speed_ms):
-                self._pit_speed_ms = speed
+            self._learn_pit_speed(speed)
             self.map_widget.set_pit_live(speed)
+            # Keep the limit badge current while cruising (if the span is known).
+            if self._pit_span is not None:
+                self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
         else:
+            self._pit_s0 = self._pit_t0 = None
             self.map_widget.set_pit_live(None)
 
         # Rising edge -> entering pit road; record where on the lap it happened.
