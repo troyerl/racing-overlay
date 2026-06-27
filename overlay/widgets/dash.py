@@ -7,7 +7,9 @@ The dash composes several distinct rounded containers in a fixed layout:
   * Bottom container:   a small + a big readout (left) + two stat cells (right)
   * Position container:  the position box, on its own to the right
   * Strip container:     three small readouts in their own floating pill
-  * Gear + throttle ring: a circular medallion floating on top of the containers
+  * Center medallion:    either a gear + input ring, or throttle/brake/clutch
+                         pedal bars (with an ABS highlight) -- see center_mode
+  * Delta bar:           an optional thin bar across the top (faster vs slower)
 
 The container *layout* is fixed, but the *content* of every slot is fully
 configurable from config.CFG["dash"]: top_right, primary_left, primary_right,
@@ -19,7 +21,8 @@ follow the global config.units setting.
 
 Expected data dict (all optional; missing values render as "--"):
     rpm, redline, sl_first, sl_last   shift bar
-    throttle                          ring fill (when ring_source == "throttle")
+    throttle, brake, clutch           ring fill + pedal bars (0..1 each)
+    abs_active                        flashes the brake pedal bar when True
     gear                              gear number ("R"/"N"/1..)
     speed_ms                          speed in m/s (converted to mph/kph)
     position                          race position (int)
@@ -219,8 +222,8 @@ class DashWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data: dict = {}
-        self._ring = 0.0
         self._shift = 0.0
+        self._ped = {"t": 0.0, "b": 0.0, "c": 0.0}  # eased throttle/brake/clutch
         self._clock = QElapsedTimer()
         self._clock.start()
         self._last_ms = 0
@@ -283,16 +286,20 @@ class DashWidget(QWidget):
             first, last = redline * 0.78, redline * 0.995
         return max(0.0, min(1.0, (rpm - first) / (last - first)))
 
-    def _ring_frac(self, d) -> float:
-        src = self._cfg().get("ring_source", "throttle")
-        if src == "throttle":
-            return max(0.0, min(1.0, _num(d, "throttle") or 0.0))
-        if src == "brake":
-            return max(0.0, min(1.0, _num(d, "brake") or 0.0))
-        rpm, redline = _num(d, "rpm"), _num(d, "redline")
-        if rpm is None or not redline:
-            return 0.0
-        return max(0.0, min(1.0, rpm / redline))
+    def _selected_inputs(self, c) -> list:
+        """Inputs to display, in order. Each is (eased_value, color_key, abs_on).
+
+        Shared by both center modes so the ring and the pedal bars always show
+        the same set of selected inputs.
+        """
+        abs_on = bool(self.data.get("abs_active"))
+        spec = [
+            ("show_throttle", True, "t", "pedal_throttle", False),
+            ("show_brake", True, "b", "pedal_brake", abs_on),
+            ("show_clutch", False, "c", "pedal_clutch", False),
+        ]
+        return [(self._ped[pk], colk, a)
+                for cfgk, dflt, pk, colk, a in spec if c.get(cfgk, dflt)]
 
     # -- panel helper ------------------------------------------------------
     def _panel(self, p, rect, radius=None) -> None:
@@ -315,11 +322,19 @@ class DashWidget(QWidget):
         c = self._cfg()
 
         dt = self._dt()
-        rt, st = self._ring_frac(d), self._shift_frac(d)
-        self._ring = _ease(self._ring, rt, dt, 0.09)
+        st = self._shift_frac(d)
         self._shift = _ease(self._shift, st, dt, 0.06)
-        self._animating = (abs(self._ring - rt) > 0.003
-                           or abs(self._shift - st) > 0.003)
+        # Eased driver inputs, shared by the ring and the pedal bars.
+        pt = max(0.0, min(1.0, _num(d, "throttle") or 0.0))
+        pb = max(0.0, min(1.0, _num(d, "brake") or 0.0))
+        pc = max(0.0, min(1.0, _num(d, "clutch") or 0.0))
+        self._ped["t"] = _ease(self._ped["t"], pt, dt, 0.05)
+        self._ped["b"] = _ease(self._ped["b"], pb, dt, 0.05)
+        self._ped["c"] = _ease(self._ped["c"], pc, dt, 0.05)
+        self._animating = (abs(self._shift - st) > 0.003
+                           or abs(self._ped["t"] - pt) > 0.003
+                           or abs(self._ped["b"] - pb) > 0.003
+                           or abs(self._ped["c"] - pc) > 0.003)
 
         # --- container geometry ------------------------------------------
         m = h * 0.045
@@ -328,6 +343,12 @@ class DashWidget(QWidget):
         show_pos = c.get("show_position", True)
         panels_top = m
         panels_bottom = h * 0.80   # the strip pill straddles below this line
+
+        # Optional delta bar across the very top; reserve space above the panels.
+        if c.get("show_delta_bar", False):
+            db_h = h * 0.05
+            self._draw_delta_bar(p, QRectF(m, m, (w - m) - m, db_h * 0.7), c, d)
+            panels_top = m + db_h
         left_left = m
         right_edge = w - m
 
@@ -403,9 +424,12 @@ class DashWidget(QWidget):
                           pill_w, pill_h)
             self._draw_strip(p, pill, strip_keys, d)
 
-        # --- gear + throttle ring (floats on top of everything) ----------
+        # --- center medallion (floats on top of everything) --------------
         if c.get("show_ring", True):
-            self._draw_ring(p, ring_cx, ring_cy, ring_d, c, d)
+            if c.get("center_mode", "ring") == "pedals":
+                self._draw_pedals(p, ring_cx, ring_cy, ring_d, c, d)
+            else:
+                self._draw_ring(p, ring_cx, ring_cy, ring_d, c, d)
 
     # -- shift / RPM bar (segmented) ---------------------------------------
     def _draw_shift(self, p, rect, c):
@@ -612,7 +636,7 @@ class DashWidget(QWidget):
             f = self._font(fs * max_w / tw)
         self._text_centered(p, box.center(), f, text, col)
 
-    # -- gear + throttle ring medallion (drawn on top) ---------------------
+    # -- gear + input ring medallion (drawn on top) ------------------------
     def _draw_ring(self, p, cx, cy, ring_d, c, d):
         # Dark medallion behind the ring so it reads as floating above panels,
         # with its own border so it stands out from the containers.
@@ -623,16 +647,32 @@ class DashWidget(QWidget):
         p.setBrush(self._col("bg_bottom"))
         p.drawEllipse(QPointF(cx, cy), mr, mr)
 
-        rect = QRectF(cx - ring_d / 2, cy - ring_d / 2, ring_d, ring_d)
-        pen_w = ring_d * 0.11
-        arc = rect.adjusted(pen_w / 2, pen_w / 2, -pen_w / 2, -pen_w / 2)
+        # One concentric arc-ring per selected input (outer -> inner).
+        inputs = self._selected_inputs(c)
+        n = len(inputs)
+        if n:
+            pen_w = ring_d * (0.11 if n == 1 else 0.075 if n == 2 else 0.055)
+            gap = pen_w * 0.55
+            r_out = ring_d / 2 - pen_w / 2 - ring_d * 0.015
+            for i, (val, colkey, abs_on) in enumerate(inputs):
+                r = r_out - i * (pen_w + gap)
+                arc = QRectF(cx - r, cy - r, 2 * r, 2 * r)
+                on = self._col("abs") if abs_on else self._col(colkey)
+                self._draw_ring_arc(p, arc, pen_w, val, on, c)
+            gear_px = ring_d * (0.50 if n == 1 else 0.40 if n == 2 else 0.32)
+        else:
+            gear_px = ring_d * 0.50
+
+        self._text_centered(p, QPointF(cx, cy), self._font(gear_px),
+                             _gear_str(d.get("gear")), self._col("gear"))
+
+    def _draw_ring_arc(self, p, arc, pen_w, frac, on_color, c):
         n = max(1, int(c.get("ring_segments", 16)))
         seg = 360.0 / n
         span = seg * 0.72
-        lit = self._ring * n
-        on, off = self._col("green"), self._col("ring_track")
-
-        glow = QColor(on)
+        lit = max(0.0, min(1.0, frac)) * n
+        off = self._col("ring_track")
+        glow = QColor(on_color)
         glow.setAlpha(75)
         p.setPen(QPen(glow, pen_w * 2.0, cap=Qt.PenCapStyle.FlatCap))
         for i in range(n):
@@ -641,12 +681,74 @@ class DashWidget(QWidget):
                 p.drawArc(arc, int((ang + span / 2) * 16), int(-span * 16))
         for i in range(n):
             ang = 90.0 - (i + 0.5) * seg
-            p.setPen(QPen(on if i < lit else off, pen_w,
+            p.setPen(QPen(on_color if i < lit else off, pen_w,
                           cap=Qt.PenCapStyle.FlatCap))
             p.drawArc(arc, int((ang + span / 2) * 16), int(-span * 16))
 
-        self._text_centered(p, QPointF(cx, cy), self._font(ring_d * 0.50),
-                             _gear_str(d.get("gear")), self._col("gear"))
+    # -- pedal-bar medallion (throttle / brake / clutch, drawn on top) ------
+    def _draw_pedals(self, p, cx, cy, ring_d, c, d):
+        mr = ring_d / 2 + ring_d * 0.06
+        border = QColor(self._col("medallion_border"))
+        border.setAlpha(150)
+        p.setPen(QPen(border, max(1.5, ring_d * 0.022)))
+        p.setBrush(self._col("bg_bottom"))
+        p.drawEllipse(QPointF(cx, cy), mr, mr)
+
+        bars = self._selected_inputs(c)
+        if not bars:
+            # No inputs selected: just show the gear, centered.
+            self._text_centered(p, QPointF(cx, cy), self._font(ring_d * 0.50),
+                                _gear_str(d.get("gear")), self._col("gear"))
+            return
+
+        # Gear stays prominent at the top of the medallion.
+        self._text_centered(p, QPointF(cx, cy - ring_d * 0.28),
+                            self._font(ring_d * 0.26),
+                            _gear_str(d.get("gear")), self._col("gear"))
+
+        n = len(bars)
+        area_w = ring_d * (0.26 if n == 1 else 0.46 if n == 2 else 0.60)
+        area_h = ring_d * 0.44
+        top = cy - ring_d * 0.14
+        bottom = top + area_h
+        bar_w = area_w / (n + (n - 1) * 0.6)
+        gap = bar_w * 0.6
+        x0 = cx - area_w / 2
+        rad = bar_w * 0.30
+        p.setPen(Qt.PenStyle.NoPen)
+        for i, (val, ckey, abs_on) in enumerate(bars):
+            x = x0 + i * (bar_w + gap)
+            p.setBrush(self._col("pedal_track"))
+            p.drawRoundedRect(QRectF(x, top, bar_w, area_h), rad, rad)
+            fh = area_h * max(0.0, min(1.0, val))
+            if fh > 0.5:
+                p.setBrush(self._col("abs") if abs_on else self._col(ckey))
+                p.drawRoundedRect(QRectF(x, bottom - fh, bar_w, fh), rad, rad)
+
+    # -- delta bar (thin horizontal: faster green right / slower red left) --
+    def _draw_delta_bar(self, p, rect, c, d):
+        r = rect.height() / 2
+        p.setPen(QPen(self._col("pill_border"), 1.0))
+        p.setBrush(self._col("delta_bar_track"))
+        p.drawRoundedRect(rect, r, r)
+        cx = rect.center().x()
+        delta = _num(d, "delta")
+        if delta is not None:
+            rng = float(c.get("delta_bar_range", 1.0)) or 1.0
+            frac = max(-1.0, min(1.0, delta / rng))
+            fill_w = abs(frac) * (rect.width() / 2)
+            faster = delta < 0  # negative delta = ahead of best = faster
+            p.setPen(Qt.PenStyle.NoPen)
+            if faster:
+                p.setBrush(self._col("delta_faster"))
+                p.drawRoundedRect(QRectF(cx, rect.top(), fill_w, rect.height()), r, r)
+            elif fill_w > 0:
+                p.setBrush(self._col("delta_slower"))
+                p.drawRoundedRect(QRectF(cx - fill_w, rect.top(), fill_w,
+                                         rect.height()), r, r)
+        # Center reference tick.
+        p.setPen(QPen(self._col("label"), 1.2))
+        p.drawLine(QPointF(cx, rect.top() + 1), QPointF(cx, rect.bottom() - 1))
 
     # -- strip pill (own container) ----------------------------------------
     def _draw_strip(self, p, pill, keys, d):

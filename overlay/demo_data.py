@@ -275,6 +275,15 @@ class FakeIRSDK:
             t = time.time() - self._start
             return max(0.0, min(1.0, 0.75 * math.sin(t * 0.9 - 2.3)))
 
+        if key == "Clutch":
+            # iRacing reports 1.0 = fully engaged (pedal up); blip toward 0
+            # (disengaged) briefly, as if shifting.
+            t = time.time() - self._start
+            return 0.12 if (t % 7.0) < 0.4 else 1.0
+
+        if key == "BrakeABSactive":
+            return self["Brake"] > 0.55  # ABS "kicks in" under hard braking
+
         if key == "PlayerCarPosition":
             return self["CarIdxPosition"][self.player_idx]
 

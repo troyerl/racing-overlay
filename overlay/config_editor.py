@@ -50,7 +50,7 @@ COLOR_PARENTS = {"colors", "license_colors"}
 ENUMS = {
     "pit_mode": ["laps_since", "time_since", "at_lap", "at_time"],
     "units": ["metric", "imperial"],
-    "ring_source": ["rpm", "throttle", "brake"],
+    "center_mode": ["ring", "pedals"],
 }
 
 # Friendly display text for raw config option values (combo boxes show these,
@@ -74,8 +74,9 @@ OPTION_LABELS = {
     "at_lap": "Lap pitted on", "at_time": "Race time pitted",
     # units
     "metric": "Metric (km/h, °C, L)", "imperial": "Imperial (mph, °F, gal)",
-    # ring_source
+    # input toggles / center_mode
     "throttle": "Throttle", "brake": "Brake",
+    "ring": "Gear ring", "pedals": "Pedal bars",
 }
 
 # Special-cased word fixups so labels read naturally (RPM, iRating, ...).

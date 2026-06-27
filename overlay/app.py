@@ -612,6 +612,10 @@ class AdvancedSimHUD:
         total = self.ir["SessionLapsTotal"]
         if not isinstance(total, (int, float)) or total <= 0 or total > 2000:
             total = None
+        # iRacing's Clutch is 1.0 when fully engaged (pedal up); show pedal travel.
+        clutch_raw = self.ir["Clutch"]
+        clutch = (1.0 - clutch_raw) if isinstance(clutch_raw, (int, float)) else None
+        abs_active = self.ir["BrakeABSactive"]
         self.dash_widget.set_data({
             "gear": self.ir["Gear"],
             "rpm": self.ir["RPM"],
@@ -619,6 +623,9 @@ class AdvancedSimHUD:
             "sl_first": self._car_info.get("sl_first"),
             "sl_last": self._car_info.get("sl_last"),
             "throttle": self.ir["Throttle"],
+            "brake": self.ir["Brake"],
+            "clutch": clutch,
+            "abs_active": bool(abs_active),
             "speed_ms": self.ir["Speed"],
             "position": (positions[player] if positions and player is not None
                          else None),

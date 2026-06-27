@@ -179,16 +179,25 @@ glows **fade/grow** smoothly instead of popping.
   horizontal **shift/RPM bar** and a **status** readout in the top container, a
   **primary** block (a small + a big readout) plus two stacked **stat cells** in
   the bottom container, an orange **position box** as its own container, a
-  floating **strip pill** with three items, and a **segmented gear + throttle
-  ring** medallion floating on top (fills from `dash.ring_source`: throttle, RPM
-  vs redline, or brake). Every content slot — `top_right`, `primary_left`,
-  `primary_right`, `stat_left`, `stat_right`, and `strip_left`/`strip_center`/
-  `strip_right` — is picked from a metric by **dropdown**: speed (unit-aware),
-  RPM, gear, position, lap (x/total), laps remaining, lap, fuel, fuel (+laps),
-  fuel laps left, tire wear (L/R), incidents, last/best/current lap, delta,
-  track temp, or air temp (or `none` to hide it). The shift bar, ring and
-  position box have their own show/hide toggles. Speed, fuel and temps follow
-  the global `units` setting (metric/imperial).
+  floating **strip pill** with three items, and a floating **center medallion**.
+  The medallion has two modes (`dash.center_mode`): `ring` shows the gear with a
+  **concentric arc per selected input**; `pedals` shows the gear plus a
+  **vertical bar per selected input**. Pick which inputs appear with
+  `show_throttle` / `show_brake` / `show_clutch` — the selection drives *both*
+  modes (e.g. throttle only, throttle + brake, or all three), and the brake
+  arc/bar flashes amber when **ABS** is active. An optional
+  thin **delta bar** (`dash.show_delta_bar`) runs across the top — green to the
+  right when you're faster than your best, red to the left when slower
+  (`delta_bar_range` is the seconds at full deflection). Every content slot —
+  `top_right`, `primary_left`, `primary_right`, `stat_left`, `stat_right`, and
+  `strip_left`/`strip_center`/`strip_right` — is picked from a metric by
+  **dropdown**: speed (unit-aware), RPM, gear, position, lap (x/total), laps
+  remaining, lap, fuel, fuel (+laps), fuel laps left, tire wear (L/R),
+  incidents, last/best/current lap, delta, track temp, or air temp (or `none` to
+  hide it). The shift bar, medallion, position box and delta bar have their own
+  show/hide toggles. Speed, fuel and temps follow the global `units` setting
+  (metric/imperial). All inputs map to real iRacing telemetry (`Throttle`,
+  `Brake`, `Clutch`, `BrakeABSactive`).
 - Relative + Standings share `overlay/widgets/table.py`'s `BaseTable` for row rendering.
 
 Data sources: gaps from `CarIdxEstTime`/`CarIdxF2Time`, license/iRating from

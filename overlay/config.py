@@ -178,11 +178,24 @@ DEFAULTS: dict = {
         "shift_red_frac": 0.16,
         "shift_yellow_frac": 0.24,
         "ring_segments": 16,
-        # What the center ring fills with: "throttle" (0..1), "rpm" or "brake".
-        "ring_source": "throttle",
+        # Which driver inputs the center medallion shows. These apply to BOTH
+        # center modes: in "ring" each selected input is a concentric arc
+        # (outer->inner: throttle, brake, clutch); in "pedals" each is a vertical
+        # bar. Pick any combination (e.g. throttle only, or throttle + brake).
+        "show_throttle": True,
+        "show_brake": True,
+        "show_clutch": False,
         "show_shift_bar": True,
         "show_ring": True,
+        # Center medallion content: "ring" (gear + input ring) or "pedals"
+        # (throttle / brake / clutch bars with an ABS highlight).
+        "center_mode": "ring",
         "show_position": True,
+        # A thin horizontal delta bar across the top (faster = green to the
+        # right, slower = red to the left). delta_bar_range is the seconds at
+        # full deflection.
+        "show_delta_bar": False,
+        "delta_bar_range": 1.0,
         # Every content slot below picks any metric (or "none" to hide it):
         # speed, rpm, gear, position, lap_count, laps_left, lap, fuel,
         # fuel_stack, fuel_laps, tires, incidents, last_lap, best_lap,
@@ -214,6 +227,16 @@ DEFAULTS: dict = {
             "pill_border": "#ffffff20",
             # Border around the floating gear/throttle medallion so it stands out.
             "medallion_border": "#46df7a",
+            # Pedal bars (throttle / brake / clutch) + ABS highlight + track.
+            "pedal_throttle": "#46df7a",
+            "pedal_brake": "#e23b3b",
+            "pedal_clutch": "#3aa0ff",
+            "pedal_track": "#333a42",
+            "abs": "#ffd23a",
+            # Delta bar: faster (negative delta) vs slower, plus its track.
+            "delta_faster": "#46df7a",
+            "delta_slower": "#e23b3b",
+            "delta_bar_track": "#333a42",
         },
     },
     "map": {
