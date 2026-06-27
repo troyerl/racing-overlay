@@ -28,14 +28,10 @@ import time
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
 
-try:  # optional: only needed for the cpu / mem header-footer slots
-    import psutil
-except Exception:  # pragma: no cover - psutil is an optional dependency
-    psutil = None
-
 from . import common as oc
 from . import config
 from . import layout_store
+from . import sysstats
 from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.dash import DashWidget
@@ -80,7 +76,9 @@ class AdvancedSimHUD:
         self._sys_cache: tuple[str, str] | None = None
         self._sys_counter = 0
         self._path_builder = track_map.TrackPathBuilder()
-        self._track_loaded = False
+        self._track_loaded = False        # a bundled track FILE is in use
+        self._track_file_checked = False  # we've looked for a file for this track
+        self._map_version = 0             # last learned-path version pushed
         self.tracks_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tracks"
         )
@@ -615,7 +613,7 @@ class AdvancedSimHUD:
             vals = [t for t in best if t and t > 0] if best else []
             return self._fmt_laptime(min(vals)) if vals else "\u2014"
         if key == "local_time":
-            return time.strftime("%H:%M")
+            return time.strftime("%I:%M %p").lstrip("0")
         if key == "sim_time":
             tod = ir["SessionTimeOfDay"]
             return self._fmt_tod(tod) if tod is not None else "\u2014"
@@ -658,17 +656,15 @@ class AdvancedSimHUD:
 
     def _sys_stats(self) -> tuple[str, str]:
         """(cpu%, mem%) for the local machine, sampled a couple times a second."""
-        if psutil is None:
-            return ("--", "--")
         self._sys_counter += 1
         if self._sys_cache is None or self._sys_counter >= 30:
             self._sys_counter = 0
-            try:
-                cpu = psutil.cpu_percent(interval=None)
-                mem = psutil.virtual_memory().percent
-                self._sys_cache = (f"{cpu:.0f}%", f"{mem:.0f}%")
-            except Exception:
-                self._sys_cache = ("--", "--")
+            cpu = sysstats.cpu_percent()
+            mem = sysstats.mem_percent()
+            self._sys_cache = (
+                f"{cpu:.0f}%" if cpu is not None else "--",
+                f"{mem:.0f}%" if mem is not None else "--",
+            )
         return self._sys_cache
 
     @staticmethod
@@ -692,24 +688,33 @@ class AdvancedSimHUD:
         if self.demo or self._track_loaded:
             return
 
-        weekend = self.ir["WeekendInfo"]
-        track_id = weekend.get("TrackID") if weekend else None
-        track_file = track_map.find_track_file(track_id, self.tracks_dir)
-        if track_file:
-            try:
-                pts, sf, corners, _ = track_map.load_track(track_file)
-                self.map_widget.set_track(pts, sf, corners)
-                self._track_loaded = True
-                return
-            except Exception:
-                pass  # fall back to GPS learning
+        # Look for a bundled file once we actually know the track (WeekendInfo
+        # can be missing on the first ticks). If none exists, learn from GPS.
+        if not self._track_file_checked:
+            weekend = self.ir["WeekendInfo"]
+            if weekend:
+                self._track_file_checked = True
+                track_file = track_map.find_track_file(
+                    weekend.get("TrackID"), self.tracks_dir)
+                if track_file:
+                    try:
+                        pts, sf, corners, _ = track_map.load_track(track_file)
+                        self.map_widget.set_track(pts, sf, corners)
+                        self._track_loaded = True
+                        return
+                    except Exception:
+                        pass  # fall back to GPS learning
 
-        # No file for this TrackID: learn the shape from the player's own GPS.
-        if not self._path_builder.ready:
-            self._path_builder.add(lap_pct[player], self.ir["Lat"], self.ir["Lon"])
-            if self._path_builder.ready:
-                self.map_widget.set_path(self._path_builder.path)
-                self._track_loaded = True
+        # Learn the shape from the player's own GPS, showing a rough loop early
+        # and refining it as more of the lap is sampled.
+        b = self._path_builder
+        b.add(lap_pct[player] if lap_pct and player is not None else None,
+              self.ir["Lat"], self.ir["Lon"])
+        if b.version != self._map_version:
+            self._map_version = b.version
+            self.map_widget.set_path(b.path)
+        elif not b.ready:
+            self.map_widget.set_progress(b.coverage())
 
     def _update_map(self, player, lap_pct, surface, drivers) -> None:
         if player is None or not lap_pct or not surface:

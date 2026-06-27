@@ -167,27 +167,59 @@ def load_track(path: str, n: int = 720):
 
 
 class TrackPathBuilder:
-    """Learns a track path from the player's GPS (Lat/Lon) over a lap."""
+    """Learns a track path from the player's GPS (Lat/Lon) as you drive.
 
-    def __init__(self, bins: int = 720):
+    Rather than waiting for a near-complete lap before showing anything, the map
+    appears as a rough loop once a fraction of the lap has been sampled, then
+    keeps refining (rebuilding) as more of the track is covered. ``coverage()``
+    reports progress so the UI can show a percentage while it learns.
+    """
+
+    def __init__(self, bins: int = 720, first_frac: float = 0.55):
         self.bins = bins
         self._samples: list[tuple[float, float] | None] = [None] * bins
-        self.ready = False
+        self._filled = 0
+        self.first_frac = first_frac      # coverage needed for the first preview
+        self.ready = False                # a (possibly partial) path is available
+        self.complete = False             # essentially the whole lap is sampled
         self.path: list[tuple[float, float]] | None = None
+        self.version = 0                  # bumped whenever path is rebuilt
+        self._built_at = 0
+
+    def coverage(self) -> float:
+        return self._filled / self.bins
 
     def add(self, pct, lat, lon) -> None:
         if pct is None or lat is None or lon is None:
             return
         if not (0.0 <= pct <= 1.0):
             return
+        # (0, 0) is iRacing's "no GPS fix yet" sentinel -- ignore it so we don't
+        # collapse the whole path onto the origin.
+        if lat == 0.0 and lon == 0.0:
+            return
         i = min(int(pct * self.bins), self.bins - 1)
+        if self._samples[i] is None:
+            self._filled += 1
         # Equirectangular projection to a local flat plane (good enough for a
         # single track). y is negated so North points up on screen.
         x = math.radians(lon) * math.cos(math.radians(lat))
         y = -math.radians(lat)
         self._samples[i] = (x, y)
-        if not self.ready and sum(1 for s in self._samples if s) > self.bins * 0.9:
+
+        if self.complete:
+            return
+        cov = self._filled / self.bins
+        # First preview at first_frac, then rebuild every +4% of new coverage so
+        # the shape sharpens as you keep driving.
+        grew = (self._filled - self._built_at) >= max(1, int(self.bins * 0.04))
+        if (not self.ready and cov >= self.first_frac) or (self.ready and grew):
             self._build()
+            self._built_at = self._filled
+            self.ready = True
+            self.version += 1
+            if cov >= 0.96:
+                self.complete = True
 
     def _build(self) -> None:
         n = self.bins
@@ -210,7 +242,6 @@ class TrackPathBuilder:
             t = ((i - back) % n) / span
             path.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
         self.path = path
-        self.ready = True
 
 
 class TrackMapWidget(QWidget):
@@ -225,11 +256,22 @@ class TrackMapWidget(QWidget):
         # Each car: (lap_pct, label, color_hex, is_player)
         self.cars: list[tuple[float, str, str, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
+        self._progress_pct = -1
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_path(self, path) -> None:
         self.set_track(path, start_finish=0.0, corners=[])
+
+    def set_progress(self, frac: float) -> None:
+        """Update the 'learning track' percentage shown before a path exists."""
+        pct = max(0, min(100, int(frac * 100)))
+        if pct == self._progress_pct:
+            return
+        self._progress_pct = pct
+        self.placeholder = f"LEARNING TRACK\u2026  {pct}%  \u00b7  drive a lap"
+        if self.path is None:  # only the placeholder needs repainting
+            self.update()
 
     def set_track(self, path, start_finish: float = 0.0, corners=None) -> None:
         self.path = path

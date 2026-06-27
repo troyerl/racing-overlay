@@ -109,8 +109,10 @@ in this priority order:
    or `tracks/<id>.svg` (accurate, and can carry corner-name labels).
 2. **Live GPS learning:** if no file exists for the current `TrackID`,
    `TrackPathBuilder` learns the layout from your own car's GPS (`Lat`/`Lon`)
-   sampled by lap %. Drive one clean lap and the map fills in ("LEARNING TRACK…
-   drive a lap" until ~90% sampled).
+   sampled by lap %. The map appears as a rough loop part-way through your first
+   lap and keeps sharpening as you drive; until then it shows a live
+   "LEARNING TRACK… NN%" progress readout (if it stays at 0%, the sim isn't
+   sending GPS yet — get out on track and start moving).
 3. **Demo mode:** loads `tracks/_demo.json` immediately.
 
 ### Building the track library
