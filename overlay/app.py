@@ -86,6 +86,12 @@ class AdvancedSimHUD:
         self._learn_name = ""             # display name to stamp on a saved scan
         self._track_saved = False         # we've persisted this learned scan
         self._force_learn = False         # rescan: re-learn even if a file exists
+        # Pit-lane learning: detect the entry/exit (by lap pct) as the player
+        # drives through the pits, and the speed limit from the pit limiter.
+        self._pit_was_on = False
+        self._pit_enter_pct = None
+        self._pit_span = None
+        self._pit_speed_ms = 0.0
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -727,7 +733,7 @@ class AdvancedSimHUD:
         path = track_map.find_track_file("_demo", self.tracks_dir)
         if path:
             try:
-                pts, sf, corners, _ = track_map.load_track(path)
+                pts, sf, corners, _, _ = track_map.load_track(path)
                 self.map_widget.set_track(pts, sf, corners)
                 return
             except Exception:
@@ -755,8 +761,14 @@ class AdvancedSimHUD:
                         self._track_id, self.tracks_dir)
                     if track_file:
                         try:
-                            pts, sf, corners, _ = track_map.load_track(track_file)
+                            pts, sf, corners, _, meta = track_map.load_track(
+                                track_file)
                             self.map_widget.set_track(pts, sf, corners)
+                            if meta.get("pit_span"):
+                                self._pit_span = meta["pit_span"]
+                                self._pit_speed_ms = meta.get("pit_speed", 0.0)
+                                self.map_widget.set_pit(
+                                    self._pit_span, self._pit_speed_ms)
                             self._track_loaded = True
                             return
                         except Exception:
@@ -790,7 +802,8 @@ class AdvancedSimHUD:
             self._track_saved = True
             try:
                 track_map.save_learned_track(
-                    self.tracks_dir, self._track_id, b.path, self._learn_name)
+                    self.tracks_dir, self._track_id, b.path, self._learn_name,
+                    pit_span=self._pit_span, pit_speed=self._pit_speed_ms)
             except Exception:
                 pass
 
@@ -811,6 +824,11 @@ class AdvancedSimHUD:
         self._dr_x = self._dr_y = 0.0
         self._dr_t = None
         self._dr_last_pct = None
+        # Forget the learned pit lane too (set_track(None) clears it on the map).
+        self._pit_was_on = False
+        self._pit_enter_pct = None
+        self._pit_span = None
+        self._pit_speed_ms = 0.0
         # Clear the drawn map back to the "learning" placeholder.
         self.map_widget.set_track(None)
         self.map_widget.set_progress(0.0)
@@ -850,6 +868,8 @@ class AdvancedSimHUD:
             return
 
         self._ensure_track(player, lap_pct)
+        if config.CFG["map"].get("show_pit", True):
+            self._learn_pit(player, lap_pct)
 
         cars = []
         for idx, pct in enumerate(lap_pct):
@@ -868,6 +888,57 @@ class AdvancedSimHUD:
             )
             cars.append((pct, num, color, is_player))
         self.map_widget.set_cars(cars)
+
+    # iRacing EngineWarnings bitfield: pit speed limiter engaged.
+    _PIT_LIMITER_BIT = 0x10
+
+    def _learn_pit(self, player, lap_pct) -> None:
+        """Learn where pit road is (entry/exit lap pct) and its speed limit.
+
+        Entry/exit come from the player's OnPitRoad edges; the limit is the
+        top speed seen while the pit limiter is engaged (it holds the car at the
+        cap). Also feeds the map the live pit-lane speed for an over-limit warning.
+        """
+        if player is None or not lap_pct:
+            return
+        on = self.ir["OnPitRoad"]
+        if on is None:  # fall back to the per-car array
+            arr = self.ir["CarIdxOnPitRoad"]
+            on = bool(arr[player]) if arr and player < len(arr) else False
+        on = bool(on)
+        pct = lap_pct[player]
+        speed = self.ir["Speed"]
+
+        if on:
+            ew = self.ir["EngineWarnings"]
+            limiter = bool(ew and (int(ew) & self._PIT_LIMITER_BIT))
+            if (limiter and isinstance(speed, (int, float))
+                    and speed > self._pit_speed_ms):
+                self._pit_speed_ms = speed
+            self.map_widget.set_pit_live(speed)
+        else:
+            self.map_widget.set_pit_live(None)
+
+        # Rising edge -> entering pit road; record where on the lap it happened.
+        if on and not self._pit_was_on:
+            if pct is not None and 0.0 <= pct <= 1.0:
+                self._pit_enter_pct = pct
+        # Falling edge -> left pit road; finalize the span and persist it.
+        elif (not on) and self._pit_was_on and self._pit_enter_pct is not None:
+            if pct is not None and 0.0 <= pct <= 1.0:
+                self._pit_span = (self._pit_enter_pct, pct)
+                self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+                if self._track_id is not None:
+                    try:
+                        track_map.update_track_meta(
+                            self.tracks_dir, self._track_id,
+                            pit_span=[round(self._pit_span[0], 5),
+                                      round(self._pit_span[1], 5)],
+                            pit_speed=round(self._pit_speed_ms, 3))
+                    except Exception:
+                        pass
+            self._pit_enter_pct = None
+        self._pit_was_on = on
 
     def _update_dash(self, player, positions, car_lap) -> None:
         """Feed the dash a full telemetry snapshot."""

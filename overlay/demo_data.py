@@ -170,6 +170,13 @@ class FakeIRSDK:
         if key == "CarIdxOnPitRoad":
             return self._on_pit_list()
 
+        if key == "OnPitRoad":
+            return self._on_pit_list()[self.player_idx]
+
+        if key == "EngineWarnings":
+            # Pit speed limiter bit (0x10) on while the player is on pit road.
+            return 0x10 if self._on_pit_list()[self.player_idx] else 0
+
         if key == "CarIdxTrackSurface":
             return [oc.TRK_IN_PIT_STALL if on else oc.TRK_ON_TRACK
                     for on in self._on_pit_list()]
@@ -272,6 +279,9 @@ class FakeIRSDK:
             return math.sin(t * 0.6) * 0.45  # gentle +/- swing
 
         if key == "Speed":
+            # Held near the pit limit (~55 km/h) while on pit road.
+            if self._on_pit_list()[self.player_idx]:
+                return 15.3
             return self._engine()[0]
 
         if key == "RPM":

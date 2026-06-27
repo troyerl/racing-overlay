@@ -146,12 +146,15 @@ def find_track_file(track_id, tracks_dir: str = "tracks") -> str | None:
     return None
 
 
-def save_learned_track(tracks_dir: str, track_id, points, name: str = "") -> str | None:
+def save_learned_track(tracks_dir: str, track_id, points, name: str = "",
+                       pit_span=None, pit_speed: float = 0.0) -> str | None:
     """Persist a learned track loop to tracks/<track_id>.json.
 
     Written in the same schema load_track reads, so the next session at this
     track loads it instantly instead of re-learning. Marked "learned": true so
     it's distinguishable from a hand-made/official file (delete it to re-scan).
+    pit_span is an (entry_pct, exit_pct) tuple and pit_speed the learned pit
+    limit in m/s; both are optional and only written when known.
     """
     if track_id is None or not points:
         return None
@@ -165,6 +168,10 @@ def save_learned_track(tracks_dir: str, track_id, points, name: str = "") -> str
         "start_finish": 0.0,
         "corners": [],
     }
+    if pit_span is not None:
+        data["pit_span"] = [round(float(pit_span[0]), 5), round(float(pit_span[1]), 5)]
+    if pit_speed:
+        data["pit_speed"] = round(float(pit_speed), 3)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
@@ -172,8 +179,36 @@ def save_learned_track(tracks_dir: str, track_id, points, name: str = "") -> str
     return path
 
 
+def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
+    """Patch extra keys (e.g. pit_span, pit_speed) into an existing track file.
+
+    Used to record pit data learned after the geometry was already saved/loaded.
+    No-op if the file doesn't exist yet (the data is written by
+    save_learned_track when the scan finishes instead).
+    """
+    if track_id is None or not fields:
+        return False
+    path = os.path.join(tracks_dir, f"{track_id}.json")
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return False
+    data.update(fields)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+    return True
+
+
 def load_track(path: str, n: int = 720):
-    """Load a track file -> (points, start_finish_pct, corners, name)."""
+    """Load a track file -> (points, start_finish_pct, corners, name, meta).
+
+    meta carries optional extras: {"pit_span": (entry, exit), "pit_speed": m/s}.
+    """
     if path.lower().endswith(".svg"):
         with open(path, "r", encoding="utf-8") as fh:
             d = svgpath.first_path_d(fh.read())
@@ -181,7 +216,8 @@ def load_track(path: str, n: int = 720):
             raise ValueError(f"No <path> found in {path}")
         raw = svgpath.flatten_path(d)
         points = _resample_by_length(raw, n)
-        return points, 0.0, [], os.path.splitext(os.path.basename(path))[0]
+        name = os.path.splitext(os.path.basename(path))[0]
+        return points, 0.0, [], name, {}
 
     with open(path, "r", encoding="utf-8") as fh:
         data = json.load(fh)
@@ -189,7 +225,12 @@ def load_track(path: str, n: int = 720):
     points = _resample_by_length(raw, n)
     sf = float(data.get("start_finish", 0.0))
     corners = [(float(c["pct"]), str(c["label"])) for c in data.get("corners", [])]
-    return points, sf, corners, data.get("name", "")
+    meta: dict = {}
+    if isinstance(data.get("pit_span"), (list, tuple)) and len(data["pit_span"]) == 2:
+        meta["pit_span"] = (float(data["pit_span"][0]), float(data["pit_span"][1]))
+    if data.get("pit_speed"):
+        meta["pit_speed"] = float(data["pit_speed"])
+    return points, sf, corners, data.get("name", ""), meta
 
 
 class TrackPathBuilder:
@@ -302,6 +343,11 @@ class TrackMapWidget(QWidget):
         self.start_finish = 0.0  # lap pct that path[0] corresponds to
         self.corners: list[tuple[float, str]] = []  # (lap_pct, label)
         self._centroid = (0.0, 0.0)
+        # Pit lane: the (entry_pct, exit_pct) stretch the pit road runs alongside,
+        # the learned speed limit (m/s), and the player's live pit-lane speed.
+        self.pit_span: tuple[float, float] | None = None
+        self.pit_speed_ms: float = 0.0
+        self.pit_live_ms: float | None = None
         # Each car: (lap_pct, label, color_hex, is_player)
         self.cars: list[tuple[float, str, str, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
@@ -331,6 +377,25 @@ class TrackMapWidget(QWidget):
                 sum(pt[0] for pt in path) / len(path),
                 sum(pt[1] for pt in path) / len(path),
             )
+        else:  # cleared (e.g. on rescan) -> forget the pit lane too
+            self.pit_span = None
+            self.pit_speed_ms = 0.0
+            self.pit_live_ms = None
+        self.update()
+
+    def set_pit(self, span, speed_ms: float = 0.0) -> None:
+        """Set the pit-lane stretch (entry_pct, exit_pct) and learned limit."""
+        self.pit_span = (float(span[0]), float(span[1])) if span else None
+        if speed_ms:
+            self.pit_speed_ms = float(speed_ms)
+        self.update()
+
+    def set_pit_live(self, speed_ms) -> None:
+        """Update the player's live pit-lane speed (None when not in the pits)."""
+        new = float(speed_ms) if isinstance(speed_ms, (int, float)) else None
+        if new == self.pit_live_ms:
+            return
+        self.pit_live_ms = new
         self.update()
 
     def set_cars(self, cars) -> None:
@@ -403,6 +468,8 @@ class TrackMapWidget(QWidget):
         p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 2)))
         p.drawPath(qpath)
 
+        if mc.get("show_pit", True) and self.pit_span is not None:
+            self._draw_pit(p, tx)
         if mc.get("show_corners", True):
             self._draw_corners(p, tx)
         if mc.get("show_start_finish", True):
@@ -423,6 +490,70 @@ class TrackMapWidget(QWidget):
             QPointF(ax - nx * 7, ay - ny * 7),
             QPointF(ax + nx * 7, ay + ny * 7),
         )
+
+    def _draw_pit(self, p: QPainter, tx) -> None:
+        n = len(self.path)
+        if n < 3:
+            return
+        mc = _mcfg()
+        start = self._index_for_pct(self.pit_span[0])
+        end = self._index_for_pct(self.pit_span[1])
+        # Indices from entry -> exit in driving direction (wrapping past the line).
+        span = (end - start) % n
+        if span == 0 or span > n * 0.6:  # ignore degenerate / implausible spans
+            return
+        idxs = [(start + k) % n for k in range(span + 1)]
+
+        # Offset the highlight inward (toward the infield) so it reads as a
+        # separate lane running beside the track rather than over it.
+        cc = tx(self._centroid)
+        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        pts = []
+        for i in idxs:
+            s = tx(self.path[i])
+            dx, dy = s.x() - cc.x(), s.y() - cc.y()
+            ln = math.hypot(dx, dy) or 1.0
+            pts.append(QPointF(s.x() - dx / ln * off, s.y() - dy / ln * off))
+
+        lane = QPainterPath()
+        lane.moveTo(pts[0])
+        for q in pts[1:]:
+            lane.lineTo(q)
+        pen = QPen(_mcol("pit"), max(3.0, mc.get("asphalt_width", 11) * 0.5))
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(pen)
+        p.drawPath(lane)
+
+        self._draw_pit_label(p, pts[len(pts) // 2])
+
+    def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
+        live = self.pit_live_ms
+        limit = self.pit_speed_ms
+        parts = ["PIT"]
+        if limit:
+            parts.append(f"{round(config.conv_speed(limit))}")
+        # While in the pits, append the live speed; red when over the limit.
+        over = (live is not None and limit and live > limit + 0.6)
+        if live is not None:
+            parts.append(f"\u2192 {round(config.conv_speed(live))} {config.speed_unit()}")
+        elif limit:
+            parts.append(config.speed_unit())
+        text = "  ".join(parts)
+
+        fam = config.CFG.get("font_family", "Arial")
+        sz = max(6, round(8 * config.text_scale_for("map")))
+        p.setFont(QFont(fam, sz, QFont.Weight.Bold))
+        fm = p.fontMetrics()
+        w = fm.horizontalAdvance(text) + 12
+        h = fm.height() + 4
+        rect = QRectF(anchor.x() - w / 2, anchor.y() - h / 2, w, h)
+        p.setBrush(_mcol("pit_over") if over else _mcol("pit"))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(rect, 4, 4)
+        p.setPen(QColor(255, 255, 255) if over else _mcol("pit_text"))
+        p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_corners(self, p: QPainter, tx) -> None:
         if not self.corners:

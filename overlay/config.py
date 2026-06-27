@@ -271,6 +271,10 @@ DEFAULTS: dict = {
         "show_infield": True,
         "show_corners": True,
         "show_start_finish": True,
+        # Highlight the stretch of track the pit lane runs alongside (learned by
+        # driving through the pits once) and show the pit speed limit + your live
+        # pit-lane speed.
+        "show_pit": True,
         # Draw a rounded card behind the whole map. Off by default so only the
         # infield (the area enclosed by the track loop) is shaded.
         "show_panel": False,
@@ -282,6 +286,10 @@ DEFAULTS: dict = {
             "player": "#46df7a",
             "corner_bg": "#0b0d11c8",
             "corner_text": "#d6dce2",
+            # Pit-lane highlight, its label text, and the over-limit warning color.
+            "pit": "#ffd23a",
+            "pit_text": "#0b0d11",
+            "pit_over": "#ff5b5b",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",

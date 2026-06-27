@@ -121,6 +121,17 @@ in this priority order:
    (or delete the file); the new scan overwrites the saved one when complete.
 3. **Demo mode:** loads `tracks/_demo.json` immediately.
 
+### Pit lane
+
+With `map.show_pit` on (default), the map also learns **where the pit lane is**:
+the first time you drive through the pits it records the entry/exit points (from
+`OnPitRoad`) and highlights that stretch of track in amber. It also learns the
+**pit speed limit** from the pit limiter (`EngineWarnings`), so the highlight is
+labelled with the limit; while you're in the pits it shows your live speed and
+turns red if you're over the limit. The pit span and limit are saved into the
+track's `tracks/<id>.json` alongside the geometry, so they persist between
+sessions (and reset with **Rescan track now**).
+
 ### Building the track library
 
 Three ways to populate `tracks/`:
