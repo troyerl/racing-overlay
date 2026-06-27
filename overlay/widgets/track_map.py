@@ -189,6 +189,18 @@ class TrackPathBuilder:
     def coverage(self) -> float:
         return self._filled / self.bins
 
+    def reset(self) -> None:
+        """Drop sampled points so the next lap is learned from a fresh frame.
+
+        Keeps the last built path (and ready/version) on screen so the map
+        doesn't flicker back to the placeholder while a cleaner lap is captured.
+        Used by dead reckoning, which must rebuild from one continuous lap (its
+        coordinates are only consistent within a single lap origin).
+        """
+        self._samples = [None] * self.bins
+        self._filled = 0
+        self._built_at = 0
+
     def add(self, pct, lat, lon) -> None:
         """Add a sample from GPS (latitude / longitude in degrees)."""
         if lat is None or lon is None:

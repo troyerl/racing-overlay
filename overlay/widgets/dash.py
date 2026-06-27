@@ -287,6 +287,26 @@ class DashWidget(QWidget):
             first, last = redline * 0.78, redline * 0.995
         return max(0.0, min(1.0, (rpm - first) / (last - first)))
 
+    def _should_blink(self, d, c) -> bool:
+        """True when the shift light should flash: at the shift RPM and not in
+        top gear (no upshift available there)."""
+        if not c.get("shift_blink", True):
+            return False
+        rpm = _num(d, "rpm")
+        if rpm is None:
+            return False
+        # No point flashing in (or above) the highest forward gear.
+        gear = _num(d, "gear")
+        top = _num(d, "top_gear")
+        if top and gear is not None and gear >= top:
+            return False
+        # Prefer iRacing's dedicated blink RPM; fall back to the last shift light
+        # or just under the redline.
+        blink_rpm = _num(d, "sl_blink") or _num(d, "sl_last")
+        if blink_rpm is None:
+            blink_rpm = (_num(d, "redline") or 8000.0) * 0.99
+        return rpm >= blink_rpm
+
     def _selected_inputs(self, c) -> list:
         """Inputs to display, in order. Each is (eased_value, color_key, abs_on).
 
@@ -337,11 +357,11 @@ class DashWidget(QWidget):
                            or abs(self._ped["b"] - pb) > 0.003
                            or abs(self._ped["c"] - pc) > 0.003)
 
-        # Shift-light blink: once RPM tops out, flash the whole bar to say
-        # "shift now". Forces continuous repaints while it's flashing.
+        # Shift-light blink: at the shift RPM, flash the whole bar to say "shift
+        # now" (but never in top gear, where there's nothing to shift up to).
+        # Forces continuous repaints while it's flashing.
         self._shift_blink = False
-        if (c.get("show_shift_bar", True) and c.get("shift_blink", True)
-                and self._shift >= 0.999):
+        if c.get("show_shift_bar", True) and self._should_blink(d, c):
             hz = float(c.get("shift_blink_hz", 7.0) or 7.0)
             if (self._clock.elapsed() * hz / 1000.0) % 1.0 >= 0.5:
                 self._shift_blink = True

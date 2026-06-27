@@ -143,6 +143,7 @@ class FakeIRSDK:
                 "DriverCarSLShiftRPM": 7600.0,
                 "DriverCarSLLastRPM": 7850.0,
                 "DriverCarSLBlinkRPM": 7950.0,
+                "DriverCarGearNumForward": 6,
                 "Drivers": [
                     {
                         "CarIdx": i,

@@ -183,6 +183,8 @@ class AdvancedSimHUD:
             "sl_first": info.get("DriverCarSLFirstRPM"),
             "sl_last": info.get("DriverCarSLLastRPM"),
             "sl_shift": info.get("DriverCarSLShiftRPM"),
+            "sl_blink": info.get("DriverCarSLBlinkRPM"),
+            "gears": info.get("DriverCarGearNumForward"),
             "est_lap": float(info.get("DriverCarEstLapTime", 0.0) or 0.0),
         }
         # Track name (for the optional header/footer slot) lives in WeekendInfo;
@@ -728,7 +730,7 @@ class AdvancedSimHUD:
 
     def _ensure_track(self, player, lap_pct) -> None:
         """Prefer a bundled per-track file (by TrackID); else learn from GPS."""
-        if self.demo or self._track_loaded:
+        if self.demo or self._track_loaded or self._path_builder.complete:
             return
 
         # Look for a bundled file once we actually know the track (WeekendInfo
@@ -757,7 +759,11 @@ class AdvancedSimHUD:
         if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
             b.add(pct, lat, lon)
         else:
-            xy = self._dead_reckon(pct)
+            xy, wrapped = self._dead_reckon(pct)
+            # Dead-reckoned coordinates are only consistent within one lap, so
+            # start fresh at each start/finish crossing to avoid a kinked path.
+            if wrapped:
+                b.reset()
             if xy is not None:
                 b.add_xy(pct, xy[0], xy[1])
 
@@ -772,7 +778,8 @@ class AdvancedSimHUD:
 
         Re-zeros at the start/finish line so each lap shares one origin; the
         absolute orientation may be mirrored/rotated vs. reality, but the loop
-        shape is correct, which is all the 2D map needs.
+        shape is correct, which is all the 2D map needs. Returns
+        ((x, y) or None, wrapped) where wrapped marks a start/finish crossing.
         """
         speed = self.ir["Speed"]
         yaw = self.ir["YawNorth"]
@@ -780,9 +787,11 @@ class AdvancedSimHUD:
             yaw = self.ir["Yaw"]
         t = self.ir["SessionTime"]
         if pct is None or speed is None or yaw is None or t is None:
-            return None
+            return None, False
         # A sharp drop in lap pct = crossed the line -> start a fresh lap origin.
-        if self._dr_last_pct is not None and pct + 0.5 < self._dr_last_pct:
+        wrapped = (self._dr_last_pct is not None
+                   and pct + 0.5 < self._dr_last_pct)
+        if wrapped:
             self._dr_x = self._dr_y = 0.0
             self._dr_t = t
         if self._dr_t is not None:
@@ -792,7 +801,7 @@ class AdvancedSimHUD:
                 self._dr_y += speed * dt * math.sin(yaw)
         self._dr_t = t
         self._dr_last_pct = pct
-        return (self._dr_x, self._dr_y)
+        return (self._dr_x, self._dr_y), wrapped
 
     def _update_map(self, player, lap_pct, surface, drivers) -> None:
         if player is None or not lap_pct or not surface:
@@ -833,6 +842,8 @@ class AdvancedSimHUD:
             "redline": self._car_info.get("redline"),
             "sl_first": self._car_info.get("sl_first"),
             "sl_last": self._car_info.get("sl_last"),
+            "sl_blink": self._car_info.get("sl_blink"),
+            "top_gear": self._car_info.get("gears"),
             "throttle": self.ir["Throttle"],
             "brake": self.ir["Brake"],
             "clutch": clutch,
