@@ -262,6 +262,7 @@ What you can change, by section:
 
 | Section | Examples of what's customizable |
 | --- | --- |
+| `show` (per widget) | Each widget section (`standings`, `relative`, `radar`, `map`, `dash`) has a **`show`** toggle. Turning it off hides that window **and** skips all of its per-tick telemetry reads and calculations, so hidden widgets cost nothing. Toggle it live from the top of each tab in the settings editor. |
 | `font_family` | Global font used by every panel. |
 | `text_scale` | **Global** multiplier on all text sizes. Raise to enlarge everything, lower to shrink. Each widget also has its own `text_scale` (below) that multiplies on top of this. |
 | `units` | `"metric"` (km/h, °C, L) or `"imperial"` (mph, °F, gal). Drives the unit-aware Dash readouts (`speed`, `track_temp`, `air_temp`, `fuel`) and the Light HUD's fuel. `speed_kph` / `speed_mph` stay fixed to their named unit regardless. |

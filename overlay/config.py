@@ -92,6 +92,8 @@ DEFAULTS: dict = {
         },
     },
     "relative": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
         "rows_ahead": 3,
@@ -121,6 +123,8 @@ DEFAULTS: dict = {
         "footer_icons": {"left": False, "center": False, "right": False},
     },
     "standings": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
         "rows": 10,  # how many to show in top-N mode (center_on_player off)
@@ -153,6 +157,8 @@ DEFAULTS: dict = {
         "footer_icons": {"left": False, "center": False, "right": False},
     },
     "radar": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
         "range_pct": 0.03,
         "ease_side_tau": 0.10,
         "ease_glow_tau": 0.13,
@@ -181,6 +187,8 @@ DEFAULTS: dict = {
         },
     },
     "dash": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
         "shift_segments": 20,
@@ -249,6 +257,8 @@ DEFAULTS: dict = {
         },
     },
     "map": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
         # Per-widget text size (corner labels, car numbers), x global text_scale.
         "text_scale": 1.0,
         "asphalt_width": 11,
@@ -425,6 +435,29 @@ def table_column_order(section: str) -> list:
 def has_column(section: str, key: str) -> bool:
     """True if the given column is currently visible in a table section."""
     return key in table_column_order(section)
+
+
+def table_slot_items(section: str) -> set:
+    """The header/footer items actually displayed for a table section.
+
+    Footer items are excluded when that table's footer is hidden, so values for
+    a hidden footer are never computed. Used to drive lazy calculation.
+    """
+    cfg = CFG.get(section, {})
+    groups = ["header"]
+    if cfg.get("show_footer", True):
+        groups.append("footer")
+    items = set()
+    for grp in groups:
+        for v in cfg.get(grp, {}).values():
+            if v and v != "none":
+                items.add(v)
+    return items
+
+
+def slot_in_use(key: str, sections=("relative", "standings")) -> bool:
+    """True if any table currently displays the given header/footer item."""
+    return any(key in table_slot_items(s) for s in sections)
 
 
 def units() -> str:

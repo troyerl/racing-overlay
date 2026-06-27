@@ -58,8 +58,8 @@ class AdvancedSimHUD:
         self.ir = oc.make_irsdk(demo=demo)
         self._settings_window = None
 
-        # Repaint every panel immediately when the config changes (editor UI).
-        config.on_change(lambda _cfg: self._repaint_all())
+        # Repaint + re-apply widget visibility when the config changes (editor UI).
+        config.on_change(self._on_config_change)
 
         self._driver_cache: dict[int, dict] = {}
         # Engine/shift-light params from the session YAML (cached with drivers).
@@ -103,9 +103,11 @@ class AdvancedSimHUD:
             click_through=self.click_through,
         )
         self.panels.append(win)
+        self._win_by_key[key] = win
         return win
 
     def _build_panels(self) -> None:
+        self._win_by_key: dict[str, PanelWindow] = {}
         self.standings_widget = StandingsWidget()
         self.relative_widget = RelativeWidget()
         self.radar_widget = RadarWidget()
@@ -120,9 +122,25 @@ class AdvancedSimHUD:
         self._wrap("map", self.map_widget)
         self._wrap("dash", self.dash_widget)
 
+    @staticmethod
+    def _is_shown(key: str) -> bool:
+        return bool(config.CFG.get(key, {}).get("show", True))
+
     def show(self) -> None:
-        for win in self.panels:
-            win.show()
+        self._apply_visibility()
+
+    def _apply_visibility(self) -> None:
+        """Show or hide each panel window to match its config 'show' flag."""
+        for key, win in self._win_by_key.items():
+            if self._is_shown(key):
+                if not win.isVisible():
+                    win.show()
+            elif win.isVisible():
+                win.hide()
+
+    def _on_config_change(self, _cfg) -> None:
+        self._apply_visibility()
+        self._repaint_all()
 
     def _repaint_all(self) -> None:
         for w in (self.standings_widget, self.relative_widget,
@@ -161,14 +179,16 @@ class AdvancedSimHUD:
             "est_lap": float(info.get("DriverCarEstLapTime", 0.0) or 0.0),
         }
         # Track name (for the optional header/footer slot) lives in WeekendInfo;
-        # cache it on the same throttled refresh instead of parsing every tick.
-        wk = (self.ir["WeekendInfo"] if self.ir else None) or {}
-        name = wk.get("TrackDisplayName") or wk.get("TrackName") or ""
-        layout = wk.get("TrackConfigName") or ""
-        if layout and str(layout).strip().lower() not in ("", "n/a", "none"):
-            self._track_name = f"{name} - {layout}"
-        else:
-            self._track_name = name
+        # only parse it when a slot actually shows it, and only on this throttled
+        # refresh rather than every tick.
+        if config.slot_in_use("track_name"):
+            wk = (self.ir["WeekendInfo"] if self.ir else None) or {}
+            name = wk.get("TrackDisplayName") or wk.get("TrackName") or ""
+            layout = wk.get("TrackConfigName") or ""
+            if layout and str(layout).strip().lower() not in ("", "n/a", "none"):
+                self._track_name = f"{name} - {layout}"
+            else:
+                self._track_name = name
         return self._driver_cache
 
     # --- Per-tick update ----------------------------------------------------
@@ -177,40 +197,62 @@ class AdvancedSimHUD:
         if self.ir is None or (not self.ir.is_connected and not self.ir.startup()):
             return
 
-        player = self.ir["PlayerCarIdx"]
-        positions = self.ir["CarIdxPosition"]
-        lap_pct = self.ir["CarIdxLapDistPct"]
-        surface = self.ir["CarIdxTrackSurface"]
-        est_time = self.ir["CarIdxEstTime"]
-        car_left_right = self.ir["CarLeftRight"]
-        car_lap = self.ir["CarIdxLap"]
-        car_f2 = self.ir["CarIdxF2Time"]
-        drivers = self._drivers()
-        lap_est = self._lap_est(est_time)
+        # Which widgets are visible: a hidden widget does no reads and no work.
+        en = {k: self._is_shown(k)
+              for k in ("standings", "relative", "radar", "map", "dash")}
+        if not any(en.values()):
+            return
 
-        # Track pit stops only if a table actually shows the pit column.
+        player = self.ir["PlayerCarIdx"]
+        need_order = en["standings"] or en["relative"] or en["dash"]
+        need_drivers = en["standings"] or en["relative"] or en["map"] or en["dash"]
+        # Each array is only read if some visible widget consumes it.
+        positions = self.ir["CarIdxPosition"] if need_order else None
+        lap_pct = (self.ir["CarIdxLapDistPct"]
+                   if (en["radar"] or en["map"]) else None)
+        surface = (self.ir["CarIdxTrackSurface"]
+                   if (en["radar"] or en["standings"] or en["relative"]
+                       or en["map"]) else None)
+        est_time = (self.ir["CarIdxEstTime"]
+                    if (en["relative"] or en["standings"]) else None)
+        car_left_right = self.ir["CarLeftRight"] if en["radar"] else None
+        car_lap = self.ir["CarIdxLap"] if need_order else None
+        # CarIdxF2Time only feeds the standings gap column.
+        car_f2 = (self.ir["CarIdxF2Time"]
+                  if (en["standings"] and config.has_column("standings", "gap"))
+                  else None)
+        # _drivers() also refreshes the dash's engine/shift-light params.
+        drivers = self._drivers() if need_drivers else {}
+        lap_est = self._lap_est(est_time) if est_time is not None else 0.0
+
+        # Track pit stops only if a *shown* table shows the pit column.
         sess_time = None
-        if (config.has_column("relative", "pit")
-                or config.has_column("standings", "pit")):
+        if ((en["relative"] and config.has_column("relative", "pit"))
+                or (en["standings"] and config.has_column("standings", "pit"))):
             sess_time = self.ir["SessionTime"]
             self._update_pit_tracking(surface, car_lap, sess_time)
 
-        # Per-car lap times only if a table shows that column (else skip the read).
+        # Per-car lap times only if a shown table shows that column.
         self._car_last = self._car_best = None
-        if config.has_column("relative", "last_lap") or \
-                config.has_column("standings", "last_lap"):
+        if (en["relative"] and config.has_column("relative", "last_lap")) or \
+                (en["standings"] and config.has_column("standings", "last_lap")):
             self._car_last = self.ir["CarIdxLastLapTime"]
-        if config.has_column("relative", "best_lap") or \
-                config.has_column("standings", "best_lap"):
+        if (en["relative"] and config.has_column("relative", "best_lap")) or \
+                (en["standings"] and config.has_column("standings", "best_lap")):
             self._car_best = self.ir["CarIdxBestLapTime"]
 
-        self._update_radar(player, lap_pct, surface, car_left_right)
-        self._update_standings(positions, drivers, surface, car_f2, player, lap_est,
-                               car_lap, sess_time)
-        self._update_relative(player, est_time, surface, drivers, positions,
-                              car_lap, lap_est, sess_time)
-        self._update_map(player, lap_pct, surface, drivers)
-        self._update_dash(player, positions, car_lap)
+        if en["radar"]:
+            self._update_radar(player, lap_pct, surface, car_left_right)
+        if en["standings"]:
+            self._update_standings(positions, drivers, surface, car_f2, player,
+                                   lap_est, car_lap, sess_time)
+        if en["relative"]:
+            self._update_relative(player, est_time, surface, drivers, positions,
+                                  car_lap, lap_est, sess_time)
+        if en["map"]:
+            self._update_map(player, lap_pct, surface, drivers)
+        if en["dash"]:
+            self._update_dash(player, positions, car_lap)
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -553,14 +595,8 @@ class AdvancedSimHUD:
         Only configured slots are computed (lazy), so unused readouts cost
         nothing per tick. Returns key -> display string for the table to draw.
         """
-        cfg = config.CFG[section]
-        keys = set()
-        for grp in ("header", "footer"):
-            for v in cfg.get(grp, {}).values():
-                if v and v != "none":
-                    keys.add(v)
         out: dict = {}
-        for k in keys:
+        for k in config.table_slot_items(section):
             val = self._slot_value(k, drivers, positions, player, car_lap,
                                    lap_est, count)
             if val is not None:
