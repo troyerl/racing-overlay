@@ -528,9 +528,9 @@ class TrackMapWidget(QWidget):
         p.setPen(pen)
         p.drawPath(lane)
 
-        self._draw_pit_label(p, pts[len(pts) // 2])
+        self._draw_pit_label(p)
 
-    def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
+    def _draw_pit_label(self, p: QPainter) -> None:
         live = self.pit_live_ms
         limit = self.pit_speed_ms
         parts = ["PIT"]
@@ -550,7 +550,9 @@ class TrackMapWidget(QWidget):
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(text) + 12
         h = fm.height() + 4
-        rect = QRectF(anchor.x() - w / 2, anchor.y() - h / 2, w, h)
+        # Pinned to the bottom-left corner so it never covers the track.
+        margin = 6.0
+        rect = QRectF(margin, self.height() - h - margin, w, h)
         p.setBrush(_mcol("pit_over") if over else _mcol("pit"))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 4, 4)
@@ -592,7 +594,8 @@ class TrackMapWidget(QWidget):
                 ln = math.hypot(dx, dy) or 1.0
                 c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
             r = 11.0 if is_player else 9.0
-            p.setBrush(QColor(color))
+            # Cars in the pits are grayed out.
+            p.setBrush(_mcol("pit_car") if on_pit else QColor(color))
             p.setPen(QPen(QColor(0, 0, 0), 2 if is_player else 1))
             p.drawEllipse(c, r, r)
             p.setPen(QColor(20, 20, 20) if is_player else QColor(255, 255, 255))

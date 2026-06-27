@@ -275,6 +275,8 @@ DEFAULTS: dict = {
         # driving through the pits once) and show the pit speed limit + your live
         # pit-lane speed.
         "show_pit": True,
+        # What each car dot shows: "number" (car number) or "position".
+        "car_label": "number",
         # Draw a rounded card behind the whole map. Off by default so only the
         # infield (the area enclosed by the track loop) is shaded.
         "show_panel": False,
@@ -291,6 +293,8 @@ DEFAULTS: dict = {
             "pit": "#ff4d4d",
             "pit_text": "#ffffff",
             "pit_over": "#ffd23a",
+            # Fill for a car's dot while it's on pit road (grayed out).
+            "pit_car": "#6e747d",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",

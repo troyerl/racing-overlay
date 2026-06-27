@@ -51,6 +51,7 @@ ENUMS = {
     "pit_mode": ["laps_since", "time_since", "at_lap", "at_time"],
     "units": ["metric", "imperial"],
     "center_mode": ["ring", "pedals"],
+    "car_label": ["number", "position"],
 }
 
 # Friendly display text for raw config option values (combo boxes show these,
@@ -81,6 +82,8 @@ OPTION_LABELS = {
     # input toggles / center_mode
     "throttle": "Throttle", "brake": "Brake",
     "ring": "Gear ring", "pedals": "Pedal bars",
+    # map car-dot label
+    "number": "Car number",
 }
 
 # Special-cased word fixups so labels read naturally (RPM, iRating, ...).

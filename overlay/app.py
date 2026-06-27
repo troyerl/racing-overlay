@@ -877,6 +877,8 @@ class AdvancedSimHUD:
 
         on_pit_arr = self.ir["CarIdxOnPitRoad"]
         pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
+        use_pos = config.CFG["map"].get("car_label", "number") == "position"
+        positions = self.ir["CarIdxPosition"] if use_pos else None
         cars = []
         for idx, pct in enumerate(lap_pct):
             if pct is None or pct < 0.0 or pct > 1.0:
@@ -888,7 +890,10 @@ class AdvancedSimHUD:
             if surface[idx] != oc.TRK_ON_TRACK and not on_pit and not is_player:
                 continue
             d = drivers.get(idx)
-            num = str(d.get("CarNumber", "?")) if d else "?"
+            if use_pos and positions and idx < len(positions) and positions[idx]:
+                num = str(positions[idx])
+            else:
+                num = str(d.get("CarNumber", "?")) if d else "?"
             palette = track_map.car_palette()
             color = (
                 config.CFG["map"]["colors"]["player"]
