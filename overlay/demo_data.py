@@ -189,8 +189,34 @@ class FakeIRSDK:
             leader = max(totals)
             return [(leader - t) * self.lap_time for t in totals]
 
+        if key == "CarIdxLastLapTime":
+            # A plausible last lap per car: the demo pace scaled around lap_time,
+            # nudged by a slow wobble so the values tick over time.
+            t = time.time() - self._start
+            return [self.lap_time / self._speed[i]
+                    + 0.6 * math.sin(t * 0.2 + self._phase[i])
+                    for i in range(self.num_cars)]
+
+        if key == "CarIdxBestLapTime":
+            return [self.lap_time / self._speed[i] - 0.45
+                    for i in range(self.num_cars)]
+
         if key == "Lap":
             return int(self._total_laps()[self.player_idx]) + 1
+
+        if key == "SessionLapsTotal":
+            return 50
+
+        if key == "LFwearM":
+            t = time.time() - self._start
+            return max(0.0, min(1.0, 0.92 - 0.02 * (0.5 + 0.5 * math.sin(t * 0.05))))
+
+        if key == "RFwearM":
+            t = time.time() - self._start
+            return max(0.0, min(1.0, 0.88 - 0.02 * (0.5 + 0.5 * math.sin(t * 0.05 + 1))))
+
+        if key == "FuelUsePerHour":
+            return 176.0  # L/hr -> ~12 laps remaining at the demo fuel level
 
         if key == "SessionTime":
             return time.time() - self._start

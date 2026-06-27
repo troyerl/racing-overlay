@@ -83,16 +83,19 @@ class LightSpeedOverlay(QWidget):
 
         lc = config.CFG["light_hud"]
         font_px = max(6, round(lc['font_px'] * config.text_scale_for("light_hud")))
+        cols = lc['colors']
         self.style_sheet = f"""
             QLabel {{
-                color: {_hex(lc['colors']['text'])};
+                color: {_hex(cols['text'])};
                 font-family: '{config.CFG.get('font_family', 'Segoe UI')}', Arial, sans-serif;
                 font-size: {font_px}px;
                 font-weight: bold;
-                background-color: {_rgba(lc['colors']['bg'])};
-                border-left: 4px solid {_hex(lc['colors']['accent'])};
-                padding: 6px 12px;
-                border-radius: 2px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                    stop:0 {_rgba(cols['bg_top'])}, stop:1 {_rgba(cols['bg_bottom'])});
+                border: 1px solid {_rgba(cols['border'])};
+                border-left: 4px solid {_hex(cols['accent'])};
+                padding: 8px 14px;
+                border-radius: 10px;
             }}
         """
 

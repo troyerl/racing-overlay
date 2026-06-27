@@ -18,9 +18,10 @@ from __future__ import annotations
 
 import sys
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QApplication,
     QCheckBox,
     QColorDialog,
@@ -30,9 +31,12 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTabBar,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -56,7 +60,10 @@ OPTION_LABELS = {
     # dash metrics
     "speed": "Speed", "speed_kph": "Speed (km/h)", "speed_mph": "Speed (mph)",
     "rpm": "RPM", "gear": "Gear", "position": "Position", "lap": "Lap",
-    "fuel": "Fuel", "last_lap": "Last lap", "best_lap": "Best lap",
+    "lap_count": "Lap (x/total)", "fuel": "Fuel", "fuel_stack": "Fuel (+laps)",
+    "fuel_laps": "Fuel laps left", "tires": "Tire wear (L/R)",
+    "laps_left": "Laps remaining",
+    "last_lap": "Last lap", "best_lap": "Best lap",
     "cur_lap": "Current lap", "delta": "Delta", "incidents": "Incidents",
     "track_temp": "Track temp", "air_temp": "Air temp",
     # table header / footer items
@@ -80,87 +87,210 @@ _WORD_FIXUPS = {
 
 from .widgets.dash import METRIC_KEYS as _DASH_METRICS
 
-# Items available for each table's header / footer sections (and the dash slots).
+# Items available for each table's header / footer sections.
 SECTION_ITEMS = {
     ("relative", "header"): ["none", "sof", "position"],
     ("relative", "footer"): ["none", "race_time", "lap", "incidents"],
     ("standings", "header"): ["none", "order_pill", "title", "count"],
-    ("dash", "center"): list(_DASH_METRICS),
-    ("dash", "bottom"): list(_DASH_METRICS),
 }
 SECTION_KEYS = {"left", "center", "right"}
 
-ACCENT = "#4c9aff"
+# Dash content slots: each picks any metric (or "none" to hide it).
+DASH_SLOT_KEYS = {"top_right", "primary_left", "primary_right",
+                  "stat_left", "stat_right",
+                  "strip_left", "strip_center", "strip_right"}
+
+# Friendly names for the reorderable table columns.
+COLUMN_LABELS = {
+    "badge": "Status badge", "position": "Position", "car_number": "Car number",
+    "name": "Driver name", "license": "License", "irating": "iRating",
+    "pit": "Pit", "gap": "Gap", "last_lap": "Last lap", "best_lap": "Best lap",
+}
+
+ACCENT = "#46df7a"        # neon green (matches the dash)
+ACCENT_DIM = "#2f9d56"
+ORANGE = "#ff9416"
+YELLOW = "#ffd23a"
+BLUE = "#4c9aff"
+
+# Per-tab accent colors so each section reads like its widget's theme.
+TAB_COLORS = {
+    "General": "#9aa3b2",
+    "Table": ACCENT,
+    "Relative": ACCENT,
+    "Standings": ACCENT,
+    "Radar": ACCENT,
+    "Dash": ACCENT,
+    "Map": "#62b5ff",
+    "Light Hud": "#9aa3b2",
+}
 
 STYLE = f"""
-QWidget#root {{ background: #14161b; }}
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
-QLabel#title {{ font-size: 19px; font-weight: 600; color: #f2f4f7; }}
+QLabel#title {{ font-size: 20px; font-weight: 700; color: #f4f6f8; }}
 QLabel#subtitle {{ color: #8b93a1; font-size: 11px; }}
 QLabel#status {{ color: {ACCENT}; font-size: 11px; }}
 
 QLineEdit#search {{
-    background: #1d2128; border: 1px solid #2c313b; border-radius: 9px;
-    padding: 8px 12px; color: #e6e8ec;
+    background: rgba(20,23,28,0.85); border: 1px solid #2c313b; border-radius: 11px;
+    padding: 9px 14px; color: #e6e8ec; selection-background-color: {ACCENT};
 }}
 QLineEdit#search:focus {{ border: 1px solid {ACCENT}; }}
 
-QTabWidget::pane {{ border: none; top: -1px; }}
-QTabBar::tab {{
-    background: transparent; color: #8b93a1; padding: 9px 15px; margin-right: 2px;
-    border: none; border-bottom: 2px solid transparent; font-weight: 500;
-}}
-QTabBar::tab:selected {{ color: #f2f4f7; border-bottom: 2px solid {ACCENT}; }}
-QTabBar::tab:hover {{ color: #cfd4dc; }}
+QTabWidget::pane {{ border: none; top: 2px; background: transparent; }}
+QTabBar {{ background: transparent; }}
 
 QScrollArea {{ border: none; background: transparent; }}
 
 QGroupBox {{
-    border: 1px solid #262b34; border-radius: 12px; margin-top: 16px;
-    background: #171a20; padding: 10px 12px 12px 12px;
+    border: 1px solid rgba(70,223,122,0.20); border-radius: 13px; margin-top: 16px;
+    background: rgba(16,19,24,0.72); padding: 10px 12px 12px 12px;
 }}
 QGroupBox::title {{
-    subcontrol-origin: margin; left: 14px; padding: 2px 7px; color: #9aa3b2;
-    font-size: 10px; font-weight: 700;
+    subcontrol-origin: margin; left: 14px; padding: 2px 8px; color: {ACCENT};
+    font-size: 10px; font-weight: 800;
 }}
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-    background: #1d2128; border: 1px solid #2c313b; border-radius: 8px;
-    padding: 5px 9px; color: #e6e8ec; min-height: 18px; min-width: 150px;
+    background: rgba(29,33,40,0.92); border: 1px solid #2c313b; border-radius: 9px;
+    padding: 6px 10px; color: #e6e8ec; min-height: 18px; min-width: 150px;
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
     border: 1px solid {ACCENT};
 }}
-QComboBox::drop-down {{ border: none; width: 20px; }}
+QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
-    background: #1d2128; border: 1px solid #2c313b; color: #e6e8ec;
-    selection-background-color: {ACCENT}; selection-color: #0b1220; outline: none;
+    background: #161a20; border: 1px solid #2c313b; color: #e6e8ec;
+    selection-background-color: {ACCENT}; selection-color: #06210f; outline: none;
 }}
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 16px; border: none; }}
 
 QCheckBox::indicator {{
-    width: 18px; height: 18px; border: 1px solid #39404c; border-radius: 5px;
-    background: #1d2128;
+    width: 30px; height: 18px; border: 1px solid #39404c; border-radius: 6px;
+    background: #14171c;
 }}
-QCheckBox::indicator:checked {{ background: {ACCENT}; border: 1px solid {ACCENT}; }}
+QCheckBox::indicator:hover {{ border: 1px solid {ACCENT}; }}
+QCheckBox::indicator:checked {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 #5cf08c, stop:1 {ACCENT});
+    border: 1px solid {ACCENT};
+}}
 
 QPushButton {{
-    background: #222732; border: 1px solid #2f3540; border-radius: 9px;
-    padding: 8px 15px; color: #dfe3ea;
+    background: rgba(34,39,50,0.9); border: 1px solid #2f3540; border-radius: 10px;
+    padding: 9px 16px; color: #dfe3ea;
 }}
 QPushButton:hover {{ background: #2a3140; }}
 QPushButton#primary {{
-    background: {ACCENT}; border: 1px solid {ACCENT}; color: #0b1220; font-weight: 600;
+    background: {BLUE}; border: 1px solid {BLUE}; color: #06121f; font-weight: 700;
 }}
 QPushButton#primary:hover {{ background: #5ea7ff; }}
+QPushButton#warn {{
+    background: transparent; border: 1px solid {YELLOW}; color: {YELLOW}; font-weight: 600;
+}}
+QPushButton#warn:hover {{ background: rgba(255,210,58,0.12); }}
+QPushButton#danger {{
+    background: transparent; border: 1px solid {ORANGE}; color: {ORANGE}; font-weight: 600;
+}}
+QPushButton#danger:hover {{ background: rgba(255,148,22,0.12); }}
+
+QListWidget#orderList {{
+    background: rgba(20,23,28,0.72); border: 1px solid #2c313b; border-radius: 10px;
+    padding: 4px; outline: none;
+}}
+QListWidget#orderList::item {{
+    background: rgba(34,39,50,0.85); border: 1px solid #2f3540; border-radius: 7px;
+    padding: 8px 10px; margin: 2px 1px; color: #dfe3ea;
+}}
+QListWidget#orderList::item:hover {{ border: 1px solid {ACCENT_DIM}; }}
+QListWidget#orderList::item:selected {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+        stop:0 rgba(70,223,122,0.30), stop:1 rgba(70,223,122,0.16));
+    border: 1px solid {ACCENT}; color: #f4f6f8;
+}}
 
 QScrollBar:vertical {{ background: transparent; width: 11px; margin: 2px; }}
 QScrollBar::handle:vertical {{ background: #2c313b; border-radius: 5px; min-height: 32px; }}
-QScrollBar::handle:vertical:hover {{ background: #3a4150; }}
+QScrollBar::handle:vertical:hover {{ background: {ACCENT_DIM}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; }}
 """
+
+_CARBON: QPixmap | None = None
+
+
+def _carbon_tile() -> QPixmap:
+    """A small carbon-fiber weave tile used as the window background."""
+    global _CARBON
+    if _CARBON is not None:
+        return _CARBON
+    cell = 6
+    size = cell * 2
+    pm = QPixmap(size, size)
+    pm.fill(QColor("#0d0f12"))
+    p = QPainter(pm)
+
+    def weave(x, y, flip):
+        g = (QLinearGradient(x + cell, y, x, y + cell) if flip
+             else QLinearGradient(x, y, x + cell, y + cell))
+        g.setColorAt(0.0, QColor("#20242b"))
+        g.setColorAt(0.5, QColor("#161a20"))
+        g.setColorAt(1.0, QColor("#0b0d11"))
+        p.fillRect(QRectF(x, y, cell, cell), QBrush(g))
+
+    weave(0, 0, False)
+    weave(cell, cell, False)
+    weave(cell, 0, True)
+    weave(0, cell, True)
+    p.end()
+    _CARBON = pm
+    return pm
+
+
+class ChipTabBar(QTabBar):
+    """Tab bar drawn as rounded chips, each tinted with its section color."""
+
+    def __init__(self, colors: dict, parent=None):
+        super().__init__(parent)
+        self._colors = colors
+        self.setDrawBase(False)
+        self.setExpanding(False)
+        self.setUsesScrollButtons(False)
+        self.setElideMode(Qt.TextElideMode.ElideRight)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+    def _color(self, i: int) -> QColor:
+        return QColor(self._colors.get(self.tabText(i), "#8b93a1"))
+
+    def tabSizeHint(self, index):  # noqa: N802
+        s = super().tabSizeHint(index)
+        s.setHeight(36)
+        return s
+
+    def paintEvent(self, event):  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        cur = self.currentIndex()
+        for i in range(self.count()):
+            r = QRectF(self.tabRect(i)).adjusted(2, 5, -2, -5)
+            col = self._color(i)
+            selected = i == cur
+            fill = QColor(col)
+            fill.setAlpha(44 if selected else 18)
+            edge = QColor(col)
+            edge.setAlpha(255 if selected else 130)
+            p.setBrush(fill)
+            p.setPen(QPen(edge, 1.6 if selected else 1.2))
+            p.drawRoundedRect(r, 9, 9)
+            p.setPen(QColor("#f4f6f8") if selected else QColor("#aab2bf"))
+            f = self.font()
+            f.setBold(selected)
+            p.setFont(f)
+            txt = p.fontMetrics().elidedText(
+                self.tabText(i), Qt.TextElideMode.ElideRight, int(r.width() - 12))
+            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+        p.end()
 
 
 def _enum_options(path: list):
@@ -170,6 +300,8 @@ def _enum_options(path: list):
     key = path[-1]
     if key in ENUMS:
         return ENUMS[key]
+    if path[0] == "dash" and key in DASH_SLOT_KEYS:
+        return list(_DASH_METRICS)
     if key in SECTION_KEYS and len(path) >= 3:
         return SECTION_ITEMS.get((path[0], path[-2]))
     return None
@@ -302,6 +434,88 @@ class PaletteEditor(QWidget):
         self._on_change(list(self._values))
 
 
+class OrderEditor(QWidget):
+    """Drag-to-reorder list of keys with add/remove (e.g. table columns).
+
+    Drag rows to reorder, pick from the dropdown and press Add to insert a
+    column that isn't shown yet, or select a row and press Remove to hide it.
+    """
+
+    def __init__(self, values: list, labels: dict, all_keys: list, on_change):
+        super().__init__()
+        self._labels = labels
+        self._all_keys = list(all_keys)
+        self._on_change = on_change
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(7)
+
+        self.list = QListWidget()
+        self.list.setObjectName("orderList")
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list.setUniformItemSizes(True)
+        self.list.setMinimumHeight(150)
+        self.list.model().rowsMoved.connect(lambda *_: self._emit())
+        v.addWidget(self.list)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(6)
+        self.add_combo = QComboBox()
+        self.add_btn = QPushButton("+  Add")
+        self.remove_btn = QPushButton("\u2715  Remove")
+        for b in (self.add_btn, self.remove_btn):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.add_btn.clicked.connect(self._add)
+        self.remove_btn.clicked.connect(self._remove)
+        controls.addWidget(self.add_combo, 1)
+        controls.addWidget(self.add_btn)
+        controls.addWidget(self.remove_btn)
+        v.addLayout(controls)
+
+        for key in values:
+            self._add_item(key)
+        self._refresh_controls()
+
+    def _add_item(self, key: str) -> None:
+        item = QListWidgetItem(self._labels.get(key, _pretty(key)))
+        item.setData(Qt.ItemDataRole.UserRole, key)
+        self.list.addItem(item)
+
+    def _current_keys(self) -> list:
+        return [self.list.item(i).data(Qt.ItemDataRole.UserRole)
+                for i in range(self.list.count())]
+
+    def _refresh_controls(self) -> None:
+        present = set(self._current_keys())
+        self.add_combo.clear()
+        available = [k for k in self._all_keys if k not in present]
+        for k in available:
+            self.add_combo.addItem(self._labels.get(k, _pretty(k)), k)
+        self.add_combo.setEnabled(bool(available))
+        self.add_btn.setEnabled(bool(available))
+        self.remove_btn.setEnabled(self.list.count() > 1)
+
+    def _emit(self) -> None:
+        self._refresh_controls()
+        self._on_change(self._current_keys())
+
+    def _add(self) -> None:
+        key = self.add_combo.currentData()
+        if key:
+            self._add_item(key)
+            self._emit()
+
+    def _remove(self) -> None:
+        row = self.list.currentRow()
+        if row < 0:
+            row = self.list.count() - 1
+        if row >= 0 and self.list.count() > 1:
+            self.list.takeItem(row)
+            self._emit()
+
+
 class ConfigEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -314,6 +528,7 @@ class ConfigEditor(QWidget):
         self.working = config._deep_merge(config.full_defaults(), config.CFG)
         self._rows: list[dict] = []   # {widget, text, groups}
         self._groups: list[QGroupBox] = []
+        self._carbon = _carbon_tile()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
@@ -334,6 +549,7 @@ class ConfigEditor(QWidget):
         root.addWidget(self.search)
 
         self.tabs = QTabWidget()
+        self.tabs.setTabBar(ChipTabBar(TAB_COLORS))
         root.addWidget(self.tabs, 1)
 
         self.status = QLabel("")
@@ -357,21 +573,33 @@ class ConfigEditor(QWidget):
         self.autosave_chk.setChecked(True)
         controls.addWidget(self.autosave_chk)
         controls.addStretch(1)
-        for text, slot, primary in (
-            ("Reset", self._reset, False),
-            ("Reload", self._reload, False),
-            ("Apply", self._apply, False),
-            ("Save", self._save, True),
+        for text, slot, oname in (
+            ("Reset", self._reset, "danger"),
+            ("Reload", self._reload, ""),
+            ("Apply", self._apply, "warn"),
+            ("Save", self._save, "primary"),
         ):
             b = QPushButton(text)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
-            if primary:
-                b.setObjectName("primary")
+            if oname:
+                b.setObjectName(oname)
             b.clicked.connect(slot)
             controls.addWidget(b)
         root.addLayout(controls)
 
         self._build_tabs()
+
+    # --- background ---------------------------------------------------------
+
+    def paintEvent(self, event):  # noqa: N802
+        p = QPainter(self)
+        p.drawTiledPixmap(self.rect(), self._carbon)
+        # Subtle top sheen + darker edges for depth over the carbon weave.
+        g = QLinearGradient(0, 0, 0, self.height())
+        g.setColorAt(0.0, QColor(255, 255, 255, 12))
+        g.setColorAt(0.22, QColor(0, 0, 0, 0))
+        g.setColorAt(1.0, QColor(0, 0, 0, 70))
+        p.fillRect(self.rect(), g)
 
     # --- UI construction ----------------------------------------------------
 
@@ -391,6 +619,8 @@ class ConfigEditor(QWidget):
         area = QScrollArea()
         area.setWidgetResizable(True)
         area.setWidget(inner)
+        area.setStyleSheet("background: transparent;")
+        area.viewport().setStyleSheet("background: transparent;")
         return area
 
     def _build_section(self, schema: dict, path: list, groups: list) -> QWidget:
@@ -405,7 +635,7 @@ class ConfigEditor(QWidget):
                 continue
             cur_path = path + [key]
             value = _get_at(self.working, cur_path)
-            if key == "palette" and isinstance(default_val, list):
+            if isinstance(default_val, list) and key in ("palette", "column_order"):
                 continue  # rendered as its own group below
             v.addWidget(self._leaf_row(cur_path, default_val, value, groups))
 
@@ -416,6 +646,13 @@ class ConfigEditor(QWidget):
                 value = _get_at(self.working, cur_path)
                 box.layout().addWidget(
                     PaletteEditor(value, lambda x, p=cur_path: self._set(p, x)))
+                v.addWidget(box)
+            elif key == "column_order" and isinstance(default_val, list):
+                box = self._group("Column order", cur_path, groups)
+                value = _get_at(self.working, cur_path)
+                box.layout().addWidget(
+                    OrderEditor(value, COLUMN_LABELS, config.TABLE_COLUMNS,
+                                lambda x, p=cur_path: self._set(p, x)))
                 v.addWidget(box)
             elif isinstance(default_val, dict):
                 box = self._group(_pretty(key), cur_path, groups)

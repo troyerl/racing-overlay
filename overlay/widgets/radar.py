@@ -17,7 +17,7 @@ All colors, sizes, easing and toggles come from config.CFG["radar"].
 from __future__ import annotations
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
@@ -78,6 +78,16 @@ class RadarWidget(QWidget):
         rc = _rcfg()
         sz = rc["sizes"]
 
+        # Rounded card behind the radar so it matches the dash/table panels.
+        if rc.get("show_panel", True) and "bg_top" in rc["colors"]:
+            radius = max(8.0, min(w, h) * rc.get("corner_radius_frac", 0.12))
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, _rcol("bg_top"))
+            grad.setColorAt(1.0, _rcol("bg_bottom"))
+            p.setBrush(grad)
+            p.setPen(QPen(_rcol("panel_border"), 1))
+            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+
         car_w = max(12.0, w * sz["car_w"])
         car_h = max(24.0, h * sz["car_h"])
         bar_h = car_h * sz["bar_h"]
@@ -132,30 +142,65 @@ class RadarWidget(QWidget):
         car = QRectF(cx - car_w / 2, cy - car_h / 2, car_w, car_h)
         p.drawRoundedRect(car, car_w * 0.4, car_w * 0.4)
 
+    @staticmethod
+    def _feather_mask(pp, w, h, vertical):
+        # Multiply a perpendicular fade onto whatever is already drawn so the
+        # long edges of the bar dissolve instead of ending in a hard line.
+        pp.setCompositionMode(QPainter.CompositionMode.CompositionMode_DestinationIn)
+        if vertical:
+            m = QLinearGradient(0.0, 0.0, 0.0, float(h))
+        else:
+            m = QLinearGradient(0.0, 0.0, float(w), 0.0)
+        m.setColorAt(0.0, QColor(0, 0, 0, 0))
+        m.setColorAt(0.5, QColor(0, 0, 0, 255))
+        m.setColorAt(1.0, QColor(0, 0, 0, 0))
+        pp.fillRect(0, 0, w, h, m)
+
     def _side_bar(self, p, x0, x1, cy, bar_h, strong, to_left):
+        # A soft bar beside the car: strong at the inner edge next to you and
+        # fading outward, with the top/bottom edges feathered so there's no box.
         left, right = min(x0, x1), max(x0, x1)
-        rect = QRectF(left, cy - bar_h / 2, right - left, bar_h)
+        w = max(1, int(round(right - left)))
+        h = max(1, int(round(bar_h)))
         base = _rcol("red")
         alpha = 235 if strong else 195
-        inner_x = right if to_left else left
-        outer_x = left if to_left else right
-        grad = QLinearGradient(inner_x, 0, outer_x, 0)
+        pm = QPixmap(w, h)
+        pm.fill(Qt.GlobalColor.transparent)
+        pp = QPainter(pm)
+        pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Horizontal fade: strongest at the inner edge (nearest the car).
+        if to_left:
+            grad = QLinearGradient(float(w), 0.0, 0.0, 0.0)
+        else:
+            grad = QLinearGradient(0.0, 0.0, float(w), 0.0)
         grad.setColorAt(0.0, QColor(base.red(), base.green(), base.blue(), alpha))
         grad.setColorAt(1.0, QColor(base.red(), base.green(), base.blue(), 0))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(grad)
-        p.drawRoundedRect(rect, bar_h * 0.25, bar_h * 0.25)
+        pp.fillRect(0, 0, w, h, grad)
+        self._feather_mask(pp, w, h, vertical=True)
+        pp.end()
+        p.drawPixmap(int(round(left)), int(round(cy - bar_h / 2.0)), pm)
 
     def _v_glow(self, p, cx, y_inner, y_outer, closeness, up):
+        # A soft bar ahead/behind the car: strong near the car and fading toward
+        # the edge, with the side edges feathered so there's no box.
         half_w = self.width() * _rcfg()["sizes"]["glow_w"]
-        top, bottom = (min(y_inner, y_outer), max(y_inner, y_outer))
-        rect = QRectF(cx - half_w, top, half_w * 2, bottom - top)
+        top, bottom = min(y_inner, y_outer), max(y_inner, y_outer)
+        w = max(1, int(round(half_w * 2.0)))
+        h = max(1, int(round(bottom - top)))
         peak = int(80 + 130 * max(0.0, min(1.0, closeness)))
         col = _prox_color(closeness, peak)
         fade = QColor(col.red(), col.green(), col.blue(), 0)
-        grad = QLinearGradient(0, y_inner, 0, y_outer)
+        pm = QPixmap(w, h)
+        pm.fill(Qt.GlobalColor.transparent)
+        pp = QPainter(pm)
+        pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        # Vertical fade: strongest at the inner edge (nearest the car).
+        inner_local = float(y_inner - top)
+        outer_local = float(y_outer - top)
+        grad = QLinearGradient(0.0, inner_local, 0.0, outer_local)
         grad.setColorAt(0.0, col)
         grad.setColorAt(1.0, fade)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(grad)
-        p.drawRoundedRect(rect, half_w * 0.4, half_w * 0.4)
+        pp.fillRect(0, 0, w, h, grad)
+        self._feather_mask(pp, w, h, vertical=False)
+        pp.end()
+        p.drawPixmap(int(round(cx - half_w)), int(round(top)), pm)

@@ -66,6 +66,9 @@ class AdvancedSimHUD:
         # Per-car pit history: idx -> {"on": bool, "lap": int, "time": float}.
         # We track this ourselves because iRacing exposes no per-car "last pit".
         self._pit: dict[int, dict] = {}
+        # Per-car lap-time arrays, refreshed per tick only if a column needs them.
+        self._car_last = None
+        self._car_best = None
         self._path_builder = track_map.TrackPathBuilder()
         self._track_loaded = False
         self.tracks_dir = os.path.join(
@@ -170,10 +173,19 @@ class AdvancedSimHUD:
 
         # Track pit stops only if a table actually shows the pit column.
         sess_time = None
-        if (config.CFG["relative"]["columns"].get("pit")
-                or config.CFG["standings"]["columns"].get("pit")):
+        if (config.has_column("relative", "pit")
+                or config.has_column("standings", "pit")):
             sess_time = self.ir["SessionTime"]
             self._update_pit_tracking(surface, car_lap, sess_time)
+
+        # Per-car lap times only if a table shows that column (else skip the read).
+        self._car_last = self._car_best = None
+        if config.has_column("relative", "last_lap") or \
+                config.has_column("standings", "last_lap"):
+            self._car_last = self.ir["CarIdxLastLapTime"]
+        if config.has_column("relative", "best_lap") or \
+                config.has_column("standings", "best_lap"):
+            self._car_best = self.ir["CarIdxBestLapTime"]
 
         self._update_radar(player, lap_pct, surface, car_left_right)
         self._update_standings(positions, drivers, surface, car_f2, player, lap_est,
@@ -187,6 +199,19 @@ class AdvancedSimHUD:
     def _empty_row(tag: str) -> dict:
         """A blank placeholder row (keeps the player centered when padding)."""
         return {"key": f"_empty_{tag}", "empty": True}
+
+    @staticmethod
+    def _visible_cols(section: str) -> dict:
+        """Per-column visibility for a table, driven by its column_order list.
+
+        Returned as a dict so the row builders can keep using cols.get(key) to
+        skip computing fields whose column isn't shown. "stripe" is a separate
+        sub-toggle of the position cell.
+        """
+        order = set(config.table_column_order(section))
+        cols = {k: (k in order) for k in config.TABLE_COLUMNS}
+        cols["stripe"] = config.CFG[section]["columns"].get("stripe", True)
+        return cols
 
     def _update_pit_tracking(self, surface, car_lap, sess_time) -> None:
         """Record each car's last pit (lap + race time) on pit-road entry."""
@@ -268,16 +293,12 @@ class AdvancedSimHUD:
 
     def _build_standings_row(self, idx, drivers, positions, surface, car_f2,
                              player, lap_est, cols, car_lap, sess_time,
-                             pit_mode, show_ir_change) -> dict:
+                             pit_mode) -> dict:
         # Only compute fields whose column is actually shown.
         d = drivers.get(idx, {})
         cls = sr = ""
         if cols.get("license"):
             cls, sr = self._parse_license(d.get("LicString"))
-
-        ir_delta = None
-        if cols.get("irating") and show_ir_change and self.demo and idx != player:
-            ir_delta = ((idx * 37) % 60) - 30  # pseudo projected change for demo
 
         pit = ""
         if cols.get("pit"):
@@ -297,14 +318,16 @@ class AdvancedSimHUD:
         return {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
+            "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
             "name": d.get("UserName", f"Car {idx}") if cols.get("name") else "",
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
             "irating": self._fmt_irating(d.get("IRating")) if cols.get("irating") else "",
-            "ir_delta": ir_delta,
             "pit": pit,
             "gap_text": gap_text,
+            "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
+            "best_lap": self._lap_for(idx, self._car_best) if cols.get("best_lap") else "",
             "is_player": idx == player,
             "in_pit": surface[idx] in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS),
             "lapping": False,
@@ -315,9 +338,8 @@ class AdvancedSimHUD:
         if not positions:
             return
         scfg = config.CFG["standings"]
-        cols = scfg["columns"]
+        cols = self._visible_cols("standings")
         pit_mode = scfg.get("pit_mode", "laps_since")
-        show_ir_change = scfg.get("show_irating_change", True)
         n = scfg["rows"]
         ranked = sorted(
             (idx for idx, pos in enumerate(positions) if pos and pos > 0),
@@ -328,8 +350,7 @@ class AdvancedSimHUD:
         def build(idx):
             return self._build_standings_row(idx, drivers, positions, surface,
                                              car_f2, player, lap_est, cols,
-                                             car_lap, sess_time, pit_mode,
-                                             show_ir_change)
+                                             car_lap, sess_time, pit_mode)
 
         center = scfg.get("center_on_player", True) and player in ranked
         if center:
@@ -395,9 +416,23 @@ class AdvancedSimHUD:
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
 
+    @staticmethod
+    def _fmt_laptime(secs) -> str:
+        """A lap time as M:SS.mmm (iRacing uses <=0 for 'no time set')."""
+        if not isinstance(secs, (int, float)) or secs <= 0:
+            return "\u2014"
+        m = int(secs // 60)
+        s = secs - m * 60
+        return f"{m}:{s:06.3f}"
+
+    def _lap_for(self, idx, arr) -> str:
+        """Formatted lap time for a car from a CarIdx lap-time array."""
+        if not arr or idx >= len(arr):
+            return "\u2014"
+        return self._fmt_laptime(arr[idx])
+
     def _build_relative_row(self, idx, delta, drivers, positions, surface, car_lap,
-                            player, is_player, cols, sess_time, pit_mode,
-                            show_ir_change) -> dict:
+                            player, is_player, cols, sess_time, pit_mode) -> dict:
         # Only compute fields whose column is actually shown.
         d = drivers.get(idx, {})
         cls = sr = ""
@@ -411,20 +446,19 @@ class AdvancedSimHUD:
             car_lap and car_lap[idx] > 0 and car_lap[player] > 0
             and car_lap[idx] != car_lap[player] and not is_player
         )
-        ir_delta = None
-        if cols.get("irating") and show_ir_change and self.demo and not is_player:
-            ir_delta = ((idx * 37) % 60) - 30  # pseudo projected change for demo
         return {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
+            "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
             "name": d.get("UserName", f"Car {idx}") if cols.get("name") else "",
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
             "irating": self._fmt_irating(d.get("IRating")) if cols.get("irating") else "",
-            "ir_delta": ir_delta,
             "pit": pit,
             "gap": abs(delta) if cols.get("gap") else None,
+            "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
+            "best_lap": self._lap_for(idx, self._car_best) if cols.get("best_lap") else "",
             "is_player": is_player,
             "in_pit": in_pit,
             "lapping": lapping,
@@ -436,9 +470,8 @@ class AdvancedSimHUD:
             return
 
         rcfg = config.CFG["relative"]
-        cols = rcfg["columns"]
+        cols = self._visible_cols("relative")
         pit_mode = rcfg.get("pit_mode", "laps_since")
-        show_ir_change = rcfg.get("show_irating_change", True)
         me = est_time[player]
         rels = []
         for idx, t in enumerate(est_time):
@@ -469,14 +502,14 @@ class AdvancedSimHUD:
         for delta, idx in reversed(ahead):
             rows.append(self._build_relative_row(
                 idx, delta, drivers, positions, surface, car_lap, player, False,
-                cols, sess_time, pit_mode, show_ir_change))
+                cols, sess_time, pit_mode))
         rows.append(self._build_relative_row(
             player, 0.0, drivers, positions, surface, car_lap, player, True,
-            cols, sess_time, pit_mode, show_ir_change))
+            cols, sess_time, pit_mode))
         for delta, idx in behind:
             rows.append(self._build_relative_row(
                 idx, delta, drivers, positions, surface, car_lap, player, False,
-                cols, sess_time, pit_mode, show_ir_change))
+                cols, sess_time, pit_mode))
         if rcfg.get("center_on_player", True):
             for k in range(n_behind - len(behind)):
                 rows.append(self._empty_row(f"rel_bot{k}"))
@@ -575,53 +608,45 @@ class AdvancedSimHUD:
         self.map_widget.set_cars(cars)
 
     def _update_dash(self, player, positions, car_lap) -> None:
-        dc = config.CFG["dash"]
-        # Which metrics are actually on screen (center + bottom slots).
-        selected = set(dc.get("center", {}).values()) | set(dc.get("bottom", {}).values())
+        """Feed the dash a full telemetry snapshot."""
+        total = self.ir["SessionLapsTotal"]
+        if not isinstance(total, (int, float)) or total <= 0 or total > 2000:
+            total = None
+        self.dash_widget.set_data({
+            "gear": self.ir["Gear"],
+            "rpm": self.ir["RPM"],
+            "redline": self._car_info.get("redline"),
+            "sl_first": self._car_info.get("sl_first"),
+            "sl_last": self._car_info.get("sl_last"),
+            "throttle": self.ir["Throttle"],
+            "speed_ms": self.ir["Speed"],
+            "position": (positions[player] if positions and player is not None
+                         else None),
+            "lap": self.ir["Lap"] or (car_lap[player]
+                                      if car_lap and player is not None else None),
+            "laps_total": total,
+            "incidents": self.ir["PlayerCarMyIncidentCount"],
+            "tire_l": self.ir["LFwearM"],
+            "tire_r": self.ir["RFwearM"],
+            "fuel": self.ir["FuelLevel"],
+            "fuel_laps": self._fuel_laps(),
+            "air_temp": self.ir["AirTemp"],
+            "track_temp": self.ir["TrackTemp"] or self.ir["TrackTempCrew"],
+            "last_lap": self.ir["LapLastLapTime"],
+            "best_lap": self.ir["LapBestLapTime"],
+            "cur_lap": self.ir["LapCurrentLapTime"],
+            "delta": self.ir["LapDeltaToSessionBest"],
+        })
 
-        raw: dict = {}
-        # Gear ring + shift lights + position are fixed elements, always read.
-        raw["gear"] = self.ir["Gear"]
-        raw["rpm"] = self.ir["RPM"]
-        raw["redline"] = self._car_info.get("redline")
-        raw["sl_first"] = self._car_info.get("sl_first")
-        raw["sl_last"] = self._car_info.get("sl_last")
-        raw["sl_shift"] = self._car_info.get("sl_shift")
-        ring_src = dc.get("ring_source", "rpm")
-        if ring_src == "throttle":
-            raw["throttle"] = self.ir["Throttle"]
-        elif ring_src == "brake":
-            raw["brake"] = self.ir["Brake"]
-        if dc.get("show_position", True) or "position" in selected:
-            raw["position"] = (positions[player] if positions and player is not None
-                               else None)
-
-        # Configurable readouts: only fetch telemetry a selected metric needs.
-        if "rpm" in selected:
-            pass  # already read above
-        if {"speed", "speed_kph", "speed_mph"} & selected:
-            raw["speed_ms"] = self.ir["Speed"]
-        if "lap" in selected:
-            raw["lap"] = self.ir["Lap"] or (car_lap[player]
-                                            if car_lap and player is not None else None)
-        if "fuel" in selected:
-            raw["fuel"] = self.ir["FuelLevel"]
-        if "last_lap" in selected:
-            raw["last_lap"] = self.ir["LapLastLapTime"]
-        if "best_lap" in selected:
-            raw["best_lap"] = self.ir["LapBestLapTime"]
-        if "cur_lap" in selected:
-            raw["cur_lap"] = self.ir["LapCurrentLapTime"]
-        if "delta" in selected:
-            raw["delta"] = self.ir["LapDeltaToSessionBest"]
-        if "incidents" in selected:
-            raw["incidents"] = self.ir["PlayerCarMyIncidentCount"]
-        if "track_temp" in selected:
-            raw["track_temp"] = self.ir["TrackTemp"] or self.ir["TrackTempCrew"]
-        if "air_temp" in selected:
-            raw["air_temp"] = self.ir["AirTemp"]
-
-        self.dash_widget.set_data(raw)
+    def _fuel_laps(self):
+        """Estimate laps of fuel remaining from level, burn rate and lap time."""
+        fuel = self.ir["FuelLevel"]
+        per_hr = self.ir["FuelUsePerHour"]
+        est_lap = self._car_info.get("est_lap") or 0.0
+        if not isinstance(fuel, (int, float)) or not per_hr or est_lap <= 0:
+            return None
+        per_lap = per_hr * (est_lap / 3600.0)
+        return fuel / per_lap if per_lap > 0 else None
 
 
 def main() -> int:

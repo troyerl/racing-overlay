@@ -174,17 +174,21 @@ glows **fade/grow** smoothly instead of popping.
 - **Radar** (`overlay/widgets/radar.py`) — directional proximity warning: you are the white
   car in the center, red bars fade outward when a car is alongside
   (`CarLeftRight`), and a yellow-to-red glow appears ahead/behind scaled by how
-  close the nearest car is. Transparent background (no container box).
-- **Dash / RPM** (`overlay/widgets/dash.py`) — a pill showing the current gear inside a
-  green ring that fills with a configurable source (`dash.ring_source`: RPM vs
-  redline, throttle, or brake), a row of shift-light dots across the
-  top, two big readouts, a large position number, and a bottom strip with three
-  items. The two center readouts (`dash.center`) and the three bottom items
-  (`dash.bottom`) are each picked from a metric by **dropdown** — speed
-  (unit-aware), KPH, MPH, RPM, gear, position, lap, fuel, last/best/current lap,
-  delta, incidents, track temp, or air temp. Speed, fuel and temps follow the
-  global `units` setting (metric/imperial). Only the metrics actually shown are
-  read from telemetry.
+  close the nearest car is, drawn on a rounded card that matches the dash.
+- **Dash / RPM** (`overlay/widgets/dash.py`) — a multi-container dashboard with: a
+  horizontal **shift/RPM bar** and a **status** readout in the top container, a
+  **primary** block (a small + a big readout) plus two stacked **stat cells** in
+  the bottom container, an orange **position box** as its own container, a
+  floating **strip pill** with three items, and a **segmented gear + throttle
+  ring** medallion floating on top (fills from `dash.ring_source`: throttle, RPM
+  vs redline, or brake). Every content slot — `top_right`, `primary_left`,
+  `primary_right`, `stat_left`, `stat_right`, and `strip_left`/`strip_center`/
+  `strip_right` — is picked from a metric by **dropdown**: speed (unit-aware),
+  RPM, gear, position, lap (x/total), laps remaining, lap, fuel, fuel (+laps),
+  fuel laps left, tire wear (L/R), incidents, last/best/current lap, delta,
+  track temp, or air temp (or `none` to hide it). The shift bar, ring and
+  position box have their own show/hide toggles. Speed, fuel and temps follow
+  the global `units` setting (metric/imperial).
 - Relative + Standings share `overlay/widgets/table.py`'s `BaseTable` for row rendering.
 
 Data sources: gaps from `CarIdxEstTime`/`CarIdxF2Time`, license/iRating from
@@ -251,12 +255,20 @@ What you can change, by section:
 | `text_scale` | **Global** multiplier on all text sizes. Raise to enlarge everything, lower to shrink. Each widget also has its own `text_scale` (below) that multiplies on top of this. |
 | `units` | `"metric"` (km/h, °C, L) or `"imperial"` (mph, °F, gal). Drives the unit-aware Dash readouts (`speed`, `track_temp`, `air_temp`, `fuel`) and the Light HUD's fuel. `speed_kph` / `speed_mph` stay fixed to their named unit regardless. |
 | `table` | Shared row/cell/header styling for both tables: all colors, license-class colors, iRating cell colors, player/threat row tints, `corner_radius_frac`, `font_scale`, `gap_font_scale`, `row_ease_tau` / `fade_ease_tau` (animation speed), per-cell `widths`, `alt_row_shading`. |
-| `relative` | `rows_ahead` / `rows_behind` (cars shown in front of / behind you); `center_on_player`; a **`columns`** map to show/hide badge, position, class stripe, name, license, iRating, **pit**, gap (hidden columns reflow); `pit_mode`; `show_irating_change` (the change arrow on the iRating cell); `show_footer`; and customizable **`header`** (sof, position) and **`footer`** (race_time, lap, incidents) items. |
-| `standings` | `rows_ahead` / `rows_behind` (window above/below you when centered), `rows` (size in top-N mode), `center_on_player`, `title`; its own **`columns`** map (independent of Relative, incl. **pit**); `pit_mode`; `show_irating_change`; and customizable **`header`** items (order_pill, title, count). |
+| `relative` | `rows_ahead` / `rows_behind` (cars shown in front of / behind you); `center_on_player`; a **`column_order`** list that controls *which* columns show and *in what order* (add/remove/reorder them from the editor); `columns.stripe` (the position class-color stripe); `pit_mode`; `show_footer`; and customizable **`header`** (sof, position) and **`footer`** (race_time, lap, incidents) items. |
+| `standings` | `rows_ahead` / `rows_behind` (window above/below you when centered), `rows` (size in top-N mode), `center_on_player`, `title`; its own **`column_order`** list (independent of Relative); `columns.stripe`; `pit_mode`; and customizable **`header`** items (order_pill, title, count). |
 
-`show_irating_change` is independent of the iRating column: keep `columns.irating`
-on to show each driver's iRating, and toggle `show_irating_change` to decide
-whether the projected up/down change arrow appears next to it.
+Columns are controlled entirely by **`column_order`**: in the settings editor's
+**Column order** group you can drag rows to reorder, pick a column from the
+dropdown and press **Add**, or select a row and press **Remove**. A column that
+isn't in the list isn't shown (and its data isn't computed). The `name` column
+always stretches to fill the leftover width.
+
+The available columns are: **badge** (status/pit/lap marker), **position**,
+**car_number**, **name**, **license** (class + SR), **irating**, **pit**,
+**gap**, **last_lap** and **best_lap**. Tables start with a sensible subset; add
+the rest from the editor as needed. Every column maps to real iRacing telemetry
+(`CarIdxLastLapTime`, `CarIdxBestLapTime`, DriverInfo, etc.).
 
 #### Per-widget text size
 
@@ -311,23 +323,22 @@ section isn't drawn (and isn't computed).
 
 #### Labels vs. icons (Font Awesome)
 
-Every labeled readout can show a **Font Awesome icon instead of its text label**,
-toggled per item. The bundled font is `assets/fonts/fa-solid-900.ttf` (Font
-Awesome 6 Free, Solid). Each label keeps its value text; only the label part
-swaps to a glyph (e.g. KPH → a gauge, TRACK → a road, lap time → a stopwatch).
+Readouts use **Font Awesome icons** where a metric has one mapped. The bundled
+font is `assets/fonts/fa-solid-900.ttf` (Font Awesome 6 Free, Solid). The dash
+draws each slot's icon automatically next to its value (e.g. speed → a gauge,
+fuel → a pump, lap time → a stopwatch).
 
-In the settings editor these are checkboxes; in JSON they are boolean maps that
-mirror the slot structure:
+The tables can show a **Font Awesome icon instead of a text label**, toggled per
+header/footer section. In the settings editor these are checkboxes; in JSON they
+are boolean maps that mirror the slot structure:
 
-| Toggle map | Controls |
+| Toggle | Controls |
 | --- | --- |
-| `dash.center_icons` (`left`, `right`) | the two big center readouts |
-| `dash.bottom_icons` (`left`, `center`, `right`) | the bottom strip items |
 | `relative.header_icons` / `relative.footer_icons` | SOF / position / race_time / lap / incidents |
 | `standings.header_icons` | order_pill / title / count |
 
 ```json
-{ "dash": { "bottom_icons": { "left": true, "center": true, "right": true } } }
+{ "relative": { "header_icons": { "left": true, "center": false, "right": true } } }
 ```
 
 If the font is missing or a metric has no mapped icon, that item falls back to
@@ -343,8 +354,8 @@ Standings (`rows`) instead.
 
 #### Pit column
 
-Enable `columns.pit` on either table to show pit info per car. `pit_mode` (per
-table) selects what it shows:
+Add `pit` to either table's `column_order` (via the editor's Column order group)
+to show pit info per car. `pit_mode` (per table) selects what it shows:
 
 | `pit_mode` | Shows | Example |
 | --- | --- | --- |
@@ -357,34 +368,37 @@ A car currently on pit road shows `PIT`; a car not yet seen pitting shows `—`.
 iRacing exposes no per-car "last pit" value, so the overlay watches
 `CarIdxOnPitRoad` (falling back to the pit-stall track surface) and records each
 stop itself — meaning history starts when the overlay launches (or when you
-enable the column). Tracking only runs while the pit column is shown.
+add the column). Tracking only runs while the pit column is shown.
 | `radar` | `range_pct` (ahead/behind detection window), `ease_side_tau` / `ease_glow_tau`, car/red/yellow/axis/nose colors, element `sizes` (car, bars, glow, nose), `show_nose`, `show_axis`. |
 | `map` | Asphalt/outline/infield/player/corner colors, the car-dot `palette`, `asphalt_width`, `outline_width`, and `show_infield` / `show_corners` / `show_start_finish` toggles. |
 | `light_hud` | `font_px`, text/accent/accent2/background colors for the simple fuel+delta HUD. |
 
-Example `overlay_config.json` (red text in tables, hide the iRating column, show
-5 standings rows, wider radar range, neon-green light HUD accent):
+Example `overlay_config.json` (red text in tables, a trimmed/reordered Relative,
+5 standings rows with a pit column, wider radar range, neon-green light HUD):
 
 ```json
 {
   "table": { "colors": { "text": "#ff4444" } },
   "relative": {
-    "columns": { "irating": false, "license": false },
+    "column_order": ["position", "name", "gap"],
     "show_footer": false
   },
-  "standings": { "rows": 5, "title": "GRID", "columns": { "gap": false } },
+  "standings": {
+    "rows": 5, "title": "GRID",
+    "column_order": ["badge", "position", "name", "license", "irating", "pit"]
+  },
   "radar": { "range_pct": 0.05 },
   "light_hud": { "colors": { "accent": "#00ff66" } }
 }
 ```
 
-Note that `relative.columns` and `standings.columns` are **independent**, so you
-can show iRating in the Standings tower while hiding it in the Relative box.
+Note that `relative.column_order` and `standings.column_order` are
+**independent**, so you can show iRating in the Standings tower while hiding it
+in the Relative box.
 
-Honest caveats: the small iRating arrow is *projected* iRating change, which
-iRacing does not expose — it's only shown in `--demo` (synthetic) and blank live.
-The radar's lateral placement is a heuristic (iRacing reports only an aggregate
-`CarLeftRight`, not each rival's lateral offset); longitudinal placement is real.
+Honest caveats: the radar's lateral placement is a heuristic (iRacing reports
+only an aggregate `CarLeftRight`, not each rival's lateral offset); longitudinal
+placement is real.
 
 ## iRacing API corrections baked into the HUD
 

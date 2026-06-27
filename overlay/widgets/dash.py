@@ -1,21 +1,40 @@
 """
-Dash / RPM widget.
+Dash -- a multi-container racing dashboard.
 
-A dark pill that shows, left-to-right:
-  * a gear number inside a green ring (the ring fills with RPM vs redline),
-  * a row of shift-light dots across the top,
-  * two big labeled readouts (configurable),
-  * a large position number on the right,
-  * a bottom strip with three configurable items.
+The dash composes several distinct rounded containers in a fixed layout:
 
-The two center readouts (config.dash.center: left/right) and the three bottom
-items (config.dash.bottom: left/center/right) are each chosen from a metric by
-name, so they can be swapped from the settings editor without touching code.
+  * Top container:      shift / RPM bar (left) + a status readout (right)
+  * Bottom container:   a small + a big readout (left) + two stat cells (right)
+  * Position container:  the position box, on its own to the right
+  * Strip container:     three small readouts in their own floating pill
+  * Gear + throttle ring: a circular medallion floating on top of the containers
 
-All colors, sizes and toggles come from config.CFG["dash"].
+The container *layout* is fixed, but the *content* of every slot is fully
+configurable from config.CFG["dash"]: top_right, primary_left, primary_right,
+stat_left, stat_right and strip_left/center/right each pick any metric from
+METRICS (or "none" to hide it), so you can e.g. swap speed and laps, or show
+laps remaining instead of the lap count. Colors, a per-widget text scale and
+the shift-bar / ring / position toggles come from the same section. Units
+follow the global config.units setting.
+
+Expected data dict (all optional; missing values render as "--"):
+    rpm, redline, sl_first, sl_last   shift bar
+    throttle                          ring fill (when ring_source == "throttle")
+    gear                              gear number ("R"/"N"/1..)
+    speed_ms                          speed in m/s (converted to mph/kph)
+    position                          race position (int)
+    lap, laps_total                   current lap / total laps
+    incidents                         incident count
+    tire_l, tire_r                    front tire wear as 0..1 fractions
+    fuel, fuel_laps                   fuel level (litres) + laps remaining
+    air_temp, track_temp              temperatures in Celsius
+    last_lap, best_lap, cur_lap       lap times in seconds
+    delta                             delta to session best
 """
 
 from __future__ import annotations
+
+import math
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
 from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QLinearGradient,
@@ -24,53 +43,14 @@ from PyQt6.QtWidgets import QWidget
 
 from .. import config
 from . import icons
-from .table import ease
+
+_VC_LEFT = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
 
 
-def _dcfg() -> dict:
-    return config.CFG["dash"]
-
-
-def _dcol(key: str) -> QColor:
-    return config.qcolor(_dcfg()["colors"][key])
-
-
-_DFONT_CACHE: dict = {}
-
-
-def _dfont(px: float, bold: bool = True) -> QFont:
-    fam = config.CFG.get("font_family", "Segoe UI")
-    pxi = max(6, int(round(px * config.text_scale_for())))
-    key = (fam, pxi, bold)
-    f = _DFONT_CACHE.get(key)
-    if f is None:
-        f = QFont(fam)
-        f.setStyleHint(QFont.StyleHint.SansSerif)
-        f.setPixelSize(pxi)
-        f.setBold(bold)
-        if len(_DFONT_CACHE) > 512:
-            _DFONT_CACHE.clear()
-        _DFONT_CACHE[key] = f
-    return f
-
-
-def _gear_str(g) -> str:
-    if g is None:
-        return "N"
-    g = int(g)
-    if g < 0:
-        return "R"
-    if g == 0:
-        return "N"
-    return str(g)
-
-
-def _clock(sec) -> str:
-    if not sec or sec <= 0:
-        return "--:--"
-    m = int(sec // 60)
-    s = sec - m * 60
-    return f"{m}:{s:06.3f}"
+def _ease(cur: float, tgt: float, dt: float, tau: float) -> float:
+    if tau <= 0:
+        return tgt
+    return cur + (tgt - cur) * (1.0 - math.exp(-dt / tau))
 
 
 def _num(d: dict, key: str):
@@ -78,95 +58,161 @@ def _num(d: dict, key: str):
     return v if isinstance(v, (int, float)) else None
 
 
-# Metric registry: key -> (label, value-formatter(raw dict) -> str). A label may
-# be a string or a zero-arg callable (used for unit-aware labels like KPH/MPH).
-def _fmt_speed(d):  # unit-aware (follows config.units)
+def _gear_str(g) -> str:
+    if g is None:
+        return "N"
+    g = int(g)
+    return "R" if g < 0 else ("N" if g == 0 else str(g))
+
+
+def _clock(sec) -> str:
+    if not sec or sec <= 0:
+        return "--:--"
+    m = int(sec // 60)
+    return f"{m}:{sec - m * 60:06.3f}"
+
+
+# --------------------------------------------------------------------------
+# Metric registry: every content slot in the dash picks one of these keys.
+# A formatter returns either a plain string (single value) or a list of
+# (sub-label, value) rows for stacked cells (tires, fuel+laps).
+# --------------------------------------------------------------------------
+def _f_speed(d):
     v = config.conv_speed(_num(d, "speed_ms"))
     return f"{v:.0f}" if v is not None else "--"
 
 
-def _fmt_speed_kph(d):
-    v = _num(d, "speed_ms")
-    return f"{v * 3.6:.0f}" if v is not None else "--"
-
-
-def _fmt_speed_mph(d):
-    v = _num(d, "speed_ms")
-    return f"{v * 2.236936:.0f}" if v is not None else "--"
-
-
-def _fmt_rpm(d):
+def _f_rpm(d):
     v = _num(d, "rpm")
     return f"{v:.0f}" if v is not None else "--"
 
 
-def _fmt_pos(d):
+def _f_pos(d):
     v = d.get("position")
-    return f"P{int(v)}" if v else "--"
+    return f"P{int(v)}" if isinstance(v, (int, float)) and v else "--"
 
 
-def _fmt_lap(d):
-    v = d.get("lap")
-    return f"{int(v)}" if isinstance(v, (int, float)) else "--"
+def _f_lap_count(d):
+    lap, total = _num(d, "lap"), _num(d, "laps_total")
+    if lap is not None and total and total > 0:
+        return f"{int(lap)}/{int(total)}"
+    return f"{int(lap)}" if lap is not None else "--"
 
 
-def _fmt_fuel(d):  # unit-aware (litres or gallons)
+def _f_laps_left(d):
+    lap, total = _num(d, "lap"), _num(d, "laps_total")
+    if lap is not None and total and total > 0:
+        return f"{max(0, int(total) - int(lap))}"
+    return "--"
+
+
+def _f_lap(d):
+    v = _num(d, "lap")
+    return f"{int(v)}" if v is not None else "--"
+
+
+def _f_fuel(d):
     v = config.conv_fuel(_num(d, "fuel"))
-    return f"{v:.1f}" if v is not None else "--"
+    return f"{v:.1f} {config.fuel_unit()}" if v is not None else "--"
 
 
-def _fmt_delta(d):
+def _f_fuel_laps(d):
+    v = _num(d, "fuel_laps")
+    return f"{v:.1f} Laps" if v is not None else "-- Laps"
+
+
+def _f_fuel_stack(d):
+    v = config.conv_fuel(_num(d, "fuel"))
+    laps = _num(d, "fuel_laps")
+    top = f"{v:.1f} {config.fuel_unit()}" if v is not None else "--"
+    bot = f"{laps:.1f} Laps" if laps is not None else "-- Laps"
+    return [("FUEL", top), ("", bot)]
+
+
+def _f_tires(d):
+    l, r = _num(d, "tire_l"), _num(d, "tire_r")
+    ls = f"{l * 100:.0f}%" if l is not None else "--"
+    rs = f"{r * 100:.0f}%" if r is not None else "--"
+    return [("L", ls), ("R", rs)]
+
+
+def _f_inc(d):
+    v = _num(d, "incidents")
+    return f"{int(v)}x" if v is not None else "--"
+
+
+def _f_gear(d):
+    return _gear_str(d.get("gear"))
+
+
+def _f_delta(d):
     v = _num(d, "delta")
     return f"{v:+.2f}" if v is not None else "--"
 
 
-def _fmt_inc(d):
-    v = d.get("incidents")
-    return f"{int(v)}x" if isinstance(v, (int, float)) else "--"
+def _f_clock(key):
+    return lambda d: _clock(_num(d, key))
 
 
-def _fmt_temp(key):  # unit-aware (C or F)
+def _f_temp(key):
     def fmt(d):
         v = config.conv_temp(_num(d, key))
         return f"{v:.0f}\u00b0" if v is not None else "--"
     return fmt
 
 
+# key -> (label, formatter). The label is used wherever the slot's render
+# style shows one (small primary, stat cells, strip); big readouts hide it.
 METRICS: dict = {
     "none": ("", lambda d: ""),
-    "speed": (config.speed_unit, _fmt_speed),
-    "speed_kph": ("KPH", _fmt_speed_kph),
-    "speed_mph": ("MPH", _fmt_speed_mph),
-    "rpm": ("RPM", _fmt_rpm),
-    "gear": ("GEAR", lambda d: _gear_str(d.get("gear"))),
-    "position": ("POS", _fmt_pos),
-    "lap": ("LAP", _fmt_lap),
-    "fuel": (config.fuel_unit, _fmt_fuel),
-    "last_lap": ("LAST", lambda d: _clock(_num(d, "last_lap"))),
-    "best_lap": ("BEST", lambda d: _clock(_num(d, "best_lap"))),
-    "cur_lap": ("TIME", lambda d: _clock(_num(d, "cur_lap"))),
-    "delta": ("DELTA", _fmt_delta),
-    "incidents": ("INC", _fmt_inc),
-    "track_temp": ("TRACK", _fmt_temp("track_temp")),
-    "air_temp": ("AIR", _fmt_temp("air_temp")),
+    "speed": (lambda: config.speed_unit(), _f_speed),
+    "rpm": ("RPM", _f_rpm),
+    "gear": ("GEAR", _f_gear),
+    "position": ("POS", _f_pos),
+    "lap_count": ("LAP", _f_lap_count),
+    "laps_left": ("LEFT", _f_laps_left),
+    "lap": ("LAP", _f_lap),
+    "fuel": (lambda: config.fuel_unit(), _f_fuel),
+    "fuel_stack": ("FUEL", _f_fuel_stack),
+    "fuel_laps": ("FUEL", _f_fuel_laps),
+    "tires": ("TIRE", _f_tires),
+    "incidents": ("INC", _f_inc),
+    "last_lap": ("LAST", _f_clock("last_lap")),
+    "best_lap": ("BEST", _f_clock("best_lap")),
+    "cur_lap": ("TIME", _f_clock("cur_lap")),
+    "delta": ("DELTA", _f_delta),
+    "air_temp": ("A", _f_temp("air_temp")),
+    "track_temp": ("T", _f_temp("track_temp")),
 }
 
-# Ordered keys used to populate dropdowns in the settings editor.
-METRIC_KEYS = [
-    "none", "speed", "speed_kph", "speed_mph", "rpm", "gear", "position", "lap",
-    "fuel", "last_lap", "best_lap", "cur_lap", "delta", "incidents",
-    "track_temp", "air_temp",
-]
+# Order used to populate dropdowns in the settings editor.
+METRIC_KEYS: list = list(METRICS.keys())
+
+# Time-style metrics hide their text label in the strip (the icon is enough).
+_TIME_KEYS = {"last_lap", "best_lap", "cur_lap"}
 
 
-def _metric(key: str):
-    return METRICS.get(key, METRICS["none"])
+def _m_label(key: str) -> str:
+    lbl = METRICS.get(key, METRICS["none"])[0]
+    return lbl() if callable(lbl) else lbl
 
 
-def _label_text(key: str) -> str:
-    """Resolve a metric's label (string or callable) to display text."""
-    label = _metric(key)[0]
-    return label() if callable(label) else label
+def _m_value(key: str, d: dict):
+    return METRICS.get(key, METRICS["none"])[1](d)
+
+
+def _m_lines(key: str, d: dict) -> list:
+    """Stacked rows for cell rendering: [(sub-label, value), ...]."""
+    v = _m_value(key, d)
+    return v if isinstance(v, list) else [(_m_label(key), v)]
+
+
+def _m_str(key: str, d: dict) -> str:
+    """Single value string (first row of a stacked metric)."""
+    v = _m_value(key, d)
+    if isinstance(v, list):
+        return v[0][1] if v else "--"
+    return v
 
 
 class DashWidget(QWidget):
@@ -175,284 +221,465 @@ class DashWidget(QWidget):
         self.data: dict = {}
         self._ring = 0.0
         self._shift = 0.0
-        self._clock_t = QElapsedTimer()
-        self._clock_t.start()
+        self._clock = QElapsedTimer()
+        self._clock.start()
         self._last_ms = 0
         self._animating = False
-        self.setMinimumSize(320, 110)
+        self._font_cache: dict = {}
+        self.setMinimumSize(480, 150)
 
+    # -- data / animation --------------------------------------------------
     def set_data(self, data: dict) -> None:
         data = data or {}
         changed = data != self.data
         self.data = data
-        # Repaint only when something changed or an animation is still settling,
-        # so a steady dash drops to 0 FPS instead of redrawing 60x/sec.
         if changed or self._animating:
             self.update()
 
     def _dt(self) -> float:
-        now = self._clock_t.elapsed()
+        now = self._clock.elapsed()
         dt = (now - self._last_ms) / 1000.0
         self._last_ms = now
         return max(0.0, min(0.1, dt))
 
-    # -- geometry-independent helpers -------------------------------------
-    def _shift_fraction(self, d) -> float:
+    # -- helpers -----------------------------------------------------------
+    def _cfg(self) -> dict:
+        return config.CFG["dash"]
+
+    def _col(self, key: str) -> QColor:
+        cols = self._cfg()["colors"]
+        return config.qcolor(cols.get(key, "#ff00ff"))
+
+    def _font(self, px: float, bold: bool = True) -> QFont:
+        fam = config.CFG.get("font_family", "Segoe UI")
+        pxi = max(6, int(round(px * config.text_scale_for("dash"))))
+        key = (fam, pxi, bold)
+        f = self._font_cache.get(key)
+        if f is None:
+            f = QFont(fam)
+            f.setStyleHint(QFont.StyleHint.SansSerif)
+            f.setPixelSize(pxi)
+            f.setBold(bold)
+            if len(self._font_cache) > 256:
+                self._font_cache.clear()
+            self._font_cache[key] = f
+        return f
+
+    def _text_centered(self, p, center, font, text, color) -> None:
+        p.setFont(font)
+        p.setPen(color)
+        br = QFontMetricsF(font).tightBoundingRect(text)
+        x = center.x() - (br.left() + br.width() / 2)
+        y = center.y() - (br.top() + br.height() / 2)
+        p.drawText(QPointF(x, y), text)
+
+    def _shift_frac(self, d) -> float:
         rpm = _num(d, "rpm")
         if rpm is None:
             return 0.0
-        first = _num(d, "sl_first")
-        last = _num(d, "sl_last")
+        first, last = _num(d, "sl_first"), _num(d, "sl_last")
         if first is None or last is None or last <= first:
             redline = _num(d, "redline") or 8000.0
-            first, last = redline * 0.80, redline * 0.99
+            first, last = redline * 0.78, redline * 0.995
         return max(0.0, min(1.0, (rpm - first) / (last - first)))
 
-    def _ring_fraction(self, d) -> float:
-        src = _dcfg().get("ring_source", "rpm")
+    def _ring_frac(self, d) -> float:
+        src = self._cfg().get("ring_source", "throttle")
         if src == "throttle":
             return max(0.0, min(1.0, _num(d, "throttle") or 0.0))
         if src == "brake":
             return max(0.0, min(1.0, _num(d, "brake") or 0.0))
-        rpm = _num(d, "rpm")
-        redline = _num(d, "redline")
+        rpm, redline = _num(d, "rpm"), _num(d, "redline")
         if rpm is None or not redline:
             return 0.0
         return max(0.0, min(1.0, rpm / redline))
 
-    # -- painting ----------------------------------------------------------
+    # -- panel helper ------------------------------------------------------
+    def _panel(self, p, rect, radius=None) -> None:
+        if radius is None:
+            radius = min(rect.width(), rect.height()) * 0.22
+        grad = QLinearGradient(0, rect.top(), 0, rect.bottom())
+        grad.setColorAt(0.0, self._col("bg_top"))
+        grad.setColorAt(1.0, self._col("bg_bottom"))
+        p.setPen(QPen(self._col("panel_border"), 1.2))
+        p.setBrush(grad)
+        p.drawRoundedRect(rect, radius, radius)
+
+    # -- paint -------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
         config.use_section("dash")
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         d = self.data or {}
-        dc = _dcfg()
+        c = self._cfg()
 
         dt = self._dt()
-        ring_t = self._ring_fraction(d)
-        shift_t = self._shift_fraction(d)
-        self._ring = ease(self._ring, ring_t, dt, 0.10)
-        self._shift = ease(self._shift, shift_t, dt, 0.06)
-        self._animating = (abs(self._ring - ring_t) > 0.003
-                           or abs(self._shift - shift_t) > 0.003)
+        rt, st = self._ring_frac(d), self._shift_frac(d)
+        self._ring = _ease(self._ring, rt, dt, 0.09)
+        self._shift = _ease(self._shift, st, dt, 0.06)
+        self._animating = (abs(self._ring - rt) > 0.003
+                           or abs(self._shift - st) > 0.003)
 
-        main_h = h * 0.80
-        rad = main_h * 0.30
+        # --- container geometry ------------------------------------------
+        m = h * 0.045
+        gp = h * 0.022             # vertical gap between top/bottom containers
+        hg = w * 0.007             # horizontal gap before the position container
+        show_pos = c.get("show_position", True)
+        panels_top = m
+        panels_bottom = h * 0.80   # the strip pill straddles below this line
+        left_left = m
+        right_edge = w - m
 
-        # Gear geometry sits at the fixed left edge, independent of pill width.
-        show_ring = dc.get("show_gear_ring", True)
-        gear_right = 1 + main_h * (0.92 if show_ring else 0.80)
-        content_left = gear_right + main_h * 0.16
+        total = panels_bottom - panels_top
+        top_h = (total - gp) * 0.42
+        bot_h = (total - gp) * 0.58
 
-        # Lay out the (tightly packed) center readouts so we know how wide the
-        # content is before deciding the pill width.
-        items, center_right = self._center_layout(content_left, main_h, dc, d)
-
-        show_pos = dc.get("show_position", True)
+        # The position box is its OWN container at the top-right; the top row's
+        # shift/status container ends before it. The bottom container spans
+        # the full width underneath both.
+        top_right = right_edge
         if show_pos:
-            pw = float(w)
-        else:
-            # No position: end the pill just past the content (no empty space).
-            pw = min(float(w), max(center_right + main_h * 0.40,
-                                   content_left + main_h * 1.20))
-        main = QRectF(1, 1, pw - 2, main_h - 1)
+            p9_w = top_h * 1.30
+            p9_rect = QRectF(right_edge - p9_w, panels_top, p9_w, top_h)
+            top_right = p9_rect.left() - hg
 
-        grad = QLinearGradient(0, 0, 0, main_h)
-        grad.setColorAt(0.0, _dcol("bg_top"))
-        grad.setColorAt(1.0, _dcol("bg_bottom"))
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(grad)
-        p.drawRoundedRect(main, rad, rad)
+        top_rect = QRectF(left_left, panels_top, top_right - left_left, top_h)
+        bot_rect = QRectF(left_left, panels_top + top_h + gp,
+                          right_edge - left_left, bot_h)
 
-        if show_ring:
-            self._draw_gear(p, main, main_h, d)
-        else:
-            self._draw_gear_plain(p, main, main_h, d)
-
-        pos_left = w * 0.74
-        if dc.get("show_shift_lights", True):
-            x1 = pos_left if show_pos else center_right
-            self._draw_shift_lights(p, content_left, x1, main, main_h, dc)
-
-        self._paint_center(p, items, main, main_h)
-
+        self._panel(p, top_rect)
+        self._panel(p, bot_rect)
         if show_pos:
-            self._draw_position(p, pos_left, w, main, main_h, d)
+            self._draw_position(p, p9_rect, d)
 
-        if show_pos:
-            sx, sright = w * 0.16, w * 0.82
-        else:
-            sx = max(main_h * 0.20, content_left - main_h * 0.30)
-            sright = pw - main_h * 0.18
-        self._draw_bottom(p, sx, sright, h, main_h, dc, d)
+        # Ring medallion: sits on the seam between the two panels (biased upward)
+        # so it doesn't crowd the strip pill below.
+        ring_cx = left_left + (right_edge - left_left) * 0.46
+        ring_cy = panels_top + top_h + gp / 2
+        ring_d = total * 0.80
+        ring_half = ring_d / 2
+        pad = h * 0.035
+        gapL = ring_cx - ring_half - pad
+        gapR = ring_cx + ring_half + pad
 
-    def _draw_gear(self, p, main, main_h, d):
-        ring_d = main_h * 0.82
-        cy = main.center().y()
-        left = main.left() + main_h * 0.10
-        rect = QRectF(left, cy - ring_d / 2, ring_d, ring_d)
-        pen_w = ring_d * 0.10
-        arc = rect.adjusted(pen_w / 2, pen_w / 2, -pen_w / 2, -pen_w / 2)
+        # --- top container contents (shift bar | status) -----------------
+        ipad = top_rect.height() * 0.22
+        inc_right = top_rect.right() - ipad
 
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(QPen(_dcol("ring_track"), pen_w, cap=Qt.PenCapStyle.RoundCap))
-        p.drawArc(arc, 0, 360 * 16)
-        frac = self._ring
-        if frac > 0.001:
-            p.setPen(QPen(_dcol("ring_active"), pen_w, cap=Qt.PenCapStyle.RoundCap))
-            p.drawArc(arc, 90 * 16, -int(360 * 16 * frac))
+        if c.get("show_shift_bar", True):
+            self._draw_shift(p, QRectF(top_rect.left() + ipad,
+                                       top_rect.center().y() - top_rect.height() * 0.20,
+                                       gapL - (top_rect.left() + ipad),
+                                       top_rect.height() * 0.40), c)
+        if c.get("top_right", "incidents") not in (None, "none"):
+            self._draw_status(p, QRectF(gapR, top_rect.top(),
+                                        inc_right - gapR,
+                                        top_rect.height()),
+                              c.get("top_right", "incidents"), d)
 
-        inner = rect.adjusted(pen_w * 1.5, pen_w * 1.5, -pen_w * 1.5, -pen_w * 1.5)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(_dcol("bg_bottom"))
-        p.drawEllipse(inner)
-        p.setPen(_dcol("gear_text"))
-        self._draw_glyph_centered(p, inner.center(), _dfont(ring_d * 0.50),
-                                  _gear_str(d.get("gear")))
-        return rect.right()
+        # --- bottom container contents (primary | stats) -----------------
+        bpad = bot_rect.height() * 0.14
+        if c.get("primary_left", "lap_count") not in (None, "none") \
+                or c.get("primary_right", "speed") not in (None, "none"):
+            self._draw_primary(p, QRectF(bot_rect.left() + bpad,
+                                         bot_rect.top() + bpad,
+                                         gapL - (bot_rect.left() + bpad),
+                                         bot_rect.height() - bpad * 2), c, d)
+        if c.get("stat_left", "tires") not in (None, "none") \
+                or c.get("stat_right", "fuel_stack") not in (None, "none"):
+            self._draw_stats(p, QRectF(gapR, bot_rect.top() + bpad,
+                                       bot_rect.right() - bpad - gapR,
+                                       bot_rect.height() - bpad * 2), c, d)
 
-    def _draw_gear_plain(self, p, main, main_h, d):
-        rect = QRectF(main.left() + main_h * 0.10, main.top(), main_h * 0.7, main_h)
-        p.setPen(_dcol("gear_text"))
-        self._draw_glyph_centered(p, rect.center(), _dfont(main_h * 0.50),
-                                  _gear_str(d.get("gear")))
-        return rect.right()
+        # --- strip pill (own container) ----------------------------------
+        strip_keys = [c.get("strip_left", "air_temp"),
+                      c.get("strip_center", "track_temp"),
+                      c.get("strip_right", "last_lap")]
+        if any(k not in (None, "none") for k in strip_keys):
+            pill_w = (right_edge - left_left) * 0.66
+            pill_h = h * 0.26
+            pill = QRectF(ring_cx - pill_w / 2, panels_bottom - pill_h * 0.28,
+                          pill_w, pill_h)
+            self._draw_strip(p, pill, strip_keys, d)
 
-    @staticmethod
-    def _draw_glyph_centered(p, center, font, text) -> None:
-        """Draw text centered on its tight glyph bounds (not the font line box)."""
-        p.setFont(font)
-        br = QFontMetricsF(font).tightBoundingRect(text)
-        x = center.x() - (br.left() + br.width() / 2)
-        y = center.y() - (br.top() + br.height() / 2)
-        p.drawText(QPointF(x, y), text)
+        # --- gear + throttle ring (floats on top of everything) ----------
+        if c.get("show_ring", True):
+            self._draw_ring(p, ring_cx, ring_cy, ring_d, c, d)
 
-    def _draw_shift_lights(self, p, x0, x1, main, main_h, dc):
-        n = max(1, int(dc.get("shift_lights", 15)))
-        y = main.top() + main_h * 0.20
-        dot_r = main_h * 0.055
-        x1 = x1 - dot_r
-        x0 = x0 + dot_r
+    # -- shift / RPM bar (segmented) ---------------------------------------
+    def _draw_shift(self, p, rect, c):
+        n = max(1, int(c.get("shift_segments", 20)))
+        gap = rect.width() / n * 0.30
+        bw = rect.width() / n - gap
         lit = self._shift * n
-        red_frac = max(0.0, min(1.0, dc.get("shift_red_frac", 0.20)))
-        yel_frac = max(0.0, min(1.0 - red_frac, dc.get("shift_yellow_frac", 0.30)))
-        red_start = n * (1.0 - red_frac)
-        yel_start = n * (1.0 - red_frac - yel_frac)
-        on_c = _dcol("shift_on")
-        off_c = _dcol("shift_off")
-        yel_c = _dcol("shift_yellow")
-        red_c = _dcol("shift_red")
+        red_f = max(0.0, min(1.0, c.get("shift_red_frac", 0.16)))
+        yel_f = max(0.0, min(1.0 - red_f, c.get("shift_yellow_frac", 0.24)))
+        red0 = n * (1.0 - red_f)
+        yel0 = n * (1.0 - red_f - yel_f)
+        green, off = self._col("shift_green"), self._col("shift_off")
+        yel, red = self._col("shift_yellow"), self._col("shift_red")
+        full_h = rect.height()
+        tick_h = rect.height() * 0.5
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(n):
-            cx = x0 + (x1 - x0) * (i / (n - 1)) if n > 1 else (x0 + x1) / 2
+            x = rect.left() + i * (bw + gap)
             if i < lit:
-                if i >= red_start:
-                    p.setBrush(red_c)
-                elif i >= yel_start:
-                    p.setBrush(yel_c)
-                else:
-                    p.setBrush(on_c)
+                cc = red if i >= red0 else yel if i >= yel0 else green
+                y, bh = rect.top(), full_h
             else:
-                p.setBrush(off_c)
-            p.drawEllipse(QRectF(cx - dot_r, y - dot_r, dot_r * 2, dot_r * 2))
+                cc, y, bh = off, rect.top() + (full_h - tick_h) / 2, tick_h
+            p.setBrush(cc)
+            p.drawRoundedRect(QRectF(x, y, bw, bh), bw * 0.4, bw * 0.4)
 
-    def _center_layout(self, x0, main_h, dc, d):
-        """Measure the center readouts, packed left-to-right; return (items, right)."""
-        center = dc.get("center", {})
-        icon_cfg = dc.get("center_icons", {})
-        slots = [(s, center.get(s, "none")) for s in ("left", "right")]
-        slots = [(s, k) for s, k in slots if k and k != "none"]
-        items = []
-        x = x0
-        gap = main_h * 0.55
-        val_fm = QFontMetricsF(_dfont(main_h * 0.30, bold=True))
-        for slot, key in slots:
-            val = _metric(key)[1](d)
-            if icon_cfg.get(slot) and icons.has(key):
-                lf = icons.icon_font(main_h * 0.15)
-                lead = icons.glyph(key)
-            else:
-                lf = _dfont(main_h * 0.14, bold=True)
-                lead = _label_text(key)
-            lw = QFontMetricsF(lf).horizontalAdvance(lead)
-            vw = val_fm.horizontalAdvance(val)
-            cw = max(lw, vw)
-            items.append({"x": x, "lead": lead, "lead_font": lf, "val": val, "w": cw})
-            x += cw + gap
-        right = (x - gap) if items else x0
-        return items, right
+    # -- status readout (icon + big value, e.g. incidents) -----------------
+    def _draw_status(self, p, rect, key, d):
+        val = _m_str(key, d)
+        h = rect.height()
+        glyph = icons.glyph(key)
+        ic_f = icons.icon_font(h * 0.46)
+        val_f = self._font(h * 0.46)
+        iw = QFontMetricsF(ic_f).horizontalAdvance(glyph) if glyph else 0.0
+        gap = h * 0.14
+        vw = QFontMetricsF(val_f).horizontalAdvance(val)
+        total = iw + (gap if glyph else 0.0) + vw
+        # Auto-shrink so wide values (clock metrics) never clip the container.
+        if total > rect.width() and total > 0:
+            s = rect.width() / total
+            ic_f = icons.icon_font(h * 0.46 * s)
+            val_f = self._font(h * 0.46 * s)
+            iw = QFontMetricsF(ic_f).horizontalAdvance(glyph) if glyph else 0.0
+            vw = QFontMetricsF(val_f).horizontalAdvance(val)
+            gap *= s
+            total = iw + (gap if glyph else 0.0) + vw
+        x = rect.left() + max(0.0, (rect.width() - total) / 2)
+        if glyph:
+            p.setFont(ic_f)
+            # Incidents keep the warning-amber icon; other metrics use the label tint.
+            p.setPen(self._col("warn") if key == "incidents" else self._col("label"))
+            p.drawText(QRectF(x, rect.top(), iw + 4, h), _VC_LEFT, glyph)
+            x += iw + gap
+        p.setFont(val_f)
+        p.setPen(self._col("value"))
+        p.drawText(QRectF(x, rect.top(), vw + 6, h), _VC_LEFT, val)
 
-    def _paint_center(self, p, items, main, main_h):
-        if not items:
+    # -- primary (lower-left): a small readout + a big readout on one row ---
+    def _draw_primary(self, p, rect, c, d):
+        h = rect.height()
+        left_key = c.get("primary_left", "lap_count")
+        right_key = c.get("primary_right", "speed")
+        show_l = left_key not in (None, "none")
+        show_r = right_key not in (None, "none")
+
+        # left = small group (icon + label + value); right = big value + icon.
+        l_lbl = _m_label(left_key) if show_l else ""
+        l_val = _m_str(left_key, d) if show_l else ""
+        l_glyph = icons.glyph(left_key) if show_l else ""
+        r_val = _m_str(right_key, d) if show_r else ""
+        r_glyph = icons.glyph(right_key) if show_r else ""
+
+        def sizes(s):
+            return {
+                "flag": h * 0.32 * s, "lbl": h * 0.28 * s, "lapv": h * 0.38 * s,
+                "spd": h * 0.66 * s, "gauge": h * 0.30 * s,
+                "g_icon": h * 0.12 * s, "g_lbl": h * 0.10 * s,
+                "g_grp": h * 0.34 * s, "g_spd": h * 0.12 * s,
+            }
+
+        def measure(s):
+            z = sizes(s)
+            tot = 0.0
+            if show_l:
+                if l_glyph:
+                    tot += (QFontMetricsF(icons.icon_font(z["flag"]))
+                            .horizontalAdvance(l_glyph) + z["g_icon"])
+                if l_lbl:
+                    tot += (QFontMetricsF(self._font(z["lbl"]))
+                            .horizontalAdvance(l_lbl) + z["g_lbl"])
+                tot += QFontMetricsF(self._font(z["lapv"])).horizontalAdvance(l_val)
+                if show_r:
+                    tot += z["g_grp"]
+            if show_r:
+                tot += QFontMetricsF(self._font(z["spd"])).horizontalAdvance(r_val)
+                if r_glyph:
+                    tot += (z["g_spd"] + QFontMetricsF(icons.icon_font(z["gauge"]))
+                            .horizontalAdvance(r_glyph))
+            return tot
+
+        need = measure(1.0)
+        s = rect.width() / need if need > rect.width() and need > 0 else 1.0
+        z = sizes(s)
+        x = rect.left()
+
+        def draw(font, text, color):
+            nonlocal x
+            p.setFont(font)
+            p.setPen(color)
+            wte = QFontMetricsF(font).horizontalAdvance(text)
+            p.drawText(QRectF(x, rect.top(), wte + 6, h), _VC_LEFT, text)
+            return wte
+
+        if show_l:
+            if l_glyph:
+                x += draw(icons.icon_font(z["flag"]), l_glyph,
+                          self._col("label")) + z["g_icon"]
+            if l_lbl:
+                x += draw(self._font(z["lbl"]), l_lbl, self._col("label")) + z["g_lbl"]
+            x += draw(self._font(z["lapv"]), l_val, self._col("value"))
+            if show_r:
+                x += z["g_grp"]
+        if show_r:
+            x += draw(self._font(z["spd"]), r_val, self._col("value"))
+            if r_glyph:
+                x += z["g_spd"]
+                draw(icons.icon_font(z["gauge"]), r_glyph, self._col("label"))
+
+    # -- stats (two configurable stacked cells) ----------------------------
+    def _draw_stats(self, p, rect, c, d):
+        keys = [c.get("stat_left", "tires"), c.get("stat_right", "fuel_stack")]
+        cells = [(k, _m_lines(k, d)) for k in keys if k not in (None, "none")]
+        if not cells:
             return
-        align = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
-        lbl_y = main.top() + main_h * 0.30
-        val_y = main.top() + main_h * 0.47
-        val_f = _dfont(main_h * 0.30, bold=True)
-        for it in items:
-            p.setPen(_dcol("label"))
-            p.setFont(it["lead_font"])
-            p.drawText(QRectF(it["x"], lbl_y, it["w"] + 6, main_h * 0.16),
-                       align, it["lead"])
-            p.setPen(_dcol("value"))
-            p.setFont(val_f)
-            p.drawText(QRectF(it["x"], val_y, it["w"] + 10, main_h * 0.34),
-                       align, it["val"])
+        gap = rect.width() * 0.06
+        cw = (rect.width() - gap * (len(cells) - 1)) / len(cells)
+        x = rect.left()
+        for key, lines in cells:
+            self._draw_stat_cell(p, QRectF(x, rect.top(), cw, rect.height()),
+                                 key, lines)
+            x += cw + gap
 
-    def _draw_position(self, p, x0, w, main, main_h, d):
+    def _draw_stat_cell(self, p, rect, key, lines):
+        h = rect.height()
+        glyph = icons.glyph(key)
+        ic_px, lbl_px, val_px = h * 0.40, h * 0.20, h * 0.24
+        icon_gap, lbl_gap = h * 0.12, h * 0.08
+        icon_w = (QFontMetricsF(icons.icon_font(ic_px)).horizontalAdvance(glyph)
+                  + icon_gap) if glyph else 0.0
+        lbl_fm = QFontMetricsF(self._font(lbl_px))
+        val_fm = QFontMetricsF(self._font(val_px))
+        widest = 0.0
+        for lbl, val in lines:
+            lw = (lbl_fm.horizontalAdvance(lbl) + lbl_gap) if lbl else 0.0
+            widest = max(widest, lw + val_fm.horizontalAdvance(val))
+        need = icon_w + widest + h * 0.08
+        if need > rect.width() and need > 0:
+            s = rect.width() / need
+            ic_px, lbl_px, val_px = ic_px * s, lbl_px * s, val_px * s
+            icon_gap, lbl_gap = icon_gap * s, lbl_gap * s
+
+        x = rect.left()
+        if glyph:
+            p.setFont(icons.icon_font(ic_px))
+            p.setPen(self._col("label"))
+            gw = p.fontMetrics().horizontalAdvance(glyph)
+            p.drawText(QRectF(x, rect.top(), gw + 4, h), _VC_LEFT, glyph)
+            x += gw + icon_gap
+        lbl_f, val_f = self._font(lbl_px), self._font(val_px)
+        n = max(1, len(lines))
+        for i, (lbl, val) in enumerate(lines):
+            cy = rect.top() + (i + 0.5) / n * h
+            row = QRectF(x, cy - h * 0.5 / n, rect.right() - x, h / n)
+            tx = x
+            if lbl:
+                p.setFont(lbl_f)
+                p.setPen(self._col("label"))
+                lw = p.fontMetrics().horizontalAdvance(lbl)
+                p.drawText(QRectF(tx, row.top(), lw + 4, row.height()),
+                           _VC_LEFT, lbl)
+                tx += lw + lbl_gap
+            p.setFont(val_f)
+            p.setPen(self._col("value"))
+            p.drawText(QRectF(tx, row.top(), max(10.0, rect.right() - tx),
+                              row.height()), _VC_LEFT, val)
+
+    # -- position box (own container) --------------------------------------
+    def _draw_position(self, p, box, d):
         v = d.get("position")
         text = f"P{int(v)}" if v else "--"
-        p.setFont(_dfont(main_h * 0.38, bold=True))
-        p.setPen(_dcol("position"))
-        p.drawText(QRectF(x0, main.top(), w - x0 - main_h * 0.12, main_h),
-                   Qt.AlignmentFlag.AlignCenter, text)
+        col = self._col("orange")
+        r = min(box.width(), box.height()) * 0.20
+        grad = QLinearGradient(0, box.top(), 0, box.bottom())
+        grad.setColorAt(0.0, self._col("bg_top"))
+        grad.setColorAt(1.0, self._col("bg_bottom"))
+        p.setPen(QPen(col, max(1.6, box.height() * 0.022)))
+        p.setBrush(grad)
+        p.drawRoundedRect(box, r, r)
+        fs = box.height() * 0.40
+        f = self._font(fs)
+        tw = QFontMetricsF(f).horizontalAdvance(text)
+        max_w = box.width() * 0.74
+        if tw > max_w and tw > 0:
+            f = self._font(fs * max_w / tw)
+        self._text_centered(p, box.center(), f, text, col)
 
-    def _draw_bottom(self, p, sx, sright, h, main_h, dc, d):
-        bottom = dc.get("bottom", {})
-        icon_cfg = dc.get("bottom_icons", {})
-        names = ("left", "center", "right")
-        slots = [(s, bottom.get(s, "none")) for s in names]
-        if all(k in (None, "none") for _, k in slots):
+    # -- gear + throttle ring medallion (drawn on top) ---------------------
+    def _draw_ring(self, p, cx, cy, ring_d, c, d):
+        # Dark medallion behind the ring so it reads as floating above panels,
+        # with its own border so it stands out from the containers.
+        mr = ring_d / 2 + ring_d * 0.06
+        border = QColor(self._col("medallion_border"))
+        border.setAlpha(150)
+        p.setPen(QPen(border, max(1.5, ring_d * 0.022)))
+        p.setBrush(self._col("bg_bottom"))
+        p.drawEllipse(QPointF(cx, cy), mr, mr)
+
+        rect = QRectF(cx - ring_d / 2, cy - ring_d / 2, ring_d, ring_d)
+        pen_w = ring_d * 0.11
+        arc = rect.adjusted(pen_w / 2, pen_w / 2, -pen_w / 2, -pen_w / 2)
+        n = max(1, int(c.get("ring_segments", 16)))
+        seg = 360.0 / n
+        span = seg * 0.72
+        lit = self._ring * n
+        on, off = self._col("green"), self._col("ring_track")
+
+        glow = QColor(on)
+        glow.setAlpha(75)
+        p.setPen(QPen(glow, pen_w * 2.0, cap=Qt.PenCapStyle.FlatCap))
+        for i in range(n):
+            if i < lit:
+                ang = 90.0 - (i + 0.5) * seg
+                p.drawArc(arc, int((ang + span / 2) * 16), int(-span * 16))
+        for i in range(n):
+            ang = 90.0 - (i + 0.5) * seg
+            p.setPen(QPen(on if i < lit else off, pen_w,
+                          cap=Qt.PenCapStyle.FlatCap))
+            p.drawArc(arc, int((ang + span / 2) * 16), int(-span * 16))
+
+        self._text_centered(p, QPointF(cx, cy), self._font(ring_d * 0.50),
+                             _gear_str(d.get("gear")), self._col("gear"))
+
+    # -- strip pill (own container) ----------------------------------------
+    def _draw_strip(self, p, pill, keys, d):
+        items = [k for k in keys if k not in (None, "none")]
+        sh = pill.height()
+        p.setPen(QPen(self._col("pill_border"), 1.4))
+        p.setBrush(self._col("pill_bg"))
+        p.drawRoundedRect(pill, sh / 2, sh / 2)
+        if not items:
             return
-        strip_h = h * 0.26
-        strip_w = max(main_h * 1.5, sright - sx)
-        sy = main_h - strip_h * 0.45
-        strip = QRectF(sx, sy, strip_w, strip_h)
-        p.setPen(QPen(_dcol("bottom_border"), 1.4))
-        p.setBrush(_dcol("bottom_bg"))
-        p.drawRoundedRect(strip, strip_h / 2, strip_h / 2)
 
-        third = strip_w / 3.0
-        lbl_px = strip_h * 0.34
-        icon_px = strip_h * 0.40
-        val_f = _dfont(strip_h * 0.40, bold=True)
-        gap = strip_h * 0.22
-        for i, (slot, key) in enumerate(slots):
-            if key in (None, "none"):
-                continue
-            cell = QRectF(sx + i * third, sy, third, strip_h)
-            val = _metric(key)[1](d)
-            use_icon = bool(icon_cfg.get(slot)) and icons.has(key)
-            if use_icon:
-                p.setFont(icons.icon_font(icon_px))
-                lead = icons.glyph(key)
-            else:
-                p.setFont(_dfont(lbl_px, bold=True))
-                lead = _label_text(key)
-            lw = p.fontMetrics().horizontalAdvance(lead)
-            p.setFont(val_f)
-            vw = p.fontMetrics().horizontalAdvance(val)
-            total = lw + gap + vw
-            tx = cell.left() + (cell.width() - total) / 2
-            p.setPen(_dcol("bottom_label"))
-            p.setFont(icons.icon_font(icon_px) if use_icon
-                      else _dfont(lbl_px, bold=True))
-            p.drawText(QRectF(tx, cell.top(), lw + 2, strip_h),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       lead)
-            p.setFont(val_f)
-            p.setPen(_dcol("bottom_value"))
-            p.drawText(QRectF(tx + lw + gap, cell.top(), vw + 4, strip_h),
-                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                       val)
+        pad = sh * 0.55
+        cx0 = pill.left() + pad
+        content_w = pill.width() - 2 * pad
+        cell = content_w / len(items)
+        val_f = self._font(sh * 0.40)
+        lbl_f = self._font(sh * 0.34)
+        gap = sh * 0.18
+        for i, key in enumerate(items):
+            label = "" if key in _TIME_KEYS else _m_label(key)
+            val = _m_str(key, d)
+            parts = []
+            glyph = icons.glyph(key)
+            if glyph:
+                parts.append((icons.icon_font(sh * 0.42), glyph, self._col("label")))
+            if label:
+                parts.append((lbl_f, label, self._col("label")))
+            parts.append((val_f, val, self._col("value")))
+            widths = [QFontMetricsF(f).horizontalAdvance(t) for f, t, _ in parts]
+            total = sum(widths) + gap * (len(parts) - 1)
+            tx = cx0 + i * cell + (cell - total) / 2
+            for (f, t, col), wp in zip(parts, widths):
+                p.setFont(f)
+                p.setPen(col)
+                p.drawText(QRectF(tx, pill.top(), wp + 4, sh), _VC_LEFT, t)
+                tx += wp + gap

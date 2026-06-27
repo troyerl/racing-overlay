@@ -20,7 +20,8 @@ import math
 import os
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath,
+                         QPen)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
@@ -255,6 +256,19 @@ class TrackMapWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = QRectF(self.rect())
+
+        mc = _mcfg()
+        # Rounded card behind the map so it matches the dash/table panels.
+        if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
+            radius = max(8.0, min(rect.width(), rect.height())
+                         * mc.get("corner_radius_frac", 0.08))
+            grad = QLinearGradient(0, 0, 0, rect.height())
+            grad.setColorAt(0.0, _mcol("bg_top"))
+            grad.setColorAt(1.0, _mcol("bg_bottom"))
+            p.setBrush(grad)
+            p.setPen(QPen(_mcol("panel_border"), 1))
+            p.drawRoundedRect(
+                QRectF(0.5, 0.5, rect.width() - 1, rect.height() - 1), radius, radius)
 
         if not self.path:
             p.setPen(QColor(220, 220, 220))

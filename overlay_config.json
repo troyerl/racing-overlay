@@ -1,13 +1,14 @@
 {
   "units": "imperial",
-  "dash": {
-    "center": {
-      "left": "speed_mph",
-      "right": "incidents"
-    },
-    "center_icons": {
-      "left": true,
-      "right": true
-    }
+  "standings": {
+    "column_order": [
+      "badge",
+      "position",
+      "name",
+      "irating",
+      "license",
+      "pit",
+      "gap"
+    ]
   }
 }

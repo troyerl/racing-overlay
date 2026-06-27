@@ -25,6 +25,13 @@ CONFIG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "overlay_config.json"
 )
 
+# Every column a timing table knows how to draw. Which ones appear, and in what
+# order, is controlled per table by its "column_order" list (add/remove/reorder
+# from the settings editor). "stripe" is not a column -- it's a sub-toggle of the
+# position cell -- so it lives in the table's "columns" dict instead.
+TABLE_COLUMNS = ["badge", "position", "car_number", "name", "license",
+                 "irating", "pit", "gap", "last_lap", "best_lap"]
+
 DEFAULTS: dict = {
     "font_family": "Segoe UI",
     # Global multiplier applied to every text size in every widget. Raise it to
@@ -36,7 +43,7 @@ DEFAULTS: dict = {
     # fuel readouts. (speed_kph / speed_mph stay fixed to their named unit.)
     "units": "metric",
     "table": {
-        "corner_radius_frac": 0.03,
+        "corner_radius_frac": 0.05,
         "alt_row_shading": True,
         "font_scale": 0.40,
         "gap_font_scale": 1.12,
@@ -45,27 +52,30 @@ DEFAULTS: dict = {
         "widths": {  # as multiples of row height
             "badge": 0.95,
             "position": 1.25,
+            "car_number": 1.60,
             "gap": 1.70,
-            "irating": 2.70,
-            "irating_narrow": 1.70,  # iRating pill width when no change arrow shows
+            "irating": 1.70,
             "license": 2.00,
             "pit": 2.10,
+            "last_lap": 2.90,
+            "best_lap": 2.90,
             "gutter": 0.18,
         },
         "colors": {
-            "bg": "#101319f5",
-            "border": "#ffffff1c",
-            "cell_dark": "#080a0d",
+            # Vertical gradient card matching the dash (top lighter -> bottom dark).
+            "bg": "#1b1f26f2",
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "border": "#ffffff20",
+            "cell_dark": "#0b0e12",
             "row_alt": "#ffffff0a",
-            "player_row": "#967c26b4",
-            "threat": "#781a1adc",
-            "text": "#f5f6f8",
-            "muted": "#878e96",
+            "player_row": "#8a5a18b4",
+            "threat": "#7a1a1adc",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
             "irating_bg": "#eef0f2",
             "irating_text": "#14161a",
-            "ir_up": "#22963c",
-            "ir_down": "#c83232",
-            "badge_player": "#ff8c00",
+            "badge_player": "#ff9416",
             "badge_pit_bg": "#ebeef0",
             "badge_pit_text": "#141414",
             "badge_lap": "#7638c4",
@@ -92,18 +102,13 @@ DEFAULTS: dict = {
         # "time_since" (time out since last stop), "at_lap" (lap they pitted on),
         # "at_time" (race clock when they pitted).
         "pit_mode": "laps_since",
-        # When the iRating column is shown, also show the projected change arrow.
-        "show_irating_change": True,
-        "columns": {
-            "badge": True,
-            "position": True,
-            "stripe": True,
-            "name": True,
-            "license": True,
-            "irating": True,
-            "pit": False,
-            "gap": True,
-        },
+        # Which columns appear and in what order (left to right). Add, remove and
+        # reorder them from the settings editor. The "name" column always
+        # stretches to fill the leftover space.
+        "column_order": ["badge", "position", "name", "license",
+                         "irating", "gap"],
+        # The position cell's class-color stripe (not a column of its own).
+        "columns": {"stripe": True},
         # Header / footer are split into three sections; pick which item goes in
         # each (or "none"). Header items: sof, position. Footer: race_time, lap,
         # incidents.
@@ -125,17 +130,13 @@ DEFAULTS: dict = {
         "center_on_player": True,
         "title": "Standings",
         "pit_mode": "laps_since",
-        "show_irating_change": True,
-        "columns": {
-            "badge": True,
-            "position": True,
-            "stripe": True,
-            "name": True,
-            "license": True,
-            "irating": True,
-            "pit": False,
-            "gap": True,
-        },
+        # Which columns appear and in what order (left to right). Add, remove and
+        # reorder them from the settings editor. The "name" column always
+        # stretches to fill the leftover space.
+        "column_order": ["badge", "position", "name", "license",
+                         "irating", "gap"],
+        # The position cell's class-color stripe (not a column of its own).
+        "columns": {"stripe": True},
         # Three header sections; pick the item for each (or "none").
         # Items: order_pill, title, count.
         "header": {"left": "order_pill", "center": "title", "right": "count"},
@@ -148,6 +149,9 @@ DEFAULTS: dict = {
         "ease_glow_tau": 0.13,
         "show_nose": True,
         "show_axis": True,
+        # Draw a rounded card behind the radar (matches the dash panels).
+        "show_panel": False,
+        "corner_radius_frac": 0.12,
         "sizes": {
             "car_w": 0.13,
             "car_h": 0.20,
@@ -156,56 +160,60 @@ DEFAULTS: dict = {
             "nose_len": 0.16,
         },
         "colors": {
-            "car": "#f5f6f8",
+            "car": "#f4f6f8",
             "red": "#e23b3b",
             "yellow": "#ffd23a",
-            "axis": "#ffffff2d",
-            "nose": "#ffffffe6",
+            "axis": "#46df7a3a",
+            "nose": "#46df7ae6",
+            # Card background gradient + border, matching the dash style.
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff20",
         },
     },
     "dash": {
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        # Number of shift-light dots across the top.
-        "shift_lights": 15,
-        "show_shift_lights": True,
-        # Green ring around the gear number. show_gear_ring toggles it; ring_source
-        # picks what it fills with: "rpm" (vs redline), "throttle", or "brake".
-        "show_gear_ring": True,
-        "ring_source": "rpm",
-        # Big position readout on the right (P12).
+        "shift_segments": 20,
+        "shift_red_frac": 0.16,
+        "shift_yellow_frac": 0.24,
+        "ring_segments": 16,
+        # What the center ring fills with: "throttle" (0..1), "rpm" or "brake".
+        "ring_source": "throttle",
+        "show_shift_bar": True,
+        "show_ring": True,
         "show_position": True,
-        # Fractions of the shift range, counted from the top, painted red then
-        # yellow (the rest is green): red is the top `shift_red_frac`, yellow the
-        # next `shift_yellow_frac`.
-        "shift_red_frac": 0.20,
-        "shift_yellow_frac": 0.30,
-        # The two big center readouts -- pick a metric for each (or "none").
-        # Options: speed_kph, speed_mph, rpm, gear, position, lap, fuel,
-        # last_lap, best_lap, cur_lap, delta, incidents, track_temp, air_temp.
-        "center": {"left": "speed", "right": "rpm"},
-        # The three items in the bottom strip -- same metric options as above.
-        "bottom": {"left": "track_temp", "center": "air_temp", "right": "cur_lap"},
-        # Per-slot: show a Font Awesome icon instead of the text label.
-        "center_icons": {"left": False, "right": False},
-        "bottom_icons": {"left": True, "center": True, "right": True},
+        # Every content slot below picks any metric (or "none" to hide it):
+        # speed, rpm, gear, position, lap_count, laps_left, lap, fuel,
+        # fuel_stack, fuel_laps, tires, incidents, last_lap, best_lap,
+        # cur_lap, delta, air_temp, track_temp.
+        "top_right": "incidents",       # readout next to the shift bar
+        "primary_left": "lap_count",    # small readout, lower-left
+        "primary_right": "speed",       # big readout, lower-left
+        "stat_left": "tires",           # stacked cell, lower-right
+        "stat_right": "fuel_stack",     # stacked cell, lower-right
+        "strip_left": "air_temp",       # bottom strip
+        "strip_center": "track_temp",
+        "strip_right": "last_lap",
         "colors": {
-            "bg_top": "#171b21",
-            "bg_bottom": "#0c0e12",
-            "ring_active": "#5bd96a",
-            "ring_track": "#373c44",
-            "gear_text": "#f4f6f8",
+            "bg_top": "#1b1f26",
+            "bg_bottom": "#0f1216",
+            "panel_border": "#ffffff20",
             "label": "#8b93a1",
             "value": "#f4f6f8",
-            "position": "#ff8c00",
-            "shift_on": "#5bd96a",
-            "shift_off": "#373c44",
+            "gear": "#ffffff",
+            "green": "#46df7a",
+            "ring_track": "#333a42",
+            "orange": "#ff9416",
+            "warn": "#e0a93a",
+            "shift_green": "#46df7a",
             "shift_yellow": "#ffd23a",
             "shift_red": "#e23b3b",
-            "bottom_bg": "#0b0d11ec",
-            "bottom_border": "#ffffff22",
-            "bottom_value": "#e9ebef",
-            "bottom_label": "#8b93a1",
+            "shift_off": "#333a42",
+            "pill_bg": "#0b0d11ee",
+            "pill_border": "#ffffff20",
+            # Border around the floating gear/throttle medallion so it stands out.
+            "medallion_border": "#46df7a",
         },
     },
     "map": {
@@ -217,13 +225,21 @@ DEFAULTS: dict = {
         "show_infield": True,
         "show_corners": True,
         "show_start_finish": True,
+        # Draw a rounded card behind the whole map. Off by default so only the
+        # infield (the area enclosed by the track loop) is shaded.
+        "show_panel": False,
+        "corner_radius_frac": 0.08,
         "colors": {
-            "asphalt": "#3a4048",
-            "outline": "#7d858f",
-            "infield": "#0c1218c8",
-            "player": "#ffd400",
-            "corner_bg": "#00000096",
-            "corner_text": "#dce2e8",
+            "asphalt": "#333a42",
+            "outline": "#8b93a1",
+            "infield": "#0f1216c8",
+            "player": "#46df7a",
+            "corner_bg": "#0b0d11c8",
+            "corner_text": "#d6dce2",
+            # Card background gradient + border, matching the dash style.
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff20",
         },
         "palette": [
             "#3aa0ff", "#ff5bac", "#46d27a", "#b06bff", "#ffa23a",
@@ -236,10 +252,13 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         "font_px": 16,
         "colors": {
-            "text": "#ffffff",
-            "accent": "#00f0ff",
-            "accent2": "#00ff66",
-            "bg": "#0a0f14d9",
+            "text": "#f4f6f8",
+            "accent": "#46df7a",
+            "accent2": "#ff9416",
+            # Card gradient + border, matching the dash panels.
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "border": "#ffffff20",
         },
     },
 }
@@ -355,6 +374,27 @@ def write_template(path: str = CONFIG_FILE) -> str:
     return path
 
 
+def table_column_order(section: str) -> list:
+    """Normalized list of visible columns (in order) for a table section.
+
+    Unknown keys are dropped and duplicates removed. If a section has no
+    configured order at all, every known column is shown.
+    """
+    order = CFG.get(section, {}).get("column_order")
+    if not order:
+        return list(TABLE_COLUMNS)
+    result = []
+    for k in order:
+        if k in TABLE_COLUMNS and k not in result:
+            result.append(k)
+    return result or list(TABLE_COLUMNS)
+
+
+def has_column(section: str, key: str) -> bool:
+    """True if the given column is currently visible in a table section."""
+    return key in table_column_order(section)
+
+
 def units() -> str:
     """Active unit system: 'metric' or 'imperial'."""
     u = str(CFG.get("units", "metric")).strip().lower()
@@ -395,7 +435,7 @@ def conv_fuel(litres):
 
 
 def fuel_unit() -> str:
-    return "GAL" if is_imperial() else "L"
+    return "Gal" if is_imperial() else "L"
 
 
 # Parsing a color string is surprisingly hot (every pen/brush, every frame), so

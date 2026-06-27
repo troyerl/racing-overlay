@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
@@ -57,10 +57,7 @@ def tfont(size: float, bold: bool = True) -> QFont:
     return f
 
 
-_ALL_COLUMNS = {
-    "badge": True, "position": True, "stripe": True, "name": True,
-    "license": True, "irating": True, "gap": True,
-}
+_ALL_COLUMNS = {"stripe": True}
 
 
 class BaseTable(QWidget):
@@ -72,7 +69,6 @@ class BaseTable(QWidget):
         super().__init__(parent)
         self.data: dict | None = None
         self.setMinimumSize(360, 200)
-        self._ir_has_delta = False
         self._anim: dict = {}
         self._animating = False
         self._clock = QElapsedTimer()
@@ -154,15 +150,21 @@ class BaseTable(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         tc = _tcfg()
-        radius = max(6.0, h * tc["corner_radius_frac"])
+        radius = max(10.0, h * tc["corner_radius_frac"])
 
-        p.setBrush(col("bg"))
+        # Vertical gradient card to match the dash (falls back to flat "bg").
+        cols = tc["colors"]
+        if "bg_top" in cols and "bg_bottom" in cols:
+            grad = QLinearGradient(0, 0, 0, h)
+            grad.setColorAt(0.0, col("bg_top"))
+            grad.setColorAt(1.0, col("bg_bottom"))
+            p.setBrush(grad)
+        else:
+            p.setBrush(col("bg"))
         p.setPen(QPen(col("border"), 1))
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
 
         rows = (self.data or {}).get("rows", [])
-        # The iRating pill shrinks when no row is showing a change arrow.
-        self._ir_has_delta = any(r.get("ir_delta") is not None for r in rows)
         pad = max(8.0, h * 0.025)
         header_h = max(26.0, h * 0.12)
         footer_h = max(24.0, h * 0.11) if self.has_footer() else 0.0
@@ -213,31 +215,51 @@ class BaseTable(QWidget):
         fs = h * tc["font_scale"]
         gutter = h * wf["gutter"]
 
-        show_pit = cols.get("pit")
-        badge_w = h * wf["badge"] if cols["badge"] else 0.0
-        pos_w = h * wf["position"] if cols["position"] else 0.0
-        gap_w = h * wf["gap"] if cols["gap"] else 0.0
-        ir_key = "irating" if self._ir_has_delta else "irating_narrow"
-        ir_w = h * wf.get(ir_key, wf["irating"]) if cols["irating"] else 0.0
-        lic_w = h * wf["license"] if cols["license"] else 0.0
-        pit_w = h * wf.get("pit", 2.1) if show_pit else 0.0
-
-        # Right-to-left order: gap | pit | irating | license | (name fills rest).
         right = x + w
-        x_pos = x + badge_w + (gutter if cols["position"] else 0.0)
-        x_name = x_pos + pos_w + gutter
-        gap_l = right - gap_w
-        pit_r = gap_l - (gutter if cols["gap"] else 0.0)
-        pit_l = pit_r - pit_w
-        ir_r = pit_l - (gutter if show_pit else 0.0)
-        ir_l = ir_r - ir_w
-        lic_r = ir_l - (gutter if cols["irating"] else 0.0)
-        lic_l = lic_r - lic_w
-        any_right = cols["license"] or cols["irating"] or show_pit
-        name_r = lic_l - (gutter if any_right else 0.0)
 
+        def fixed_width(k: str) -> float:
+            if k == "badge":
+                return h * wf["badge"]
+            if k == "position":
+                return h * wf["position"]
+            if k == "car_number":
+                return h * wf.get("car_number", 1.6)
+            if k == "license":
+                return h * wf["license"]
+            if k == "irating":
+                return h * wf["irating"]
+            if k == "pit":
+                return h * wf.get("pit", 2.1)
+            if k == "gap":
+                return h * wf["gap"]
+            if k == "last_lap":
+                return h * wf.get("last_lap", 2.9)
+            if k == "best_lap":
+                return h * wf.get("best_lap", 2.9)
+            return 0.0  # "name" is flexible
+
+        # Build the visible column run in the configured order, then assign each
+        # an x position. The "name" column soaks up whatever width is left over.
+        order = config.table_column_order(self.section) if self.section else []
+        n_gut = max(0, len(order) - 1)
+        fixed_total = sum(fixed_width(k) for k in order if k != "name")
+        name_w = max(10.0, w - fixed_total - n_gut * gutter) if "name" in order else 0.0
+
+        slots: dict = {}
+        cx = x
+        for k in order:
+            cw = name_w if k == "name" else fixed_width(k)
+            slots[k] = (cx, cw)
+            cx += cw + gutter
+
+        # Row backgrounds. A leading badge sits in the gutter outside the
+        # highlight (matching the original look); otherwise highlight the row.
+        if order and order[0] == "badge":
+            bx, bw = slots["badge"]
+            bg_left = bx + bw
+        else:
+            bg_left = x
         is_player = row.get("is_player")
-        bg_left = x_pos - gutter
         if is_player:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("player_row"))
@@ -249,37 +271,54 @@ class BaseTable(QWidget):
         if row.get("lapping"):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("threat"))
-            thr_left = name_r if any_right else gap_l
+            if "name" in slots:
+                nx, nw = slots["name"]
+                thr_left = nx + nw
+            else:
+                thr_left = bg_left
             p.drawRect(QRectF(thr_left, y, right - thr_left, h))
 
-        if cols["badge"]:
-            self._draw_badge(p, row, x, y, badge_w, h)
-        if cols["position"]:
-            self._draw_position(p, row, x_pos, y, pos_w, h, fs, cols["stripe"])
-
-        if cols["name"]:
+        if "badge" in slots:
+            bx, bw = slots["badge"]
+            self._draw_badge(p, row, bx, y, bw, h)
+        if "position" in slots:
+            px, pw = slots["position"]
+            self._draw_position(p, row, px, y, pw, h, fs, cols["stripe"])
+        if "car_number" in slots:
+            cnx, cnw = slots["car_number"]
+            self._draw_number(p, row, cnx, y, cnw, h, fs)
+        if "name" in slots:
+            nx, nw = slots["name"]
             p.setPen(col("muted") if row.get("in_pit") else col("text"))
             p.setFont(tfont(fs))
-            p.drawText(QRectF(x_name, y, max(10.0, name_r - x_name), h),
+            p.drawText(QRectF(nx, y, max(10.0, nw), h),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        row.get("name", ""))
-
-        if cols["license"]:
-            self._draw_license(p, row, lic_l, y, lic_w, h, fs)
-        if cols["irating"]:
-            self._draw_irating(p, row, ir_l, y, ir_w, h, fs)
-        if show_pit:
-            self._draw_pit(p, row, pit_l, y, pit_w, h, fs)
-
-        if cols["gap"]:
+        if "license" in slots:
+            lx, lw = slots["license"]
+            self._draw_license(p, row, lx, y, lw, h, fs)
+        if "irating" in slots:
+            ix, iw = slots["irating"]
+            self._draw_irating(p, row, ix, y, iw, h, fs)
+        if "pit" in slots:
+            qx, qw = slots["pit"]
+            self._draw_pit(p, row, qx, y, qw, h, fs)
+        if "gap" in slots:
+            gx, gw = slots["gap"]
             p.setPen(col("text"))
             p.setFont(tfont(fs * tc["gap_font_scale"]))
             gap = row.get("gap")
             gtxt = row.get("gap_text")
             if gtxt is None:
                 gtxt = f"{gap:.1f}" if gap is not None else "--"
-            p.drawText(QRectF(gap_l, y, gap_w - gutter, h),
+            p.drawText(QRectF(gx, y, max(10.0, gw - gutter), h),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, gtxt)
+        if "last_lap" in slots:
+            lx, lw = slots["last_lap"]
+            self._draw_laptime(p, row, "last_lap", lx, y, lw, h, fs)
+        if "best_lap" in slots:
+            bx, bw = slots["best_lap"]
+            self._draw_laptime(p, row, "best_lap", bx, y, bw, h, fs)
 
     def _draw_badge(self, p, row, x, y, bw, h):
         cx, cy = x + bw / 2, y + h / 2
@@ -354,21 +393,7 @@ class BaseTable(QWidget):
         p.drawRoundedRect(cell, 4, 4)
         p.setPen(col("irating_text"))
         p.setFont(tfont(fs * 0.82))
-        delta = row.get("ir_delta")
-        if delta is None:
-            # No change arrow: center the value in the (narrower) pill.
-            p.drawText(cell, Qt.AlignmentFlag.AlignCenter, str(row.get("irating", "")))
-            return
-        p.drawText(QRectF(cell.left() + 8, cell.top(), cell.width() * 0.55, cell.height()),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   str(row.get("irating", "")))
-        up = delta >= 0
-        p.setPen(col("ir_up") if up else col("ir_down"))
-        p.setFont(tfont(fs * 0.74))
-        arrow = "\u25B2" if up else "\u25BC"
-        p.drawText(QRectF(cell.left(), cell.top(), cell.width() - 8, cell.height()),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                   f"{arrow}{abs(delta)}")
+        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, str(row.get("irating", "")))
 
     def _draw_pit(self, p, row, x, y, pw, h, fs):
         cell = QRectF(x, y + h * 0.2, pw, h * 0.6)
@@ -380,3 +405,18 @@ class BaseTable(QWidget):
         p.setFont(tfont(fs * 0.8))
         txt = "PIT" if in_pit else (row.get("pit") or "\u2014")
         p.drawText(cell.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignCenter, txt)
+
+    def _draw_number(self, p, row, x, y, nw, h, fs):
+        cell = QRectF(x, y + h * 0.2, nw, h * 0.6)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(col("cell_dark"))
+        p.drawRoundedRect(cell, 4, 4)
+        p.setPen(col("text"))
+        p.setFont(tfont(fs * 0.9))
+        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, str(row.get("car_number", "")))
+
+    def _draw_laptime(self, p, row, key, x, y, lw, h, fs):
+        p.setPen(col("muted") if row.get("in_pit") else col("text"))
+        p.setFont(tfont(fs * 0.92))
+        p.drawText(QRectF(x, y, lw, h), Qt.AlignmentFlag.AlignCenter,
+                   row.get(key) or "\u2014")

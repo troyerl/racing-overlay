@@ -26,21 +26,32 @@ _FONT_PATH = os.path.join(_ROOT, "assets", "fonts", "fa-solid-900.ttf")
 
 # name -> Font Awesome 6 Free Solid codepoint.
 _CODEPOINTS: dict[str, int] = {
-    # dash center / bottom metrics
+    # dash speed / engine metrics
+    "speed": 0xF625,          # gauge-high
     "speed_kph": 0xF625,      # gauge-high
     "speed_mph": 0xF625,      # gauge-high
     "rpm": 0xF624,            # gauge
     "gear": 0xF013,           # gear (cog)
     "position": 0xF292,       # hashtag
+    # lap / fuel / tire metrics
     "lap": 0xF11E,            # flag-checkered
+    "lap_count": 0xF11E,      # flag-checkered
+    "laps_left": 0xF11E,      # flag-checkered
     "fuel": 0xF52F,           # gas-pump
-    "last_lap": 0xF017,       # clock
+    "fuel_laps": 0xF52F,      # gas-pump
+    "fuel_stack": 0xF52F,     # gas-pump
+    "tires": 0xF1CD,          # life-ring (tire-like)
+    # timing metrics
+    "last_lap": 0xF2F2,       # stopwatch
     "best_lap": 0xF091,       # trophy
     "cur_lap": 0xF2F2,        # stopwatch
     "delta": 0xF252,          # hourglass-half
     "incidents": 0xF071,      # triangle-exclamation
-    "track_temp": 0xF018,     # road
-    "air_temp": 0xF2C9,       # temperature-half
+    # environment
+    "track_temp": 0xF2C9,     # temperature-half (thermometer)
+    "air_temp": 0xF72E,       # wind
+    # decorative
+    "sparkle": 0xF005,        # star
     # table header / footer items
     "sof": 0xF0C0,            # users
     "race_time": 0xF017,      # clock
