@@ -109,9 +109,11 @@ DEFAULTS: dict = {
                          "irating", "gap"],
         # The position cell's class-color stripe (not a column of its own).
         "columns": {"stripe": True},
-        # Header / footer are split into three sections; pick which item goes in
-        # each (or "none"). Header items: sof, position. Footer: race_time, lap,
-        # incidents.
+        # Header / footer are each split into three sections (left/center/right);
+        # pick which item goes in each (or "none"). Any item works in any slot:
+        #   sof, class_sof, position, class_position, session_time, race_time,
+        #   lap, incidents, track_name, track_temp, air_temp, best_lap,
+        #   session_best, local_time, sim_time, cpu, mem.
         "header": {"left": "sof", "center": "none", "right": "position"},
         "footer": {"left": "race_time", "center": "lap", "right": "incidents"},
         # Per-section: show a Font Awesome icon instead of the text label.
@@ -128,6 +130,7 @@ DEFAULTS: dict = {
         # When true, show a window of the running order centered on the player
         # instead of the top N positions.
         "center_on_player": True,
+        "show_footer": True,
         "title": "Standings",
         "pit_mode": "laps_since",
         # Which columns appear and in what order (left to right). Add, remove and
@@ -137,11 +140,17 @@ DEFAULTS: dict = {
                          "irating", "gap"],
         # The position cell's class-color stripe (not a column of its own).
         "columns": {"stripe": True},
-        # Three header sections; pick the item for each (or "none").
-        # Items: order_pill, title, count.
+        # Header / footer each have three sections; pick the item for each (or
+        # "none"). order_pill / title / count are standings-specific; every
+        # other item (sof, class_sof, position, class_position, session_time,
+        # race_time, lap, incidents, track_name, track_temp, air_temp, best_lap,
+        # session_best, local_time, sim_time, cpu, mem) works in any slot too.
         "header": {"left": "order_pill", "center": "title", "right": "count"},
+        "footer": {"left": "track_temp", "center": "session_time",
+                   "right": "air_temp"},
         # Per-section: show a Font Awesome icon instead of the text label.
         "header_icons": {"left": False, "center": False, "right": False},
+        "footer_icons": {"left": False, "center": False, "right": False},
     },
     "radar": {
         "range_pct": 0.03,

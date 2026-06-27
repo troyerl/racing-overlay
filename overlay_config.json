@@ -9,7 +9,10 @@
       "license",
       "pit",
       "gap"
-    ]
+    ],
+    "header": {
+      "left": "mem"
+    }
   },
   "dash": {
     "show_brake": false

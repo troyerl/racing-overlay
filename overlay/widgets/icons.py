@@ -54,7 +54,16 @@ _CODEPOINTS: dict[str, int] = {
     "sparkle": 0xF005,        # star
     # table header / footer items
     "sof": 0xF0C0,            # users
+    "class_sof": 0xF0C0,      # users
+    "class_position": 0xF292, # hashtag
+    "session_time": 0xF017,   # clock
     "race_time": 0xF017,      # clock
+    "session_best": 0xF091,   # trophy
+    "track_name": 0xF018,     # road
+    "local_time": 0xF017,     # clock
+    "sim_time": 0xF185,       # sun
+    "cpu": 0xF2DB,            # microchip
+    "mem": 0xF538,            # memory
     "order_pill": 0xF0CB,     # list-ol
     "title": 0xF091,          # trophy
     "count": 0xF0C0,          # users

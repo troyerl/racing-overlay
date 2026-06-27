@@ -23,9 +23,15 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
+
+try:  # optional: only needed for the cpu / mem header-footer slots
+    import psutil
+except Exception:  # pragma: no cover - psutil is an optional dependency
+    psutil = None
 
 from . import common as oc
 from . import config
@@ -69,6 +75,10 @@ class AdvancedSimHUD:
         # Per-car lap-time arrays, refreshed per tick only if a column needs them.
         self._car_last = None
         self._car_best = None
+        # Cached, throttled values for the header/footer slots.
+        self._track_name = ""
+        self._sys_cache: tuple[str, str] | None = None
+        self._sys_counter = 0
         self._path_builder = track_map.TrackPathBuilder()
         self._track_loaded = False
         self.tracks_dir = os.path.join(
@@ -152,6 +162,15 @@ class AdvancedSimHUD:
             "sl_shift": info.get("DriverCarSLShiftRPM"),
             "est_lap": float(info.get("DriverCarEstLapTime", 0.0) or 0.0),
         }
+        # Track name (for the optional header/footer slot) lives in WeekendInfo;
+        # cache it on the same throttled refresh instead of parsing every tick.
+        wk = (self.ir["WeekendInfo"] if self.ir else None) or {}
+        name = wk.get("TrackDisplayName") or wk.get("TrackName") or ""
+        layout = wk.get("TrackConfigName") or ""
+        if layout and str(layout).strip().lower() not in ("", "n/a", "none"):
+            self._track_name = f"{name} - {layout}"
+        else:
+            self._track_name = name
         return self._driver_cache
 
     # --- Per-tick update ----------------------------------------------------
@@ -371,11 +390,12 @@ class AdvancedSimHUD:
             rows = [build(idx) for idx in ranked[:n]]
 
         shown = sum(1 for r in rows if not r.get("empty"))
-        show_count = "count" in set(scfg.get("header", {}).values())
         self.standings_widget.set_data({
             "title": scfg["title"],
-            "header_right": f"{shown}/{total}" if show_count else "",
             "rows": rows,
+            "slots": self._slot_values("standings", drivers, positions, player,
+                                       lap_est=lap_est, car_lap=car_lap,
+                                       count=f"{shown}/{total}"),
         })
 
     @staticmethod
@@ -514,17 +534,10 @@ class AdvancedSimHUD:
             for k in range(n_behind - len(behind)):
                 rows.append(self._empty_row(f"rel_bot{k}"))
 
-        hdr_items = set(rcfg.get("header", {}).values())
-        show_sof = "sof" in hdr_items
-        show_pos = "position" in hdr_items
         self.relative_widget.set_data({
-            "sof": self._sof(drivers) if show_sof else "--",
-            "pos": (positions[player] if positions else None) if show_pos else None,
-            "total": (sum(1 for x in positions if x and x > 0)
-                      if positions else None) if show_pos else None,
             "rows": rows,
-            "footer": (self._relative_footer(player, car_lap, lap_est)
-                       if rcfg.get("show_footer", True) else {}),
+            "slots": self._slot_values("relative", drivers, positions, player,
+                                       car_lap, lap_est),
         })
 
     def _sof(self, drivers) -> str:
@@ -533,20 +546,135 @@ class AdvancedSimHUD:
             return "--"
         return self._fmt_irating(sum(irs) / len(irs))
 
-    def _relative_footer(self, player, car_lap, lap_est) -> dict:
-        items = set(config.CFG["relative"].get("footer", {}).values())
+    # --- header / footer slot values ---------------------------------------
+
+    def _slot_values(self, section, drivers, positions, player, car_lap,
+                     lap_est, count=None) -> dict:
+        """Pre-format every header/footer item the section actually uses.
+
+        Only configured slots are computed (lazy), so unused readouts cost
+        nothing per tick. Returns key -> display string for the table to draw.
+        """
+        cfg = config.CFG[section]
+        keys = set()
+        for grp in ("header", "footer"):
+            for v in cfg.get(grp, {}).values():
+                if v and v != "none":
+                    keys.add(v)
         out: dict = {}
-        if "race_time" in items:
-            out["race_time"] = self._fmt_clock(self.ir["SessionTime"])
-            out["race_total"] = self._fmt_clock(self.ir["SessionTimeTotal"])
-        if "lap" in items:
-            total = self.ir["SessionTimeTotal"]
-            lap = self.ir["Lap"] or (car_lap[player] if car_lap else None)
-            out["lap"] = lap if lap else "-"
-            out["lap_est"] = round(total / lap_est, 1) if (total and lap_est) else "-"
-        if "incidents" in items:
-            out["incidents"] = self.ir["PlayerCarMyIncidentCount"] or 0
+        for k in keys:
+            val = self._slot_value(k, drivers, positions, player, car_lap,
+                                   lap_est, count)
+            if val is not None:
+                out[k] = val
         return out
+
+    def _slot_value(self, key, drivers, positions, player, car_lap, lap_est,
+                    count):
+        ir = self.ir
+        if key == "sof":
+            return self._sof(drivers)
+        if key == "class_sof":
+            return self._class_sof(drivers, player)
+        if key == "position":
+            pos = positions[player] if positions and player is not None else None
+            total = sum(1 for x in positions if x and x > 0) if positions else None
+            return f"{pos}/{total}" if pos and total else "\u2014"
+        if key == "class_position":
+            return self._class_position(drivers, positions, player)
+        if key == "session_time":
+            rem = ir["SessionTimeRemain"]
+            if rem is None:
+                tot, el = ir["SessionTimeTotal"], ir["SessionTime"]
+                rem = (tot - el) if (tot is not None and el is not None) else None
+            return self._fmt_clock(rem) if rem is not None else "\u2014"
+        if key == "race_time":
+            return (f"{self._fmt_clock(ir['SessionTime'])}"
+                    f" / {self._fmt_clock(ir['SessionTimeTotal'])}")
+        if key == "lap":
+            lap = ir["Lap"] or (car_lap[player]
+                                if car_lap and player is not None else None)
+            total = ir["SessionTimeTotal"]
+            est = round(total / lap_est, 1) if (total and lap_est) else "-"
+            return f"{lap if lap else '-'}/~{est}"
+        if key == "incidents":
+            return f"{ir['PlayerCarMyIncidentCount'] or 0}x"
+        if key == "track_name":
+            return self._track_name or "\u2014"
+        if key == "track_temp":
+            t = config.conv_temp(ir["TrackTemp"] if ir["TrackTemp"] is not None
+                                 else ir["TrackTempCrew"])
+            return f"{t:.0f}{config.temp_unit()}" if t is not None else "\u2014"
+        if key == "air_temp":
+            t = config.conv_temp(ir["AirTemp"])
+            return f"{t:.0f}{config.temp_unit()}" if t is not None else "\u2014"
+        if key == "best_lap":
+            return self._fmt_laptime(ir["LapBestLapTime"])
+        if key == "session_best":
+            best = ir["CarIdxBestLapTime"]
+            vals = [t for t in best if t and t > 0] if best else []
+            return self._fmt_laptime(min(vals)) if vals else "\u2014"
+        if key == "local_time":
+            return time.strftime("%H:%M")
+        if key == "sim_time":
+            tod = ir["SessionTimeOfDay"]
+            return self._fmt_tod(tod) if tod is not None else "\u2014"
+        if key == "cpu":
+            return self._sys_stats()[0]
+        if key == "mem":
+            return self._sys_stats()[1]
+        if key == "count":
+            return count
+        return None
+
+    def _class_sof(self, drivers, player) -> str:
+        cid = self._player_class(drivers, player)
+        if cid is None:
+            return self._sof(drivers)
+        irs = [d.get("IRating") for d in drivers.values()
+               if d.get("IRating") and d.get("CarClassID") == cid]
+        if not irs:
+            return "--"
+        return self._fmt_irating(sum(irs) / len(irs))
+
+    def _class_position(self, drivers, positions, player) -> str:
+        cp = self.ir["CarIdxClassPosition"]
+        if not cp or player is None or not cp[player] or cp[player] <= 0:
+            return "\u2014"
+        cid = self._player_class(drivers, player)
+        if cid is not None and drivers and positions:
+            total = sum(1 for idx, d in drivers.items()
+                        if d.get("CarClassID") == cid
+                        and idx < len(positions)
+                        and positions[idx] and positions[idx] > 0)
+        else:
+            total = sum(1 for x in cp if x and x > 0)
+        return f"{cp[player]}/{total}" if total else str(cp[player])
+
+    @staticmethod
+    def _player_class(drivers, player):
+        d = drivers.get(player) if drivers and player is not None else None
+        return d.get("CarClassID") if d else None
+
+    def _sys_stats(self) -> tuple[str, str]:
+        """(cpu%, mem%) for the local machine, sampled a couple times a second."""
+        if psutil is None:
+            return ("--", "--")
+        self._sys_counter += 1
+        if self._sys_cache is None or self._sys_counter >= 30:
+            self._sys_counter = 0
+            try:
+                cpu = psutil.cpu_percent(interval=None)
+                mem = psutil.virtual_memory().percent
+                self._sys_cache = (f"{cpu:.0f}%", f"{mem:.0f}%")
+            except Exception:
+                self._sys_cache = ("--", "--")
+        return self._sys_cache
+
+    @staticmethod
+    def _fmt_tod(secs) -> str:
+        secs = int(secs) % 86400
+        return f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}"
 
     def _load_demo_track(self) -> None:
         path = track_map.find_track_file("_demo", self.tracks_dir)

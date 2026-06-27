@@ -14,6 +14,33 @@ from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
+from . import icons
+
+_VA_LEFT = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+
+# Edge-slot items that can be mapped to any header/footer section of either
+# table. Each maps to (short text label, icon name). The displayed value is a
+# preformatted string the app puts in data["slots"][key]; "title", "count" and
+# "order_pill" are rendered specially (see _slot_item).
+SLOT_ITEMS: dict[str, tuple[str, str]] = {
+    "sof":            ("SOF",  "sof"),
+    "class_sof":      ("CSOF", "class_sof"),
+    "position":       ("POS",  "position"),
+    "class_position": ("CPOS", "class_position"),
+    "session_time":   ("TIME", "session_time"),
+    "race_time":      ("RACE", "race_time"),
+    "lap":            ("LAP",  "lap"),
+    "incidents":      ("INC",  "incidents"),
+    "track_name":     ("",     "track_name"),
+    "track_temp":     ("TRK",  "track_temp"),
+    "air_temp":       ("AIR",  "air_temp"),
+    "best_lap":       ("BEST", "best_lap"),
+    "session_best":   ("SBEST", "session_best"),
+    "local_time":     ("CLK",  "local_time"),
+    "sim_time":       ("SIM",  "sim_time"),
+    "cpu":            ("CPU",  "cpu"),
+    "mem":            ("MEM",  "mem"),
+}
 
 
 def ease(current: float, target: float, dt: float, tau: float = 0.12) -> float:
@@ -124,25 +151,111 @@ class BaseTable(QWidget):
             it["draw"](p, cx, y, h)
             cx += it["w"] + spacing
 
-    # Subclasses override these.
-    def draw_header(self, p, x, y, w, h):
-        d = self.data or {}
-        fs = h * 0.44
-        p.setFont(tfont(fs))
-        p.setPen(col("text"))
-        p.drawText(QRectF(x, y, w, h),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   str(d.get("title", "")))
-        p.setPen(col("muted"))
-        p.drawText(QRectF(x, y, w, h),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                   str(d.get("header_right", "")))
-
-    def draw_footer(self, p, x, y, w, h):
-        pass
+    # --- header / footer slots ---------------------------------------------
+    # Both edges share one mappable system: each of the three sections
+    # (left/center/right) picks any item from SLOT_ITEMS (or "none"). The app
+    # pre-formats each configured item's value into data["slots"].
 
     def has_footer(self) -> bool:
-        return False
+        if not self.section:
+            return False
+        return bool(config.CFG.get(self.section, {}).get("show_footer", False))
+
+    def draw_header(self, p, x, y, w, h):
+        self._draw_slots(p, x, y, w, h, "header", "header_icons", line=False)
+
+    def draw_footer(self, p, x, y, w, h):
+        self._draw_slots(p, x, y, w, h, "footer", "footer_icons", line=True)
+
+    def _draw_slots(self, p, x, y, w, h, group, icons_key, line):
+        if not self.section:
+            return
+        cfg = config.CFG.get(self.section, {})
+        gcfg = cfg.get(group, {})
+        icfg = cfg.get(icons_key, {})
+        if line:
+            p.setPen(QPen(col("border"), 1))
+            p.drawLine(int(x), int(y), int(x + w), int(y))
+        d = self.data or {}
+        slots = d.get("slots", {})
+        fs = h * 0.42
+        items = []
+        for pos in ("left", "center", "right"):
+            key = gcfg.get(pos, "none")
+            if not key or key == "none":
+                continue
+            it = self._slot_item(p, key, slots, d, fs, h, pos,
+                                 bool(icfg.get(pos)))
+            if it:
+                items.append(it)
+        self._layout_items(p, x, y, w, h, items)
+
+    def _slot_item(self, p, key, slots, d, fs, h, align, use_icon):
+        if key == "title":
+            text = str(d.get("title", ""))
+            p.setFont(tfont(fs))
+            w = p.fontMetrics().horizontalAdvance(text)
+
+            def draw(p, ax, y, hh):
+                p.setFont(tfont(fs))
+                p.setPen(col("text"))
+                p.drawText(QRectF(ax, y, w + 4, hh), _VA_LEFT, text)
+
+            return {"align": align, "w": w, "draw": draw}
+        if key == "order_pill":
+            return self._pill_item(p, "ORDER", fs, h, align)
+        spec = SLOT_ITEMS.get(key)
+        if spec is None:
+            # "count" and any unknown key fall through to a value-only readout.
+            spec = ("", key)
+        label, icon_key = spec
+        value = str(slots.get(key, "\u2014"))
+        return self._slot_text(p, fs, h, align, value, label, icon_key,
+                              use_icon, muted_value=(key == "count"))
+
+    def _slot_text(self, p, fs, h, align, value, label, icon_key, use_icon,
+                  muted_value=False):
+        icon_on = use_icon and icon_key and icons.has(icon_key)
+        if icon_on:
+            lead = icons.glyph(icon_key)
+            p.setFont(icons.icon_font(fs * 0.82))
+        elif label:
+            lead = label
+            p.setFont(tfont(fs * 0.62))
+        else:
+            lead = ""
+        lead_w = p.fontMetrics().horizontalAdvance(lead) if lead else 0.0
+        gap = fs * 0.35 if lead else 0.0
+        p.setFont(tfont(fs * 0.9))
+        val_w = p.fontMetrics().horizontalAdvance(value)
+
+        def draw(p, ax, y, hh):
+            if lead:
+                p.setPen(col("muted"))
+                p.setFont(icons.icon_font(fs * 0.82) if icon_on
+                          else tfont(fs * 0.62))
+                p.drawText(QRectF(ax, y, lead_w + 2, hh), _VA_LEFT, lead)
+            p.setFont(tfont(fs * 0.9))
+            p.setPen(col("muted") if muted_value else col("text"))
+            p.drawText(QRectF(ax + lead_w + gap, y, val_w + 4, hh),
+                       _VA_LEFT, value)
+
+        return {"align": align, "w": lead_w + gap + val_w, "draw": draw}
+
+    def _pill_item(self, p, text, fs, h, align):
+        pill_w = h * 1.3
+
+        def draw(p, ax, y, hh):
+            cy = y + hh / 2
+            pill = QRectF(ax, cy - hh * 0.22, pill_w, hh * 0.44)
+            p.setPen(QPen(col("muted"), 1))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(pill, 3, 3)
+            p.setFont(tfont(fs * 0.6))
+            p.setPen(col("muted"))
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, text)
+
+        return {"align": align, "w": pill_w, "draw": draw}
 
     def paintEvent(self, event) -> None:  # noqa: N802
         config.use_section(self.section)

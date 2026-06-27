@@ -151,6 +151,7 @@ class FakeIRSDK:
                         "IRating": _DEMO_DRIVERS[i][2],
                         "LicString": _DEMO_DRIVERS[i][3],
                         "CarClassColor": _DEMO_DRIVERS[i][4],
+                        "CarClassID": 0,
                     }
                     for i in range(self.num_cars)
                 ],
@@ -189,6 +190,9 @@ class FakeIRSDK:
             leader = max(totals)
             return [(leader - t) * self.lap_time for t in totals]
 
+        if key == "CarIdxClassPosition":
+            return self["CarIdxPosition"]  # single-class demo field
+
         if key == "CarIdxLastLapTime":
             # A plausible last lap per car: the demo pace scaled around lap_time,
             # nudged by a slow wobble so the values tick over time.
@@ -224,11 +228,19 @@ class FakeIRSDK:
         if key == "SessionTimeTotal":
             return 45 * 60.0
 
+        if key == "SessionTimeRemain":
+            return max(0.0, 45 * 60.0 - (time.time() - self._start))
+
+        if key == "SessionTimeOfDay":
+            # Start at 14:00 and let the sim clock advance with real time.
+            return (14 * 3600.0 + (time.time() - self._start)) % 86400.0
+
         if key == "PlayerCarMyIncidentCount":
             return 11
 
         if key == "WeekendInfo":
-            return {"TrackID": "_demo", "TrackDisplayName": "Demo Speedpark"}
+            return {"TrackID": "_demo", "TrackDisplayName": "Demo Speedpark",
+                    "TrackConfigName": "Oval"}
 
         if key == "CarLeftRight":
             pct = self._lap_pct()

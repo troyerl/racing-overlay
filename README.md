@@ -264,8 +264,8 @@ What you can change, by section:
 | `text_scale` | **Global** multiplier on all text sizes. Raise to enlarge everything, lower to shrink. Each widget also has its own `text_scale` (below) that multiplies on top of this. |
 | `units` | `"metric"` (km/h, °C, L) or `"imperial"` (mph, °F, gal). Drives the unit-aware Dash readouts (`speed`, `track_temp`, `air_temp`, `fuel`) and the Light HUD's fuel. `speed_kph` / `speed_mph` stay fixed to their named unit regardless. |
 | `table` | Shared row/cell/header styling for both tables: all colors, license-class colors, iRating cell colors, player/threat row tints, `corner_radius_frac`, `font_scale`, `gap_font_scale`, `row_ease_tau` / `fade_ease_tau` (animation speed), per-cell `widths`, `alt_row_shading`. |
-| `relative` | `rows_ahead` / `rows_behind` (cars shown in front of / behind you); `center_on_player`; a **`column_order`** list that controls *which* columns show and *in what order* (add/remove/reorder them from the editor); `columns.stripe` (the position class-color stripe); `pit_mode`; `show_footer`; and customizable **`header`** (sof, position) and **`footer`** (race_time, lap, incidents) items. |
-| `standings` | `rows_ahead` / `rows_behind` (window above/below you when centered), `rows` (size in top-N mode), `center_on_player`, `title`; its own **`column_order`** list (independent of Relative); `columns.stripe`; `pit_mode`; and customizable **`header`** items (order_pill, title, count). |
+| `relative` | `rows_ahead` / `rows_behind` (cars shown in front of / behind you); `center_on_player`; a **`column_order`** list that controls *which* columns show and *in what order* (add/remove/reorder them from the editor); `columns.stripe` (the position class-color stripe); `pit_mode`; `show_footer`; and a fully mappable **`header`** / **`footer`** (any slot item — see below). |
+| `standings` | `rows_ahead` / `rows_behind` (window above/below you when centered), `rows` (size in top-N mode), `center_on_player`, `title`, `show_footer`; its own **`column_order`** list (independent of Relative); `columns.stripe`; `pit_mode`; and a fully mappable **`header`** / **`footer`** (any slot item, plus the standings-only `order_pill` / `title` / `count`). |
 
 Columns are controlled entirely by **`column_order`**: in the settings editor's
 **Column order** group you can drag rows to reorder, pick a column from the
@@ -303,32 +303,45 @@ smaller Standings:
 
 #### Header / footer sections
 
-The header and footer are each split into **three sections** — `left`, `center`,
-`right` — and you choose which item goes in each (or `none`). In the settings
-editor each section is a dropdown.
+Both tables have a `header` **and** a `footer` (the standings footer can be
+hidden with `standings.show_footer`). Each edge is split into **three sections**
+— `left`, `center`, `right` — and you map any item into each (or `none`). In the
+settings editor each section is a dropdown. The same item set is available in
+every slot, so you can pin whatever you like wherever you like:
 
-Available items per group:
-
-| Group | Items you can place |
+| Item | Shows |
 | --- | --- |
-| `relative.header` | `sof`, `position` |
-| `relative.footer` | `race_time`, `lap`, `incidents` |
-| `standings.header` | `order_pill`, `title`, `count` |
+| `sof` / `class_sof` | Strength of field (whole field / your car class) |
+| `position` / `class_position` | Your overall / in-class position (`p/total`) |
+| `session_time` | Time remaining in the session |
+| `race_time` | Session time elapsed / total |
+| `lap` | Current lap / estimated total |
+| `incidents` | Your incident count (`11x`) |
+| `track_name` | Track + layout (`Watkins Glen - Boot`) |
+| `track_temp` / `air_temp` | Track / air temperature (unit-aware) |
+| `best_lap` / `session_best` | Your best lap / the fastest lap in the lobby |
+| `local_time` / `sim_time` | Real-world clock / in-sim time of day |
+| `cpu` / `mem` | This machine's CPU% / memory% (needs `psutil`) |
+| `order_pill` / `title` / `count` | Standings-only decorations |
 
 ```json
 {
   "relative": {
-    "header": { "left": "sof",       "center": "none", "right": "position"  },
-    "footer": { "left": "race_time", "center": "lap",  "right": "incidents" }
+    "header": { "left": "sof",       "center": "class_sof", "right": "position"  },
+    "footer": { "left": "race_time", "center": "lap",       "right": "incidents" }
   },
   "standings": {
-    "header": { "left": "order_pill", "center": "title", "right": "count" }
+    "show_footer": true,
+    "header": { "left": "order_pill", "center": "title",        "right": "count" },
+    "footer": { "left": "track_temp", "center": "session_time", "right": "air_temp" }
   }
 }
 ```
 
 Set a section to `none` to leave it empty. An item that isn't placed in any
-section isn't drawn (and isn't computed).
+section isn't drawn (and isn't computed). `cpu` / `mem` need the optional
+`psutil` package (see `requirements.txt`); without it they show `--`. Ping /
+connection quality isn't included because iRacing's SDK doesn't expose it.
 
 #### Labels vs. icons (Font Awesome)
 
@@ -343,8 +356,8 @@ are boolean maps that mirror the slot structure:
 
 | Toggle | Controls |
 | --- | --- |
-| `relative.header_icons` / `relative.footer_icons` | SOF / position / race_time / lap / incidents |
-| `standings.header_icons` | order_pill / title / count |
+| `relative.header_icons` / `relative.footer_icons` | the icon-vs-label choice for each `relative` header / footer section |
+| `standings.header_icons` / `standings.footer_icons` | the same for the `standings` header / footer sections |
 
 ```json
 { "relative": { "header_icons": { "left": true, "center": false, "right": true } } }

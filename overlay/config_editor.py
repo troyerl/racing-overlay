@@ -67,7 +67,11 @@ OPTION_LABELS = {
     "cur_lap": "Current lap", "delta": "Delta", "incidents": "Incidents",
     "track_temp": "Track temp", "air_temp": "Air temp",
     # table header / footer items
-    "sof": "Strength of field", "race_time": "Race time",
+    "sof": "Strength of field", "class_sof": "Class strength of field",
+    "race_time": "Race time (elapsed / total)", "session_time": "Time remaining",
+    "class_position": "Class position", "track_name": "Track name",
+    "session_best": "Session best lap", "local_time": "Local time",
+    "sim_time": "Sim time of day", "cpu": "CPU usage %", "mem": "Memory usage %",
     "order_pill": "Order", "title": "Title", "count": "Count",
     # pit_mode
     "laps_since": "Laps since pit", "time_since": "Time since pit",
@@ -88,11 +92,20 @@ _WORD_FIXUPS = {
 
 from .widgets.dash import METRIC_KEYS as _DASH_METRICS
 
-# Items available for each table's header / footer sections.
+# Items available for each table's header / footer sections. Every item works
+# in any slot; order_pill / title / count are standings-specific extras.
+_SLOT_COMMON = [
+    "none", "sof", "class_sof", "position", "class_position",
+    "session_time", "race_time", "lap", "incidents", "track_name",
+    "track_temp", "air_temp", "best_lap", "session_best",
+    "local_time", "sim_time", "cpu", "mem",
+]
+_SLOT_STANDINGS = _SLOT_COMMON + ["order_pill", "title", "count"]
 SECTION_ITEMS = {
-    ("relative", "header"): ["none", "sof", "position"],
-    ("relative", "footer"): ["none", "race_time", "lap", "incidents"],
-    ("standings", "header"): ["none", "order_pill", "title", "count"],
+    ("relative", "header"): _SLOT_COMMON,
+    ("relative", "footer"): _SLOT_COMMON,
+    ("standings", "header"): _SLOT_STANDINGS,
+    ("standings", "footer"): _SLOT_STANDINGS,
 }
 SECTION_KEYS = {"left", "center", "right"}
 
