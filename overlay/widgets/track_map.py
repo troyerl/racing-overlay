@@ -528,9 +528,14 @@ class TrackMapWidget(QWidget):
         p.setPen(pen)
         p.drawPath(lane)
 
-        self._draw_pit_label(p)
+        # Anchor the label just inside the track at the start of the pit lane.
+        entry = pts[0]
+        dx, dy = entry.x() - cc.x(), entry.y() - cc.y()
+        ln = math.hypot(dx, dy) or 1.0
+        anchor = QPointF(entry.x() - dx / ln * 22.0, entry.y() - dy / ln * 22.0)
+        self._draw_pit_label(p, anchor)
 
-    def _draw_pit_label(self, p: QPainter) -> None:
+    def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
         live = self.pit_live_ms
         limit = self.pit_speed_ms
         parts = ["PIT"]
@@ -550,9 +555,11 @@ class TrackMapWidget(QWidget):
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(text) + 12
         h = fm.height() + 4
-        # Pinned to the bottom-left corner so it never covers the track.
-        margin = 6.0
-        rect = QRectF(margin, self.height() - h - margin, w, h)
+        # Centered on the pit-lane entry, nudged into the infield; clamped so it
+        # never spills outside the widget.
+        x = min(max(2.0, anchor.x() - w / 2), self.width() - w - 2.0)
+        y = min(max(2.0, anchor.y() - h / 2), self.height() - h - 2.0)
+        rect = QRectF(x, y, w, h)
         p.setBrush(_mcol("pit_over") if over else _mcol("pit"))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 4, 4)
@@ -594,7 +601,9 @@ class TrackMapWidget(QWidget):
                 ln = math.hypot(dx, dy) or 1.0
                 c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
             r = 11.0 if is_player else 9.0
-            # Cars in the pits are grayed out.
+            # Cars in the pits are grayed out and faded back.
+            if on_pit:
+                p.setOpacity(max(0.05, min(1.0, _mcfg().get("pit_dot_opacity", 0.45))))
             p.setBrush(_mcol("pit_car") if on_pit else QColor(color))
             p.setPen(QPen(QColor(0, 0, 0), 2 if is_player else 1))
             p.drawEllipse(c, r, r)
@@ -604,3 +613,4 @@ class TrackMapWidget(QWidget):
                 Qt.AlignmentFlag.AlignCenter,
                 label,
             )
+            p.setOpacity(1.0)

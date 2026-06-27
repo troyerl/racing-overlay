@@ -277,6 +277,8 @@ DEFAULTS: dict = {
         "show_pit": True,
         # What each car dot shows: "number" (car number) or "position".
         "car_label": "number",
+        # Opacity (0..1) of a car's dot while it's on pit road.
+        "pit_dot_opacity": 0.45,
         # Draw a rounded card behind the whole map. Off by default so only the
         # infield (the area enclosed by the track loop) is shaded.
         "show_panel": False,
