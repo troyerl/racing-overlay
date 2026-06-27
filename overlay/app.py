@@ -32,7 +32,9 @@ from PyQt6.QtWidgets import QApplication
 from . import common as oc
 from . import config
 from . import layout_store
+from . import paths
 from . import sysstats
+from . import version
 from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.dash import DashWidget
@@ -101,9 +103,10 @@ class AdvancedSimHUD:
         self._dr_y = 0.0
         self._dr_t = None
         self._dr_last_pct = None
-        self.tracks_dir = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tracks"
-        )
+        self.tracks_dir = paths.tracks_dir()
+        # The overlay widgets start hidden; the settings window (or --start)
+        # turns them on, and they keep running after settings is closed.
+        self._overlay_running = False
 
         self._layout_state = layout_store.load_layout()
         self.panels: list[PanelWindow] = []
@@ -151,10 +154,32 @@ class AdvancedSimHUD:
     def show(self) -> None:
         self._apply_visibility()
 
+    def start_overlay(self) -> None:
+        """Show the overlay widgets (per their individual 'show' flags)."""
+        self._overlay_running = True
+        self._apply_visibility()
+
+    def stop_overlay(self) -> None:
+        """Hide every overlay widget without quitting the app."""
+        self._overlay_running = False
+        for win in self._win_by_key.values():
+            if win.isVisible():
+                win.hide()
+
+    def toggle_overlay(self) -> bool:
+        if self._overlay_running:
+            self.stop_overlay()
+        else:
+            self.start_overlay()
+        return self._overlay_running
+
+    def overlay_running(self) -> bool:
+        return self._overlay_running
+
     def _apply_visibility(self) -> None:
-        """Show or hide each panel window to match its config 'show' flag."""
+        """Show or hide each panel window to match config, when the overlay is on."""
         for key, win in self._win_by_key.items():
-            if self._is_shown(key):
+            if self._overlay_running and self._is_shown(key):
                 if not win.isVisible():
                     win.show()
             elif win.isVisible():
@@ -173,7 +198,7 @@ class AdvancedSimHUD:
         from .config_editor import ConfigEditor
 
         if self._settings_window is None:
-            self._settings_window = ConfigEditor()
+            self._settings_window = ConfigEditor(overlay=self)
         self._settings_window.show()
         self._settings_window.raise_()
         self._settings_window.activateWindow()
@@ -1060,8 +1085,17 @@ def main() -> int:
 
     click_through = "--no-clickthrough" not in sys.argv
     demo = "--demo" in sys.argv
-    settings = "--settings" in sys.argv
+    # Default launch (e.g. double-clicking the desktop icon) opens settings and
+    # waits for you to press "Start Overlay". --start shows the widgets right
+    # away; --no-settings skips opening the settings window.
+    start_now = "--start" in sys.argv or demo
+    open_settings = "--no-settings" not in sys.argv
     app = QApplication(sys.argv)
+    app.setApplicationName("Racing Overlay")
+    icon_path = paths.app_icon()
+    if icon_path:
+        from PyQt6.QtGui import QIcon
+        app.setWindowIcon(QIcon(icon_path))
 
     import signal
 
@@ -1071,13 +1105,95 @@ def main() -> int:
     keepalive.timeout.connect(lambda: None)
 
     hud = AdvancedSimHUD(click_through=click_through, demo=demo)
-    hud.show()
-    if settings:
+
+    # In-app auto-update: check GitHub for a newer release and offer to install.
+    from .updater import UpdateChecker
+    hud._updater = UpdateChecker()
+    hud._updater.found.connect(lambda info: _prompt_update(app, hud, info))
+    hud._updater.downloaded.connect(lambda path: _run_installer(app, path))
+    hud._updater.start()
+
+    # A tray icon keeps the app reachable (reopen settings / quit) after the
+    # settings window is closed while the overlay keeps running. If there's no
+    # system tray, fall back to quitting when the last window closes.
+    tray = _install_tray(app, hud, icon_path)
+    app.setQuitOnLastWindowClosed(tray is None)
+
+    if start_now:
+        hud.start_overlay()
+    if open_settings or not start_now:
         hud.open_settings()
     if not click_through:
         print("Edit mode: drag panels to position them; positions are saved.")
-        print("Settings UI: relaunch with --settings to customize every widget live.")
     return app.exec()
+
+
+def _prompt_update(app, hud, info) -> None:
+    from PyQt6.QtWidgets import QMessageBox
+    box = QMessageBox()
+    box.setWindowTitle("Update available")
+    box.setIcon(QMessageBox.Icon.Information)
+    box.setText(f"Racing Overlay {info['version']} is available. Install it now?")
+    notes = (info.get("notes") or "").strip()
+    if notes:
+        box.setDetailedText(notes)
+    box.setStandardButtons(QMessageBox.StandardButton.Yes
+                           | QMessageBox.StandardButton.No)
+    if box.exec() == QMessageBox.StandardButton.Yes and info.get("url"):
+        hud._updater.download_async(info["url"])
+
+
+def _run_installer(app, path) -> None:
+    """Launch the downloaded installer and quit so it can replace files."""
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:
+            import subprocess
+            subprocess.Popen([path])
+    except Exception:
+        return
+    app.quit()
+
+
+def _install_tray(app, hud, icon_path):
+    """Add a system-tray icon with Settings / Start-Stop / Quit. Returns it or None."""
+    from PyQt6.QtWidgets import QSystemTrayIcon, QMenu
+    if not QSystemTrayIcon.isSystemTrayAvailable():
+        return None
+    from PyQt6.QtGui import QIcon
+    icon = QIcon(icon_path) if icon_path else app.windowIcon()
+    tray = QSystemTrayIcon(icon, app)
+    tray.setToolTip("Racing Overlay")
+    menu = QMenu()
+    act_settings = menu.addAction("Open Settings")
+    act_toggle = menu.addAction("Start Overlay")
+    menu.addSeparator()
+    act_update = menu.addAction("Check for Updates")
+    act_quit = menu.addAction("Quit")
+
+    def refresh():
+        act_toggle.setText("Stop Overlay" if hud.overlay_running()
+                           else "Start Overlay")
+
+    def toggle():
+        hud.toggle_overlay()
+        refresh()
+
+    act_settings.triggered.connect(hud.open_settings)
+    act_toggle.triggered.connect(toggle)
+    act_update.triggered.connect(lambda: getattr(hud, "_updater", None)
+                                 and hud._updater.start())
+    act_update.setVisible(bool(version.GITHUB_REPO))
+    act_quit.triggered.connect(app.quit)
+    menu.aboutToShow.connect(refresh)
+    tray.setContextMenu(menu)
+    tray.activated.connect(
+        lambda reason: hud.open_settings()
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger,
+                      QSystemTrayIcon.ActivationReason.DoubleClick) else None)
+    tray.show()
+    return tray
 
 
 if __name__ == "__main__":

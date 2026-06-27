@@ -40,13 +40,52 @@ assets/fonts/          # bundled Font Awesome TTF
 tracks/                # track shape files keyed by iRacing TrackID
 ```
 
-## Run
+## Install as a desktop app (no terminal)
+
+Build a self-contained app with a Desktop icon so you never touch a terminal to
+launch it. **Run this once on the machine you'll use the overlay on** (run it on
+Windows to get a Windows `.exe` &mdash; PyInstaller can't cross-compile):
+
+```powershell
+python build_windows.py
+```
+
+This produces `dist/Racing Overlay/Racing Overlay.exe` and drops a **"Racing
+Overlay" shortcut on your Desktop** (the build auto-installs PyInstaller/Pillow
+if needed and converts `assets/app.png` into the app icon). From then on just
+double-click the desktop icon.
+
+When launched it **opens the settings window first**. Press **Start Overlay** to
+show the widgets; you can then **close the settings window and the overlay keeps
+running**. A tray icon (Open Settings / Start-Stop Overlay / Check for Updates /
+Quit) keeps it reachable afterward.
+
+### Automatic releases &amp; in-app updates
+
+Pushing to `main`/`master` runs the **`.github/workflows/release.yml`** pipeline
+on a Windows runner, which:
+
+1. stamps the version (`1.0.<run-number>`) and your repo into `overlay/version.py`,
+2. builds the app with PyInstaller and packages a one-click **installer**
+   (`Racing-Overlay-Setup-<version>.exe`) with [Inno Setup](https://jrsoftware.org/isinfo.php),
+3. **creates a git tag and a GitHub Release** and attaches the installer.
+
+Anyone can then download that installer from the repo's Releases page and run it
+(per-user install, no admin needed). The installed app **checks GitHub for a
+newer release on launch** and, if one exists, asks whether to download and run
+the new installer &mdash; one click to update. You can also trigger the check from
+the tray's **Check for Updates** item. (Update checks are disabled in source
+checkouts, where `GITHUB_REPO` is empty.)
+
+## Run (from source)
 
 Multi-widget HUD (Timing Tower, Relative, Radar, 2D Track Map, Dash/RPM &mdash;
 each an independent, movable, position-saving window):
 
 ```powershell
-python run.py            # or:  python -m overlay
+python run.py            # opens settings; press "Start Overlay" to show widgets
+python run.py --start    # show the overlay widgets immediately
+python run.py --no-settings --start   # widgets only, no settings window
 ```
 
 Simple fuel + delta HUD:
@@ -65,9 +104,12 @@ Flags:
 - `--gallons` (light HUD) &mdash; convert fuel from liters to US gallons (iRacing reports liters).
 - `--no-clickthrough` (both) &mdash; "edit mode": windows become interactive so you can
   **drag them**, then relaunch without the flag to lock them.
-- `--settings` (run.py) &mdash; open the **visual settings editor** alongside the
-  overlay; changes apply live. See [Customize everything](#customize-everything-overlay_configjson).
+- `--start` (run.py) &mdash; show the overlay widgets immediately on launch.
+- `--no-settings` (run.py) &mdash; don't open the settings window on launch.
 - `--dump-config` (run.py) &mdash; write a full `overlay_config.json` template and exit.
+
+The settings window has a **Start/Stop Overlay** button, and changes apply live.
+See [Customize everything](#customize-everything-overlay_configjson).
 
 ### Moving and saving panel positions
 
@@ -240,8 +282,8 @@ A point-and-click editor exposes **every** key with the right control type
 grouped into tabs per widget:
 
 ```bash
-python3 -m overlay.config_editor                      # standalone editor
-python3 run.py --demo --no-clickthrough --settings    # editor + live overlay
+python3 -m overlay.config_editor                  # standalone editor (no overlay)
+python3 run.py --demo --no-clickthrough           # editor + live overlay (demo)
 ```
 
 It has a dark, modern layout with a **search box** at the top to instantly filter

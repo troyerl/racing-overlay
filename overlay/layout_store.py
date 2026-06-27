@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import os
 
-LAYOUT_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "overlay_layout.json"
-)
+from . import paths
+
+LAYOUT_FILE = paths.data_file("overlay_layout.json")
 
 
 def load_layout() -> dict:

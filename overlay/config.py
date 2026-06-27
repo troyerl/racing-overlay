@@ -21,9 +21,9 @@ import os
 
 from PyQt6.QtGui import QColor
 
-CONFIG_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "overlay_config.json"
-)
+from . import paths
+
+CONFIG_FILE = paths.data_file("overlay_config.json")
 
 # Every column a timing table knows how to draw. Which ones appear, and in what
 # order, is controlled per table by its "column_order" list (add/remove/reorder

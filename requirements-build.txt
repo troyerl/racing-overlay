@@ -1,0 +1,4 @@
+# Build-time only (not needed to run from source). `build_windows.py` will
+# auto-install these if they're missing.
+pyinstaller>=6.0
+pillow>=10.0

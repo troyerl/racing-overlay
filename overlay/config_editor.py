@@ -211,6 +211,15 @@ QPushButton#danger {{
     background: transparent; border: 1px solid {ORANGE}; color: {ORANGE}; font-weight: 600;
 }}
 QPushButton#danger:hover {{ background: rgba(255,148,22,0.12); }}
+QPushButton#go {{
+    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #5cf08c, stop:1 {ACCENT});
+    border: 1px solid {ACCENT}; color: #06210f; font-weight: 700;
+}}
+QPushButton#go:hover {{ background: #5cf08c; }}
+QPushButton#stop {{
+    background: transparent; border: 1px solid {ORANGE}; color: {ORANGE}; font-weight: 700;
+}}
+QPushButton#stop:hover {{ background: rgba(255,148,22,0.12); }}
 
 QListWidget#orderList {{
     background: rgba(20,23,28,0.72); border: 1px solid #2c313b; border-radius: 10px;
@@ -534,8 +543,11 @@ class OrderEditor(QWidget):
 
 
 class ConfigEditor(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, overlay=None):
         super().__init__(parent)
+        # Optional overlay controller (the running HUD) so the settings window
+        # can start/stop the widgets. None when launched standalone.
+        self._overlay = overlay
         self.setObjectName("root")
         self.setWindowTitle("Overlay Settings")
         self.resize(640, 800)
@@ -583,6 +595,15 @@ class ConfigEditor(QWidget):
 
         controls = QHBoxLayout()
         controls.setSpacing(8)
+        self.overlay_btn = QPushButton("Start Overlay")
+        self.overlay_btn.setObjectName("go")
+        self.overlay_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.overlay_btn.clicked.connect(self._toggle_overlay)
+        controls.addWidget(self.overlay_btn)
+        if self._overlay is None:
+            self.overlay_btn.hide()
+        else:
+            self._refresh_overlay_btn()
         self.live_chk = QCheckBox("Apply live")
         self.live_chk.setChecked(True)
         controls.addWidget(self.live_chk)
@@ -783,6 +804,23 @@ class ConfigEditor(QWidget):
                 box.setVisible(own or id(box) in live_groups)
 
     # --- value changes ------------------------------------------------------
+
+    def _toggle_overlay(self) -> None:
+        if self._overlay is None:
+            return
+        running = self._overlay.toggle_overlay()
+        self._refresh_overlay_btn()
+        self._flash("Overlay started" if running else "Overlay stopped")
+
+    def _refresh_overlay_btn(self) -> None:
+        if self._overlay is None:
+            return
+        running = self._overlay.overlay_running()
+        self.overlay_btn.setText("Stop Overlay" if running else "Start Overlay")
+        self.overlay_btn.setObjectName("stop" if running else "go")
+        # Re-polish so the objectName-based style (#go / #stop) takes effect.
+        self.overlay_btn.style().unpolish(self.overlay_btn)
+        self.overlay_btn.style().polish(self.overlay_btn)
 
     def _rescan_track(self) -> None:
         if config.request_rescan():

@@ -20,9 +20,9 @@ from PyQt6.QtGui import QFont, QFontDatabase
 
 from .. import config
 
-# assets/ lives at the repo root (two levels up from overlay/widgets/).
-_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-_FONT_PATH = os.path.join(_ROOT, "assets", "fonts", "fa-solid-900.ttf")
+# assets/ is bundled alongside the app (repo root in dev, _MEIPASS when frozen).
+from .. import paths
+_FONT_PATH = paths.resource_file("assets", "fonts", "fa-solid-900.ttf")
 
 # name -> Font Awesome 6 Free Solid codepoint.
 _CODEPOINTS: dict[str, int] = {
