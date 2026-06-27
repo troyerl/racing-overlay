@@ -194,6 +194,10 @@ DEFAULTS: dict = {
         "shift_segments": 20,
         "shift_red_frac": 0.16,
         "shift_yellow_frac": 0.24,
+        # Flash the whole shift bar once RPM reaches the top of the range,
+        # signalling "shift now". shift_blink_hz is the flash rate.
+        "shift_blink": True,
+        "shift_blink_hz": 7.0,
         "ring_segments": 16,
         # Which driver inputs the center medallion shows. These apply to BOTH
         # center modes: in "ring" each selected input is a concentric arc

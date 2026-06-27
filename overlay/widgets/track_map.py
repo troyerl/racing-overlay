@@ -190,21 +190,32 @@ class TrackPathBuilder:
         return self._filled / self.bins
 
     def add(self, pct, lat, lon) -> None:
-        if pct is None or lat is None or lon is None:
-            return
-        if not (0.0 <= pct <= 1.0):
+        """Add a sample from GPS (latitude / longitude in degrees)."""
+        if lat is None or lon is None:
             return
         # (0, 0) is iRacing's "no GPS fix yet" sentinel -- ignore it so we don't
         # collapse the whole path onto the origin.
         if lat == 0.0 and lon == 0.0:
             return
-        i = min(int(pct * self.bins), self.bins - 1)
-        if self._samples[i] is None:
-            self._filled += 1
         # Equirectangular projection to a local flat plane (good enough for a
         # single track). y is negated so North points up on screen.
         x = math.radians(lon) * math.cos(math.radians(lat))
         y = -math.radians(lat)
+        self.add_xy(pct, x, y)
+
+    def add_xy(self, pct, x, y) -> None:
+        """Add an already-projected (x, y) sample at the given lap pct.
+
+        Used both by the GPS path (via add) and by dead-reckoned positions when
+        GPS isn't available.
+        """
+        if pct is None or x is None or y is None:
+            return
+        if not (0.0 <= pct <= 1.0):
+            return
+        i = min(int(pct * self.bins), self.bins - 1)
+        if self._samples[i] is None:
+            self._filled += 1
         self._samples[i] = (x, y)
 
         if self.complete:

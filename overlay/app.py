@@ -21,6 +21,7 @@ Corrections vs. the common template:
 
 from __future__ import annotations
 
+import math
 import os
 import sys
 import time
@@ -79,6 +80,12 @@ class AdvancedSimHUD:
         self._track_loaded = False        # a bundled track FILE is in use
         self._track_file_checked = False  # we've looked for a file for this track
         self._map_version = 0             # last learned-path version pushed
+        # Dead-reckoning state, used to learn the map from speed + heading when
+        # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
+        self._dr_x = 0.0
+        self._dr_y = 0.0
+        self._dr_t = None
+        self._dr_last_pct = None
         self.tracks_dir = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tracks"
         )
@@ -742,15 +749,50 @@ class AdvancedSimHUD:
                         pass  # fall back to GPS learning
 
         # Learn the shape from the player's own GPS, showing a rough loop early
-        # and refining it as more of the lap is sampled.
+        # and refining it as more of the lap is sampled. If the sim doesn't
+        # expose GPS (Lat/Lon), fall back to dead reckoning from speed + heading.
         b = self._path_builder
-        b.add(lap_pct[player] if lap_pct and player is not None else None,
-              self.ir["Lat"], self.ir["Lon"])
+        pct = lap_pct[player] if lap_pct and player is not None else None
+        lat, lon = self.ir["Lat"], self.ir["Lon"]
+        if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
+            b.add(pct, lat, lon)
+        else:
+            xy = self._dead_reckon(pct)
+            if xy is not None:
+                b.add_xy(pct, xy[0], xy[1])
+
         if b.version != self._map_version:
             self._map_version = b.version
             self.map_widget.set_path(b.path)
         elif not b.ready:
             self.map_widget.set_progress(b.coverage())
+
+    def _dead_reckon(self, pct):
+        """Integrate speed + heading into an (x, y) when GPS is unavailable.
+
+        Re-zeros at the start/finish line so each lap shares one origin; the
+        absolute orientation may be mirrored/rotated vs. reality, but the loop
+        shape is correct, which is all the 2D map needs.
+        """
+        speed = self.ir["Speed"]
+        yaw = self.ir["YawNorth"]
+        if yaw is None:
+            yaw = self.ir["Yaw"]
+        t = self.ir["SessionTime"]
+        if pct is None or speed is None or yaw is None or t is None:
+            return None
+        # A sharp drop in lap pct = crossed the line -> start a fresh lap origin.
+        if self._dr_last_pct is not None and pct + 0.5 < self._dr_last_pct:
+            self._dr_x = self._dr_y = 0.0
+            self._dr_t = t
+        if self._dr_t is not None:
+            dt = t - self._dr_t
+            if 0.0 < dt < 0.5:  # ignore pauses / jumps (resets, replays)
+                self._dr_x += speed * dt * math.cos(yaw)
+                self._dr_y += speed * dt * math.sin(yaw)
+        self._dr_t = t
+        self._dr_last_pct = pct
+        return (self._dr_x, self._dr_y)
 
     def _update_map(self, player, lap_pct, surface, drivers) -> None:
         if player is None or not lap_pct or not surface:

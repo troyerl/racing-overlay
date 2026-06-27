@@ -107,12 +107,14 @@ in this priority order:
 
 1. **Bundled per-track file** keyed by iRacing's `TrackID` in `tracks/<id>.json`
    or `tracks/<id>.svg` (accurate, and can carry corner-name labels).
-2. **Live GPS learning:** if no file exists for the current `TrackID`,
-   `TrackPathBuilder` learns the layout from your own car's GPS (`Lat`/`Lon`)
-   sampled by lap %. The map appears as a rough loop part-way through your first
-   lap and keeps sharpening as you drive; until then it shows a live
-   "LEARNING TRACK… NN%" progress readout (if it stays at 0%, the sim isn't
-   sending GPS yet — get out on track and start moving).
+2. **Live learning:** if no file exists for the current `TrackID`,
+   `TrackPathBuilder` learns the layout as you drive, sampled by lap %. It uses
+   the car's GPS (`Lat`/`Lon`) when the sim exposes it, and otherwise falls back
+   to **dead reckoning** from `Speed` + heading (`YawNorth`) so the map still
+   builds even without GPS. The map appears as a rough loop part-way through your
+   first lap and keeps sharpening; until then it shows a live "LEARNING TRACK…
+   NN%" readout. (The dead-reckoned shape may be rotated/mirrored vs. reality,
+   but the layout is correct.)
 3. **Demo mode:** loads `tracks/_demo.json` immediately.
 
 ### Building the track library
@@ -178,7 +180,9 @@ glows **fade/grow** smoothly instead of popping.
   (`CarLeftRight`), and a yellow-to-red glow appears ahead/behind scaled by how
   close the nearest car is, drawn on a rounded card that matches the dash.
 - **Dash / RPM** (`overlay/widgets/dash.py`) — a multi-container dashboard with: a
-  horizontal **shift/RPM bar** and a **status** readout in the top container, a
+  horizontal **shift/RPM bar** (which **blinks** once RPM tops out to tell you to
+  shift — toggle with `dash.shift_blink`, rate `dash.shift_blink_hz`) and a
+  **status** readout in the top container, a
   **primary** block (a small + a big readout) plus two stacked **stat cells** in
   the bottom container, an orange **position box** as its own container, a
   floating **strip pill** with three items, and a floating **center medallion**.

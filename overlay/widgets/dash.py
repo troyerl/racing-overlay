@@ -223,6 +223,7 @@ class DashWidget(QWidget):
         super().__init__(parent)
         self.data: dict = {}
         self._shift = 0.0
+        self._shift_blink = False  # dark half of the shift-light blink
         self._ped = {"t": 0.0, "b": 0.0, "c": 0.0}  # eased throttle/brake/clutch
         self._clock = QElapsedTimer()
         self._clock.start()
@@ -336,6 +337,16 @@ class DashWidget(QWidget):
                            or abs(self._ped["b"] - pb) > 0.003
                            or abs(self._ped["c"] - pc) > 0.003)
 
+        # Shift-light blink: once RPM tops out, flash the whole bar to say
+        # "shift now". Forces continuous repaints while it's flashing.
+        self._shift_blink = False
+        if (c.get("show_shift_bar", True) and c.get("shift_blink", True)
+                and self._shift >= 0.999):
+            hz = float(c.get("shift_blink_hz", 7.0) or 7.0)
+            if (self._clock.elapsed() * hz / 1000.0) % 1.0 >= 0.5:
+                self._shift_blink = True
+            self._animating = True
+
         # --- container geometry ------------------------------------------
         m = h * 0.045
         gp = h * 0.022             # vertical gap between top/bottom containers
@@ -445,10 +456,12 @@ class DashWidget(QWidget):
         yel, red = self._col("shift_yellow"), self._col("shift_red")
         full_h = rect.height()
         tick_h = rect.height() * 0.5
+        # During the dark half of a blink, drop every segment to the "off" tick.
+        blink_dark = getattr(self, "_shift_blink", False)
         p.setPen(Qt.PenStyle.NoPen)
         for i in range(n):
             x = rect.left() + i * (bw + gap)
-            if i < lit:
+            if not blink_dark and i < lit:
                 cc = red if i >= red0 else yel if i >= yel0 else green
                 y, bh = rect.top(), full_h
             else:
