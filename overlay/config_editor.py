@@ -887,10 +887,17 @@ class ConfigEditor(QWidget):
         self.overlay_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.overlay_btn.clicked.connect(self._toggle_overlay)
         controls.addWidget(self.overlay_btn)
+        self.edit_w, self.edit_sw = self._opt_toggle("Edit layout", False)
+        self.edit_w.setToolTip("Make the overlay widgets draggable so you can "
+                               "move and resize them; turn off to lock.")
+        self.edit_sw.toggled.connect(self._toggle_edit)
+        controls.addWidget(self.edit_w)
         if self._overlay is None:
             self.overlay_btn.hide()
+            self.edit_w.hide()
         else:
             self._refresh_overlay_btn()
+            self._sync_edit_switch()
         live_w, self.live_sw = self._opt_toggle("Apply live", True)
         controls.addWidget(live_w)
         save_w, self.autosave_sw = self._opt_toggle("Auto-save", True)
@@ -1214,6 +1221,28 @@ class ConfigEditor(QWidget):
         # Re-polish so the objectName-based style (#go / #stop) takes effect.
         self.overlay_btn.style().unpolish(self.overlay_btn)
         self.overlay_btn.style().polish(self.overlay_btn)
+
+    def _sync_edit_switch(self) -> None:
+        """Reflect the overlay's current edit/lock state without re-firing it."""
+        if self._overlay is None or not hasattr(self._overlay, "edit_mode_enabled"):
+            return
+        self.edit_sw.blockSignals(True)
+        self.edit_sw.setChecked(self._overlay.edit_mode_enabled())
+        self.edit_sw.blockSignals(False)
+
+    def _toggle_edit(self, on: bool) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "set_edit_mode"):
+            return
+        self._overlay.set_edit_mode(bool(on))
+        self._flash("Edit layout on \u2014 drag widgets to move/resize"
+                    if on else "Layout locked")
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        # Re-sync state in case it changed from the tray while we were hidden.
+        if self._overlay is not None:
+            self._refresh_overlay_btn()
+            self._sync_edit_switch()
 
     def _rescan_track(self) -> None:
         if config.request_rescan():

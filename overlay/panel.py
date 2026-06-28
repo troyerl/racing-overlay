@@ -79,8 +79,31 @@ class PanelWindow(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         super().showEvent(event)
-        if self.click_through:
-            oc.enable_windows_click_through(self)
+        oc.set_windows_click_through(self, self.click_through)
+
+    def set_click_through(self, value: bool) -> None:
+        """Flip between locked (click-through) and edit mode (draggable) live.
+
+        In edit mode the window grabs the mouse so it can be dragged, and shows
+        a resize grip in the bottom-right corner.
+        """
+        value = bool(value)
+        self.click_through = value
+        self._drag_offset = None
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, value)
+        # Re-apply the Win32 styles against the live window handle.
+        if self.isVisible():
+            oc.set_windows_click_through(self, value)
+        if value:
+            if self._grip is not None:
+                self._grip.deleteLater()
+                self._grip = None
+        elif self._grip is None:
+            self._grip = QSizeGrip(self)
+            self._grip.resize(16, 16)
+            self._grip.move(self.width() - 16, self.height() - 16)
+            self._grip.show()
+        self.update()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)

@@ -199,6 +199,20 @@ class AdvancedSimHUD:
     def overlay_running(self) -> bool:
         return self._overlay_running
 
+    def edit_mode_enabled(self) -> bool:
+        """True when panels are draggable (i.e. not click-through)."""
+        return not self.click_through
+
+    def set_edit_mode(self, enabled: bool) -> None:
+        """Make every panel draggable (edit) or click-through (locked) live."""
+        self.click_through = not bool(enabled)
+        for win in self.panels:
+            win.set_click_through(self.click_through)
+
+    def toggle_edit_mode(self) -> bool:
+        self.set_edit_mode(not self.edit_mode_enabled())
+        return self.edit_mode_enabled()
+
     def _apply_visibility(self) -> None:
         """Show or hide each panel window to match config, when the overlay is on."""
         for key, win in self._win_by_key.items():
@@ -1447,6 +1461,8 @@ def _install_tray(app, hud, icon_path):
     menu = QMenu()
     act_settings = menu.addAction("Open Settings")
     act_toggle = menu.addAction("Start Overlay")
+    act_edit = menu.addAction("Edit Layout")
+    act_edit.setCheckable(True)
     menu.addSeparator()
     act_update = menu.addAction("Check for Updates")
     act_quit = menu.addAction("Quit")
@@ -1454,6 +1470,7 @@ def _install_tray(app, hud, icon_path):
     def refresh():
         act_toggle.setText("Stop Overlay" if hud.overlay_running()
                            else "Start Overlay")
+        act_edit.setChecked(hud.edit_mode_enabled())
 
     def toggle():
         hud.toggle_overlay()
@@ -1461,6 +1478,7 @@ def _install_tray(app, hud, icon_path):
 
     act_settings.triggered.connect(hud.open_settings)
     act_toggle.triggered.connect(toggle)
+    act_edit.triggered.connect(lambda checked: hud.set_edit_mode(checked))
     act_update.triggered.connect(lambda: getattr(hud, "_updater", None)
                                  and hud._updater.start())
     act_update.setVisible(bool(version.GITHUB_REPO))

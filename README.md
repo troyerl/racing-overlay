@@ -120,8 +120,15 @@ See [Customize everything](#customize-everything-overlay_configjson).
 ### Moving and saving panel positions
 
 The panels (Tower, Relative, Radar, Map, Dash) are **independent top-level
-windows**. Launch in edit mode, drag each one wherever you like, and its position
-is saved automatically to `overlay_layout.json`:
+windows**. Their positions/sizes are saved automatically to
+`overlay_layout.json`.
+
+The easiest way to rearrange them is the **"Edit layout" switch** in the settings
+window's bottom bar (also available as **Edit Layout** in the tray menu). Flip it
+on to make every widget draggable and resizable, move things where you want, then
+flip it off to lock them again — no restart needed.
+
+You can also start directly in edit mode from the command line:
 
 ```bash
 python3 run.py --demo --no-clickthrough   # drag/resize panels; layout persists

@@ -20,6 +20,9 @@ Release notes. To cut a release, add a new section to the top and push.
   a checkbox.
 - **Sliders for numbers.** Numeric settings use a slider paired with a precise
   value box, with sensible ranges inferred per setting.
+- **In-app "Edit layout" toggle.** You can now make the overlay widgets
+  draggable/resizable and lock them again right from the settings window (and the
+  tray menu) — no more relaunching with `--no-clickthrough` to rearrange them.
 
 ## 1.2.0 - 2026-06-28
 

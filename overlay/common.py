@@ -60,13 +60,13 @@ def make_irsdk(demo: bool = False):
     return ir
 
 
-def enable_windows_click_through(widget: QWidget) -> None:
-    """Apply the Win32 extended styles required for genuine click-through.
+def set_windows_click_through(widget: QWidget, enabled: bool) -> None:
+    """Set or clear the Win32 extended styles for genuine click-through.
 
     Qt's WA_TransparentForMouseEvents alone is unreliable for frameless/
-    translucent windows on Windows, so we also set WS_EX_LAYERED |
-    WS_EX_TRANSPARENT. No-op off Windows. Call after the native window exists
-    (e.g. in showEvent), since winId() isn't valid in __init__.
+    translucent windows on Windows, so we also flip WS_EX_TRANSPARENT (keeping
+    WS_EX_LAYERED set either way). No-op off Windows. Call after the native
+    window exists (e.g. in showEvent), since winId() isn't valid in __init__.
     """
     if sys.platform != "win32":
         return
@@ -80,8 +80,15 @@ def enable_windows_click_through(widget: QWidget) -> None:
         hwnd = int(widget.winId())
         user32 = ctypes.windll.user32
         current = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        user32.SetWindowLongW(
-            hwnd, GWL_EXSTYLE, current | WS_EX_LAYERED | WS_EX_TRANSPARENT
-        )
+        if enabled:
+            new = current | WS_EX_LAYERED | WS_EX_TRANSPARENT
+        else:
+            new = (current | WS_EX_LAYERED) & ~WS_EX_TRANSPARENT
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new)
     except Exception:
         pass
+
+
+def enable_windows_click_through(widget: QWidget) -> None:
+    """Backwards-compatible shim: enable click-through on Windows."""
+    set_windows_click_through(widget, True)
