@@ -42,6 +42,9 @@ DEFAULTS: dict = {
     # "imperial" (mph, F, gal). Affects the unit-aware "speed", temperature and
     # fuel readouts. (speed_kph / speed_mph stay fixed to their named unit.)
     "units": "metric",
+    # Check GitHub for a newer release when the app launches (silent unless an
+    # update is found). The "Check for Updates" button works regardless.
+    "check_updates_on_launch": True,
     "table": {
         "corner_radius_frac": 0.05,
         "alt_row_shading": True,
@@ -464,20 +467,6 @@ DEFAULTS: dict = {
             "#ff5b5b", "#36d6d6", "#d6d636", "#7a8cff", "#ff8cce",
             "#5be0a0", "#c0c0c0",
         ],
-    },
-    "light_hud": {
-        # Per-widget text size, multiplied by the global text_scale.
-        "text_scale": 1.0,
-        "font_px": 16,
-        "colors": {
-            "text": "#f4f6f8",
-            "accent": "#46df7a",
-            "accent2": "#ff9416",
-            # Card gradient + border, matching the dash panels.
-            "bg_top": "#1b1f26f2",
-            "bg_bottom": "#0f1216f2",
-            "border": "#ffffff20",
-        },
     },
 }
 

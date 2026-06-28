@@ -1,4 +1,4 @@
-"""Shared helpers for the LightSpeed overlays.
+"""Shared helpers for the overlay widgets.
 
 Keeps the iRacing SDK import guard and the Windows click-through logic in one
 place so both the simple fuel HUD and the multi-widget HUD agree on behavior.

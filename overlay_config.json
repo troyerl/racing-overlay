@@ -1,1 +1,20 @@
-{}
+{
+  "relative": {
+    "show": false
+  },
+  "laptime_log": {
+    "show": false
+  },
+  "fuel_calc": {
+    "show": false
+  },
+  "radar": {
+    "show": false
+  },
+  "dash": {
+    "show": false
+  },
+  "map": {
+    "show": false
+  }
+}

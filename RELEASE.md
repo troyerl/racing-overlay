@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.6.0 - 2026-06-28
+
+- **Settings reorganized into Widgets / Settings tabs.** The settings window now
+  has two top tabs: **Widgets** (per-widget pages) and **Settings** (global
+  options plus the shared table styling), so the sidebar is less crowded.
+- **Alphabetical widget tabs.** The widget pages in the sidebar are now ordered
+  A-Z (Dash, Fuel Calc, Laptime Log, Map, Radar, Relative, Standings).
+- **Removed the standalone Light HUD.** The old simple Fuel/Delta HUD has been
+  dropped in favor of the multi-widget overlay; its settings tab and config
+  section are gone.
+
 ## 1.5.0 - 2026-06-28
 
 - **Pace car hidden.** The pace/safety car no longer shows up as a competitor in

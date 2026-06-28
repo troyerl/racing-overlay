@@ -66,6 +66,32 @@ def tracks_dir() -> str:
     return dst
 
 
+def install_dir() -> str:
+    """Directory the app is installed/running from (where the exe lives)."""
+    if frozen():
+        return os.path.dirname(sys.executable)
+    return _REPO_ROOT
+
+
+def uninstaller_path() -> str | None:
+    """Path to the Inno Setup uninstaller for an installed Windows build.
+
+    Inno Setup drops an ``unins###.exe`` next to the program. Returns it (the
+    highest-numbered one if several exist) or None in a dev checkout / when no
+    uninstaller is present, so callers can hide the in-app uninstall option.
+    """
+    if not frozen():
+        return None
+    base = install_dir()
+    try:
+        names = sorted(
+            n for n in os.listdir(base)
+            if n.lower().startswith("unins") and n.lower().endswith(".exe"))
+    except OSError:
+        return None
+    return os.path.join(base, names[-1]) if names else None
+
+
 def app_icon() -> str | None:
     """Path to the app icon (png preferred for Qt), or None if not bundled."""
     for name in ("assets/app.png", "assets/icon.png", "assets/app.ico"):

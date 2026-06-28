@@ -13,13 +13,14 @@ import os
 import re
 import tempfile
 import threading
+import urllib.error
 import urllib.request
 
 from PyQt6.QtCore import QObject, pyqtSignal
 
 from . import version
 
-_API = "https://api.github.com/repos/{repo}/releases/latest"
+_API = "https://api.github.com/repos/{repo}"
 _HEADERS = {
     "Accept": "application/vnd.github+json",
     "User-Agent": "RacingOverlay-Updater",
@@ -37,14 +38,13 @@ def is_newer(remote: str, current: str) -> bool:
     return bool(remote) and remote != current
 
 
-def fetch_latest(timeout: float = 6.0) -> dict | None:
-    """Return {version, url, notes, name} for the latest release, or None."""
-    if not version.GITHUB_REPO:
-        return None
-    url = _API.format(repo=version.GITHUB_REPO)
+def _get_json(url: str, timeout: float):
     req = urllib.request.Request(url, headers=_HEADERS)
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.load(resp)
+        return json.load(resp)
+
+
+def _release_info(data: dict) -> dict:
     tag = (data.get("tag_name") or "").lstrip("vV")
     asset_url = None
     for a in data.get("assets", []):
@@ -57,6 +57,31 @@ def fetch_latest(timeout: float = 6.0) -> dict | None:
         "notes": data.get("body", "") or "",
         "name": data.get("name", "") or "",
     }
+
+
+def fetch_latest(timeout: float = 6.0) -> dict | None:
+    """Return {version, url, notes, name} for the newest release, or None.
+
+    Uses GitHub's /releases/latest endpoint, but that 404s when a repo has no
+    *published, non-prerelease* release (only tags, drafts or pre-releases). In
+    that case we fall back to the full release list and pick the newest one that
+    isn't a draft, so pre-release builds are still offered. None means no
+    release is available to compare against (not an error).
+    """
+    if not version.GITHUB_REPO:
+        return None
+    base = _API.format(repo=version.GITHUB_REPO)
+    try:
+        return _release_info(_get_json(base + "/releases/latest", timeout))
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+    # No "latest" release -> look through all releases (newest first).
+    releases = _get_json(base + "/releases", timeout)
+    published = [r for r in releases if isinstance(r, dict) and not r.get("draft")]
+    if not published:
+        return None
+    return _release_info(published[0])
 
 
 def download(url: str, on_progress=None) -> str:
@@ -120,7 +145,10 @@ class UpdateChecker(QObject):
         except Exception as exc:  # noqa: BLE001
             self.check_failed.emit(str(exc) or "Network error")
             return
-        if not info or not info.get("version"):
+        if info is None:
+            self.check_failed.emit("No releases have been published yet.")
+            return
+        if not info.get("version"):
             self.check_failed.emit("Couldn't read the latest release from GitHub.")
             return
         if is_newer(info["version"], version.__version__):

@@ -1,8 +1,9 @@
-# LightSpeed Overlay
+# Racing Overlay
 
-A native (non-browser) iRacing **Fuel & Delta** HUD built with PyQt6. It draws a
-frameless, always-on-top, click-through panel and polls iRacing's shared-memory
-telemetry via `pyirsdk`.
+A native (non-browser) multi-widget iRacing HUD built with PyQt6 (Dash/RPM,
+Relative, Standings, Radar, 2D Track Map, Laptime Log and Fuel Calculator). It
+draws frameless, always-on-top, click-through panels and polls iRacing's
+shared-memory telemetry via `pyirsdk`.
 
 ## Requirements
 
@@ -33,7 +34,7 @@ overlay/               # the application package
   svgpath.py           # minimal SVG <path> flattener
   widgets/             # custom-painted widgets
     dash.py  radar.py  relative.py  standings.py
-    table.py  track_map.py  light_hud.py  icons.py
+    table.py  track_map.py  laptime_log.py  fuel_calc.py  icons.py
 tools/                 # standalone helper scripts (not imported by the app)
   fetch_tracks.py  record_track.py  svg_to_track.py
 assets/fonts/          # bundled Font Awesome TTF
@@ -96,21 +97,14 @@ python run.py --start    # show the overlay widgets immediately
 python run.py --no-settings --start   # widgets only, no settings window
 ```
 
-Simple fuel + delta HUD:
-
-```powershell
-python -m overlay.widgets.light_hud
-```
-
 Flags:
 
-- `--demo` (both) &mdash; run with **simulated telemetry**; no iRacing required. A fake
+- `--demo` &mdash; run with **simulated telemetry**; no iRacing required. A fake
   12-car field circulates with time-varying pace so the **running order keeps
   changing**, and a tight battle pack around your car weaves past on both sides
   so the **radar regularly shows left / right / both**. Every panel animates.
   Great for layout/styling work.
-- `--gallons` (light HUD) &mdash; convert fuel from liters to US gallons (iRacing reports liters).
-- `--no-clickthrough` (both) &mdash; "edit mode": windows become interactive so you can
+- `--no-clickthrough` &mdash; "edit mode": windows become interactive so you can
   **drag them**, then relaunch without the flag to lock them.
 - `--start` (run.py) &mdash; show the overlay widgets immediately on launch.
 - `--no-settings` (run.py) &mdash; don't open the settings window on launch.
@@ -148,7 +142,6 @@ Quit with `Ctrl+C` in the terminal you launched it from.
 
 ```bash
 python run.py --demo --no-clickthrough
-python -m overlay.widgets.light_hud --demo --no-clickthrough
 ```
 
 Demo mode also works off-Windows (handy for development on macOS/Linux), since
@@ -400,7 +393,7 @@ What you can change, by section:
 | `show` (per widget) | Each widget section (`standings`, `relative`, `radar`, `map`, `dash`) has a **`show`** toggle. Turning it off hides that window **and** skips all of its per-tick telemetry reads and calculations, so hidden widgets cost nothing. Toggle it live from the top of each tab in the settings editor. |
 | `font_family` | Global font used by every panel. |
 | `text_scale` | **Global** multiplier on all text sizes. Raise to enlarge everything, lower to shrink. Each widget also has its own `text_scale` (below) that multiplies on top of this. |
-| `units` | `"metric"` (km/h, °C, L) or `"imperial"` (mph, °F, gal). Drives the unit-aware Dash readouts (`speed`, `track_temp`, `air_temp`, `fuel`) and the Light HUD's fuel. `speed_kph` / `speed_mph` stay fixed to their named unit regardless. |
+| `units` | `"metric"` (km/h, °C, L) or `"imperial"` (mph, °F, gal). Drives the unit-aware Dash readouts (`speed`, `track_temp`, `air_temp`, `fuel`). `speed_kph` / `speed_mph` stay fixed to their named unit regardless. |
 | `table` | Shared row/cell/header styling for both tables: all colors, license-class colors, iRating cell colors, player/threat row tints, `corner_radius_frac`, `font_scale`, `gap_font_scale`, `row_ease_tau` / `fade_ease_tau` (animation speed), per-cell `widths`, `alt_row_shading`. |
 | `relative` | `rows_ahead` / `rows_behind` (cars shown in front of / behind you); `center_on_player`; a **`column_order`** list that controls *which* columns show and *in what order* (add/remove/reorder them from the editor); `columns.stripe` (the position class-color stripe); `pit_mode`; `show_footer`; and a fully mappable **`header`** / **`footer`** (any slot item — see below). |
 | `standings` | `rows_ahead` / `rows_behind` (window above/below you when centered), `rows` (size in top-N mode), `center_on_player`, `title`, `show_footer`; its own **`column_order`** list (independent of Relative); `columns.stripe`; `pit_mode`; and a fully mappable **`header`** / **`footer`** (any slot item, plus the standings-only `order_pill` / `title` / `count`). |
@@ -431,7 +424,6 @@ text bigger or smaller without touching the rest:
 | `standings.text_scale` | the Standings tower |
 | `dash.text_scale` | the Dash / RPM widget |
 | `map.text_scale` | track-map corner labels + car numbers |
-| `light_hud.text_scale` | the simple Fuel/Delta HUD |
 
 Effective size = `text_scale` (global) × `<widget>.text_scale`. Both default to
 `1.0` per widget, so nothing changes until you set one. Example — bigger Relative,
@@ -533,10 +525,9 @@ stop itself — meaning history starts when the overlay launches (or when you
 add the column). Tracking only runs while the pit column is shown.
 | `radar` | `range_pct` (ahead/behind detection window), `ease_side_tau` / `ease_glow_tau`, car/red/yellow/axis/nose colors, element `sizes` (car, bars, glow, nose), `show_nose`, `show_axis`. |
 | `map` | Asphalt/outline/infield/player/corner/wind colors, the car-dot `palette`, `asphalt_width`, `outline_width`, `rotation` (0/90/180/270) + `mirror` orientation, and `show_infield` / `show_corners` / `auto_corners` / `show_start_finish` / `show_pit` / `show_wind` toggles. |
-| `light_hud` | `font_px`, text/accent/accent2/background colors for the simple fuel+delta HUD. |
 
 Example `overlay_config.json` (red text in tables, a trimmed/reordered Relative,
-5 standings rows with a pit column, wider radar range, neon-green light HUD):
+5 standings rows with a pit column, wider radar range):
 
 ```json
 {
@@ -549,8 +540,7 @@ Example `overlay_config.json` (red text in tables, a trimmed/reordered Relative,
     "rows": 5, "title": "GRID",
     "column_order": ["badge", "position", "name", "license", "irating", "pit"]
   },
-  "radar": { "range_pct": 0.05 },
-  "light_hud": { "colors": { "accent": "#00ff66" } }
+  "radar": { "range_pct": 0.05 }
 }
 ```
 

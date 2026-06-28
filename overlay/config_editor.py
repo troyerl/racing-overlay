@@ -29,7 +29,8 @@ from PyQt6.QtCore import (
     pyqtProperty,
     pyqtSignal,
 )
-from PyQt6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPen, QPixmap
+from PyQt6.QtGui import (QBrush, QColor, QFont, QLinearGradient, QPainter, QPen,
+                         QPixmap)
 from PyQt6.QtWidgets import (
     QAbstractButton,
     QAbstractItemView,
@@ -54,11 +55,21 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import config, version
+from . import config, paths, version
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
 # Simple key-name -> options dropdowns.
+# A short curated list of fonts that suit a racing HUD. Segoe UI is the default
+# (ships with Windows); Bahnschrift / Agency FB are condensed "industrial" faces
+# that also ship with Windows; the rest are common fallbacks. Any font not
+# installed falls back gracefully, and a custom value already in the config is
+# kept as an option so the dropdown never discards it.
+FONT_CHOICES = [
+    "Segoe UI", "Bahnschrift", "Bahnschrift Condensed", "Agency FB",
+    "Eurostile", "Consolas", "Tahoma", "Verdana", "Arial",
+]
+
 ENUMS = {
     "pit_mode": ["laps_since", "time_since", "at_lap", "at_time"],
     "units": ["metric", "imperial"],
@@ -66,6 +77,7 @@ ENUMS = {
     "car_label": ["number", "position"],
     "delta_mode": ["previous", "best"],
     "rotation": [0, 90, 180, 270],
+    "font_family": FONT_CHOICES,
 }
 
 # Friendly display text for raw config option values (combo boxes show these,
@@ -108,6 +120,8 @@ OPTION_LABELS = {
 # Friendly labels for specific config keys whose auto-generated name is too
 # terse to be meaningful. Keyed by "section.key" (preferred) or bare key.
 LABEL_OVERRIDES = {
+    "check_updates_on_launch": "Check for updates on launch",
+    "font_family": "Font",
     "fuel_calc.title": "Title text",
     "fuel_calc.history_laps": "Laps to average for fuel use",
     "fuel_calc.show_title": "Show title bar",
@@ -184,8 +198,11 @@ TAB_COLORS = {
     "Radar": ACCENT,
     "Dash": ACCENT,
     "Map": "#62b5ff",
-    "Light Hud": "#9aa3b2",
 }
+
+# Section keys shown under the "Settings" top tab (global, non-widget config).
+# Everything else is a widget and lives under the "Widgets" top tab.
+SETTINGS_SECTION_KEYS = {"__general__", "table"}
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
@@ -238,8 +255,10 @@ QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
     border: 1px solid {ACCENT};
 }}
-QComboBox {{ min-width: 150px; }}
-QComboBox::drop-down {{ border: none; width: 22px; }}
+QComboBox {{ min-width: 150px; padding-right: 26px; }}
+/* The chevron is custom-painted by Combo; hide the native arrow + box. */
+QComboBox::drop-down {{ border: none; width: 26px; }}
+QComboBox::down-arrow {{ image: none; width: 0; height: 0; }}
 QComboBox QAbstractItemView {{
     background: #161a20; border: 1px solid #2c313b; color: #e6e8ec;
     selection-background-color: {ACCENT}; selection-color: #06210f; outline: none;
@@ -288,6 +307,20 @@ QPushButton#stop {{
     background: transparent; border: 1px solid {ORANGE}; color: {ORANGE}; font-weight: 700;
 }}
 QPushButton#stop:hover {{ background: rgba(255,148,22,0.12); }}
+
+/* Top-level horizontal tabs (Widgets / Settings) */
+QWidget#topTabs {{
+    background: rgba(13,15,19,0.78); border: 1px solid #20242c; border-radius: 12px;
+}}
+QPushButton#topTab {{
+    background: transparent; border: none; border-radius: 9px;
+    padding: 9px 20px; color: #8b93a1; font-size: 12px; font-weight: 800;
+    letter-spacing: 0.4px;
+}}
+QPushButton#topTab:hover {{ color: #d7dae0; }}
+QPushButton#topTab:checked {{
+    background: rgba(70,223,122,0.16); border: 1px solid {ACCENT_DIM}; color: #f4f6f8;
+}}
 
 QListWidget#orderList {{
     background: rgba(20,23,28,0.72); border: 1px solid #2c313b; border-radius: 10px;
@@ -340,6 +373,43 @@ def _carbon_tile() -> QPixmap:
     p.end()
     _CARBON = pm
     return pm
+
+
+class Combo(QComboBox):
+    """A dropdown that paints its own chevron, flipping up while the list is open."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._open = False
+
+    def showPopup(self) -> None:  # noqa: N802 (Qt naming)
+        self._open = True
+        self.update()
+        super().showPopup()
+
+    def hidePopup(self) -> None:  # noqa: N802 (Qt naming)
+        self._open = False
+        self.update()
+        super().hidePopup()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
+        super().paintEvent(event)  # field + text (native arrow is hidden via QSS)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        pen = QPen(QColor("#aab2bf"), 1.6)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+        cx = self.width() - 14.0
+        cy = self.height() / 2.0
+        s = 4.0
+        if self._open:  # chevron up
+            p.drawLine(QPointF(cx - s, cy + s * 0.55), QPointF(cx, cy - s * 0.55))
+            p.drawLine(QPointF(cx, cy - s * 0.55), QPointF(cx + s, cy + s * 0.55))
+        else:           # chevron down
+            p.drawLine(QPointF(cx - s, cy - s * 0.55), QPointF(cx, cy + s * 0.55))
+            p.drawLine(QPointF(cx, cy + s * 0.55), QPointF(cx + s, cy - s * 0.55))
+        p.end()
 
 
 class ToggleSwitch(QAbstractButton):
@@ -768,7 +838,7 @@ class OrderEditor(QWidget):
 
         controls = QHBoxLayout()
         controls.setSpacing(6)
-        self.add_combo = QComboBox()
+        self.add_combo = Combo()
         self.add_btn = QPushButton("+  Add")
         self.remove_btn = QPushButton("\u2715  Remove")
         for b in (self.add_btn, self.remove_btn):
@@ -841,6 +911,7 @@ class ConfigEditor(QWidget):
         self._nav_items: dict[str, NavItem] = {}
         self._sections: list[tuple[str, str]] = []
         self._cur_index = 0
+        self._top_tab = "widgets"
         self._carbon = _carbon_tile()
         self._updater = None
         self._dl_dialog = None
@@ -863,7 +934,7 @@ class ConfigEditor(QWidget):
         plabel = QLabel("Profile")
         plabel.setStyleSheet("background: transparent; color: #aab2bf; "
                              "font-weight: 700;")
-        self.ctx_combo = QComboBox()
+        self.ctx_combo = Combo()
         self.ctx_combo.setObjectName("ctxCombo")
         for ctx in config.contexts():
             self.ctx_combo.addItem(config.CONTEXT_LABELS.get(ctx, ctx), ctx)
@@ -884,6 +955,24 @@ class ConfigEditor(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         root.addWidget(self.search)
+
+        # Top-level tabs split the sidebar into widget pages vs global settings.
+        tabbar = QWidget()
+        tabbar.setObjectName("topTabs")
+        tab_lay = QHBoxLayout(tabbar)
+        tab_lay.setContentsMargins(6, 6, 6, 6)
+        tab_lay.setSpacing(6)
+        self._top_tabs: dict[str, QPushButton] = {}
+        for name, label in (("widgets", "Widgets"), ("settings", "Settings")):
+            b = QPushButton(label)
+            b.setObjectName("topTab")
+            b.setCheckable(True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _c=False, n=name: self._set_top_tab(n))
+            tab_lay.addWidget(b)
+            self._top_tabs[name] = b
+        tab_lay.addStretch(1)
+        root.addWidget(tabbar)
 
         # Sidebar navigation rail + stacked pages.
         body = QHBoxLayout()
@@ -1002,7 +1091,42 @@ class ConfigEditor(QWidget):
         self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_btn.clicked.connect(self._check_updates)
         h.addWidget(self._update_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        # Offer an in-app uninstall only for an installed Windows build (where
+        # the Inno Setup uninstaller exists beside the exe).
+        if paths.uninstaller_path():
+            uninstall = QPushButton("Uninstall")
+            uninstall.setObjectName("danger")
+            uninstall.setCursor(Qt.CursorShape.PointingHandCursor)
+            uninstall.clicked.connect(self._uninstall)
+            h.addWidget(uninstall, 0, Qt.AlignmentFlag.AlignVCenter)
         return card
+
+    def _uninstall(self) -> None:
+        """Confirm, then close the app and launch the Windows uninstaller."""
+        from PyQt6.QtWidgets import QApplication, QMessageBox
+        path = paths.uninstaller_path()
+        if not path:
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Uninstall Racing Overlay")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("Uninstall Racing Overlay?")
+        box.setInformativeText(
+            "This closes the app and starts the Windows uninstaller. Your saved "
+            "settings and learned tracks (in your user folder) are left in place.")
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            import subprocess
+            subprocess.Popen([path], close_fds=True)  # noqa: S603
+        except OSError as exc:
+            QMessageBox.critical(self, "Uninstall failed",
+                                 f"Couldn't start the uninstaller.\n\n{exc}")
+            return
+        QApplication.instance().quit()
 
     def _ensure_updater(self):
         if self._updater is not None:
@@ -1162,10 +1286,12 @@ class ConfigEditor(QWidget):
         self._accordions.clear()
         self._nav_items.clear()
 
-        self._sections = [("__general__", "General")] + [
-            (k, _pretty(k)) for k, val in config.DEFAULTS.items()
-            if isinstance(val, dict)
-        ]
+        # General first (Settings tab), then the rest alphabetically by title so
+        # the widget vertical tabs read A-Z (Dash, Fuel Calc, Laptime Log, ...).
+        self._sections = [("__general__", "General")] + sorted(
+            ((k, _pretty(k)) for k, val in config.DEFAULTS.items()
+             if isinstance(val, dict)),
+            key=lambda kt: kt[1].lower())
         for idx, (key, title) in enumerate(self._sections):
             color = TAB_COLORS.get(title, "#9aa3b2")
             self.stack.addWidget(self._scroll(self._build_page(key, title, color)))
@@ -1176,7 +1302,38 @@ class ConfigEditor(QWidget):
             self._nav_items[key] = nav
             self.nav_lay.addWidget(nav)
         self.nav_lay.addStretch(1)
-        self._select(min(self._cur_index, len(self._sections) - 1))
+        self._cur_index = min(self._cur_index, len(self._sections) - 1)
+        self._apply_top_tab()
+
+    def _group_keys(self, tab: str) -> set[str]:
+        """The section keys that belong to the given top tab."""
+        allk = {k for k, _t in self._sections}
+        settings = allk & SETTINGS_SECTION_KEYS
+        return settings if tab == "settings" else (allk - settings)
+
+    def _set_top_tab(self, name: str) -> None:
+        self._top_tab = name
+        self._apply_top_tab()
+
+    def _apply_top_tab(self) -> None:
+        """Show only the nav items for the active top tab, keeping a valid page."""
+        for name, btn in self._top_tabs.items():
+            btn.setChecked(name == self._top_tab)
+        keys = self._group_keys(self._top_tab)
+        first_idx = None
+        for idx, (key, _t) in enumerate(self._sections):
+            nav = self._nav_items.get(key)
+            visible = key in keys
+            if nav:
+                nav.setVisible(visible)
+            if visible and first_idx is None:
+                first_idx = idx
+        cur_key = (self._sections[self._cur_index][0]
+                   if 0 <= self._cur_index < len(self._sections) else None)
+        if cur_key in keys:
+            self._select(self._cur_index)
+        elif first_idx is not None:
+            self._select(first_idx)
 
     def _select(self, index: int) -> None:
         self._cur_index = index
@@ -1190,8 +1347,13 @@ class ConfigEditor(QWidget):
         area = QScrollArea()
         area.setWidgetResizable(True)
         area.setWidget(inner)
-        area.setStyleSheet("background: transparent;")
-        area.viewport().setStyleSheet("background: transparent;")
+        # Scope the transparent background to the scroll area + its viewport via
+        # explicit selectors. A bare "background: transparent;" cascades to every
+        # child widget (e.g. it wiped the #primary button's blue fill).
+        area.viewport().setObjectName("scrollViewport")
+        area.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+            " QWidget#scrollViewport { background: transparent; }")
         return area
 
     def _build_page(self, key: str, title: str, color: str) -> QWidget:
@@ -1366,9 +1528,20 @@ class ConfigEditor(QWidget):
     def _control(self, path: list, default_val, value, color: str) -> QWidget:
         options = _enum_options(path)
         if options:
-            combo = QComboBox()
+            # Keep an out-of-list current value (e.g. a custom font_family from a
+            # hand-edited config) so the dropdown never silently discards it.
+            options = list(options)
+            if value not in options:
+                options.insert(0, value)
+            is_font = bool(path) and path[-1] == "font_family"
+            combo = Combo()
             for opt in options:
-                combo.addItem(_option_label(opt), opt)
+                # Font names display verbatim (not run through _pretty, which
+                # would mangle e.g. "Segoe UI" -> "Segoe ui").
+                combo.addItem(opt if is_font else _option_label(opt), opt)
+                if is_font and isinstance(opt, str):
+                    combo.setItemData(combo.count() - 1, QFont(opt, 11),
+                                      Qt.ItemDataRole.FontRole)
             combo.setCurrentIndex(options.index(value) if value in options else 0)
             combo.currentIndexChanged.connect(
                 lambda _i, p=path, c=combo: self._set(p, c.currentData()))
@@ -1376,7 +1549,10 @@ class ConfigEditor(QWidget):
         if _is_color(path, default_val):
             return ColorButton(value, lambda v, p=path: self._set(p, v))
         if isinstance(default_val, bool):
-            sw = ToggleSwitch(checked=bool(value), accent=color)
+            # The General tab uses a muted gray that's nearly invisible as an
+            # "on" color, so toggles there fall back to the green accent.
+            accent = ACCENT if (not color or color.lower() == "#9aa3b2") else color
+            sw = ToggleSwitch(checked=bool(value), accent=accent)
             sw.toggled.connect(lambda v, p=path: self._set(p, bool(v)))
             return sw
         if isinstance(default_val, (int, float)):

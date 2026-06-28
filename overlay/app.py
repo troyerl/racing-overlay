@@ -62,7 +62,13 @@ class AdvancedSimHUD:
     def __init__(self, click_through: bool = True, demo: bool = False):
         self.click_through = click_through
         self.demo = demo
-        self.ir = oc.make_irsdk(demo=demo)
+        # The real telemetry source. self.ir points at whatever feeds the widgets
+        # this tick -- usually _sdk, but a synthetic source while arranging the
+        # layout offline (see process_telemetry_tick).
+        self._sdk = oc.make_irsdk(demo=demo)
+        self.ir = self._sdk
+        self._demo_ir = None       # lazily created synthetic source for edit mode
+        self._demo_active = False
         self._settings_window = None
 
         # Repaint + re-apply widget visibility when the config changes (editor UI).
@@ -316,15 +322,35 @@ class AdvancedSimHUD:
 
     # --- Per-tick update ----------------------------------------------------
 
+    def _demo_feed(self):
+        """A synthetic telemetry source used to populate the overlay while you
+        arrange the layout offline. Seeds a demo track + lap log the first time."""
+        if self._demo_ir is None:
+            self._demo_ir = oc.make_irsdk(demo=True)
+        if not self._demo_active:
+            self._demo_active = True
+            self._load_demo_track()
+            self._seed_demo_laptimes()
+        return self._demo_ir
+
     def process_telemetry_tick(self) -> None:
-        connected = bool(self.ir is not None
-                         and (self.ir.is_connected or self.ir.startup()))
+        connected = bool(self._sdk is not None
+                         and (self._sdk.is_connected or self._sdk.startup()))
         # Reveal/hide the overlay as iRacing connects or disconnects.
         if connected != self._connected:
             self._connected = connected
             self._apply_visibility()
-        if not connected:
+        # When iRacing isn't connected but you're arranging the layout (overlay
+        # on + edit mode), feed the widgets synthetic data instead of leaving
+        # them blank. Otherwise, when disconnected, there's nothing to do.
+        use_demo = (not connected and self._overlay_running
+                    and self.edit_mode_enabled())
+        if not connected and not use_demo:
+            self.ir = self._sdk
             return
+        if connected:
+            self._demo_active = False
+        self.ir = self._demo_feed() if use_demo else self._sdk
 
         # Switch the garage vs on-track profile before anything else, so widget
         # visibility + content reflect the right context this tick.
@@ -1535,7 +1561,8 @@ def main() -> int:
     hud._updater = UpdateChecker()
     hud._updater.found.connect(lambda info: _prompt_update(app, hud, info))
     hud._updater.downloaded.connect(lambda path: _run_installer(app, path))
-    hud._updater.start()
+    if config.CFG.get("check_updates_on_launch", True):
+        hud._updater.start()
 
     # A tray icon keeps the app reachable (reopen settings / quit) after the
     # settings window is closed while the overlay keeps running. If there's no
