@@ -5,6 +5,23 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.5.0 - 2026-06-28
+
+- **Pace car hidden.** The pace/safety car no longer shows up as a competitor in
+  the Standings or Relative tables.
+- **Accurate lapped traffic.** Relative now decides red/blue lapped tints from
+  actual lap distance, so a car just behind you that hasn't crossed the line yet
+  is no longer mistakenly shown as a lap down (blue).
+- **White flag timing.** The white flag now shows only as you approach the line
+  to start the final lap and clears the moment you cross onto it.
+- **Standings sizing.** With only a few cars, rows no longer stretch and blow up
+  the text; row height is capped (configurable via `table.max_row_height_frac`).
+- **Tunable shift blink.** The RPM shift-bar blink point is now a fraction of the
+  car's redline (`dash.shift_blink_pct`, default 0.99) so you can dial in exactly
+  when it flashes if it felt too early.
+- **Map readability.** Corner numbers now sit outside the track instead of on the
+  racing line, and your own car is far easier to spot (glow + bright ring).
+
 ## 1.4.0 - 2026-06-28
 
 - **Corner numbers on the map.** The track map now numbers corners. Tracks with

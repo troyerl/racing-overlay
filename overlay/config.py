@@ -45,6 +45,10 @@ DEFAULTS: dict = {
     "table": {
         "corner_radius_frac": 0.05,
         "alt_row_shading": True,
+        # Cap a row's height to this fraction of the panel height so that, when
+        # only a few cars are present, rows don't stretch and the text doesn't
+        # look zoomed in (extra space is left empty below). 0 disables the cap.
+        "max_row_height_frac": 0.14,
         "font_scale": 0.40,        # row text size (multiple of row height)
         "gap_font_scale": 1.12,
         # Header / footer text size, independent of the row font above.
@@ -288,6 +292,10 @@ DEFAULTS: dict = {
         # signalling "shift now". shift_blink_hz is the flash rate.
         "shift_blink": True,
         "shift_blink_hz": 7.0,
+        # RPM (as a fraction of the car's redline) at which the bar starts to
+        # flash. Raise it toward 1.0 if the blink feels too early, lower it for
+        # an earlier warning. Used in preference to iRacing's shift-light RPMs.
+        "shift_blink_pct": 0.99,
         "ring_segments": 16,
         # Which driver inputs the center medallion shows. These apply to BOTH
         # center modes: in "ring" each selected input is a concentric arc

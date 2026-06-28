@@ -760,14 +760,21 @@ class TrackMapWidget(QWidget):
         fam = config.CFG.get("font_family", "Arial")
         sz = max(5, round(8 * config.text_scale_for("map")))
         p.setFont(QFont(fam, sz, QFont.Weight.Bold))
-        cxc, cyc = self._centroid
+        fm = p.fontMetrics()
+        # Push the label outside the asphalt, working in screen space so it
+        # behaves the same for normalized track files and GPS-learned paths.
+        cc = tx(self._centroid)
+        asph = _mcfg().get("asphalt_width", 11)
+        off = asph * 0.5 + sz + 8.0
+        bh = fm.height() + 4
         for pct, label in corners:
-            pt = self.path[self._index_for_pct(pct)]
-            # Offset the label outward from the track centroid for legibility.
-            ox, oy = pt[0] - cxc, pt[1] - cyc
-            ln = math.hypot(ox, oy) or 1.0
-            anchor = tx((pt[0] + ox / ln * 0.04, pt[1] + oy / ln * 0.04))
-            rect = QRectF(anchor.x() - 16, anchor.y() - 9, 32, 18)
+            s = tx(self.path[self._index_for_pct(pct)])
+            dx, dy = s.x() - cc.x(), s.y() - cc.y()
+            ln = math.hypot(dx, dy) or 1.0
+            ax = s.x() + dx / ln * off
+            ay = s.y() + dy / ln * off
+            bw = max(bh, fm.horizontalAdvance(label) + 12)
+            rect = QRectF(ax - bw / 2, ay - bh / 2, bw, bh)
             p.setBrush(_mcol("corner_bg"))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(rect, 4, 4)
@@ -788,13 +795,29 @@ class TrackMapWidget(QWidget):
                 dx, dy = c.x() - cc.x(), c.y() - cc.y()
                 ln = math.hypot(dx, dy) or 1.0
                 c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
-            r = 11.0 if is_player else 9.0
+            r = 12.5 if is_player else 9.0
             # Cars in the pits are grayed out and faded back.
             if on_pit:
                 p.setOpacity(max(0.05, min(1.0, _mcfg().get("pit_dot_opacity", 0.45))))
-            p.setBrush(_mcol("pit_car") if on_pit else QColor(color))
-            p.setPen(QPen(QColor(0, 0, 0), 2 if is_player else 1))
-            p.drawEllipse(c, r, r)
+            fill = _mcol("pit_car") if on_pit else QColor(color)
+            # Make the player unmistakable: a soft glow halo plus a bright
+            # double ring around a larger dot.
+            if is_player and not on_pit:
+                glow = QColor(fill)
+                glow.setAlpha(70)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(glow)
+                p.drawEllipse(c, r + 6.0, r + 6.0)
+                p.setBrush(fill)
+                p.setPen(QPen(QColor(0, 0, 0), 2))
+                p.drawEllipse(c, r, r)
+                p.setPen(QPen(QColor(255, 255, 255), 2.4))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(c, r + 2.4, r + 2.4)
+            else:
+                p.setBrush(fill)
+                p.setPen(QPen(QColor(0, 0, 0), 1))
+                p.drawEllipse(c, r, r)
             p.setPen(QColor(20, 20, 20) if is_player else QColor(255, 255, 255))
             p.drawText(
                 QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r),

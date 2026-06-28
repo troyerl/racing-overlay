@@ -72,6 +72,8 @@ class AdvancedSimHUD:
         config.on_rescan_pits(self._rescan_pits)
 
         self._driver_cache: dict[int, dict] = {}
+        # CarIdx values of pace/safety cars, so they're never shown as competitors.
+        self._pace_idxs: set[int] = set()
         # Engine/shift-light params from the session YAML (cached with drivers).
         self._car_info: dict = {}
         self._driver_refresh_counter = 0
@@ -81,6 +83,8 @@ class AdvancedSimHUD:
         # Per-car lap-time arrays, refreshed per tick only if a column needs them.
         self._car_last = None
         self._car_best = None
+        # CarIdxLapDistPct snapshot for the current tick (lapped-traffic check).
+        self._lap_pct = None
         # Cached, throttled values for the header/footer slots.
         self._track_name = ""
         self._sys_cache: tuple[str, str] | None = None
@@ -105,10 +109,10 @@ class AdvancedSimHUD:
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
         self._green_until = 0.0
-        # White flag (final lap): flash it briefly (like green) when it first
-        # waves, then let it fade rather than holding all lap.
+        # White flag (approaching the final lap): remember the lap it first
+        # waved on so we can hide it once you cross the line onto the last lap.
         self._flag_was_white = False
-        self._white_until = 0.0
+        self._white_start_lap = None
         # Laptime log: the player's completed laps (newest first), each
         # {"lap": int, "secs": float, "temp_c": float|None}, plus the last seen
         # lap number so we can detect a lap rollover.
@@ -271,9 +275,20 @@ class AdvancedSimHUD:
         info = self.ir["DriverInfo"] if self.ir else None
         if not info:
             return self._driver_cache
-        self._driver_cache = {
-            d["CarIdx"]: d for d in info.get("Drivers", [])
-        }
+        # Exclude the pace/safety car: it isn't a competitor and shouldn't show
+        # in the tables. Remember its CarIdx so the tick can skip it too.
+        cache: dict[int, dict] = {}
+        pace: set[int] = set()
+        for d in info.get("Drivers", []):
+            idx = d.get("CarIdx")
+            if idx is None:
+                continue
+            if d.get("CarIsPaceCar"):
+                pace.add(idx)
+                continue
+            cache[idx] = d
+        self._driver_cache = cache
+        self._pace_idxs = pace
         self._car_info = {
             "redline": info.get("DriverCarRedLine"),
             "sl_first": info.get("DriverCarSLFirstRPM"),
@@ -328,7 +343,10 @@ class AdvancedSimHUD:
         # Each array is only read if some visible widget consumes it.
         positions = self.ir["CarIdxPosition"] if need_order else None
         lap_pct = (self.ir["CarIdxLapDistPct"]
-                   if (en["radar"] or en["map"]) else None)
+                   if (en["radar"] or en["map"] or en["standings"]
+                       or en["relative"]) else None)
+        # Used by the tables to tell genuine lapped traffic from same-lap cars.
+        self._lap_pct = lap_pct
         surface = (self.ir["CarIdxTrackSurface"]
                    if (en["radar"] or en["standings"] or en["relative"]
                        or en["map"]) else None)
@@ -515,6 +533,41 @@ class AdvancedSimHUD:
             "lapping": False,
         }
 
+    def _laps_done(self, idx, car_lap):
+        """Total laps completed by a car (lap count + fraction into the lap).
+
+        Combining CarIdxLap with CarIdxLapDistPct gives a continuous distance so
+        two cars on the *same* racing lap aren't mistaken for lapped traffic just
+        because one has crossed the start/finish line and the other hasn't.
+        """
+        if not car_lap or idx >= len(car_lap):
+            return None
+        lap = car_lap[idx]
+        if not isinstance(lap, (int, float)) or lap < 0:
+            return None
+        pct = 0.0
+        lp = self._lap_pct
+        if lp and idx < len(lp) and isinstance(lp[idx], (int, float)) and lp[idx] >= 0:
+            pct = lp[idx]
+        return lap + pct
+
+    def _lap_tint(self, idx, player, car_lap, is_player):
+        """(lapping, lap_ahead) for the row's lapped-traffic tint.
+
+        A car counts as lapped traffic only when at least ~half a lap of distance
+        separates it from the player (so adjacent same-lap cars aren't tinted).
+        """
+        if is_player:
+            return False, False
+        me = self._laps_done(player, car_lap)
+        them = self._laps_done(idx, car_lap)
+        if me is None or them is None:
+            return False, False
+        diff = them - me
+        if abs(diff) < 0.5:
+            return False, False
+        return True, diff > 0
+
     def _update_standings(self, positions, drivers, surface, car_f2,
                           player, lap_est, car_lap, sess_time) -> None:
         if not positions:
@@ -524,7 +577,8 @@ class AdvancedSimHUD:
         pit_mode = scfg.get("pit_mode", "laps_since")
         n = scfg["rows"]
         ranked = sorted(
-            (idx for idx, pos in enumerate(positions) if pos and pos > 0),
+            (idx for idx, pos in enumerate(positions)
+             if pos and pos > 0 and idx not in self._pace_idxs),
             key=lambda idx: positions[idx],
         )
         total = len(ranked)
@@ -697,13 +751,9 @@ class AdvancedSimHUD:
         if cols.get("pit"):
             pit = self._pit_text(idx, car_lap, sess_time, pit_mode)
         in_pit = surface[idx] in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
-        lapping = bool(
-            car_lap and car_lap[idx] > 0 and car_lap[player] > 0
-            and car_lap[idx] != car_lap[player] and not is_player
-        )
-        # A car on a higher lap count is ahead (it will lap you -> red); a car on
-        # a lower lap count is behind (you're lapping it -> blue).
-        lap_ahead = bool(lapping and car_lap[idx] > car_lap[player])
+        # A car ~a lap ahead will lap you (-> red); ~a lap behind you'll lap
+        # it (-> blue). Distance-based so same-lap cars near you aren't tinted.
+        lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
         return {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
@@ -734,7 +784,7 @@ class AdvancedSimHUD:
         me = est_time[player]
         rels = []
         for idx, t in enumerate(est_time):
-            if idx == player or t is None:
+            if idx == player or t is None or idx in self._pace_idxs:
                 continue
             if surface[idx] not in (oc.TRK_ON_TRACK, oc.TRK_APPROACHING_PITS,
                                      oc.TRK_IN_PIT_STALL):
@@ -1207,9 +1257,10 @@ class AdvancedSimHUD:
 
     def _session_flag(self):
         """Current flag to show: 'checkered', 'red', 'dq', 'black', 'meatball',
-        'furled', 'blue', 'yellow', 'debris', 'white', 'crossed',
+        'furled', 'blue', 'white', 'yellow', 'debris', 'crossed',
         'green' (briefly) or None. Personal/penalty flags take priority over the
-        caution; white (final lap) and green (resume) only flash briefly."""
+        caution; green (resume) only flashes briefly, and white shows while you
+        approach the final lap and clears as you cross the line onto it."""
         raw = self.ir["SessionFlags"]
         try:
             sf = int(raw) & 0xFFFFFFFF
@@ -1226,13 +1277,19 @@ class AdvancedSimHUD:
             self._green_until = now + secs
         self._flag_was_yellow = yellow
 
-        # White flag (final lap) only flashes briefly when it first waves; it
-        # stays set by iRacing all lap, so rising-edge it into a short window.
+        # White flag waves as you approach the line to start the final lap. Note
+        # the lap it first appears on, then hide it once you cross that line
+        # (your lap count ticks up onto the final lap).
         white = bool(sf & self._FLAG_WHITE)
+        lap = self.ir["Lap"]
         if white and not self._flag_was_white:
-            secs = float(config.CFG["dash"].get("flag_green_seconds", 3.0) or 3.0)
-            self._white_until = now + secs
+            self._white_start_lap = lap
+        if not white:
+            self._white_start_lap = None
         self._flag_was_white = white
+        white_show = white and (
+            self._white_start_lap is None or not isinstance(lap, int)
+            or lap <= self._white_start_lap)
 
         # Checkered (session over) trumps everything else, then a red (session
         # stopped), then personal penalty/black flags directed at you.
@@ -1251,12 +1308,13 @@ class AdvancedSimHUD:
         # Blue (let a faster car by) is directed at you, so above the caution.
         if sf & self._FLAG_BLUE:
             return "blue"
+        # White flag only while approaching the final lap (hidden once crossed).
+        if white_show:
+            return "white"
         if yellow:
             return "yellow"
         if sf & self._FLAG_DEBRIS:
             return "debris"
-        if now < self._white_until:
-            return "white"
         if sf & self._FLAG_CROSSED:
             return "crossed"
         if now < self._green_until:

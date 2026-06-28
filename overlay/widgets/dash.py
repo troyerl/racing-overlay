@@ -308,13 +308,16 @@ class DashWidget(QWidget):
         top = _num(d, "top_gear")
         if top and gear is not None and gear >= top:
             return False
-        # Prefer iRacing's dedicated blink RPM, then its recommended shift RPM.
-        # (sl_last is only where the *last* LED lights -- well before the shift
-        # point -- so using it made the bar blink too early.) Fall back to just
-        # under the redline when the car reports neither.
-        blink_rpm = _num(d, "sl_blink") or _num(d, "sl_shift")
-        if not blink_rpm:
-            blink_rpm = (_num(d, "redline") or 8000.0) * 0.99
+        # Blink at a fraction of the car's redline (configurable). This is more
+        # predictable than iRacing's shift-light RPMs, which are often set well
+        # below the limiter and made the bar flash too early; iRacing's blink /
+        # shift RPM is only a fallback when the redline isn't reported.
+        pct = float(c.get("shift_blink_pct", 0.99) or 0.99)
+        redline = _num(d, "redline")
+        if redline:
+            blink_rpm = redline * pct
+        else:
+            blink_rpm = _num(d, "sl_blink") or _num(d, "sl_shift") or 8000.0 * pct
         return rpm >= blink_rpm
 
     def _selected_inputs(self, c) -> list:

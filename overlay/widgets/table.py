@@ -293,6 +293,11 @@ class BaseTable(QWidget):
         body_h = h - body_top - footer_h - pad
         n = max(1, len(rows))
         row_h = body_h / n
+        # With only a few rows, don't let them stretch (and the text balloon) to
+        # fill the panel: cap the row height and leave the extra space empty.
+        max_rh_frac = tc.get("max_row_height_frac", 0.0) or 0.0
+        if max_rh_frac > 0:
+            row_h = min(row_h, h * max_rh_frac)
 
         self.draw_header(p, pad, pad, w - 2 * pad, header_h)
 
