@@ -1,15 +1,18 @@
 """
 Directional proximity-warning radar.
 
-You are the white car in the center. When a car is alongside, a red bar fades
-outward on that side (from CarLeftRight). When a car is within range ahead or
-behind, a colored glow appears above/below, shading yellow -> red as it gets
-closer. The widget background is transparent so it floats over the game.
+You are the white car in the center. When a car is alongside, a red marker
+appears on that side (from CarLeftRight) and slides fore/aft: low (level with
+your rear bumper) when the car is behind, rising to the top as it pulls up to
+your front bumper. When a car is within range ahead or behind, a colored glow
+appears above/below, shading yellow -> red as it gets closer. Front and rear
+sensing can each be turned off. The background is transparent so it floats over
+the game.
 
 Honest limitation: iRacing reports only an aggregate CarLeftRight for the player
-(left / right / both), not each rival's lateral offset, so the side bars are
-on/off (with a stronger tint for 2-car situations). Front/rear closeness is real,
-derived from CarIdxLapDistPct deltas.
+(left / right / both), not each rival's lateral offset, so the side is on/off
+(with a stronger tint for 2-car situations). The fore/aft marker position and
+front/rear closeness are real, derived from CarIdxLapDistPct deltas.
 
 All colors, sizes, easing and toggles come from config.CFG["radar"].
 """
@@ -49,8 +52,10 @@ class RadarWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data = {"left": False, "right": False, "left2": False,
-                     "right2": False, "ahead": None, "behind": None}
-        self._a = {"left": 0.0, "right": 0.0, "ahead": 0.0, "behind": 0.0}
+                     "right2": False, "left_pos": 0.0, "right_pos": 0.0,
+                     "ahead": None, "behind": None}
+        self._a = {"left": 0.0, "right": 0.0, "ahead": 0.0, "behind": 0.0,
+                   "left_pos": 0.0, "right_pos": 0.0}
         self._clock = QElapsedTimer()
         self._clock.start()
         self._last_ms = 0
@@ -97,35 +102,53 @@ class RadarWidget(QWidget):
         a = self._a
         side_tau = rc["ease_side_tau"]
         glow_tau = rc["ease_glow_tau"]
+        show_front = rc.get("show_front", True)
+        show_rear = rc.get("show_rear", True)
         t_left = 1.0 if d.get("left") else 0.0
         t_right = 1.0 if d.get("right") else 0.0
-        t_ahead = d.get("ahead") or 0.0
-        t_behind = d.get("behind") or 0.0
+        t_ahead = (d.get("ahead") or 0.0) if show_front else 0.0
+        t_behind = (d.get("behind") or 0.0) if show_rear else 0.0
+        t_lpos = float(d.get("left_pos") or 0.0)
+        t_rpos = float(d.get("right_pos") or 0.0)
         a["left"] = ease(a["left"], t_left, dt, side_tau)
         a["right"] = ease(a["right"], t_right, dt, side_tau)
         a["ahead"] = ease(a["ahead"], t_ahead, dt, glow_tau)
         a["behind"] = ease(a["behind"], t_behind, dt, glow_tau)
+        a["left_pos"] = ease(a["left_pos"], t_lpos, dt, side_tau)
+        a["right_pos"] = ease(a["right_pos"], t_rpos, dt, side_tau)
         self._animating = (abs(a["left"] - t_left) > 0.004
                            or abs(a["right"] - t_right) > 0.004
                            or abs(a["ahead"] - t_ahead) > 0.004
-                           or abs(a["behind"] - t_behind) > 0.004)
+                           or abs(a["behind"] - t_behind) > 0.004
+                           or (a["left"] > 0.01 and abs(a["left_pos"] - t_lpos) > 0.004)
+                           or (a["right"] > 0.01 and abs(a["right_pos"] - t_rpos) > 0.004))
 
-        if a["ahead"] > 0.01:
+        if show_front and a["ahead"] > 0.01:
             self._v_glow(p, cx, cy - car_h * 0.45, h * 0.06, a["ahead"], up=True)
-        if a["behind"] > 0.01:
+        if show_rear and a["behind"] > 0.01:
             self._v_glow(p, cx, cy + car_h * 0.45, h * 0.94, a["behind"], up=False)
 
+        # Vertical travel of the side marker: +pos toward the top (front bumper),
+        # -pos toward the bottom (rear bumper), kept within the card. The marker
+        # height (~a car length) is the configurable sizes.bar_h fraction.
+        marker_h = max(18.0, bar_h)
+        travel = max(0.0, h * 0.5 - marker_h * 0.5 - h * 0.06)
+        # Optional: tint the side marker by fore/aft overlap (red dead-alongside,
+        # yellow toward your bumpers) as a proxy for closeness. None == plain red.
+        prox = rc.get("side_proximity_color", False)
         if a["left"] > 0.01:
             p.save()
             p.setOpacity(a["left"])
-            self._side_bar(p, w * 0.07, cx - inner, cy, bar_h,
-                           strong=d.get("left2"), to_left=True)
+            self._side_marker(p, w * 0.07, cx - inner, cy - a["left_pos"] * travel,
+                              marker_h, strong=d.get("left2"), to_left=True,
+                              closeness=(1.0 - abs(a["left_pos"])) if prox else None)
             p.restore()
         if a["right"] > 0.01:
             p.save()
             p.setOpacity(a["right"])
-            self._side_bar(p, cx + inner, w * 0.93, cy, bar_h,
-                           strong=d.get("right2"), to_left=False)
+            self._side_marker(p, cx + inner, w * 0.93, cy - a["right_pos"] * travel,
+                              marker_h, strong=d.get("right2"), to_left=False,
+                              closeness=(1.0 - abs(a["right_pos"])) if prox else None)
             p.restore()
 
         if rc.get("show_axis", True):
@@ -156,13 +179,17 @@ class RadarWidget(QWidget):
         m.setColorAt(1.0, QColor(0, 0, 0, 0))
         pp.fillRect(0, 0, w, h, m)
 
-    def _side_bar(self, p, x0, x1, cy, bar_h, strong, to_left):
-        # A soft bar beside the car: strong at the inner edge next to you and
-        # fading outward, with the top/bottom edges feathered so there's no box.
+    def _side_marker(self, p, x0, x1, yc, marker_h, strong, to_left,
+                     closeness=None):
+        # A soft marker beside the car, centered at yc (which slides up/down with
+        # the rival's fore/aft position): strong at the inner edge next to you and
+        # fading outward, with its top/bottom edges feathered to a point. Solid
+        # red by default (iRacing gives no sideways distance); when closeness is
+        # supplied it fades yellow->red by fore/aft overlap instead.
         left, right = min(x0, x1), max(x0, x1)
         w = max(1, int(round(right - left)))
-        h = max(1, int(round(bar_h)))
-        base = _rcol("red")
+        h = max(1, int(round(marker_h)))
+        base = _rcol("red") if closeness is None else _prox_color(closeness, 255)
         alpha = 235 if strong else 195
         pm = QPixmap(w, h)
         pm.fill(Qt.GlobalColor.transparent)
@@ -178,7 +205,7 @@ class RadarWidget(QWidget):
         pp.fillRect(0, 0, w, h, grad)
         self._feather_mask(pp, w, h, vertical=True)
         pp.end()
-        p.drawPixmap(int(round(left)), int(round(cy - bar_h / 2.0)), pm)
+        p.drawPixmap(int(round(left)), int(round(yc - marker_h / 2.0)), pm)
 
     def _v_glow(self, p, cx, y_inner, y_outer, closeness, up):
         # A soft bar ahead/behind the car: strong near the car and fading toward

@@ -5,6 +5,21 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.7.0 - 2026-06-28
+
+- **Radar side marker shows fore/aft position.** A car alongside is now a marker
+  that slides up and down your side: low when they're at your rear bumper, rising
+  to the top as they pull up to your front bumper (instead of a static side bar).
+- **Front/rear sensing toggles.** You can turn the radar's front and rear
+  proximity glow on or off independently (`radar.show_front` / `radar.show_rear`).
+- **Optional side proximity color.** A new toggle fades the side marker red→yellow
+  by fore/aft overlap (`radar.side_proximity_color`, off by default); the marker
+  is solid red otherwise. iRacing exposes no true sideways distance, so this is
+  an overlap-based approximation.
+- **Demo map corner numbers fixed.** The demo track's corners are now numbered
+  from the track geometry (on the real apexes, in driving order) instead of the
+  old hardcoded guesses that sat between turns.
+
 ## 1.6.0 - 2026-06-28
 
 - **Settings reorganized into Widgets / Settings tabs.** The settings window now

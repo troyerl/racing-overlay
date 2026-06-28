@@ -259,6 +259,20 @@ DEFAULTS: dict = {
         "range_pct": 0.03,
         "ease_side_tau": 0.10,
         "ease_glow_tau": 0.13,
+        # Front/rear proximity sensing. Turn either off to hide the ahead/behind
+        # glow and skip its detection (e.g. if you only want blind-spot warnings).
+        "show_front": True,
+        "show_rear": True,
+        # The side warning is a moving marker: a car alongside slides from the
+        # bottom (level with your rear bumper) up to the top (your front bumper)
+        # as it pulls forward. This is how far ahead/behind, as a fraction of a
+        # lap, maps to the marker reaching the very top/bottom of the radar.
+        "side_span_pct": 0.0045,
+        # When on, the side marker fades yellow->red by fore/aft overlap: red when
+        # a car is dead alongside you, yellowing as it slides to your front/rear
+        # bumper. This is an approximation (iRacing gives no true sideways
+        # distance), so it's off by default -- the marker is plain red otherwise.
+        "side_proximity_color": False,
         "show_nose": True,
         "show_axis": True,
         # Draw a rounded card behind the radar (matches the dash panels).

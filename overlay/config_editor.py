@@ -122,6 +122,10 @@ OPTION_LABELS = {
 LABEL_OVERRIDES = {
     "check_updates_on_launch": "Check for updates on launch",
     "font_family": "Font",
+    "radar.show_front": "Front sensing",
+    "radar.show_rear": "Rear sensing",
+    "radar.side_span_pct": "Side marker travel (lap fraction)",
+    "radar.side_proximity_color": "Fade side marker yellow\u2192red by overlap",
     "fuel_calc.title": "Title text",
     "fuel_calc.history_laps": "Laps to average for fuel use",
     "fuel_calc.show_title": "Show title bar",

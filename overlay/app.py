@@ -482,10 +482,15 @@ class AdvancedSimHUD:
 
     def _update_radar(self, player, lap_pct, surface, car_left_right) -> None:
         # Nearest car ahead / behind within range (excluding the alongside zone,
-        # which is shown by the side bars instead).
+        # which is shown by the side markers instead). Also track the nearest car
+        # of all so the side marker can be positioned fore/aft.
+        rc = config.CFG["radar"]
         nearest_ahead = nearest_behind = None
+        nearest_abs = None          # signed delta of the overall closest car
         alongside_zone = 0.004
-        radar_range = config.CFG["radar"]["range_pct"]
+        radar_range = rc["range_pct"]
+        want_front = rc.get("show_front", True)
+        want_rear = rc.get("show_rear", True)
         if player is not None and lap_pct:
             me = lap_pct[player]
             for idx, pct in enumerate(lap_pct):
@@ -498,9 +503,11 @@ class AdvancedSimHUD:
                     delta -= 1.0
                 elif delta < -0.5:
                     delta += 1.0
-                if alongside_zone < delta <= radar_range:
+                if nearest_abs is None or abs(delta) < abs(nearest_abs):
+                    nearest_abs = delta
+                if want_front and alongside_zone < delta <= radar_range:
                     nearest_ahead = delta if nearest_ahead is None else min(nearest_ahead, delta)
-                elif -radar_range <= delta < -alongside_zone:
+                elif want_rear and -radar_range <= delta < -alongside_zone:
                     nearest_behind = delta if nearest_behind is None else max(nearest_behind, delta)
 
         def closeness(delta):
@@ -508,13 +515,24 @@ class AdvancedSimHUD:
                 return None
             return max(0.0, min(1.0, 1.0 - abs(delta) / radar_range))
 
+        # Where the alongside car sits fore/aft: +1 = your front bumper (top of
+        # the radar), -1 = your rear bumper (bottom). Derived from the closest
+        # car's lap-distance delta since iRacing's CarLeftRight is side-only.
+        span = rc.get("side_span_pct", 0.0045) or 0.0045
+        if nearest_abs is None:
+            side_pos = 0.0
+        else:
+            side_pos = max(-1.0, min(1.0, nearest_abs / span))
+
         self.radar_widget.set_data({
             "left": car_left_right in oc.CAR_ON_LEFT,
             "right": car_left_right in oc.CAR_ON_RIGHT,
             "left2": car_left_right == oc.LR_2_CARS_LEFT,
             "right2": car_left_right == oc.LR_2_CARS_RIGHT,
-            "ahead": closeness(nearest_ahead),
-            "behind": closeness(nearest_behind),
+            "left_pos": side_pos,
+            "right_pos": side_pos,
+            "ahead": closeness(nearest_ahead) if want_front else None,
+            "behind": closeness(nearest_behind) if want_rear else None,
         })
 
     def _build_standings_row(self, idx, drivers, positions, surface, car_f2,

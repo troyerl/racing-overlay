@@ -2,6 +2,9 @@
   "relative": {
     "show": false
   },
+  "standings": {
+    "show": false
+  },
   "laptime_log": {
     "show": false
   },
@@ -9,7 +12,10 @@
     "show": false
   },
   "radar": {
-    "show": false
+    "show": false,
+    "show_front": false,
+    "show_rear": false,
+    "side_proximity_color": true
   },
   "dash": {
     "show": false
