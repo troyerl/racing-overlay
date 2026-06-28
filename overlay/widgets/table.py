@@ -62,6 +62,12 @@ def license_color(letter: str) -> QColor:
     return config.qcolor(_tcfg()["license_colors"].get(letter, "#666666"))
 
 
+def _contrast_text(bg: QColor) -> QColor:
+    """Black or white, whichever reads better on the given background."""
+    lum = (0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()) / 255.0
+    return QColor(20, 22, 26) if lum > 0.6 else QColor(255, 255, 255)
+
+
 # Cache fonts by their resolved parameters; building a QFont (and the implicit
 # metrics work) every frame is wasteful. A new size/scale/family is just a new
 # key, so no invalidation is needed. Returned fonts must not be mutated.
@@ -482,24 +488,19 @@ class BaseTable(QWidget):
                    str(row.get("position", "")))
 
     def _draw_license(self, p, row, x, y, lw, h, fs):
+        # The whole pill takes the license-class color; text sits on top with a
+        # contrasting color. Shows the class letter + safety rating (e.g. "A 3.45").
         cell = QRectF(x, y + h * 0.2, lw, h * 0.6)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(col("cell_dark"))
-        p.drawRoundedRect(cell, 4, 4)
-        p.setPen(col("text"))
-        p.setFont(tfont(fs * 0.78))
-        p.drawText(QRectF(cell.left() + 6, cell.top(), cell.width() * 0.55, cell.height()),
-                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   str(row.get("sr", "")))
         letter = str(row.get("lic_class", ""))
-        sq = QRectF(cell.right() - cell.height() - 3, cell.top() + 3,
-                    cell.height() - 6, cell.height() - 6)
-        p.setBrush(license_color(letter))
+        bg = license_color(letter)
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(sq, 3, 3)
-        p.setPen(col("text"))
-        p.setFont(tfont(fs * 0.72))
-        p.drawText(sq, Qt.AlignmentFlag.AlignCenter, letter)
+        p.setBrush(bg)
+        p.drawRoundedRect(cell, 4, 4)
+        sr = str(row.get("sr", "")).strip()
+        text = (f"{letter} {sr}".strip() if letter else sr)
+        p.setPen(_contrast_text(bg))
+        p.setFont(tfont(fs * 0.78))
+        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_irating(self, p, row, x, y, iw, h, fs):
         cell = QRectF(x, y + h * 0.2, iw, h * 0.6)
@@ -522,13 +523,12 @@ class BaseTable(QWidget):
         p.drawText(cell.adjusted(5, 0, -5, 0), Qt.AlignmentFlag.AlignCenter, txt)
 
     def _draw_number(self, p, row, x, y, nw, h, fs):
+        # No background pill -- just the car number, prefixed with '#'.
         cell = QRectF(x, y + h * 0.2, nw, h * 0.6)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(col("cell_dark"))
-        p.drawRoundedRect(cell, 4, 4)
-        p.setPen(col("text"))
+        num = str(row.get("car_number", "")).strip()
+        p.setPen(col("muted") if row.get("in_pit") else col("text"))
         p.setFont(tfont(fs * 0.9))
-        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, str(row.get("car_number", "")))
+        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, f"#{num}" if num else "")
 
     def _draw_laptime(self, p, row, key, x, y, lw, h, fs):
         p.setPen(col("muted") if row.get("in_pit") else col("text"))

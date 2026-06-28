@@ -387,7 +387,16 @@ DEFAULTS: dict = {
         "dot_radius_frac": 0.05,
         "show_infield": True,
         "show_corners": True,
+        # Auto-number corners from the track shape when the track file has no
+        # corner data (learned tracks). Detected by curvature, numbered in
+        # driving order from the start/finish line.
+        "auto_corners": True,
         "show_start_finish": True,
+        # Orient the map to taste: rotate in 90-degree steps (0/90/180/270) and
+        # optionally mirror it horizontally. Everything (track, cars, corners,
+        # pit, start/finish) rotates together; the wind compass stays north-up.
+        "rotation": 0,
+        "mirror": False,
         # Highlight the stretch of track the pit lane runs alongside (learned by
         # driving through the pits once) and show the pit speed limit + your live
         # pit-lane speed.

@@ -121,6 +121,75 @@ def build_demo_path(n: int = 720):
     return _resample_by_length(_catmull_rom_loop(_DEMO_CONTROL), n)
 
 
+def detect_corners(path, start_finish: float = 0.0,
+                   min_turn_deg: float = 38.0, max_corners: int = 30):
+    """Find corners from a track loop's geometry and number them.
+
+    Walks the (arc-length resampled) loop, measures how fast the heading turns,
+    and groups sustained turning into corners. Each corner's apex (sharpest
+    point) becomes a lap-pct, numbered 1..N in driving order from path[0].
+    Returns a list of (pct, label) like the track-file "corners" array, so it
+    can be drawn by the same code. Heuristic, but good enough for labels.
+    """
+    n = len(path) if path else 0
+    if n < 16:
+        return []
+    step = max(1, n // 144)
+
+    def heading(i):
+        a = path[(i - step) % n]
+        b = path[(i + step) % n]
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+
+    heads = [heading(i) for i in range(n)]
+    turn = []
+    for i in range(n):
+        d = heads[(i + 1) % n] - heads[i]
+        d = (d + math.pi) % (2 * math.pi) - math.pi   # wrap to [-pi, pi]
+        turn.append(d)
+
+    # Smooth the turning rate so noise doesn't fragment one corner into many.
+    win = max(1, n // 240)
+    smooth = []
+    for i in range(n):
+        smooth.append(sum(turn[(i + k) % n] for k in range(-win, win + 1)))
+
+    thr = 0.02  # rad/step: above this we consider the car to be "turning"
+    mask = [abs(v) > thr for v in smooth]
+    if not any(mask):
+        return []
+
+    # Walk circularly starting from a straight so runs don't wrap the seam.
+    start0 = next((i for i in range(n) if not mask[i]), 0)
+    runs = []
+    cur: list[int] | None = None
+    for k in range(n):
+        idx = (start0 + k) % n
+        if mask[idx]:
+            cur = [idx] if cur is None else cur + [idx]
+        elif cur:
+            runs.append(cur)
+            cur = None
+    if cur:
+        runs.append(cur)
+
+    min_turn = math.radians(min_turn_deg)
+    found = []
+    for run in runs:
+        total = sum(turn[i] for i in run)
+        if abs(total) < min_turn:  # gentle kink, not a real corner
+            continue
+        apex = max(run, key=lambda i: abs(turn[i]))
+        found.append(apex)
+
+    found.sort()  # driving order (increasing index from path[0])
+    corners = []
+    for label, apex in enumerate(found[:max_corners], 1):
+        pct = ((apex / n) + start_finish) % 1.0
+        corners.append((pct, str(label)))
+    return corners
+
+
 # --- Per-track files --------------------------------------------------------
 #
 # A track file is keyed by iRacing's TrackID and lives in tracks/<id>.json or
@@ -346,6 +415,9 @@ class TrackMapWidget(QWidget):
         self.path: list[tuple[float, float]] | None = None
         self.start_finish = 0.0  # lap pct that path[0] corresponds to
         self.corners: list[tuple[float, str]] = []  # (lap_pct, label)
+        # Corners auto-detected from the path shape, used when the track file
+        # carries no corner data (e.g. learned tracks).
+        self._auto_corners: list[tuple[float, str]] = []
         self._centroid = (0.0, 0.0)
         # Pit lane: the (entry_pct, exit_pct) stretch the pit road runs alongside,
         # the learned speed limit (m/s), and the player's live pit-lane speed.
@@ -385,7 +457,10 @@ class TrackMapWidget(QWidget):
                 sum(pt[0] for pt in path) / len(path),
                 sum(pt[1] for pt in path) / len(path),
             )
+            # Cache auto-detected corners (only used if the file has none).
+            self._auto_corners = detect_corners(path, start_finish)
         else:  # cleared (e.g. on rescan) -> forget the pit lane too
+            self._auto_corners = []
             self.pit_span = None
             self.pit_speed_ms = 0.0
             self.pit_live_ms = None
@@ -457,8 +532,26 @@ class TrackMapWidget(QWidget):
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.placeholder)
             return
 
-        xs = [pt[0] for pt in self.path]
-        ys = [pt[1] for pt in self.path]
+        # Orientation: mirror (flip x) then rotate in 90-degree steps. Applied in
+        # model space so the bounding-box fit, cars, corners and pit all follow.
+        rot = int(round((mc.get("rotation", 0) or 0) / 90.0)) * 90 % 360
+        mirror = bool(mc.get("mirror", False))
+
+        def model(pt):
+            x, y = pt[0], pt[1]
+            if mirror:
+                x = -x
+            if rot == 90:
+                x, y = y, -x
+            elif rot == 180:
+                x, y = -x, -y
+            elif rot == 270:
+                x, y = -y, x
+            return x, y
+
+        mpts = [model(pt) for pt in self.path]
+        xs = [m[0] for m in mpts]
+        ys = [m[1] for m in mpts]
         minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
         pad = 26.0
         avail_w = rect.width() - 2 * pad
@@ -470,7 +563,8 @@ class TrackMapWidget(QWidget):
         oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
 
         def tx(pt):
-            return QPointF(pt[0] * scale + ox, pt[1] * scale + oy)
+            mx, my = model(pt)
+            return QPointF(mx * scale + ox, my * scale + oy)
 
         qpath = QPainterPath()
         qpath.moveTo(tx(self.path[0]))
@@ -497,7 +591,10 @@ class TrackMapWidget(QWidget):
         if mc.get("show_pit", True) and self.pit_span is not None:
             self._draw_pit(p, tx)
         if mc.get("show_corners", True):
-            self._draw_corners(p, tx)
+            corners = self.corners
+            if not corners and mc.get("auto_corners", True):
+                corners = self._auto_corners
+            self._draw_corners(p, tx, corners)
         if mc.get("show_start_finish", True):
             self._draw_start_finish(p, tx)
         self._draw_cars(p, tx)
@@ -656,14 +753,15 @@ class TrackMapWidget(QWidget):
         p.setPen(_mcol("wind_text"))
         p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
 
-    def _draw_corners(self, p: QPainter, tx) -> None:
-        if not self.corners:
+    def _draw_corners(self, p: QPainter, tx, corners=None) -> None:
+        corners = self.corners if corners is None else corners
+        if not corners:
             return
         fam = config.CFG.get("font_family", "Arial")
         sz = max(5, round(8 * config.text_scale_for("map")))
         p.setFont(QFont(fam, sz, QFont.Weight.Bold))
         cxc, cyc = self._centroid
-        for pct, label in self.corners:
+        for pct, label in corners:
             pt = self.path[self._index_for_pct(pct)]
             # Offset the label outward from the track centroid for legibility.
             ox, oy = pt[0] - cxc, pt[1] - cyc

@@ -65,6 +65,7 @@ ENUMS = {
     "center_mode": ["ring", "pedals"],
     "car_label": ["number", "position"],
     "delta_mode": ["previous", "best"],
+    "rotation": [0, 90, 180, 270],
 }
 
 # Friendly display text for raw config option values (combo boxes show these,
@@ -99,6 +100,9 @@ OPTION_LABELS = {
     "number": "Car number",
     # laptime log delta baseline
     "previous": "Previous lap", "best": "Session best lap",
+    # map rotation (degrees clockwise)
+    0: "0\u00b0 (default)", 90: "90\u00b0 clockwise",
+    180: "180\u00b0", 270: "270\u00b0 clockwise",
 }
 
 # Friendly labels for specific config keys whose auto-generated name is too

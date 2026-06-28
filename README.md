@@ -189,6 +189,21 @@ turns red if you're over the limit. The pit span and limit are saved into the
 track's `tracks/<id>.json` alongside the geometry, so they persist between
 sessions (and reset with **Rescan track now**).
 
+### Corner numbers
+
+With `map.show_corners` on (default), corners are numbered on the map. Track
+files that include a `corners` array use those labels; learned tracks (which
+have no corner data) have their corners **auto-detected** from the track shape
+and numbered in driving order from the start/finish line. Turn the automatic
+detection off with `map.auto_corners` if you only want hand-authored labels.
+
+### Orientation (rotate / flip)
+
+Orient the map however you like with `map.rotation` (0 / 90 / 180 / 270 degrees
+clockwise) and `map.mirror` (horizontal flip). The whole map &mdash; track, cars,
+corners, pit lane and start/finish &mdash; rotates together; the wind compass
+stays north-up.
+
 ### Wind
 
 With `map.show_wind` on (default), a small north-up compass in the map's
@@ -517,7 +532,7 @@ iRacing exposes no per-car "last pit" value, so the overlay watches
 stop itself — meaning history starts when the overlay launches (or when you
 add the column). Tracking only runs while the pit column is shown.
 | `radar` | `range_pct` (ahead/behind detection window), `ease_side_tau` / `ease_glow_tau`, car/red/yellow/axis/nose colors, element `sizes` (car, bars, glow, nose), `show_nose`, `show_axis`. |
-| `map` | Asphalt/outline/infield/player/corner/wind colors, the car-dot `palette`, `asphalt_width`, `outline_width`, and `show_infield` / `show_corners` / `show_start_finish` / `show_pit` / `show_wind` toggles. |
+| `map` | Asphalt/outline/infield/player/corner/wind colors, the car-dot `palette`, `asphalt_width`, `outline_width`, `rotation` (0/90/180/270) + `mirror` orientation, and `show_infield` / `show_corners` / `auto_corners` / `show_start_finish` / `show_pit` / `show_wind` toggles. |
 | `light_hud` | `font_px`, text/accent/accent2/background colors for the simple fuel+delta HUD. |
 
 Example `overlay_config.json` (red text in tables, a trimmed/reordered Relative,

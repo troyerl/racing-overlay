@@ -35,6 +35,13 @@ Release notes. To cut a release, add a new section to the top and push.
   switches between them automatically (via iRacing's `IsInGarage`). Use it to
   hide widgets in the garage or show different info there; while editing a
   profile the live overlay previews it.
+- **Corner numbers on the map.** The track map now numbers the corners. Tracks
+  with corner data use it; learned tracks have their corners auto-detected from
+  the shape and numbered in driving order from start/finish. Toggle with the
+  map's "Show corners" / "Auto corners" settings.
+- **Rotate / flip the map.** The track map can be rotated in 90° steps
+  (0/90/180/270) and mirrored horizontally from the map settings, so you can
+  orient it however you like. The wind compass stays north-up.
 
 ## 1.2.0 - 2026-06-28
 
