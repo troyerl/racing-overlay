@@ -287,6 +287,10 @@ class AdvancedSimHUD:
         if self.ir is None or (not self.ir.is_connected and not self.ir.startup()):
             return
 
+        # Switch the garage vs on-track profile before anything else, so widget
+        # visibility + content reflect the right context this tick.
+        self._update_context()
+
         # Which widgets are visible: a hidden widget does no reads and no work.
         en = {k: self._is_shown(k)
               for k in ("standings", "relative", "radar", "map", "dash",
@@ -1148,6 +1152,7 @@ class AdvancedSimHUD:
         self._pit_was_on = on
 
     # iRacing SessionFlags bitfield bits (irsdk_Flags).
+    _FLAG_CHECKERED = 0x00000001           # session finished
     _FLAG_YELLOW = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
     _FLAG_GREEN = 0x00000004 | 0x00000400   # green + green-held
     _FLAG_BLACK = 0x00010000                # black flag (penalty)
@@ -1155,11 +1160,23 @@ class AdvancedSimHUD:
     _FLAG_FURLED = 0x00080000               # furled/rolled black = warning
     _FLAG_REPAIR = 0x00100000               # meatball (must pit to repair)
 
+    def _update_context(self) -> None:
+        """Pick the 'garage' or 'race' profile from telemetry (iRacing's
+        IsInGarage). Switching only happens on a change, which recomputes the
+        live config and re-applies widget visibility."""
+        try:
+            in_garage = bool(self.ir["IsInGarage"])
+        except Exception:
+            in_garage = False
+        ctx = "garage" if in_garage else "race"
+        if ctx != config.active_context():
+            config.set_context(ctx)
+
     def _session_flag(self):
-        """Current flag to show: 'dq', 'black', 'meatball', 'furled', 'yellow',
-        'green' (briefly, on resume) or None. The personal penalty flags take
-        priority over the caution; green only flashes briefly when a yellow
-        clears."""
+        """Current flag to show: 'checkered', 'dq', 'black', 'meatball',
+        'furled', 'yellow', 'green' (briefly, on resume) or None. The personal
+        penalty flags take priority over the caution; green only flashes briefly
+        when a yellow clears."""
         raw = self.ir["SessionFlags"]
         try:
             sf = int(raw) & 0xFFFFFFFF
@@ -1176,6 +1193,9 @@ class AdvancedSimHUD:
             self._green_until = now + secs
         self._flag_was_yellow = yellow
 
+        # Checkered (session over) trumps everything else.
+        if sf & self._FLAG_CHECKERED:
+            return "checkered"
         # Personal penalty/black flags first (directed at you), then caution.
         if sf & self._FLAG_DQ:
             return "dq"

@@ -505,6 +505,7 @@ class DashWidget(QWidget):
             "furled": ("WARNING", "flag_furled", "flag_furled_text"),
             "dq": ("DISQUALIFIED", "flag_dq", "flag_dq_text"),
             "green": ("GREEN", "flag_green", "flag_green_text"),
+            "checkered": ("FINISH", "flag_checker_bg", "flag_checker_text"),
         }.get(flag)
         if spec is None:
             return
@@ -533,20 +534,24 @@ class DashWidget(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 45), 1))
         p.drawRoundedRect(rect, r, r)
 
-        # diagonal slashes filling the bar (clipped to its rounded shape)
+        # fill pattern (clipped to the bar's rounded shape): a black/white weave
+        # for the checkered flag, diagonal slashes for everything else.
         p.save()
         clip = QPainterPath()
         clip.addRoundedRect(rect, r, r)
         p.setClipPath(clip)
-        hatch = QColor(fg)
-        hatch.setAlpha(70)
-        p.setPen(QPen(hatch, max(2.0, rect.height() * 0.16)))
-        step = rect.height() * 0.6
-        x = rect.left() - rect.height()
-        while x < rect.right() + rect.height():
-            p.drawLine(QPointF(x, rect.bottom()),
-                       QPointF(x + rect.height(), rect.top()))
-            x += step
+        if flag == "checkered":
+            self._draw_checker(p, rect, fg)
+        else:
+            hatch = QColor(fg)
+            hatch.setAlpha(70)
+            p.setPen(QPen(hatch, max(2.0, rect.height() * 0.16)))
+            step = rect.height() * 0.6
+            x = rect.left() - rect.height()
+            while x < rect.right() + rect.height():
+                p.drawLine(QPointF(x, rect.bottom()),
+                           QPointF(x + rect.height(), rect.top()))
+                x += step
         p.restore()
 
         # clear a rounded gap behind the text so the slashes frame it
@@ -560,6 +565,21 @@ class DashWidget(QWidget):
         p.drawRoundedRect(gap, gap.height() * 0.5, gap.height() * 0.5)
 
         self._text_centered(p, QPointF(cx, rect.center().y()), font, label, fg)
+
+    @staticmethod
+    def _draw_checker(p, rect, color) -> None:
+        """A two-row black/white checkerboard filling the (already-clipped) bar."""
+        sq = rect.height() / 2.0
+        cols = int(rect.width() / sq) + 2
+        cell = QColor(color)
+        cell.setAlpha(180)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(cell)
+        for ri in range(2):
+            for ci in range(cols):
+                if (ri + ci) % 2 == 0:
+                    p.drawRect(QRectF(rect.left() + ci * sq,
+                                      rect.top() + ri * sq, sq, sq))
 
     # -- shift / RPM bar (segmented) ---------------------------------------
     def _draw_shift(self, p, rect, c):

@@ -372,6 +372,9 @@ DEFAULTS: dict = {
             "flag_dq_text": "#ffffff",
             "flag_green": "#46df7a",
             "flag_green_text": "#06210f",
+            # Checkered (session finished) - dark bar with a black/white weave.
+            "flag_checker_bg": "#14171c",
+            "flag_checker_text": "#f4f6f8",
         },
     },
     "map": {
@@ -454,18 +457,68 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def load() -> dict:
-    """Load defaults merged with overlay_config.json (if present)."""
+# --- Context profiles ------------------------------------------------------
+# The overlay can behave differently when you're in the garage vs out on track.
+# The base config is the "On track" profile; a sparse set of overrides stored
+# under the reserved "garage" key in overlay_config.json is layered on top when
+# the garage context is active. Only values that differ from the base are kept.
+GARAGE_KEY = "garage"
+CONTEXTS = ("race", "garage")
+CONTEXT_LABELS = {"race": "On track", "garage": "In garage"}
+
+
+def _read_user() -> dict:
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-            user = json.load(fh)
+            return json.load(fh)
     except (OSError, ValueError):
-        user = {}
-    return _deep_merge(DEFAULTS, user)
+        return {}
 
 
-# The live, merged configuration. Reloadable via reload().
-CFG: dict = load()
+def _split_user(user: dict) -> tuple[dict, dict]:
+    """Separate the base config from the sparse garage overrides."""
+    user = copy.deepcopy(user or {})
+    garage = user.pop(GARAGE_KEY, {}) or {}
+    return user, garage
+
+
+def load() -> dict:
+    """Load defaults merged with the base (on-track) overlay_config.json."""
+    base_user, _ = _split_user(_read_user())
+    return _deep_merge(DEFAULTS, base_user)
+
+
+def load_garage() -> dict:
+    """Load just the sparse garage overrides from disk."""
+    _, garage = _split_user(_read_user())
+    return garage
+
+
+# The base ("On track") config and the sparse garage overrides.
+BASE: dict = load()
+GARAGE: dict = load_garage()
+
+# The active context (set from telemetry) and an optional editor preview pin
+# that overrides it so the settings UI can show the profile being edited.
+ACTIVE_CONTEXT: str = "race"
+_preview_context: str | None = None
+
+
+def _ctx() -> str:
+    return _preview_context or ACTIVE_CONTEXT
+
+
+def _compute_cfg() -> dict:
+    global CFG
+    if _ctx() == "garage" and GARAGE:
+        CFG = _deep_merge(BASE, GARAGE)
+    else:
+        CFG = copy.deepcopy(BASE)
+    return CFG
+
+
+# The live, merged configuration for the active context. Reloadable via reload().
+CFG: dict = _compute_cfg()
 
 # Callbacks invoked whenever the live config changes (e.g. from the editor UI),
 # so the running overlay can repaint immediately.
@@ -548,21 +601,131 @@ def text_scale_for(section: str | None = None) -> float:
     return g
 
 
+def _notify() -> None:
+    for cb in list(_listeners):
+        try:
+            cb(CFG)
+        except Exception:
+            pass
+
+
 def set_cfg(new_cfg: dict, notify: bool = True) -> dict:
-    """Replace the live config (full, merged dict) and notify listeners."""
-    global CFG
-    CFG = copy.deepcopy(new_cfg)
-    if notify:
-        for cb in list(_listeners):
-            try:
-                cb(CFG)
-            except Exception:
-                pass
-    return CFG
+    """Replace the base (on-track) config and recompute the live config.
+
+    Kept for backwards compatibility; treats the supplied dict as the base
+    profile. Use apply_edits()/save_profiles() for context-aware editing.
+    """
+    return apply_base(new_cfg, notify)
 
 
 def reload() -> dict:
-    return set_cfg(load())
+    """Reload both profiles from disk and recompute the live config."""
+    global BASE, GARAGE
+    BASE = load()
+    GARAGE = load_garage()
+    _compute_cfg()
+    _notify()
+    return CFG
+
+
+# --- context + profile API -------------------------------------------------
+
+def contexts() -> tuple:
+    return CONTEXTS
+
+
+def active_context() -> str:
+    return ACTIVE_CONTEXT
+
+
+def effective_context() -> str:
+    """The context actually driving the live config (preview pin wins)."""
+    return _ctx()
+
+
+def set_context(ctx: str, notify: bool = True) -> dict:
+    """Switch the active context (called from telemetry: garage vs on track)."""
+    global ACTIVE_CONTEXT
+    if ctx not in CONTEXTS:
+        return CFG
+    ACTIVE_CONTEXT = ctx
+    # A live editor preview pin overrides the auto-detected context.
+    if _preview_context is None:
+        _compute_cfg()
+        if notify:
+            _notify()
+    return CFG
+
+
+def set_preview_context(ctx: str | None) -> dict:
+    """Pin the live config to a context for the editor's preview (None clears)."""
+    global _preview_context
+    _preview_context = ctx if ctx in CONTEXTS else None
+    _compute_cfg()
+    _notify()
+    return CFG
+
+
+def base_cfg() -> dict:
+    return copy.deepcopy(BASE)
+
+
+def garage_overrides() -> dict:
+    return copy.deepcopy(GARAGE)
+
+
+def editor_full(ctx: str) -> dict:
+    """The full config dict the editor should edit for a given context."""
+    if ctx == "garage":
+        return _deep_merge(BASE, GARAGE)
+    return copy.deepcopy(BASE)
+
+
+def apply_base(full_cfg: dict, notify: bool = True) -> dict:
+    """Replace the base (on-track) profile with a full config dict."""
+    global BASE
+    BASE = copy.deepcopy(full_cfg)
+    _compute_cfg()
+    if notify:
+        _notify()
+    return CFG
+
+
+def apply_garage(full_cfg: dict, notify: bool = True) -> dict:
+    """Set the garage profile from a full dict, keeping only the diff vs base."""
+    global GARAGE
+    GARAGE = diff_from_defaults(full_cfg, BASE)
+    _compute_cfg()
+    if notify:
+        _notify()
+    return CFG
+
+
+def apply_edits(ctx: str, full_cfg: dict, notify: bool = True) -> dict:
+    if ctx == "garage":
+        return apply_garage(full_cfg, notify)
+    return apply_base(full_cfg, notify)
+
+
+def clear_garage(notify: bool = True) -> dict:
+    """Drop all garage overrides (garage then mirrors the on-track profile)."""
+    global GARAGE
+    GARAGE = {}
+    _compute_cfg()
+    if notify:
+        _notify()
+    return CFG
+
+
+def save_profiles(path: str = CONFIG_FILE) -> dict:
+    """Persist the base profile (minimal) plus any sparse garage overrides."""
+    data = diff_from_defaults(BASE)
+    garage_sparse = diff_from_defaults(_deep_merge(BASE, GARAGE), BASE)
+    if garage_sparse:
+        data[GARAGE_KEY] = garage_sparse
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    return data
 
 
 _MISSING = object()

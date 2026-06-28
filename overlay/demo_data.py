@@ -247,7 +247,8 @@ class FakeIRSDK:
 
         if key == "SessionFlags":
             # Cycle through the states so the dash flag indicator is visible in
-            # demo: caution -> green resume -> black -> meatball -> furled -> DQ.
+            # demo: caution -> green -> black -> meatball -> furled -> DQ ->
+            # checkered.
             cyc = (time.time() - self._start) % 60.0
             if cyc < 6.0:
                 return 0x00004000 | 0x00008000   # caution + caution waving
@@ -259,7 +260,14 @@ class FakeIRSDK:
                 return 0x00080000                # furled (warning)
             if 48.0 <= cyc < 51.0:
                 return 0x00020000                # disqualified
+            if 54.0 <= cyc < 57.0:
+                return 0x00000001                # checkered (finish)
             return 0x00000004                    # green
+
+        if key == "IsInGarage":
+            # Spend the first ~10s of each 60s cycle "in the garage" so the
+            # garage-vs-track profile switch is observable in the demo.
+            return ((time.time() - self._start) % 60.0) < 10.0
 
         if key == "PlayerCarMyIncidentCount":
             return 11

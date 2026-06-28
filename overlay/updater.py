@@ -59,29 +59,41 @@ def fetch_latest(timeout: float = 6.0) -> dict | None:
     }
 
 
-def download(url: str) -> str:
-    """Download the installer to a temp file and return its path."""
+def download(url: str, on_progress=None) -> str:
+    """Download the installer to a temp file and return its path.
+
+    If given, ``on_progress(bytes_done, bytes_total)`` is called as bytes
+    arrive (bytes_total is 0 when the server doesn't send a Content-Length).
+    """
     fd, path = tempfile.mkstemp(suffix=".exe", prefix="RacingOverlaySetup-")
     os.close(fd)
     req = urllib.request.Request(url, headers={"User-Agent": _HEADERS["User-Agent"]})
     with urllib.request.urlopen(req) as resp, open(path, "wb") as fh:
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
         while True:
             chunk = resp.read(65536)
             if not chunk:
                 break
             fh.write(chunk)
+            done += len(chunk)
+            if on_progress is not None:
+                on_progress(done, total)
     return path
 
 
 class UpdateChecker(QObject):
     """Background update checker + installer downloader."""
 
-    found = pyqtSignal(dict)       # a newer release is available
-    downloaded = pyqtSignal(str)   # installer saved to this path
-    failed = pyqtSignal(str)       # download error message
+    found = pyqtSignal(dict)        # a newer release is available
+    up_to_date = pyqtSignal(str)    # already current; carries the version
+    check_failed = pyqtSignal(str)  # the check itself failed / not configured
+    downloaded = pyqtSignal(str)    # installer saved to this path
+    progress = pyqtSignal(int, int)  # bytes_done, bytes_total (0 = unknown)
+    failed = pyqtSignal(str)        # download error message
 
     def start(self) -> None:
-        """Check for a newer release (no-op if no repo is configured)."""
+        """Silent launch check (only speaks up when a newer release exists)."""
         if not version.GITHUB_REPO:
             return
         threading.Thread(target=self._check, daemon=True).start()
@@ -94,11 +106,34 @@ class UpdateChecker(QObject):
         if info and info.get("version") and is_newer(info["version"], version.__version__):
             self.found.emit(info)
 
+    def check_now(self) -> None:
+        """User-initiated check that reports every outcome via signals."""
+        threading.Thread(target=self._check_now, daemon=True).start()
+
+    def _check_now(self) -> None:
+        if not version.GITHUB_REPO:
+            self.check_failed.emit(
+                "This build isn't configured for automatic updates.")
+            return
+        try:
+            info = fetch_latest()
+        except Exception as exc:  # noqa: BLE001
+            self.check_failed.emit(str(exc) or "Network error")
+            return
+        if not info or not info.get("version"):
+            self.check_failed.emit("Couldn't read the latest release from GitHub.")
+            return
+        if is_newer(info["version"], version.__version__):
+            self.found.emit(info)
+        else:
+            self.up_to_date.emit(version.__version__)
+
     def download_async(self, url: str) -> None:
         threading.Thread(target=self._download, args=(url,), daemon=True).start()
 
     def _download(self, url: str) -> None:
         try:
-            self.downloaded.emit(download(url))
+            self.downloaded.emit(
+                download(url, on_progress=lambda d, t: self.progress.emit(d, t)))
         except Exception as exc:  # noqa: BLE001
             self.failed.emit(str(exc))

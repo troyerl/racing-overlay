@@ -79,9 +79,11 @@ To cut a new release, add a new `## <version> - <date>` section to the top of
 Anyone can then download that installer from the repo's Releases page and run it
 (per-user install, no admin needed). The installed app **checks GitHub for a
 newer release on launch** and, if one exists, asks whether to download and run
-the new installer &mdash; one click to update. You can also trigger the check from
-the tray's **Check for Updates** item. (Update checks are disabled in source
-checkouts, where `GITHUB_REPO` is empty.)
+the new installer &mdash; one click to update. You can also trigger the check
+manually from the **General** tab's **Check for Updates** button (it reports the
+result either way and shows a download progress bar) or the tray's **Check for
+Updates** item. (Update checks are disabled in source checkouts, where
+`GITHUB_REPO` is empty.)
 
 ## Run (from source)
 
@@ -273,8 +275,9 @@ glows **fade/grow** smoothly instead of popping.
   distinct color + label per flag: **CAUTION** (yellow) while a caution is out,
   **BLACK FLAG** (penalty), **MEATBALL** (orange — the mechanical black flag that
   means you must pit to repair), **WARNING** (furled/rolled black flag),
-  **DISQUALIFIED**, and **GREEN** only briefly when racing resumes from a yellow,
-  clearing after `dash.flag_green_seconds`. When a flag appears the bar
+  **DISQUALIFIED**, **FINISH** (the checkered flag, drawn as a black/white weave
+  when the session ends), and **GREEN** only briefly when racing resumes from a
+  yellow, clearing after `dash.flag_green_seconds`. When a flag appears the bar
   **pulses** for `dash.flag_pulse_seconds` (rate `dash.flag_blink_hz`) and then
   holds steady. The personal penalty flags take priority over the caution. Each
   color is configurable (`dash.colors.flag_*`). An optional
@@ -323,25 +326,36 @@ scripts. Defaults match the built-in look, so nothing changes until you edit it.
 ### Visual settings editor (recommended)
 
 A point-and-click editor exposes **every** key with the right control type
-(color pickers with alpha, spin boxes, checkboxes, a track-palette editor),
-grouped into tabs per widget:
+(color pickers with alpha, sliders, sliding toggles, a track-palette editor),
+organized with a **sidebar** that lists each widget:
 
 ```bash
 python3 -m overlay.config_editor                  # standalone editor (no overlay)
 python3 run.py --demo --no-clickthrough           # editor + live overlay (demo)
 ```
 
-It has a dark, modern layout with a **search box** at the top to instantly filter
-to any setting by name (e.g. type "player", "pit", "radar"), tabs per widget, and
-collapsed-into-cards groups. With **Apply live** on (default), changes repaint the
-running overlay instantly so you can tune colors/sizes while watching them. With
-**Auto-save** on (default), every change is written to `overlay_config.json`
-automatically (debounced ~0.4 s, so dragging a spin box doesn't thrash the disk) —
-no need to click Save. Uncheck Auto-save to make changes provisional and use the
-**Save** button manually; **Reset** and **Reload** are one click. The editor is
-generated from the config schema, so any key you add to the defaults automatically
-gets the right control (color picker, dropdown, spin box, checkbox, or palette
-editor).
+It has a dark, modern layout: a left **sidebar** to switch widgets (each shows a
+dot for whether it's enabled), a **search box** to filter to any setting by name,
+a prominent on/off switch per widget whose settings only appear when it's enabled,
+**accordions** for grouped settings (colors, sizes…), **sliders** for numbers and
+**sliding toggles** for on/off options. With **Apply live** on (default), changes
+repaint the running overlay instantly; with **Auto-save** on (default), every
+change is written to `overlay_config.json` automatically (debounced ~0.4 s). The
+General tab also has a **Check for Updates** button and an **Edit layout** toggle.
+The editor is generated from the config schema, so any key you add to the defaults
+automatically gets the right control.
+
+#### Garage vs on-track profiles
+
+At the top of the editor a **Profile** selector switches between two
+configurations: **On track** (your normal racing layout) and **In garage**. The
+garage profile stores only the values you change from the on-track setup, and the
+overlay switches between them **automatically** based on iRacing's `IsInGarage`.
+Use it to, for example, hide the radar/relative in the garage, or show different
+info in a widget there. The base profile is saved as usual; the overrides live
+under a `"garage"` key in `overlay_config.json`. While you have a profile
+selected in the editor, the live overlay previews that profile so you can see your
+changes; closing the editor returns it to following the live context.
 
 > Why JSON, not SQLite? This config is a small nested document read once at
 > startup and written occasionally from the editor. JSON is simpler, diffable,

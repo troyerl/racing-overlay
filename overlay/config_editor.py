@@ -43,6 +43,8 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
+    QProgressDialog,
     QPushButton,
     QScrollArea,
     QSlider,
@@ -52,7 +54,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import config
+from . import config, version
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
@@ -828,13 +830,17 @@ class ConfigEditor(QWidget):
         self.setMinimumSize(720, 560)
         self.setStyleSheet(STYLE)
 
-        self.working = config._deep_merge(config.full_defaults(), config.CFG)
+        self._edit_ctx = config.active_context()
+        self.working = config.editor_full(self._edit_ctx)
         self._rows: list[dict] = []          # {widget, text, accordions}
         self._accordions: list[CollapsibleSection] = []
         self._nav_items: dict[str, NavItem] = {}
         self._sections: list[tuple[str, str]] = []
         self._cur_index = 0
         self._carbon = _carbon_tile()
+        self._updater = None
+        self._dl_dialog = None
+        self._dl_canceled = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
@@ -846,6 +852,27 @@ class ConfigEditor(QWidget):
         subtitle.setObjectName("subtitle")
         root.addWidget(title)
         root.addWidget(subtitle)
+
+        # Profile selector: edit the on-track vs in-garage configuration.
+        prof = QHBoxLayout()
+        prof.setSpacing(8)
+        plabel = QLabel("Profile")
+        plabel.setStyleSheet("background: transparent; color: #aab2bf; "
+                             "font-weight: 700;")
+        self.ctx_combo = QComboBox()
+        self.ctx_combo.setObjectName("ctxCombo")
+        for ctx in config.contexts():
+            self.ctx_combo.addItem(config.CONTEXT_LABELS.get(ctx, ctx), ctx)
+        i = self.ctx_combo.findData(self._edit_ctx)
+        self.ctx_combo.setCurrentIndex(max(0, i))
+        self.ctx_combo.currentIndexChanged.connect(self._change_ctx)
+        self.ctx_hint = QLabel("")
+        self.ctx_hint.setObjectName("subtitle")
+        self.ctx_hint.setWordWrap(True)
+        prof.addWidget(plabel)
+        prof.addWidget(self.ctx_combo)
+        prof.addWidget(self.ctx_hint, 1)
+        root.addLayout(prof)
 
         self.search = QLineEdit()
         self.search.setObjectName("search")
@@ -918,6 +945,7 @@ class ConfigEditor(QWidget):
         root.addLayout(controls)
 
         self._build_nav_and_pages()
+        self._update_ctx_hint()
 
     # --- background ---------------------------------------------------------
 
@@ -945,6 +973,175 @@ class ConfigEditor(QWidget):
         h.addWidget(sw)
         h.addWidget(lbl)
         return w, sw
+
+    # --- updates ------------------------------------------------------------
+
+    def _about_card(self) -> QFrame:
+        """Version + 'Check for updates' card at the top of the General page."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        h = QHBoxLayout(card)
+        h.setContentsMargins(15, 11, 15, 11)
+        h.setSpacing(12)
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        t = QLabel(f"Racing Overlay  v{version.__version__}")
+        t.setObjectName("enableTitle")
+        self._update_status = QLabel("Check GitHub for the latest version.")
+        self._update_status.setObjectName("enableHint")
+        self._update_status.setWordWrap(True)
+        texts.addWidget(t)
+        texts.addWidget(self._update_status)
+        h.addLayout(texts, 1)
+        self._update_btn = QPushButton("Check for Updates")
+        self._update_btn.setObjectName("primary")
+        self._update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_btn.clicked.connect(self._check_updates)
+        h.addWidget(self._update_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+        return card
+
+    def _ensure_updater(self):
+        if self._updater is not None:
+            return self._updater
+        from .updater import UpdateChecker
+        up = UpdateChecker()
+        up.found.connect(self._on_update_found)
+        up.up_to_date.connect(self._on_up_to_date)
+        up.check_failed.connect(self._on_check_failed)
+        up.progress.connect(self._on_progress)
+        up.downloaded.connect(self._on_downloaded)
+        up.failed.connect(self._on_download_failed)
+        self._updater = up
+        return up
+
+    def _check_updates(self) -> None:
+        self._ensure_updater()
+        self._update_btn.setEnabled(False)
+        self._update_status.setText("Checking for updates\u2026")
+        self._flash("Checking for updates\u2026")
+        self._updater.check_now()
+
+    def _on_up_to_date(self, ver: str) -> None:
+        self._update_btn.setEnabled(True)
+        self._update_status.setText(f"You're on the latest version (v{ver}).")
+        QMessageBox.information(
+            self, "No updates",
+            f"You're already on the latest version (v{ver}).")
+
+    def _on_check_failed(self, msg: str) -> None:
+        self._update_btn.setEnabled(True)
+        self._update_status.setText("Update check failed.")
+        QMessageBox.warning(self, "Update check failed",
+                            f"Couldn't check for updates.\n\n{msg}")
+
+    def _on_update_found(self, info: dict) -> None:
+        self._update_btn.setEnabled(True)
+        ver = info.get("version", "?")
+        self._update_status.setText(f"Version {ver} is available.")
+        box = QMessageBox(self)
+        box.setWindowTitle("Update available")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"Racing Overlay {ver} is available "
+                    f"(you have v{version.__version__}).")
+        box.setInformativeText(
+            "Download and install it now? The app will close to finish "
+            "updating.")
+        notes = (info.get("notes") or "").strip()
+        if notes:
+            box.setDetailedText(notes)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes
+                               | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            self._update_status.setText(f"Version {ver} is available.")
+            return
+        url = info.get("url")
+        if not url:
+            QMessageBox.warning(
+                self, "No installer",
+                "That release doesn't have a downloadable installer "
+                "for this platform.")
+            return
+        self._begin_download(url, ver)
+
+    def _begin_download(self, url: str, ver: str) -> None:
+        self._dl_canceled = False
+        dlg = QProgressDialog("Downloading update\u2026", "Cancel", 0, 100, self)
+        dlg.setWindowTitle(f"Downloading v{ver}")
+        dlg.setWindowModality(Qt.WindowModality.WindowModal)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.canceled.connect(self._cancel_download)
+        self._dl_dialog = dlg
+        self._update_btn.setEnabled(False)
+        self._update_status.setText("Downloading update\u2026")
+        dlg.show()
+        self._updater.download_async(url)
+
+    def _cancel_download(self) -> None:
+        # The worker thread can't be force-killed; flag it so we ignore the
+        # eventual result, and close the dialog.
+        self._dl_canceled = True
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+        self._update_btn.setEnabled(True)
+        self._update_status.setText("Update download canceled.")
+
+    def _on_progress(self, done: int, total: int) -> None:
+        if self._dl_dialog is None:
+            return
+        if total > 0:
+            self._dl_dialog.setMaximum(100)
+            self._dl_dialog.setValue(int(done * 100 / total))
+            mb = done / 1_048_576
+            tot = total / 1_048_576
+            self._dl_dialog.setLabelText(
+                f"Downloading update\u2026  {mb:.1f} / {tot:.1f} MB")
+        else:
+            self._dl_dialog.setMaximum(0)  # indeterminate "busy" bar
+
+    def _on_downloaded(self, path: str) -> None:
+        if self._dl_canceled:
+            return
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+        self._update_status.setText("Update downloaded \u2014 launching installer\u2026")
+        self._launch_installer(path)
+
+    def _on_download_failed(self, msg: str) -> None:
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+        self._update_btn.setEnabled(True)
+        self._update_status.setText("Download failed.")
+        QMessageBox.warning(self, "Download failed",
+                            f"Couldn't download the update.\n\n{msg}")
+
+    def _launch_installer(self, path: str) -> None:
+        import os
+        try:
+            if os.name == "nt":
+                os.startfile(path)  # type: ignore[attr-defined]
+            else:
+                import subprocess
+                subprocess.Popen([path])
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                self, "Couldn't start installer",
+                f"The update was downloaded to:\n{path}\n\n"
+                f"but couldn't be launched automatically:\n{exc}")
+            return
+        # Stop the overlay (if we control it) and quit so files can be replaced.
+        if self._overlay is not None and hasattr(self._overlay, "stop_overlay"):
+            try:
+                self._overlay.stop_overlay()
+            except Exception:
+                pass
+        QApplication.instance().quit()
 
     # --- UI construction ----------------------------------------------------
 
@@ -1004,6 +1201,7 @@ class ConfigEditor(QWidget):
         v.addWidget(head)
 
         if key == "__general__":
+            v.addWidget(self._about_card())
             scalars = {k: val for k, val in config.DEFAULTS.items()
                        if not isinstance(val, dict)}
             self._populate(v, scalars, [], color, [])
@@ -1239,6 +1437,8 @@ class ConfigEditor(QWidget):
 
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
+        # Preview the profile we're editing so live changes are visible.
+        config.set_preview_context(self._edit_ctx)
         # Re-sync state in case it changed from the tray while we were hidden.
         if self._overlay is not None:
             self._refresh_overlay_btn()
@@ -1260,10 +1460,46 @@ class ConfigEditor(QWidget):
         self.status.setText(msg)
         self._status_timer.start(2500)
 
+    # --- profile (context) switching ----------------------------------------
+
+    def _ctx_name(self) -> str:
+        return config.CONTEXT_LABELS.get(self._edit_ctx, self._edit_ctx)
+
+    def _update_ctx_hint(self) -> None:
+        if self._edit_ctx == "garage":
+            self.ctx_hint.setText(
+                "Editing the in-garage profile \u2014 only changes from the "
+                "on-track settings are saved here, and apply when you're in "
+                "the garage.")
+        else:
+            self.ctx_hint.setText(
+                "Editing the on-track profile \u2014 your normal racing layout.")
+
+    def _change_ctx(self) -> None:
+        new = self.ctx_combo.currentData()
+        if not new or new == self._edit_ctx:
+            return
+        # Capture any pending edits to the profile we're leaving, then persist.
+        self._save_timer.stop()
+        config.apply_edits(self._edit_ctx, self.working, notify=False)
+        if self.autosave_sw.isChecked():
+            config.save_profiles()
+        self._edit_ctx = new
+        self.working = config.editor_full(new)
+        # Pin the live overlay to the profile being edited so changes preview.
+        config.set_preview_context(new)
+        self._cur_index = 0
+        self._build_nav_and_pages()
+        self._filter(self.search.text())
+        self._update_ctx_hint()
+        self._flash(f"Editing {self._ctx_name()} profile")
+
+    # --- value changes ------------------------------------------------------
+
     def _set(self, path: list, value) -> None:
         _set_at(self.working, path, value)
         if self.live_sw.isChecked():
-            config.set_cfg(self.working)
+            config.apply_edits(self._edit_ctx, self.working)
         if self.autosave_sw.isChecked():
             self._flash("Modified \u2014 saving\u2026")
             self._save_timer.start(400)
@@ -1271,37 +1507,54 @@ class ConfigEditor(QWidget):
             self._flash("Modified \u2014 unsaved")
 
     def _autosave(self) -> None:
-        config.save(self.working)
+        config.apply_edits(self._edit_ctx, self.working,
+                           notify=self.live_sw.isChecked())
+        config.save_profiles()
         self._flash("Saved to overlay_config.json")
 
     def _apply(self) -> None:
-        config.set_cfg(self.working)
-        self._flash("Applied to running overlay")
+        config.apply_edits(self._edit_ctx, self.working)
+        config.set_preview_context(self._edit_ctx)
+        self._flash(f"Applied to {self._ctx_name()} profile")
 
     def _save(self) -> None:
         self._save_timer.stop()
-        config.set_cfg(self.working)
-        config.save(self.working)
+        config.apply_edits(self._edit_ctx, self.working)
+        config.save_profiles()
         self._flash("Saved to overlay_config.json")
 
     def _reset(self) -> None:
-        self.working = config.full_defaults()
+        if self._edit_ctx == "garage":
+            config.clear_garage(notify=self.live_sw.isChecked())
+            self.working = config.editor_full("garage")
+            msg = "Cleared garage overrides"
+        else:
+            self.working = config.full_defaults()
+            if self.live_sw.isChecked():
+                config.apply_base(self.working)
+            msg = "Reset on-track profile to defaults"
         self._build_nav_and_pages()
         self._filter(self.search.text())
-        if self.live_sw.isChecked():
-            config.set_cfg(self.working)
         if self.autosave_sw.isChecked():
             self._save_timer.start(400)
-        self._flash("Reset to defaults")
+        self._flash(msg)
 
     def _reload(self) -> None:
         self._save_timer.stop()
-        self.working = config._deep_merge(config.full_defaults(), config.load())
+        config.reload()
+        self.working = config.editor_full(self._edit_ctx)
         self._build_nav_and_pages()
         self._filter(self.search.text())
-        if self.live_sw.isChecked():
-            config.set_cfg(self.working)
+        config.set_preview_context(self._edit_ctx)
         self._flash("Reloaded from file")
+
+    # --- preview lifecycle --------------------------------------------------
+
+    def closeEvent(self, event):  # noqa: N802
+        # Stop pinning the live overlay to the edited profile; resume the
+        # telemetry-driven context.
+        config.set_preview_context(None)
+        super().closeEvent(event)
 
 
 def main() -> int:

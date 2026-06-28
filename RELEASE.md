@@ -23,6 +23,18 @@ Release notes. To cut a release, add a new section to the top and push.
 - **In-app "Edit layout" toggle.** You can now make the overlay widgets
   draggable/resizable and lock them again right from the settings window (and the
   tray menu) — no more relaunching with `--no-clickthrough` to rearrange them.
+- **Check for updates from Settings.** The General tab has a "Check for Updates"
+  button that asks GitHub for the latest release; if a newer one exists it shows
+  the version + notes and, on confirm, downloads the installer (with a progress
+  bar) and launches it to update in place.
+- **Checkered flag on the dash.** The flag bar now also shows the **checkered**
+  flag (`FINISH`) when the session ends, drawn as a black/white weave.
+- **Garage vs on-track profiles.** Settings now have two profiles — **On track**
+  and **In garage** — selectable at the top of the window. The garage profile
+  stores only the values you change from your on-track setup, and the overlay
+  switches between them automatically (via iRacing's `IsInGarage`). Use it to
+  hide widgets in the garage or show different info there; while editing a
+  profile the live overlay previews it.
 
 ## 1.2.0 - 2026-06-28
 
