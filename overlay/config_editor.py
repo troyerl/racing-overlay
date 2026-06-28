@@ -18,16 +18,26 @@ from __future__ import annotations
 
 import sys
 
-from PyQt6.QtCore import Qt, QTimer, QRectF
+from PyQt6.QtCore import (
+    Qt,
+    QTimer,
+    QRectF,
+    QPointF,
+    QSize,
+    QEasingCurve,
+    QPropertyAnimation,
+    pyqtProperty,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QBrush, QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractButton,
     QAbstractItemView,
     QApplication,
-    QCheckBox,
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
-    QGroupBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -35,9 +45,9 @@ from PyQt6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QScrollArea,
+    QSlider,
     QSpinBox,
-    QTabBar,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -173,37 +183,56 @@ TAB_COLORS = {
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
-QLabel#title {{ font-size: 20px; font-weight: 700; color: #f4f6f8; }}
+QLabel#title {{ font-size: 21px; font-weight: 800; color: #f4f6f8; }}
 QLabel#subtitle {{ color: #8b93a1; font-size: 11px; }}
 QLabel#status {{ color: {ACCENT}; font-size: 11px; }}
+QLabel#rowLabel {{ color: #c7cdd6; }}
+QLabel#pageTitle {{ font-size: 16px; font-weight: 800; color: #f4f6f8; }}
+QLabel#pageHint {{ color: #8b93a1; font-size: 11px; }}
+QLabel#enableTitle {{ font-size: 13px; font-weight: 700; color: #f4f6f8; }}
+QLabel#enableHint {{ color: #8b93a1; font-size: 11px; }}
 
 QLineEdit#search {{
     background: rgba(20,23,28,0.85); border: 1px solid #2c313b; border-radius: 11px;
-    padding: 9px 14px; color: #e6e8ec; selection-background-color: {ACCENT};
+    padding: 10px 14px; color: #e6e8ec; selection-background-color: {ACCENT};
 }}
 QLineEdit#search:focus {{ border: 1px solid {ACCENT}; }}
 
-QTabWidget::pane {{ border: none; top: 2px; background: transparent; }}
-QTabBar {{ background: transparent; }}
-
 QScrollArea {{ border: none; background: transparent; }}
 
-QGroupBox {{
-    border: 1px solid rgba(70,223,122,0.20); border-radius: 13px; margin-top: 16px;
-    background: rgba(16,19,24,0.72); padding: 10px 12px 12px 12px;
+/* Sidebar navigation rail */
+QWidget#navRail {{
+    background: rgba(13,15,19,0.78); border: 1px solid #20242c; border-radius: 14px;
 }}
-QGroupBox::title {{
-    subcontrol-origin: margin; left: 14px; padding: 2px 8px; color: {ACCENT};
-    font-size: 10px; font-weight: 800;
+
+/* Enable card at the top of a widget page */
+QFrame#enableCard {{
+    background: rgba(18,21,27,0.85); border: 1px solid #262b34; border-radius: 13px;
+}}
+
+/* Accordion header buttons */
+QPushButton#accordion {{
+    background: rgba(20,23,29,0.85); border: 1px solid #262b34;
+    border-radius: 11px; padding: 10px 14px; color: #cfd5de;
+    text-align: left; font-size: 11px; font-weight: 800; letter-spacing: 0.6px;
+}}
+QPushButton#accordion:hover {{ border: 1px solid {ACCENT_DIM}; color: #f4f6f8; }}
+QPushButton#accordion:checked {{ color: #f4f6f8; }}
+QWidget#accordionBody {{
+    background: rgba(13,16,20,0.55);
+    border-left: 1px solid #20242c; border-right: 1px solid #20242c;
+    border-bottom: 1px solid #20242c;
+    border-bottom-left-radius: 11px; border-bottom-right-radius: 11px;
 }}
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
     background: rgba(29,33,40,0.92); border: 1px solid #2c313b; border-radius: 9px;
-    padding: 6px 10px; color: #e6e8ec; min-height: 18px; min-width: 150px;
+    padding: 6px 10px; color: #e6e8ec; min-height: 18px;
 }}
 QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
     border: 1px solid {ACCENT};
 }}
+QComboBox {{ min-width: 150px; }}
 QComboBox::drop-down {{ border: none; width: 22px; }}
 QComboBox QAbstractItemView {{
     background: #161a20; border: 1px solid #2c313b; color: #e6e8ec;
@@ -212,16 +241,20 @@ QComboBox QAbstractItemView {{
 QSpinBox::up-button, QSpinBox::down-button,
 QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 16px; border: none; }}
 
-QCheckBox::indicator {{
-    width: 30px; height: 18px; border: 1px solid #39404c; border-radius: 6px;
-    background: #14171c;
+/* Sliders */
+QSlider::groove:horizontal {{
+    height: 5px; border-radius: 3px; background: #232831;
 }}
-QCheckBox::indicator:hover {{ border: 1px solid {ACCENT}; }}
-QCheckBox::indicator:checked {{
-    background: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-        stop:0 #5cf08c, stop:1 {ACCENT});
-    border: 1px solid {ACCENT};
+QSlider::sub-page:horizontal {{
+    height: 5px; border-radius: 3px;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT_DIM}, stop:1 {ACCENT});
 }}
+QSlider::add-page:horizontal {{ height: 5px; border-radius: 3px; background: #232831; }}
+QSlider::handle:horizontal {{
+    width: 16px; height: 16px; margin: -6px 0; border-radius: 8px;
+    background: #f4f6f8; border: 2px solid {ACCENT};
+}}
+QSlider::handle:horizontal:hover {{ background: #ffffff; }}
 
 QPushButton {{
     background: rgba(34,39,50,0.9); border: 1px solid #2f3540; border-radius: 10px;
@@ -303,48 +336,260 @@ def _carbon_tile() -> QPixmap:
     return pm
 
 
-class ChipTabBar(QTabBar):
-    """Tab bar drawn as rounded chips, each tinted with its section color."""
+class ToggleSwitch(QAbstractButton):
+    """A modern animated sliding on/off switch (replaces checkboxes)."""
 
-    def __init__(self, colors: dict, parent=None):
+    def __init__(self, checked: bool = False, accent: str = ACCENT, parent=None):
         super().__init__(parent)
-        self._colors = colors
-        self.setDrawBase(False)
-        self.setExpanding(False)
-        self.setUsesScrollButtons(False)
-        self.setElideMode(Qt.TextElideMode.ElideRight)
+        self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._accent = QColor(accent)
+        self._track_off = QColor("#3a4150")
+        self._knob = QColor("#f6f8fb")
+        self._w, self._h = 46, 26
+        self.setFixedSize(self._w, self._h)
+        self._pos = 1.0 if checked else 0.0
+        self.setChecked(checked)
+        self.toggled.connect(self._animate)
 
-    def _color(self, i: int) -> QColor:
-        return QColor(self._colors.get(self.tabText(i), "#8b93a1"))
+    def set_accent(self, color: str) -> None:
+        self._accent = QColor(color)
+        self.update()
 
-    def tabSizeHint(self, index):  # noqa: N802
-        s = super().tabSizeHint(index)
-        s.setHeight(36)
-        return s
+    def _animate(self, on: bool) -> None:
+        self._anim = QPropertyAnimation(self, b"pos", self)
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+        self._anim.setStartValue(self._pos)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
 
-    def paintEvent(self, event):  # noqa: N802
+    def _get_pos(self) -> float:
+        return self._pos
+
+    def _set_pos(self, v: float) -> None:
+        self._pos = v
+        self.update()
+
+    pos = pyqtProperty(float, fget=_get_pos, fset=_set_pos)
+
+    def sizeHint(self):  # noqa: N802
+        return QSize(self._w, self._h)
+
+    def hitButton(self, pos):  # noqa: N802
+        return self.rect().contains(pos)
+
+    def paintEvent(self, _event):  # noqa: N802
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cur = self.currentIndex()
-        for i in range(self.count()):
-            r = QRectF(self.tabRect(i)).adjusted(2, 5, -2, -5)
-            col = self._color(i)
-            selected = i == cur
-            fill = QColor(col)
-            fill.setAlpha(44 if selected else 18)
-            edge = QColor(col)
-            edge.setAlpha(255 if selected else 130)
+        t = self._pos
+        off, on = self._track_off, self._accent
+        track = QColor(
+            int(off.red() + (on.red() - off.red()) * t),
+            int(off.green() + (on.green() - off.green()) * t),
+            int(off.blue() + (on.blue() - off.blue()) * t),
+        )
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(track)
+        p.drawRoundedRect(QRectF(0, 0, self._w, self._h), self._h / 2, self._h / 2)
+        d = self._h - 6
+        x = 3 + t * (self._w - d - 6)
+        p.setBrush(self._knob)
+        p.drawEllipse(QRectF(x, 3, d, d))
+        p.end()
+
+
+def _num_range(path: list, default):
+    """Guess a friendly (lo, hi, step) slider range from a key name + value."""
+    key = str(path[-1]).lower()
+    is_float = isinstance(default, float)
+    if any(s in key for s in ("frac", "opacity")) or key.endswith("_pct") or "tau" in key:
+        lo, hi, step = 0.0, 1.0, 0.01
+    elif "scale" in key:
+        lo, hi, step = 0.2, 3.0, 0.05
+    elif key.endswith("_hz"):
+        lo, hi, step = 0.0, 20.0, 0.5
+    elif "seconds" in key:
+        lo, hi, step = 0.0, 10.0, 0.5
+    elif "range" in key:
+        lo, hi, step = 0.0, 5.0, 0.1
+    elif "segments" in key:
+        lo, hi, step = 1, 48, 1
+    elif "width" in key:
+        lo, hi, step = 0, 40, 1
+    elif key in ("rows", "rows_ahead", "rows_behind", "history_laps"):
+        lo, hi, step = 0, 30, 1
+    elif key.endswith("px"):
+        lo, hi, step = 6, 48, 1
+    elif is_float:
+        lo, hi, step = 0.0, max(2.0, abs(default) * 4 or 2.0), 0.05
+    else:
+        lo, hi, step = 0, int(max(10, abs(default) * 4 or 10)), 1
+    lo = min(lo, default)
+    hi = max(hi, default)
+    return (float(lo), float(hi), float(step)) if is_float else (int(lo), int(hi), int(step))
+
+
+class NumberControl(QWidget):
+    """A slider paired with a precise spin box for any numeric value."""
+
+    def __init__(self, path: list, default, value, on_change):
+        super().__init__()
+        self.is_float = isinstance(default, float)
+        self.lo, self.hi, self.step = _num_range(path, default)
+        if self.step <= 0:
+            self.step = 0.01 if self.is_float else 1
+        self.steps = max(1, int(round((self.hi - self.lo) / self.step)))
+        self._on_change = on_change
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(12)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(0, self.steps)
+        self.slider.setValue(self._to_slider(value))
+        self.slider.setMinimumWidth(140)
+        self.slider.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        if self.is_float:
+            self.spin = QDoubleSpinBox()
+            self.spin.setDecimals(3)
+            self.spin.setRange(-1_000_000.0, 1_000_000.0)
+            self.spin.setSingleStep(self.step)
+        else:
+            self.spin = QSpinBox()
+            self.spin.setRange(-1_000_000, 1_000_000)
+            self.spin.setSingleStep(max(1, int(self.step)))
+        self.spin.setValue(value)
+        self.spin.setFixedWidth(94)
+
+        self.slider.valueChanged.connect(self._slider_changed)
+        self.spin.valueChanged.connect(self._spin_changed)
+        h.addWidget(self.slider, 1)
+        h.addWidget(self.spin)
+
+    def _to_slider(self, val) -> int:
+        return max(0, min(self.steps, int(round((val - self.lo) / self.step))))
+
+    def _from_slider(self, s: int):
+        v = self.lo + s * self.step
+        return round(v, 3) if self.is_float else int(round(v))
+
+    def _slider_changed(self, s: int) -> None:
+        v = self._from_slider(s)
+        self.spin.blockSignals(True)
+        self.spin.setValue(v)
+        self.spin.blockSignals(False)
+        self._on_change(v)
+
+    def _spin_changed(self, v) -> None:
+        v = float(v) if self.is_float else int(v)
+        self.slider.blockSignals(True)
+        self.slider.setValue(self._to_slider(v))
+        self.slider.blockSignals(False)
+        self._on_change(v)
+
+
+class CollapsibleSection(QWidget):
+    """A titled accordion: click the header to expand/collapse its body."""
+
+    def __init__(self, title: str, accent: str = ACCENT, expanded: bool = True):
+        super().__init__()
+        self._title = title
+        self._default_expanded = expanded
+        self._search = title.lower()
+
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        self.header = QPushButton(self._fmt(expanded))
+        self.header.setObjectName("accordion")
+        self.header.setCheckable(True)
+        self.header.setChecked(expanded)
+        self.header.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.header.toggled.connect(self._toggle)
+        v.addWidget(self.header)
+
+        self.body = QWidget()
+        self.body.setObjectName("accordionBody")
+        self._body_lay = QVBoxLayout(self.body)
+        self._body_lay.setContentsMargins(12, 10, 12, 12)
+        self._body_lay.setSpacing(7)
+        v.addWidget(self.body)
+        self.body.setVisible(expanded)
+
+    def _fmt(self, expanded: bool) -> str:
+        return ("\u25BE   " if expanded else "\u25B8   ") + self._title.upper()
+
+    def _toggle(self, on: bool) -> None:
+        self.body.setVisible(on)
+        self.header.setText(self._fmt(on))
+
+    def setExpanded(self, on: bool) -> None:  # noqa: N802
+        if self.header.isChecked() != on:
+            self.header.setChecked(on)
+
+    def body_layout(self) -> QVBoxLayout:
+        return self._body_lay
+
+
+class NavItem(QWidget):
+    """A clickable sidebar row with a section color dot and selection highlight."""
+
+    clicked = pyqtSignal()
+
+    def __init__(self, title: str, color: str):
+        super().__init__()
+        self._color = QColor(color)
+        self._selected = False
+        self._dot_on = True
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(40)
+
+        h = QHBoxLayout(self)
+        h.setContentsMargins(18, 0, 16, 0)
+        h.setSpacing(10)
+        self.label = QLabel(title)
+        self.label.setStyleSheet("background: transparent; color: #aab2bf;")
+        h.addWidget(self.label)
+        h.addStretch(1)
+
+    def set_dot(self, on: bool) -> None:
+        self._dot_on = on
+        self.update()
+
+    def setSelected(self, sel: bool) -> None:  # noqa: N802
+        self._selected = sel
+        f = self.label.font()
+        f.setBold(sel)
+        self.label.setFont(f)
+        self.label.setStyleSheet(
+            "background: transparent; color: %s;"
+            % ("#f4f6f8" if sel else "#aab2bf"))
+        self.update()
+
+    def mousePressEvent(self, _event):  # noqa: N802
+        self.clicked.emit()
+
+    def paintEvent(self, _event):  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(6, 3, -6, -3)
+        if self._selected:
+            fill = QColor(self._color)
+            fill.setAlpha(34)
             p.setBrush(fill)
-            p.setPen(QPen(edge, 1.6 if selected else 1.2))
-            p.drawRoundedRect(r, 9, 9)
-            p.setPen(QColor("#f4f6f8") if selected else QColor("#aab2bf"))
-            f = self.font()
-            f.setBold(selected)
-            p.setFont(f)
-            txt = p.fontMetrics().elidedText(
-                self.tabText(i), Qt.TextElideMode.ElideRight, int(r.width() - 12))
-            p.drawText(r, Qt.AlignmentFlag.AlignCenter, txt)
+            p.setPen(QPen(QColor(self._color), 1.3))
+            p.drawRoundedRect(r, 10, 10)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(self._color)
+            p.drawRoundedRect(QRectF(r.left() + 3, r.center().y() - 8, 3, 16), 1.5, 1.5)
+        dot = QColor(self._color) if self._dot_on else QColor("#4d535d")
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(dot)
+        p.drawEllipse(QPointF(r.right() - 6, r.center().y()), 4.0, 4.0)
         p.end()
 
 
@@ -579,13 +824,16 @@ class ConfigEditor(QWidget):
         self._overlay = overlay
         self.setObjectName("root")
         self.setWindowTitle("Overlay Settings")
-        self.resize(640, 800)
-        self.setMinimumSize(480, 560)
+        self.resize(880, 820)
+        self.setMinimumSize(720, 560)
         self.setStyleSheet(STYLE)
 
         self.working = config._deep_merge(config.full_defaults(), config.CFG)
-        self._rows: list[dict] = []   # {widget, text, groups}
-        self._groups: list[QGroupBox] = []
+        self._rows: list[dict] = []          # {widget, text, accordions}
+        self._accordions: list[CollapsibleSection] = []
+        self._nav_items: dict[str, NavItem] = {}
+        self._sections: list[tuple[str, str]] = []
+        self._cur_index = 0
         self._carbon = _carbon_tile()
 
         root = QVBoxLayout(self)
@@ -606,9 +854,19 @@ class ConfigEditor(QWidget):
         self.search.textChanged.connect(self._filter)
         root.addWidget(self.search)
 
-        self.tabs = QTabWidget()
-        self.tabs.setTabBar(ChipTabBar(TAB_COLORS))
-        root.addWidget(self.tabs, 1)
+        # Sidebar navigation rail + stacked pages.
+        body = QHBoxLayout()
+        body.setSpacing(12)
+        self.nav_rail = QWidget()
+        self.nav_rail.setObjectName("navRail")
+        self.nav_rail.setFixedWidth(196)
+        self.nav_lay = QVBoxLayout(self.nav_rail)
+        self.nav_lay.setContentsMargins(8, 12, 8, 12)
+        self.nav_lay.setSpacing(2)
+        self.stack = QStackedWidget()
+        body.addWidget(self.nav_rail)
+        body.addWidget(self.stack, 1)
+        root.addLayout(body, 1)
 
         self.status = QLabel("")
         self.status.setObjectName("status")
@@ -617,13 +875,13 @@ class ConfigEditor(QWidget):
         self._status_timer.setSingleShot(True)
         self._status_timer.timeout.connect(lambda: self.status.setText(""))
 
-        # Debounce disk writes so dragging a spin box doesn't save on every step.
+        # Debounce disk writes so dragging a slider doesn't save on every step.
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
         self._save_timer.timeout.connect(self._autosave)
 
         controls = QHBoxLayout()
-        controls.setSpacing(8)
+        controls.setSpacing(10)
         self.overlay_btn = QPushButton("Start Overlay")
         self.overlay_btn.setObjectName("go")
         self.overlay_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -633,12 +891,10 @@ class ConfigEditor(QWidget):
             self.overlay_btn.hide()
         else:
             self._refresh_overlay_btn()
-        self.live_chk = QCheckBox("Apply live")
-        self.live_chk.setChecked(True)
-        controls.addWidget(self.live_chk)
-        self.autosave_chk = QCheckBox("Auto-save")
-        self.autosave_chk.setChecked(True)
-        controls.addWidget(self.autosave_chk)
+        live_w, self.live_sw = self._opt_toggle("Apply live", True)
+        controls.addWidget(live_w)
+        save_w, self.autosave_sw = self._opt_toggle("Auto-save", True)
+        controls.addWidget(save_w)
         controls.addStretch(1)
         for text, slot, oname in (
             ("Reset", self._reset, "danger"),
@@ -654,7 +910,7 @@ class ConfigEditor(QWidget):
             controls.addWidget(b)
         root.addLayout(controls)
 
-        self._build_tabs()
+        self._build_nav_and_pages()
 
     # --- background ---------------------------------------------------------
 
@@ -668,19 +924,59 @@ class ConfigEditor(QWidget):
         g.setColorAt(1.0, QColor(0, 0, 0, 70))
         p.fillRect(self.rect(), g)
 
+    # --- small helpers ------------------------------------------------------
+
+    def _opt_toggle(self, text: str, checked: bool):
+        """A compact labeled switch for the app-level options bar."""
+        w = QWidget()
+        h = QHBoxLayout(w)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(7)
+        sw = ToggleSwitch(checked=checked, accent=ACCENT)
+        lbl = QLabel(text)
+        lbl.setStyleSheet("background: transparent; color: #aab2bf;")
+        h.addWidget(sw)
+        h.addWidget(lbl)
+        return w, sw
+
     # --- UI construction ----------------------------------------------------
 
-    def _build_tabs(self) -> None:
-        self.tabs.clear()
+    def _build_nav_and_pages(self) -> None:
+        while self.stack.count():
+            w = self.stack.widget(0)
+            self.stack.removeWidget(w)
+            w.deleteLater()
+        while self.nav_lay.count():
+            item = self.nav_lay.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._rows.clear()
-        self._groups.clear()
-        scalars = {k: v for k, v in config.DEFAULTS.items() if not isinstance(v, dict)}
-        if scalars:
-            self.tabs.addTab(self._scroll(self._build_section(scalars, [], [])), "General")
-        for key, val in config.DEFAULTS.items():
-            if isinstance(val, dict):
-                self.tabs.addTab(
-                    self._scroll(self._build_section(val, [key], [])), _pretty(key))
+        self._accordions.clear()
+        self._nav_items.clear()
+
+        self._sections = [("__general__", "General")] + [
+            (k, _pretty(k)) for k, val in config.DEFAULTS.items()
+            if isinstance(val, dict)
+        ]
+        for idx, (key, title) in enumerate(self._sections):
+            color = TAB_COLORS.get(title, "#9aa3b2")
+            self.stack.addWidget(self._scroll(self._build_page(key, title, color)))
+            nav = NavItem(title, color)
+            nav.clicked.connect(lambda i=idx: self._select(i))
+            if key != "__general__" and "show" in config.DEFAULTS[key]:
+                nav.set_dot(bool(_get_at(self.working, [key, "show"])))
+            self._nav_items[key] = nav
+            self.nav_lay.addWidget(nav)
+        self.nav_lay.addStretch(1)
+        self._select(min(self._cur_index, len(self._sections) - 1))
+
+    def _select(self, index: int) -> None:
+        self._cur_index = index
+        self.stack.setCurrentIndex(index)
+        for idx, (key, _t) in enumerate(self._sections):
+            nav = self._nav_items.get(key)
+            if nav:
+                nav.setSelected(idx == index)
 
     def _scroll(self, inner: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -690,99 +986,175 @@ class ConfigEditor(QWidget):
         area.viewport().setStyleSheet("background: transparent;")
         return area
 
-    def _build_section(self, schema: dict, path: list, groups: list) -> QWidget:
-        container = QWidget()
-        v = QVBoxLayout(container)
-        v.setContentsMargins(4, 4, 4, 4)
-        v.setSpacing(7)
+    def _build_page(self, key: str, title: str, color: str) -> QWidget:
+        page = QWidget()
+        v = QVBoxLayout(page)
+        v.setContentsMargins(6, 4, 10, 8)
+        v.setSpacing(9)
 
-        # The Map tab gets one-shot actions to re-learn the live track / pits.
-        if path == ["map"]:
-            rescan = QPushButton("\u21BB  Rescan track now")
-            rescan.setObjectName("warn")
-            rescan.setCursor(Qt.CursorShape.PointingHandCursor)
-            rescan.clicked.connect(self._rescan_track)
-            v.addWidget(rescan)
-            hint = QLabel("Re-learns the current track from your driving and "
-                          "overwrites its saved scan (also clears the pit lane).")
-            hint.setWordWrap(True)
-            hint.setStyleSheet("color: #9aa3ad; font-size: 11px;")
-            v.addWidget(hint)
+        head = QLabel(title)
+        head.setObjectName("pageTitle")
+        v.addWidget(head)
 
-            rescan_pits = QPushButton("\u21BB  Rescan pits only")
-            rescan_pits.setObjectName("warn")
-            rescan_pits.setCursor(Qt.CursorShape.PointingHandCursor)
-            rescan_pits.clicked.connect(self._rescan_pits)
-            v.addWidget(rescan_pits)
-            hint2 = QLabel("Forgets just the pit lane; drive through the pits "
-                           "once to re-learn it.")
-            hint2.setWordWrap(True)
-            hint2.setStyleSheet("color: #9aa3ad; font-size: 11px;")
-            v.addWidget(hint2)
+        if key == "__general__":
+            scalars = {k: val for k, val in config.DEFAULTS.items()
+                       if not isinstance(val, dict)}
+            self._populate(v, scalars, [], color, [])
+            v.addStretch(1)
+            return page
 
-        # Scalars (and palette) first, then nested groups.
-        for key, default_val in schema.items():
-            if isinstance(default_val, dict):
-                continue
-            cur_path = path + [key]
-            value = _get_at(self.working, cur_path)
-            if isinstance(default_val, list) and key in ("palette", "column_order"):
-                continue  # rendered as its own group below
-            v.addWidget(self._leaf_row(cur_path, default_val, value, groups))
+        schema = config.DEFAULTS[key]
+        target = v
+        skip: set = set()
+        if "show" in schema:
+            card, body = self._enable_card(key, title, color)
+            v.addWidget(card)
+            v.addWidget(body)
+            target = body.layout()
+            skip = {"show"}
 
-        for key, default_val in schema.items():
-            cur_path = path + [key]
-            if key == "palette" and isinstance(default_val, list):
-                box = self._group("Palette", cur_path, groups)
-                value = _get_at(self.working, cur_path)
-                box.layout().addWidget(
-                    PaletteEditor(value, lambda x, p=cur_path: self._set(p, x)))
-                v.addWidget(box)
-            elif key == "column_order" and isinstance(default_val, list):
-                box = self._group("Column order", cur_path, groups)
-                value = _get_at(self.working, cur_path)
-                box.layout().addWidget(
-                    OrderEditor(value, COLUMN_LABELS, config.TABLE_COLUMNS,
-                                lambda x, p=cur_path: self._set(p, x)))
-                v.addWidget(box)
-            elif isinstance(default_val, dict):
-                box = self._group(_pretty(key), cur_path, groups)
-                box.layout().addWidget(
-                    self._build_section(default_val, cur_path, groups + [box]))
-                v.addWidget(box)
+        if key == "map":
+            self._add_map_actions(target)
 
+        self._populate(target, schema, [key], color, [], skip=skip)
         v.addStretch(1)
-        return container
+        return page
 
-    def _group(self, title: str, path: list, groups: list) -> QGroupBox:
-        box = QGroupBox(title.upper())
-        lay = QVBoxLayout(box)
-        lay.setContentsMargins(10, 6, 10, 8)
-        lay.setSpacing(6)
-        self._groups.append(box)
-        box._ed_search = " ".join(_pretty(p) for p in path).lower()  # type: ignore
-        return box
+    def _enable_card(self, key: str, title: str, color: str):
+        """A prominent master on/off switch; its body holds the rest of the
+        widget's settings and collapses when the widget is disabled."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        h = QHBoxLayout(card)
+        h.setContentsMargins(15, 11, 15, 11)
+        h.setSpacing(12)
+        texts = QVBoxLayout()
+        texts.setSpacing(1)
+        t = QLabel(f"Enable {title}")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Show this widget and reveal its settings below.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        texts.addWidget(t)
+        texts.addWidget(hint)
+        h.addLayout(texts, 1)
+        cur = bool(_get_at(self.working, [key, "show"]))
+        toggle = ToggleSwitch(checked=cur, accent=color)
+        h.addWidget(toggle, 0, Qt.AlignmentFlag.AlignVCenter)
 
-    def _leaf_row(self, path, default_val, value, groups) -> QWidget:
+        body = QWidget()
+        bl = QVBoxLayout(body)
+        bl.setContentsMargins(0, 2, 0, 0)
+        bl.setSpacing(8)
+        body.setVisible(cur)
+
+        def on_toggle(on, k=key, b=body):
+            self._set([k, "show"], bool(on))
+            b.setVisible(bool(on))
+            nav = self._nav_items.get(k)
+            if nav:
+                nav.set_dot(bool(on))
+
+        toggle.toggled.connect(on_toggle)
+        return card, body
+
+    def _add_map_actions(self, lay) -> None:
+        rescan = QPushButton("\u21BB  Rescan track now")
+        rescan.setObjectName("warn")
+        rescan.setCursor(Qt.CursorShape.PointingHandCursor)
+        rescan.clicked.connect(self._rescan_track)
+        lay.addWidget(rescan)
+        hint = QLabel("Re-learns the current track from your driving and "
+                      "overwrites its saved scan (also clears the pit lane).")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #9aa3ad; font-size: 11px;")
+        lay.addWidget(hint)
+
+        rescan_pits = QPushButton("\u21BB  Rescan pits only")
+        rescan_pits.setObjectName("warn")
+        rescan_pits.setCursor(Qt.CursorShape.PointingHandCursor)
+        rescan_pits.clicked.connect(self._rescan_pits)
+        lay.addWidget(rescan_pits)
+        hint2 = QLabel("Forgets just the pit lane; drive through the pits "
+                       "once to re-learn it.")
+        hint2.setWordWrap(True)
+        hint2.setStyleSheet("color: #9aa3ad; font-size: 11px;")
+        lay.addWidget(hint2)
+
+    # Nested groups that are usually long/secondary start collapsed.
+    _COLLAPSED = {"colors", "license_colors", "widths", "sizes", "columns"}
+
+    def _populate(self, lay, schema: dict, path: list, color: str,
+                  chain: list, skip=()) -> None:
+        # Simple leaves first, then palette / order editors, then sub-groups.
+        for key, default_val in schema.items():
+            if key in skip or isinstance(default_val, dict):
+                continue
+            if isinstance(default_val, list) and key in ("palette", "column_order"):
+                continue
+            cur = path + [key]
+            lay.addWidget(self._leaf_row(cur, default_val,
+                                         _get_at(self.working, cur), color, chain))
+
+        for key, default_val in schema.items():
+            if key in skip:
+                continue
+            cur = path + [key]
+            if key == "palette" and isinstance(default_val, list):
+                acc = self._accordion("Palette", cur, color, expanded=False)
+                acc.body_layout().addWidget(
+                    PaletteEditor(_get_at(self.working, cur),
+                                  lambda x, p=cur: self._set(p, x)))
+                lay.addWidget(acc)
+            elif key == "column_order" and isinstance(default_val, list):
+                acc = self._accordion("Column order", cur, color, expanded=True)
+                acc.body_layout().addWidget(
+                    OrderEditor(_get_at(self.working, cur), COLUMN_LABELS,
+                                config.TABLE_COLUMNS,
+                                lambda x, p=cur: self._set(p, x)))
+                lay.addWidget(acc)
+            elif isinstance(default_val, dict):
+                expanded = key not in self._COLLAPSED
+                acc = self._accordion(_pretty(key), cur, color, expanded=expanded)
+                self._populate(acc.body_layout(), default_val, cur, color,
+                               chain + [acc])
+                lay.addWidget(acc)
+
+    def _accordion(self, title: str, path: list, color: str,
+                   expanded: bool = True) -> CollapsibleSection:
+        acc = CollapsibleSection(title, accent=color, expanded=expanded)
+        acc._search = " ".join(_pretty(p) for p in path).lower()  # type: ignore
+        self._accordions.append(acc)
+        return acc
+
+    def _leaf_row(self, path, default_val, value, color, chain) -> QWidget:
         row = QWidget()
         h = QHBoxLayout(row)
-        h.setContentsMargins(2, 1, 2, 1)
+        h.setContentsMargins(2, 2, 2, 2)
+        h.setSpacing(12)
         label_text = _label_for(path)
         label = QLabel(label_text)
-        label.setMinimumWidth(150)
+        label.setObjectName("rowLabel")
+        label.setMinimumWidth(170)
         label.setWordWrap(True)
-        h.addWidget(label)
-        h.addWidget(self._control(path, default_val, value))
-        h.addStretch(1)
+        h.addWidget(label, 0)
+
+        ctrl = self._control(path, default_val, value, color)
+        if isinstance(ctrl, NumberControl):
+            h.addWidget(ctrl, 1)
+        else:
+            h.addStretch(1)
+            h.addWidget(ctrl, 0)
+
         self._rows.append({
             "widget": row,
             # Searchable on both the friendly label and the raw key path.
             "text": (label_text + " " + " ".join(_pretty(p) for p in path)).lower(),
-            "groups": list(groups),
+            "accordions": list(chain),
         })
         return row
 
-    def _control(self, path: list, default_val, value) -> QWidget:
+    def _control(self, path: list, default_val, value, color: str) -> QWidget:
         options = _enum_options(path)
         if options:
             combo = QComboBox()
@@ -795,25 +1167,14 @@ class ConfigEditor(QWidget):
         if _is_color(path, default_val):
             return ColorButton(value, lambda v, p=path: self._set(p, v))
         if isinstance(default_val, bool):
-            chk = QCheckBox()
-            chk.setChecked(bool(value))
-            chk.toggled.connect(lambda v, p=path: self._set(p, bool(v)))
-            return chk
-        if isinstance(default_val, int):
-            sp = QSpinBox()
-            sp.setRange(-100000, 100000)
-            sp.setValue(int(value))
-            sp.valueChanged.connect(lambda v, p=path: self._set(p, int(v)))
-            return sp
-        if isinstance(default_val, float):
-            dsp = QDoubleSpinBox()
-            dsp.setRange(-100000.0, 100000.0)
-            dsp.setDecimals(3)
-            dsp.setSingleStep(0.01)
-            dsp.setValue(float(value))
-            dsp.valueChanged.connect(lambda v, p=path: self._set(p, float(v)))
-            return dsp
+            sw = ToggleSwitch(checked=bool(value), accent=color)
+            sw.toggled.connect(lambda v, p=path: self._set(p, bool(v)))
+            return sw
+        if isinstance(default_val, (int, float)):
+            return NumberControl(path, default_val, value,
+                                 lambda v, p=path: self._set(p, v))
         edit = QLineEdit(str(value))
+        edit.setMinimumWidth(180)
         edit.textChanged.connect(lambda v, p=path: self._set(p, v))
         return edit
 
@@ -821,19 +1182,19 @@ class ConfigEditor(QWidget):
 
     def _filter(self, text: str) -> None:
         t = text.lower().strip()
-        live_groups = set()
         for r in self._rows:
-            vis = (t in r["text"]) if t else True
-            r["widget"].setVisible(vis)
-            if vis:
-                for g in r["groups"]:
-                    live_groups.add(id(g))
-        for box in self._groups:
-            if not t:
-                box.setVisible(True)
+            r["widget"].setVisible((t in r["text"]) if t else True)
+        for acc in self._accordions:
+            rows = [r for r in self._rows if acc in r["accordions"]]
+            has = (any(r["widget"].isVisible() for r in rows)
+                   or (bool(t) and t in getattr(acc, "_search", "")))
+            if t:
+                acc.setVisible(has)
+                if has:
+                    acc.setExpanded(True)
             else:
-                own = t in getattr(box, "_ed_search", "")
-                box.setVisible(own or id(box) in live_groups)
+                acc.setVisible(True)
+                acc.setExpanded(acc._default_expanded)
 
     # --- value changes ------------------------------------------------------
 
@@ -872,9 +1233,9 @@ class ConfigEditor(QWidget):
 
     def _set(self, path: list, value) -> None:
         _set_at(self.working, path, value)
-        if self.live_chk.isChecked():
+        if self.live_sw.isChecked():
             config.set_cfg(self.working)
-        if self.autosave_chk.isChecked():
+        if self.autosave_sw.isChecked():
             self._flash("Modified \u2014 saving\u2026")
             self._save_timer.start(400)
         else:
@@ -896,20 +1257,20 @@ class ConfigEditor(QWidget):
 
     def _reset(self) -> None:
         self.working = config.full_defaults()
-        self._build_tabs()
+        self._build_nav_and_pages()
         self._filter(self.search.text())
-        if self.live_chk.isChecked():
+        if self.live_sw.isChecked():
             config.set_cfg(self.working)
-        if self.autosave_chk.isChecked():
+        if self.autosave_sw.isChecked():
             self._save_timer.start(400)
         self._flash("Reset to defaults")
 
     def _reload(self) -> None:
         self._save_timer.stop()
         self.working = config._deep_merge(config.full_defaults(), config.load())
-        self._build_tabs()
+        self._build_nav_and_pages()
         self._filter(self.search.text())
-        if self.live_chk.isChecked():
+        if self.live_sw.isChecked():
             config.set_cfg(self.working)
         self._flash("Reloaded from file")
 

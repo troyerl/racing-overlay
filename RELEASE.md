@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.3.0 - 2026-06-28
+
+- **Redesigned settings window.** A cleaner, more modern UI that's easier to
+  navigate. Widgets now live in a left **sidebar** (each tinted with its theme
+  color and a dot showing whether it's enabled) instead of cramped tabs.
+- **Enable-gated widgets.** Each widget page opens with a prominent on/off
+  switch; a widget's settings stay collapsed until you turn it on, so you only
+  see what's relevant.
+- **Accordions.** Nested groups (colors, widths, sizes, …) are now collapsible
+  cards, with the long secondary ones collapsed by default to cut clutter.
+  Search auto-expands any group containing a match.
+- **Sliding toggles.** Every on/off option is now an animated switch instead of
+  a checkbox.
+- **Sliders for numbers.** Numeric settings use a slider paired with a precise
+  value box, with sensible ranges inferred per setting.
+
 ## 1.2.0 - 2026-06-28
 
 - **More flag states on the dash.** The flag bar now distinguishes the
