@@ -420,6 +420,62 @@ DEFAULTS: dict = {
             "flag_checker_text": "#f4f6f8",
         },
     },
+    "inputs": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        # Seconds of pedal history shown by the scrolling trace (its width).
+        "history_seconds": 6.0,
+        # Which inputs appear in the trace graph (throttle/brake/clutch also get a
+        # value bar; steering is trace-only, swinging around the centre line).
+        "show_throttle": True,
+        "show_brake": True,
+        "show_clutch": False,
+        "show_steering": False,
+        # A horizontal "trail-braking" reference line. When the brake trace climbs
+        # above brake_threshold percent (0..100), that part turns the over color.
+        "show_brake_threshold": False,
+        "brake_threshold": 85,
+        # Layout sections (each can be hidden; the rest reflow to fill the panel):
+        # the vertical title tab, the scrolling trace, the value bars and the
+        # gear/speed medallion.
+        "show_label": True,
+        "show_graph": True,
+        "show_bars": True,
+        "show_gauge": True,
+        "label_text": "TELEMETRY",
+        # Trace line thickness in pixels.
+        "line_width": 2.4,
+        "colors": {
+            "bg_top": "#1b1f26",
+            "bg_bottom": "#0f1216",
+            "panel_border": "#ffffff20",
+            # The vertical accent bar beside the title.
+            "accent": "#e23b3b",
+            "label": "#cdd3db",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            # Trace well background + gridlines.
+            "graph_bg": "#0b0d11",
+            "grid": "#ffffff14",
+            # Input channels (also used for the value bars).
+            "throttle": "#46df7a",
+            "brake": "#e23b3b",
+            "clutch": "#3aa0ff",
+            "steering": "#c08bff",
+            # Brake line turns this color while ABS is active...
+            "brake_abs": "#ffd23a",
+            # ...and this color where it's above the brake threshold line.
+            "brake_over": "#ff7a1a",
+            # The brake threshold reference line itself.
+            "threshold": "#ffffff66",
+            "bar_track": "#262b34",
+            # Gear/speed medallion.
+            "gauge_bg": "#0b0d11",
+            "gauge_ring": "#333a42",
+        },
+    },
     "map": {
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,

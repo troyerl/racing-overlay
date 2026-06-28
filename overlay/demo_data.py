@@ -353,6 +353,12 @@ class FakeIRSDK:
         if key == "BrakeABSactive":
             return self["Brake"] > 0.55  # ABS "kicks in" under hard braking
 
+        if key == "SteeringWheelAngle":
+            t = time.time() - self._start
+            return 3.2 * math.sin(t * 0.7)   # radians, weaving back and forth
+        if key == "SteeringWheelAngleMax":
+            return 5.0                        # radians of lock (for normalizing)
+
         if key == "PlayerCarPosition":
             return self["CarIdxPosition"][self.player_idx]
 

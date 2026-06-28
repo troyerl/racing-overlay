@@ -126,6 +126,15 @@ LABEL_OVERRIDES = {
     "radar.show_rear": "Rear sensing",
     "radar.side_span_pct": "Side marker travel (lap fraction)",
     "radar.side_proximity_color": "Fade side marker yellow\u2192red by overlap",
+    "inputs.history_seconds": "Trace length (seconds)",
+    "inputs.label_text": "Title text",
+    "inputs.show_label": "Show title tab",
+    "inputs.show_graph": "Show scrolling trace",
+    "inputs.show_bars": "Show value bars",
+    "inputs.show_gauge": "Show gear/speed gauge",
+    "inputs.show_steering": "Show steering line",
+    "inputs.show_brake_threshold": "Show brake threshold line",
+    "inputs.brake_threshold": "Brake threshold (%)",
     "fuel_calc.title": "Title text",
     "fuel_calc.history_laps": "Laps to average for fuel use",
     "fuel_calc.show_title": "Show title bar",
@@ -493,6 +502,8 @@ def _num_range(path: list, default):
         lo, hi, step = 0.0, 10.0, 0.5
     elif "range" in key:
         lo, hi, step = 0.0, 5.0, 0.1
+    elif "threshold" in key or "percent" in key:
+        lo, hi, step = 0, 100, 1
     elif "segments" in key:
         lo, hi, step = 1, 48, 1
     elif "width" in key:
@@ -532,16 +543,22 @@ class NumberControl(QWidget):
         self.slider.setMinimumWidth(140)
         self.slider.setCursor(Qt.CursorShape.PointingHandCursor)
 
+        # Coerce the stored value to the spin's type: a QSpinBox rejects floats,
+        # and a config edited by hand (or left over from an older default) can
+        # carry the "wrong" numeric type for a key.
+        if not isinstance(value, (int, float)):
+            value = default
         if self.is_float:
             self.spin = QDoubleSpinBox()
             self.spin.setDecimals(3)
             self.spin.setRange(-1_000_000.0, 1_000_000.0)
             self.spin.setSingleStep(self.step)
+            self.spin.setValue(float(value))
         else:
             self.spin = QSpinBox()
             self.spin.setRange(-1_000_000, 1_000_000)
             self.spin.setSingleStep(max(1, int(self.step)))
-        self.spin.setValue(value)
+            self.spin.setValue(int(round(value)))
         self.spin.setFixedWidth(94)
 
         self.slider.valueChanged.connect(self._slider_changed)

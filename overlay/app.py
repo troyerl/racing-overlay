@@ -39,6 +39,7 @@ from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.dash import DashWidget
 from .widgets.fuel_calc import FuelCalcWidget
+from .widgets.inputs import InputTraceWidget
 from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
@@ -53,6 +54,7 @@ DEFAULT_GEOMS = {
     "dash": (260, 800, 660, 190),
     "laptime_log": (40, 500, 380, 320),
     "fuel_calc": (440, 500, 460, 380),
+    "inputs": (260, 600, 660, 150),
 }
 
 
@@ -176,6 +178,7 @@ class AdvancedSimHUD:
         self.dash_widget = DashWidget()
         self.laptime_widget = LaptimeLogWidget()
         self.fuel_widget = FuelCalcWidget()
+        self.inputs_widget = InputTraceWidget()
         if self.demo:
             self._load_demo_track()
             self._seed_demo_laptimes()
@@ -187,6 +190,7 @@ class AdvancedSimHUD:
         self._wrap("dash", self.dash_widget)
         self._wrap("laptime_log", self.laptime_widget)
         self._wrap("fuel_calc", self.fuel_widget)
+        self._wrap("inputs", self.inputs_widget)
 
     @staticmethod
     def _is_shown(key: str) -> bool:
@@ -257,7 +261,7 @@ class AdvancedSimHUD:
     def _repaint_all(self) -> None:
         for w in (self.standings_widget, self.relative_widget,
                   self.radar_widget, self.map_widget, self.dash_widget,
-                  self.laptime_widget, self.fuel_widget):
+                  self.laptime_widget, self.fuel_widget, self.inputs_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -359,7 +363,7 @@ class AdvancedSimHUD:
         # Which widgets are visible: a hidden widget does no reads and no work.
         en = {k: self._is_shown(k)
               for k in ("standings", "relative", "radar", "map", "dash",
-                        "laptime_log", "fuel_calc")}
+                        "laptime_log", "fuel_calc", "inputs")}
         if not any(en.values()):
             return
 
@@ -420,6 +424,8 @@ class AdvancedSimHUD:
             self._update_laptime_log()
         if en["fuel_calc"]:
             self._update_fuel_calc()
+        if en["inputs"]:
+            self._update_inputs()
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -1407,6 +1413,32 @@ class AdvancedSimHUD:
             "flag": (self._session_flag()
                      if config.CFG["dash"].get("show_flags", True) else None),
         })
+
+    def _update_inputs(self) -> None:
+        """Feed the input-telemetry trace (throttle/brake/clutch/steer + gear)."""
+        # iRacing's Clutch is 1.0 when fully engaged (pedal up); show pedal travel.
+        clutch_raw = self.ir["Clutch"]
+        clutch = (1.0 - clutch_raw) if isinstance(clutch_raw, (int, float)) else None
+        self.inputs_widget.set_data({
+            "throttle": self.ir["Throttle"],
+            "brake": self.ir["Brake"],
+            "clutch": clutch,
+            "steer": self._steer_norm(),
+            "abs_active": bool(self.ir["BrakeABSactive"]),
+            "gear": self.ir["Gear"],
+            "speed_ms": self.ir["Speed"],
+        })
+
+    def _steer_norm(self):
+        """Steering angle normalized to 0..1 (0.5 centered), using the car's
+        max lock when reported, else a sane fallback so the trace stays on-scale."""
+        angle = self.ir["SteeringWheelAngle"]
+        if not isinstance(angle, (int, float)):
+            return None
+        amax = self.ir["SteeringWheelAngleMax"]
+        if not isinstance(amax, (int, float)) or amax <= 0.1:
+            amax = 5.0  # radians (~286 deg of lock) -- typical road-car fallback
+        return 0.5 + 0.5 * max(-1.0, min(1.0, angle / amax))
 
     def _fuel_laps(self):
         """Estimate laps of fuel remaining from level, burn rate and lap time."""

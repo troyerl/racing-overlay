@@ -20,6 +20,12 @@
   "dash": {
     "show": false
   },
+  "inputs": {
+    "show_steering": true,
+    "show_brake_threshold": true,
+    "brake_threshold": 49,
+    "show_gauge": false
+  },
   "map": {
     "show": false
   }

@@ -5,6 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.8.0 - 2026-06-28
+
+- **New Input Telemetry widget.** A scrolling throttle/brake/clutch trace (newest
+  on the right) with a vertical title tab, live value bars, and a gear + speed
+  medallion -- styled to match the other panels. Toggle each section and channel,
+  set the history length, line width and colors from the new Inputs settings page.
+- **Steering trace.** Optionally overlay a steering line that swings around the
+  center, normalized to the car's lock (`inputs.show_steering`).
+- **ABS + trail-braking cues.** The brake line/bar turns a configurable color
+  while ABS is active, and an optional brake-threshold line (a percentage) recolors
+  the brake trace where it climbs above it.
+- **Fix:** the settings window no longer crashes when a numeric value's type
+  doesn't match its control (e.g. a hand-edited or older config value).
+
 ## 1.7.0 - 2026-06-28
 
 - **Radar side marker shows fore/aft position.** A car alongside is now a marker
