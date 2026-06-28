@@ -809,10 +809,10 @@ class DashWidget(QWidget):
         p.setPen(QPen(glow, pen_w * 2.0, cap=Qt.PenCapStyle.FlatCap))
         for i in range(n):
             if i < lit:
-                ang = 90.0 - (i + 0.5) * seg
+                ang = 90.0 + (i + 0.5) * seg  # sweep counter-clockwise (L->R)
                 p.drawArc(arc, int((ang + span / 2) * 16), int(-span * 16))
         for i in range(n):
-            ang = 90.0 - (i + 0.5) * seg
+            ang = 90.0 + (i + 0.5) * seg
             p.setPen(QPen(on_color if i < lit else off, pen_w,
                           cap=Qt.PenCapStyle.FlatCap))
             p.drawArc(arc, int((ang + span / 2) * 16), int(-span * 16))

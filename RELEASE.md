@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.2.0 - 2026-06-28
+
+- **More flag states on the dash.** The flag bar now distinguishes the
+  **meatball** (must-pit-to-repair), **furled** (warning) and **disqualified**
+  flags in addition to caution/black/green, each with its own color + label, read
+  straight from iRacing's `SessionFlags`.
+- **Customizable flag flash.** The flag bar pulses briefly when a flag appears
+  and then holds steady; the flash can be toggled and its duration/rate tuned
+  from the Dash settings (`dash.flag_pulse` / `flag_pulse_seconds` /
+  `flag_blink_hz`).
+- **Fuel Calculator feature toggles.** Each section of the Fuel Calculator
+  (title, status pill, add-fuel box, gauge, usage table, pit timeline, time/laps
+  until empty) can be shown or hidden, and the rest reflow to fill the panel.
+- **Clearer settings labels.** Terse toggles now show meaningful descriptions in
+  the settings (e.g. "Show pit-window status pill" instead of "Show pill").
+- **Dash ring input direction.** The throttle/brake/clutch arcs in the dash ring
+  view now sweep left-to-right.
+
 ## 1.1.0 - 2026-06-27
 
 - **Fuel Calculator widget.** A new overlay panel showing current fuel + tank
