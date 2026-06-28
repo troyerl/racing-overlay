@@ -476,6 +476,94 @@ DEFAULTS: dict = {
             "gauge_ring": "#333a42",
         },
     },
+    "delta_bar": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        # Reference lap the delta is measured against: "session_best" (overall),
+        # "best_lap" (your own best) or "optimal" (iRacing's best-sectors lap).
+        "mode": "session_best",
+        # Seconds of delta at full bar deflection (smaller = more sensitive).
+        "range": 1.0,
+        # Show the big signed number above the bar.
+        "show_value": True,
+        "colors": {
+            "bg_top": "#1b1f26",
+            "bg_bottom": "#0f1216",
+            "panel_border": "#ffffff20",
+            "faster": "#46df7a",
+            "slower": "#e23b3b",
+            "track": "#262b34",
+            "center": "#8b93a1",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+        },
+    },
+    "flags": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        # Text shown when no flag is flying.
+        "idle_text": "TRACK CLEAR",
+        "colors": {
+            "bg_top": "#1b1f26",
+            "bg_bottom": "#0f1216",
+            "panel_border": "#ffffff20",
+            # Calm "no flag" state.
+            "idle_bg": "#1f242c",
+            "idle_text": "#9fb0a4",
+            # Flag banner backgrounds + text (mirrors the dash flag colors).
+            "flag_yellow": "#ffd23a",
+            "flag_yellow_text": "#1a1400",
+            "flag_black": "#0a0a0a",
+            "flag_black_text": "#ffffff",
+            "flag_meatball": "#ff7a1a",
+            "flag_meatball_text": "#1a0d00",
+            "flag_furled": "#caa23a",
+            "flag_furled_text": "#1a1400",
+            "flag_dq": "#c0392b",
+            "flag_dq_text": "#ffffff",
+            "flag_green": "#46df7a",
+            "flag_green_text": "#06210f",
+            "flag_white_bg": "#eef1f4",
+            "flag_white_text": "#14171c",
+            "flag_red": "#d11f2d",
+            "flag_red_text": "#ffffff",
+            "flag_blue": "#2f6bd8",
+            "flag_blue_text": "#ffffff",
+            "flag_debris": "#e0a72e",
+            "flag_debris_text": "#1a1400",
+            "flag_crossed": "#2a2f38",
+            "flag_crossed_text": "#f4f6f8",
+            "flag_checker_bg": "#14171c",
+            "flag_checker_text": "#f4f6f8",
+        },
+    },
+    "sector_timing": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        # Fallback sector count when the session provides no sector layout.
+        "sectors": 3,
+        "colors": {
+            "bg_top": "#1b1f26",
+            "bg_bottom": "#0f1216",
+            "panel_border": "#ffffff20",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            # Sector cell fills by state: matched your best (purple), completed,
+            # the in-progress sector, and not-yet-run.
+            "sec_best": "#6b39c8",
+            "sec_done": "#22303f",
+            "sec_running": "#1d3a2a",
+            "sec_running_edge": "#46df7a",
+            "sec_idle": "#161a20",
+            "sec_text": "#dfe3ea",
+        },
+    },
     "map": {
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,

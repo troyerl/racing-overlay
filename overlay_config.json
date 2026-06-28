@@ -21,10 +21,21 @@
     "show": false
   },
   "inputs": {
+    "show": false,
     "show_steering": true,
     "show_brake_threshold": true,
     "brake_threshold": 49,
     "show_gauge": false
+  },
+  "delta_bar": {
+    "show": false
+  },
+  "flags": {
+    "show": false
+  },
+  "sector_timing": {
+    "show": false,
+    "text_scale": 0.95
   },
   "map": {
     "show": false

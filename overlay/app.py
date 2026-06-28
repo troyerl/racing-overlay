@@ -38,11 +38,14 @@ from . import version
 from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.dash import DashWidget
+from .widgets.delta_bar import DeltaBarWidget
+from .widgets.flags import FlagsWidget
 from .widgets.fuel_calc import FuelCalcWidget
 from .widgets.inputs import InputTraceWidget
 from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
+from .widgets.sector_timing import SectorTimer, SectorTimingWidget
 from .widgets.standings import StandingsWidget
 
 # Default window geometry per panel: (x, y, w, h). Overridden by saved layout.
@@ -55,6 +58,9 @@ DEFAULT_GEOMS = {
     "laptime_log": (40, 500, 380, 320),
     "fuel_calc": (440, 500, 460, 380),
     "inputs": (260, 600, 660, 150),
+    "delta_bar": (380, 60, 420, 120),
+    "flags": (820, 60, 320, 150),
+    "sector_timing": (380, 200, 360, 170),
 }
 
 
@@ -113,6 +119,8 @@ class AdvancedSimHUD:
         self._pit_speed_ms = 0.0
         self._pit_s0 = None  # speed/time samples for steady-cruise detection
         self._pit_t0 = None
+        # Sector timing: derives sector splits from lap-distance crossings.
+        self._sector_timer = SectorTimer()
         # Flag state: remember whether we were under yellow so we can flash a
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
@@ -179,6 +187,9 @@ class AdvancedSimHUD:
         self.laptime_widget = LaptimeLogWidget()
         self.fuel_widget = FuelCalcWidget()
         self.inputs_widget = InputTraceWidget()
+        self.delta_bar_widget = DeltaBarWidget()
+        self.flags_widget = FlagsWidget()
+        self.sector_widget = SectorTimingWidget()
         if self.demo:
             self._load_demo_track()
             self._seed_demo_laptimes()
@@ -191,6 +202,9 @@ class AdvancedSimHUD:
         self._wrap("laptime_log", self.laptime_widget)
         self._wrap("fuel_calc", self.fuel_widget)
         self._wrap("inputs", self.inputs_widget)
+        self._wrap("delta_bar", self.delta_bar_widget)
+        self._wrap("flags", self.flags_widget)
+        self._wrap("sector_timing", self.sector_widget)
 
     @staticmethod
     def _is_shown(key: str) -> bool:
@@ -261,7 +275,9 @@ class AdvancedSimHUD:
     def _repaint_all(self) -> None:
         for w in (self.standings_widget, self.relative_widget,
                   self.radar_widget, self.map_widget, self.dash_widget,
-                  self.laptime_widget, self.fuel_widget, self.inputs_widget):
+                  self.laptime_widget, self.fuel_widget, self.inputs_widget,
+                  self.delta_bar_widget, self.flags_widget,
+                  self.sector_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -363,7 +379,8 @@ class AdvancedSimHUD:
         # Which widgets are visible: a hidden widget does no reads and no work.
         en = {k: self._is_shown(k)
               for k in ("standings", "relative", "radar", "map", "dash",
-                        "laptime_log", "fuel_calc", "inputs")}
+                        "laptime_log", "fuel_calc", "inputs", "delta_bar",
+                        "flags", "sector_timing")}
         if not any(en.values()):
             return
 
@@ -374,7 +391,7 @@ class AdvancedSimHUD:
         positions = self.ir["CarIdxPosition"] if need_order else None
         lap_pct = (self.ir["CarIdxLapDistPct"]
                    if (en["radar"] or en["map"] or en["standings"]
-                       or en["relative"]) else None)
+                       or en["relative"] or en["sector_timing"]) else None)
         # Used by the tables to tell genuine lapped traffic from same-lap cars.
         self._lap_pct = lap_pct
         surface = (self.ir["CarIdxTrackSurface"]
@@ -426,6 +443,12 @@ class AdvancedSimHUD:
             self._update_fuel_calc()
         if en["inputs"]:
             self._update_inputs()
+        if en["delta_bar"]:
+            self._update_delta_bar()
+        if en["flags"]:
+            self._update_flags()
+        if en["sector_timing"]:
+            self._update_sectors(player, lap_pct)
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -1439,6 +1462,52 @@ class AdvancedSimHUD:
         if not isinstance(amax, (int, float)) or amax <= 0.1:
             amax = 5.0  # radians (~286 deg of lock) -- typical road-car fallback
         return 0.5 + 0.5 * max(-1.0, min(1.0, angle / amax))
+
+    # --- delta bar / flags / pit service / sector timing -------------------
+
+    def _update_delta_bar(self) -> None:
+        """Feed the live delta against the configured reference lap."""
+        mode = config.CFG["delta_bar"].get("mode", "session_best")
+        key = {"session_best": "LapDeltaToSessionBest",
+               "best_lap": "LapDeltaToBestLap",
+               "optimal": "LapDeltaToOptimalLap"}.get(mode, "LapDeltaToSessionBest")
+        delta = self.ir[key]
+        self.delta_bar_widget.set_data(
+            {"delta": delta if isinstance(delta, (int, float)) else None})
+
+    def _update_flags(self) -> None:
+        """Feed the standalone flag banner (hidden entirely when no flag flies,
+        except in layout-edit mode where a placeholder stays visible)."""
+        self.flags_widget.set_data({"flag": self._session_flag(),
+                                    "edit": self.edit_mode_enabled()})
+
+    def _update_sectors(self, player, lap_pct) -> None:
+        """Feed live sector splits derived from the player's lap distance."""
+        self._sector_timer.set_boundaries(self._sector_starts())
+        pct = None
+        if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
+                and 0 <= player < len(lap_pct)):
+            pct = lap_pct[player]
+        self._sector_timer.update(pct, self.ir["LapCurrentLapTime"],
+                                  self.ir["LapLastLapTime"])
+        self.sector_widget.set_data(self._sector_timer.snapshot(
+            self.ir["LapCurrentLapTime"], self.ir["LapLastLapTime"],
+            self.ir["LapBestLapTime"]))
+
+    def _sector_starts(self):
+        """Sector start percentages from the session, else N equal divisions."""
+        info = self.ir["SplitTimeInfo"]
+        starts = []
+        secs = info.get("Sectors") if isinstance(info, dict) else None
+        if isinstance(secs, list):
+            for s in secs:
+                pct = s.get("SectorStartPct") if isinstance(s, dict) else None
+                if isinstance(pct, (int, float)):
+                    starts.append(float(pct))
+        if starts:
+            return starts
+        n = max(1, int(config.CFG["sector_timing"].get("sectors", 3) or 3))
+        return [i / n for i in range(n)]
 
     def _fuel_laps(self):
         """Estimate laps of fuel remaining from level, burn rate and lap time."""

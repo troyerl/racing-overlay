@@ -284,7 +284,13 @@ class FakeIRSDK:
 
         if key == "WeekendInfo":
             return {"TrackID": "_demo", "TrackDisplayName": "Demo Speedpark",
-                    "TrackConfigName": "Oval"}
+                    "TrackConfigName": "Oval",
+                    "WeekendOptions": {"IncidentLimit": 17}}
+
+        if key == "SplitTimeInfo":
+            return {"Sectors": [{"SectorNum": 0, "SectorStartPct": 0.0},
+                                {"SectorNum": 1, "SectorStartPct": 0.34},
+                                {"SectorNum": 2, "SectorStartPct": 0.68}]}
 
         if key == "CarLeftRight":
             pct = self._lap_pct()

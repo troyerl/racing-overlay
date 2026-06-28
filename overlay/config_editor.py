@@ -76,6 +76,7 @@ ENUMS = {
     "center_mode": ["ring", "pedals"],
     "car_label": ["number", "position"],
     "delta_mode": ["previous", "best"],
+    "mode": ["session_best", "best_lap", "optimal"],
     "rotation": [0, 90, 180, 270],
     "font_family": FONT_CHOICES,
 }
@@ -112,6 +113,8 @@ OPTION_LABELS = {
     "number": "Car number",
     # laptime log delta baseline
     "previous": "Previous lap", "best": "Session best lap",
+    # delta bar reference lap (session_best reuses the label above)
+    "best_lap": "My best lap", "optimal": "Optimal lap",
     # map rotation (degrees clockwise)
     0: "0\u00b0 (default)", 90: "90\u00b0 clockwise",
     180: "180\u00b0", 270: "270\u00b0 clockwise",
@@ -145,6 +148,11 @@ LABEL_OVERRIDES = {
     "fuel_calc.show_strip": "Show pit-window timeline",
     "fuel_calc.show_time": "Show time-until-empty",
     "fuel_calc.show_laps": "Show laps-until-empty",
+    "delta_bar.mode": "Reference lap",
+    "delta_bar.range": "Full-scale delta (seconds)",
+    "delta_bar.show_value": "Show numeric delta",
+    "flags.idle_text": "Text when no flag is flying",
+    "sector_timing.sectors": "Sector count (fallback)",
 }
 
 

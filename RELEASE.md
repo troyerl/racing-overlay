@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.9.0 - 2026-06-28
+
+- **New Delta Bar widget.** A big, standalone live time delta: a large signed
+  number over a center-anchored bar that deflects left (faster, green) or right
+  (slower, red). Pick the reference lap -- session best, your best, or the
+  optimal lap -- and the full-scale range from the new Delta Bar settings page.
+- **New Flags widget.** A standalone flag banner that mirrors the dash flag
+  style (diagonal-slash texture, checkerboard for the finish flag, label plate)
+  inside the usual panel. It stays hidden while no flag is flying and only
+  appears when a flag comes out (a "TRACK CLEAR" placeholder shows in layout-edit
+  mode so you can still position it).
+- **New Sector / Lap Timing widget.** Current, last and best lap times plus live
+  sector splits derived from your lap-distance crossings, tracking your best per
+  sector (cells turn purple when you match it). Uses the session's sector layout
+  when available, otherwise a configurable number of equal sectors.
+
 ## 1.8.0 - 2026-06-28
 
 - **New Input Telemetry widget.** A scrolling throttle/brake/clutch trace (newest
