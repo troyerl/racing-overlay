@@ -105,6 +105,10 @@ class AdvancedSimHUD:
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
         self._green_until = 0.0
+        # White flag (final lap): flash it briefly (like green) when it first
+        # waves, then let it fade rather than holding all lap.
+        self._flag_was_white = False
+        self._white_until = 0.0
         # Laptime log: the player's completed laps (newest first), each
         # {"lap": int, "secs": float, "temp_c": float|None}, plus the last seen
         # lap number so we can detect a lap rollover.
@@ -125,6 +129,10 @@ class AdvancedSimHUD:
         # The overlay widgets start hidden; the settings window (or --start)
         # turns them on, and they keep running after settings is closed.
         self._overlay_running = False
+        # Whether iRacing is currently connected. The overlay only paints over
+        # the screen while connected (so nothing floats on your desktop when
+        # you're not in the sim); updated each tick.
+        self._connected = False
 
         self._layout_state = layout_store.load_layout()
         self.panels: list[PanelWindow] = []
@@ -208,18 +216,28 @@ class AdvancedSimHUD:
         self.click_through = not bool(enabled)
         for win in self.panels:
             win.set_click_through(self.click_through)
+        # Edit mode reveals panels even when the sim isn't connected so the
+        # layout can be arranged offline (see _apply_visibility).
+        self._apply_visibility()
 
     def toggle_edit_mode(self) -> bool:
         self.set_edit_mode(not self.edit_mode_enabled())
         return self.edit_mode_enabled()
 
     def _apply_visibility(self) -> None:
-        """Show or hide each panel window to match config, when the overlay is on."""
+        """Show or hide each panel window to match config.
+
+        A panel is only shown while the overlay is running, its widget is enabled,
+        and iRacing is connected -- so nothing floats over the desktop when you're
+        not in the sim. Edit-layout mode overrides the connection check so the
+        layout can still be arranged while iRacing is closed.
+        """
+        live = self._connected or self.edit_mode_enabled()
         for key, win in self._win_by_key.items():
-            if self._overlay_running and self._is_shown(key):
-                if not win.isVisible():
-                    win.show()
-            elif win.isVisible():
+            want = self._overlay_running and live and self._is_shown(key)
+            if want and not win.isVisible():
+                win.show()
+            elif not want and win.isVisible():
                 win.hide()
 
     def _on_config_change(self, _cfg) -> None:
@@ -284,7 +302,13 @@ class AdvancedSimHUD:
     # --- Per-tick update ----------------------------------------------------
 
     def process_telemetry_tick(self) -> None:
-        if self.ir is None or (not self.ir.is_connected and not self.ir.startup()):
+        connected = bool(self.ir is not None
+                         and (self.ir.is_connected or self.ir.startup()))
+        # Reveal/hide the overlay as iRacing connects or disconnects.
+        if connected != self._connected:
+            self._connected = connected
+            self._apply_visibility()
+        if not connected:
             return
 
         # Switch the garage vs on-track profile before anything else, so widget
@@ -677,6 +701,9 @@ class AdvancedSimHUD:
             car_lap and car_lap[idx] > 0 and car_lap[player] > 0
             and car_lap[idx] != car_lap[player] and not is_player
         )
+        # A car on a higher lap count is ahead (it will lap you -> red); a car on
+        # a lower lap count is behind (you're lapping it -> blue).
+        lap_ahead = bool(lapping and car_lap[idx] > car_lap[player])
         return {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
@@ -693,6 +720,7 @@ class AdvancedSimHUD:
             "is_player": is_player,
             "in_pit": in_pit,
             "lapping": lapping,
+            "lap_ahead": lap_ahead,
         }
 
     def _update_relative(self, player, est_time, surface, drivers,
@@ -1153,8 +1181,13 @@ class AdvancedSimHUD:
 
     # iRacing SessionFlags bitfield bits (irsdk_Flags).
     _FLAG_CHECKERED = 0x00000001           # session finished
-    _FLAG_YELLOW = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
+    _FLAG_WHITE = 0x00000002               # white flag (final lap)
     _FLAG_GREEN = 0x00000004 | 0x00000400   # green + green-held
+    _FLAG_YELLOW = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
+    _FLAG_RED = 0x00000010                  # session stopped
+    _FLAG_BLUE = 0x00000020                 # faster car behind, let it by
+    _FLAG_DEBRIS = 0x00000040               # debris on track
+    _FLAG_CROSSED = 0x00000080              # crossed flag = race halfway
     _FLAG_BLACK = 0x00010000                # black flag (penalty)
     _FLAG_DQ = 0x00020000                   # disqualified
     _FLAG_FURLED = 0x00080000               # furled/rolled black = warning
@@ -1173,10 +1206,10 @@ class AdvancedSimHUD:
             config.set_context(ctx)
 
     def _session_flag(self):
-        """Current flag to show: 'checkered', 'dq', 'black', 'meatball',
-        'furled', 'yellow', 'green' (briefly, on resume) or None. The personal
-        penalty flags take priority over the caution; green only flashes briefly
-        when a yellow clears."""
+        """Current flag to show: 'checkered', 'red', 'dq', 'black', 'meatball',
+        'furled', 'blue', 'yellow', 'debris', 'white', 'crossed',
+        'green' (briefly) or None. Personal/penalty flags take priority over the
+        caution; white (final lap) and green (resume) only flash briefly."""
         raw = self.ir["SessionFlags"]
         try:
             sf = int(raw) & 0xFFFFFFFF
@@ -1193,10 +1226,20 @@ class AdvancedSimHUD:
             self._green_until = now + secs
         self._flag_was_yellow = yellow
 
-        # Checkered (session over) trumps everything else.
+        # White flag (final lap) only flashes briefly when it first waves; it
+        # stays set by iRacing all lap, so rising-edge it into a short window.
+        white = bool(sf & self._FLAG_WHITE)
+        if white and not self._flag_was_white:
+            secs = float(config.CFG["dash"].get("flag_green_seconds", 3.0) or 3.0)
+            self._white_until = now + secs
+        self._flag_was_white = white
+
+        # Checkered (session over) trumps everything else, then a red (session
+        # stopped), then personal penalty/black flags directed at you.
         if sf & self._FLAG_CHECKERED:
             return "checkered"
-        # Personal penalty/black flags first (directed at you), then caution.
+        if sf & self._FLAG_RED:
+            return "red"
         if sf & self._FLAG_DQ:
             return "dq"
         if sf & self._FLAG_BLACK:
@@ -1205,8 +1248,17 @@ class AdvancedSimHUD:
             return "meatball"
         if sf & self._FLAG_FURLED:
             return "furled"
+        # Blue (let a faster car by) is directed at you, so above the caution.
+        if sf & self._FLAG_BLUE:
+            return "blue"
         if yellow:
             return "yellow"
+        if sf & self._FLAG_DEBRIS:
+            return "debris"
+        if now < self._white_until:
+            return "white"
+        if sf & self._FLAG_CROSSED:
+            return "crossed"
         if now < self._green_until:
             return "green"
         return None
@@ -1226,6 +1278,7 @@ class AdvancedSimHUD:
             "redline": self._car_info.get("redline"),
             "sl_first": self._car_info.get("sl_first"),
             "sl_last": self._car_info.get("sl_last"),
+            "sl_shift": self._car_info.get("sl_shift"),
             "sl_blink": self._car_info.get("sl_blink"),
             "top_gear": self._car_info.get("gears"),
             "throttle": self.ir["Throttle"],

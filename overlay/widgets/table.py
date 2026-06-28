@@ -390,14 +390,11 @@ class BaseTable(QWidget):
             p.setBrush(col("row_alt"))
             p.drawRect(QRectF(bg_left, y, right - bg_left, h))
         if row.get("lapping"):
+            # Tint the whole row (red for a car a lap ahead, blue for a car a
+            # lap down) all the way to the right edge.
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col("threat"))
-            if "name" in slots:
-                nx, nw = slots["name"]
-                thr_left = nx + nw
-            else:
-                thr_left = bg_left
-            p.drawRect(QRectF(thr_left, y, right - thr_left, h))
+            p.setBrush(col("threat") if row.get("lap_ahead") else col("lapped"))
+            p.drawRect(QRectF(bg_left, y, right - bg_left, h))
 
         if "badge" in slots:
             bx, bw = slots["badge"]
@@ -450,12 +447,17 @@ class BaseTable(QWidget):
             p.setBrush(col("badge_player"))
             p.drawEllipse(box)
         elif row.get("in_pit"):
+            # Widen the badge into a pill and ease the font so "PIT" has a bit
+            # of padding around it instead of filling the square edge-to-edge.
+            pill_w = min(bw, size * 1.55)
+            pill_h = size * 0.92
+            pill = QRectF(cx - pill_w / 2, cy - pill_h / 2, pill_w, pill_h)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("badge_pit_bg"))
-            p.drawRoundedRect(box, 3, 3)
+            p.drawRoundedRect(pill, 4, 4)
             p.setPen(col("badge_pit_text"))
-            p.setFont(tfont(size * 0.5))
-            p.drawText(box, Qt.AlignmentFlag.AlignCenter, "PIT")
+            p.setFont(tfont(pill_h * 0.46))
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, "PIT")
         elif row.get("lapping"):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("badge_lap"))

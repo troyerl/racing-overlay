@@ -5,6 +5,36 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.4.0 - 2026-06-28
+
+- **Corner numbers on the map.** The track map now numbers corners. Tracks with
+  corner data use it; learned tracks have their corners auto-detected from the
+  shape and numbered in driving order from start/finish. Toggle with the map's
+  "Show corners" / "Auto corners" settings.
+- **Rotate / flip the map.** Orient the track map with `map.rotation`
+  (0/90/180/270 degrees) and `map.mirror` (horizontal flip). The whole map
+  rotates together; the wind compass stays north-up.
+- **Cleaner timing-table cells.** The car-number column drops its background and
+  shows `#3`; the license/safety-rating pill is now filled with the license
+  color (e.g. `A 4.99`) with auto-contrasting text. The in-pit `PIT` status
+  badge is a wider pill with more padding around the text.
+- **Lapped-traffic colors in Relative.** Lapped cars now tint the whole row to
+  the right edge: red for a car a lap ahead (about to lap you) and blue for a
+  car a lap down (you're lapping it).
+- **Dash input ring at rest.** Throttle/brake/clutch arcs in the ring view no
+  longer show a stray lit segment when you're off the pedals (small deadzone).
+- **More dash flags.** The flag bar now covers the full set of driver-facing
+  flags: red (session stopped), blue ("let by"), debris, crossed (halfway) and
+  the white flag (final lap). White flashes briefly like the green flag, and all
+  flag colors are customizable.
+- **Shift-light timing fix.** The RPM bar blinked too early on cars that don't
+  report a blink RPM; it now uses iRacing's blink/shift RPM (not the last-LED
+  RPM), so it flashes at the right shift point.
+- **Overlay only shows in the sim.** The widgets now appear only while iRacing
+  is connected and hide automatically when you leave the sim, so nothing floats
+  over your desktop. Edit-layout mode still reveals them so you can arrange the
+  layout offline.
+
 ## 1.3.0 - 2026-06-28
 
 - **Redesigned settings window.** A cleaner, more modern UI that's easier to

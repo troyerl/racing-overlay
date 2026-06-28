@@ -308,10 +308,12 @@ class DashWidget(QWidget):
         top = _num(d, "top_gear")
         if top and gear is not None and gear >= top:
             return False
-        # Prefer iRacing's dedicated blink RPM; fall back to the last shift light
-        # or just under the redline.
-        blink_rpm = _num(d, "sl_blink") or _num(d, "sl_last")
-        if blink_rpm is None:
+        # Prefer iRacing's dedicated blink RPM, then its recommended shift RPM.
+        # (sl_last is only where the *last* LED lights -- well before the shift
+        # point -- so using it made the bar blink too early.) Fall back to just
+        # under the redline when the car reports neither.
+        blink_rpm = _num(d, "sl_blink") or _num(d, "sl_shift")
+        if not blink_rpm:
             blink_rpm = (_num(d, "redline") or 8000.0) * 0.99
         return rpm >= blink_rpm
 
@@ -505,6 +507,11 @@ class DashWidget(QWidget):
             "furled": ("WARNING", "flag_furled", "flag_furled_text"),
             "dq": ("DISQUALIFIED", "flag_dq", "flag_dq_text"),
             "green": ("GREEN", "flag_green", "flag_green_text"),
+            "white": ("LAST LAP", "flag_white_bg", "flag_white_text"),
+            "red": ("RED FLAG", "flag_red", "flag_red_text"),
+            "blue": ("LET BY", "flag_blue", "flag_blue_text"),
+            "debris": ("DEBRIS", "flag_debris", "flag_debris_text"),
+            "crossed": ("HALFWAY", "flag_crossed", "flag_crossed_text"),
             "checkered": ("FINISH", "flag_checker_bg", "flag_checker_text"),
         }.get(flag)
         if spec is None:
@@ -822,7 +829,12 @@ class DashWidget(QWidget):
         n = max(1, int(c.get("ring_segments", 16)))
         seg = 360.0 / n
         span = seg * 0.72
-        lit = max(0.0, min(1.0, frac)) * n
+        frac = max(0.0, min(1.0, frac))
+        # Deadzone: residual easing / sensor noise leaves a tiny non-zero value
+        # when a pedal is released. Treat that as fully off so no segment lights.
+        if frac < 0.02:
+            frac = 0.0
+        lit = frac * n
         off = self._col("ring_track")
         glow = QColor(on_color)
         glow.setAlpha(75)

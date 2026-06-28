@@ -73,7 +73,10 @@ DEFAULTS: dict = {
             "cell_dark": "#0b0e12",
             "row_alt": "#ffffff0a",
             "player_row": "#8a5a18b4",
+            # Lapped-traffic row tints: "threat" (red) = a car a lap ahead that
+            # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
             "threat": "#7a1a1adc",
+            "lapped": "#13386edc",
             "text": "#f4f6f8",
             "muted": "#8b93a1",
             "irating_bg": "#eef0f2",
@@ -372,6 +375,21 @@ DEFAULTS: dict = {
             "flag_dq_text": "#ffffff",
             "flag_green": "#46df7a",
             "flag_green_text": "#06210f",
+            # White flag (final lap) - shows briefly like the green flag.
+            "flag_white_bg": "#eef1f4",
+            "flag_white_text": "#14171c",
+            # Red flag - session stopped.
+            "flag_red": "#d11f2d",
+            "flag_red_text": "#ffffff",
+            # Blue flag - faster car behind, let it by.
+            "flag_blue": "#2f6bd8",
+            "flag_blue_text": "#ffffff",
+            # Debris on track - warning.
+            "flag_debris": "#e0a72e",
+            "flag_debris_text": "#1a1400",
+            # Crossed flag - halfway point of the race.
+            "flag_crossed": "#2a2f38",
+            "flag_crossed_text": "#f4f6f8",
             # Checkered (session finished) - dark bar with a black/white weave.
             "flag_checker_bg": "#14171c",
             "flag_checker_text": "#f4f6f8",

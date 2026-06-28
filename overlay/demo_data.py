@@ -247,11 +247,19 @@ class FakeIRSDK:
 
         if key == "SessionFlags":
             # Cycle through the states so the dash flag indicator is visible in
-            # demo: caution -> green -> black -> meatball -> furled -> DQ ->
-            # checkered.
+            # demo: caution -> red -> blue -> debris -> white -> black ->
+            # meatball -> furled -> DQ -> crossed -> checkered -> green.
             cyc = (time.time() - self._start) % 60.0
             if cyc < 6.0:
                 return 0x00004000 | 0x00008000   # caution + caution waving
+            if 9.0 <= cyc < 12.0:
+                return 0x00000010                # red flag (session stopped)
+            if 14.0 <= cyc < 17.0:
+                return 0x00000020                # blue flag (let faster car by)
+            if 19.0 <= cyc < 22.0:
+                return 0x00000040                # debris
+            if 24.0 <= cyc < 27.0:
+                return 0x00000002                # white flag (final lap)
             if 30.0 <= cyc < 33.0:
                 return 0x00010000                # black flag
             if 36.0 <= cyc < 39.0:
@@ -260,6 +268,8 @@ class FakeIRSDK:
                 return 0x00080000                # furled (warning)
             if 48.0 <= cyc < 51.0:
                 return 0x00020000                # disqualified
+            if 51.0 <= cyc < 54.0:
+                return 0x00000080                # crossed (race halfway)
             if 54.0 <= cyc < 57.0:
                 return 0x00000001                # checkered (finish)
             return 0x00000004                    # green
