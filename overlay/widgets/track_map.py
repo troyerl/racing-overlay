@@ -352,6 +352,10 @@ class TrackMapWidget(QWidget):
         self.pit_span: tuple[float, float] | None = None
         self.pit_speed_ms: float = 0.0
         self.pit_live_ms: float | None = None
+        # Wind: bearing the wind blows FROM (radians, clockwise from North) and
+        # its speed in m/s. None until telemetry provides it.
+        self.wind_dir: float | None = None
+        self.wind_speed_ms: float = 0.0
         # Each car: (lap_pct, label, color_hex, is_player)
         self.cars: list[tuple[float, str, str, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
@@ -407,6 +411,17 @@ class TrackMapWidget(QWidget):
         if new == self.pit_live_ms:
             return
         self.pit_live_ms = new
+        self.update()
+
+    def set_wind(self, wind_dir, speed_ms) -> None:
+        """Set wind bearing (radians, the direction it blows FROM, CW from N)
+        and speed (m/s). Pass None to hide the compass."""
+        new_dir = float(wind_dir) if isinstance(wind_dir, (int, float)) else None
+        new_spd = float(speed_ms) if isinstance(speed_ms, (int, float)) else 0.0
+        if new_dir == self.wind_dir and abs(new_spd - self.wind_speed_ms) < 0.1:
+            return
+        self.wind_dir = new_dir
+        self.wind_speed_ms = new_spd
         self.update()
 
     def set_cars(self, cars) -> None:
@@ -486,6 +501,8 @@ class TrackMapWidget(QWidget):
         if mc.get("show_start_finish", True):
             self._draw_start_finish(p, tx)
         self._draw_cars(p, tx)
+        if mc.get("show_wind", True) and self.wind_dir is not None:
+            self._draw_wind(p, rect)
 
     def _draw_start_finish(self, p: QPainter, tx) -> None:
         sf_idx = self._index_for_pct(0.0)
@@ -576,6 +593,68 @@ class TrackMapWidget(QWidget):
         p.drawRoundedRect(rect, 4, 4)
         p.setPen(QColor(20, 20, 20) if over else _mcol("pit_text"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _draw_wind(self, p: QPainter, rect: QRectF) -> None:
+        """A small north-up compass in the top-right corner: a ring with an 'N'
+        tick and an arrow pointing the way the wind blows, plus the speed."""
+        mc = _mcfg()
+        r = max(13.0, min(rect.width(), rect.height()) * 0.06)
+        inset = r + 28.0
+        cx = rect.right() - inset
+        cy = rect.top() + inset
+        center = QPointF(cx, cy)
+        col = _mcol("wind")
+
+        # Dial.
+        p.setBrush(QColor(10, 13, 17, 190))
+        p.setPen(QPen(QColor(255, 255, 255, 40), 1))
+        p.drawEllipse(center, r, r)
+
+        # North tick at the top.
+        fam = config.CFG.get("font_family", "Arial")
+        nsz = max(6, round(7 * config.text_scale_for("map")))
+        p.setFont(QFont(fam, nsz, QFont.Weight.Bold))
+        p.setPen(QColor(170, 178, 188))
+        p.drawText(QRectF(cx - r, cy - r - nsz - 1, 2 * r, nsz + 2),
+                   Qt.AlignmentFlag.AlignCenter, "N")
+
+        # Arrow points downwind (the way the wind pushes): bearing + pi. Screen
+        # is north-up, so a bearing b maps to (sin b, -cos b).
+        b = self.wind_dir + math.pi
+        ux, uy = math.sin(b), -math.cos(b)
+        px, py = -uy, ux  # perpendicular, for the arrow head
+        tip = QPointF(cx + ux * r * 0.78, cy + uy * r * 0.78)
+        tail = QPointF(cx - ux * r * 0.70, cy - uy * r * 0.70)
+        p.setPen(QPen(col, max(2.0, r * 0.16), Qt.PenStyle.SolidLine,
+                      Qt.PenCapStyle.RoundCap))
+        p.drawLine(tail, tip)
+        # Arrow head.
+        hl = r * 0.42
+        hw = r * 0.26
+        base = QPointF(tip.x() - ux * hl, tip.y() - uy * hl)
+        head = QPainterPath()
+        head.moveTo(tip)
+        head.lineTo(QPointF(base.x() + px * hw, base.y() + py * hw))
+        head.lineTo(QPointF(base.x() - px * hw, base.y() - py * hw))
+        head.closeSubpath()
+        p.setBrush(col)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawPath(head)
+
+        # Speed label under the dial.
+        spd = round(config.conv_speed(self.wind_speed_ms))
+        text = f"{spd} {config.speed_unit()}"
+        ssz = max(6, round(8 * config.text_scale_for("map")))
+        p.setFont(QFont(fam, ssz, QFont.Weight.Bold))
+        fm = p.fontMetrics()
+        tw = fm.horizontalAdvance(text) + 8
+        th = fm.height() + 2
+        lr = QRectF(cx - tw / 2, cy + r + 2, tw, th)
+        p.setBrush(QColor(10, 13, 17, 190))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(lr, 3, 3)
+        p.setPen(_mcol("wind_text"))
+        p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_corners(self, p: QPainter, tx) -> None:
         if not self.corners:

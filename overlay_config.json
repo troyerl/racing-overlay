@@ -1,6 +1,10 @@
 {
   "units": "imperial",
+  "relative": {
+    "show": false
+  },
   "standings": {
+    "show": false,
     "column_order": [
       "badge",
       "position",
@@ -14,7 +18,16 @@
       "left": "mem"
     }
   },
+  "laptime_log": {
+    "show": false
+  },
+  "radar": {
+    "show": false
+  },
   "dash": {
     "show_brake": false
+  },
+  "map": {
+    "show": false
   }
 }

@@ -230,11 +230,19 @@ class DashWidget(QWidget):
         self._last_ms = 0
         self._animating = False
         self._font_cache: dict = {}
+        # Flag bar: which flag is showing and when it first appeared, so it can
+        # pulse briefly on arrival and then hold steady.
+        self._flag_shown = None
+        self._flag_since_ms = 0
         self.setMinimumSize(480, 150)
 
     # -- data / animation --------------------------------------------------
     def set_data(self, data: dict) -> None:
         data = data or {}
+        flag = data.get("flag")
+        if flag != self._flag_shown:  # a new flag (re)starts the pulse window
+            self._flag_shown = flag
+            self._flag_since_ms = self._clock.elapsed()
         changed = data != self.data
         self.data = data
         if changed or self._animating:
@@ -493,15 +501,25 @@ class DashWidget(QWidget):
         spec = {
             "yellow": ("CAUTION", "flag_yellow", "flag_yellow_text"),
             "black": ("BLACK FLAG", "flag_black", "flag_black_text"),
+            "meatball": ("MEATBALL", "flag_meatball", "flag_meatball_text"),
+            "furled": ("WARNING", "flag_furled", "flag_furled_text"),
+            "dq": ("DISQUALIFIED", "flag_dq", "flag_dq_text"),
             "green": ("GREEN", "flag_green", "flag_green_text"),
         }.get(flag)
         if spec is None:
             return
         label, bg_key, fg_key = spec
-        # "Wave" by flashing; keeps repaints flowing while the flag is shown.
+        # Pulse (flash) only for the first couple of seconds after the flag
+        # appears, then hold steady so it doesn't flash for the whole stint.
         hz = float(c.get("flag_blink_hz", 2.5) or 2.5)
-        on = (self._clock.elapsed() * hz / 1000.0) % 1.0 < 0.5
-        self._animating = True
+        pulse_on = bool(c.get("flag_pulse", True))
+        pulse_s = float(c.get("flag_pulse_seconds", 1.5) or 0.0)
+        since = (self._clock.elapsed() - self._flag_since_ms) / 1000.0
+        if pulse_on and since < pulse_s:
+            on = (self._clock.elapsed() * hz / 1000.0) % 1.0 < 0.5
+            self._animating = True  # keep repainting through the pulse window
+        else:
+            on = True  # solid once the pulse window ends (or if pulsing is off)
 
         bg = self._col(bg_key)
         if not on:  # dim half of the wave

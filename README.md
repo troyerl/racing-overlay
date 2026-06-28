@@ -180,6 +180,13 @@ turns red if you're over the limit. The pit span and limit are saved into the
 track's `tracks/<id>.json` alongside the geometry, so they persist between
 sessions (and reset with **Rescan track now**).
 
+### Wind
+
+With `map.show_wind` on (default), a small north-up compass in the map's
+top-right corner shows the current wind: an arrow points the way the wind is
+blowing (from `WindDir`) and the speed (`WindVel`) is labelled below in your
+configured speed unit.
+
 ### Building the track library
 
 Three ways to populate `tracks/`:
@@ -255,10 +262,15 @@ glows **fade/grow** smoothly instead of popping.
   `show_throttle` / `show_brake` / `show_clutch` — the selection drives *both*
   modes (e.g. throttle only, throttle + brake, or all three), and the brake
   arc/bar flashes amber when **ABS** is active. A minimal **flag bar** (toggle
-  `dash.show_flags`) waves across the very top from `SessionFlags` — its color is
-  the flag: **yellow** while a caution is out, **black** when you're
-  black-flagged, and **green** only briefly when racing resumes from a yellow,
-  clearing after `dash.flag_green_seconds` (wave rate `dash.flag_blink_hz`). An optional
+  `dash.show_flags`) waves across the very top from `SessionFlags`, with a
+  distinct color + label per flag: **CAUTION** (yellow) while a caution is out,
+  **BLACK FLAG** (penalty), **MEATBALL** (orange — the mechanical black flag that
+  means you must pit to repair), **WARNING** (furled/rolled black flag),
+  **DISQUALIFIED**, and **GREEN** only briefly when racing resumes from a yellow,
+  clearing after `dash.flag_green_seconds`. When a flag appears the bar
+  **pulses** for `dash.flag_pulse_seconds` (rate `dash.flag_blink_hz`) and then
+  holds steady. The personal penalty flags take priority over the caution. Each
+  color is configurable (`dash.colors.flag_*`). An optional
   thin **delta bar** (`dash.show_delta_bar`) runs across the top — green to the
   right when you're faster than your best, red to the left when slower
   (`delta_bar_range` is the seconds at full deflection). Every content slot —
@@ -271,6 +283,22 @@ glows **fade/grow** smoothly instead of popping.
   show/hide toggles. Speed, fuel and temps follow the global `units` setting
   (metric/imperial). All inputs map to real iRacing telemetry (`Throttle`,
   `Brake`, `Clutch`, `BrakeABSactive`).
+- **Laptime Log** (`overlay/widgets/laptime_log.py`) — a running list of your most
+  recent laps (newest at the top), styled like the timing tables: **LAP**,
+  **TIME** (MM:SS.mmm), **DELTA**, and the **track temperature** at that lap. The
+  delta is green when faster / red when slower and compares each lap against
+  either the **previous lap** or your **session best** (`laptime_log.delta_mode`).
+  It logs your completed laps from `Lap` + `LapLastLapTime`, reading the temp from
+  `TrackTemp`. Configure how many laps to show (`laptime_log.rows`), the header
+  size, and colors.
+- **Fuel Calculator** (`overlay/widgets/fuel_calc.py`) — current fuel + tank gauge, how
+  much to **add to finish**, a pit-window lap range, and **AVG / MAX / MIN**
+  usage scenarios (usage per lap, laps on current fuel, pit stops, litres to
+  refuel). Two summary boxes show **time** and **laps until empty** with a red
+  margin when you'd run dry before the finish, and a PIT lap-timeline strip marks
+  the recommended pit window. It learns fuel burn per lap from `FuelLevel`,
+  projects against the session's remaining laps/time, and is fully unit-aware
+  (`units`).
 - Relative + Standings share `overlay/widgets/table.py`'s `BaseTable` for row rendering.
 
 Data sources: gaps from `CarIdxEstTime`/`CarIdxF2Time`, license/iRating from
@@ -340,6 +368,8 @@ What you can change, by section:
 | `table` | Shared row/cell/header styling for both tables: all colors, license-class colors, iRating cell colors, player/threat row tints, `corner_radius_frac`, `font_scale`, `gap_font_scale`, `row_ease_tau` / `fade_ease_tau` (animation speed), per-cell `widths`, `alt_row_shading`. |
 | `relative` | `rows_ahead` / `rows_behind` (cars shown in front of / behind you); `center_on_player`; a **`column_order`** list that controls *which* columns show and *in what order* (add/remove/reorder them from the editor); `columns.stripe` (the position class-color stripe); `pit_mode`; `show_footer`; and a fully mappable **`header`** / **`footer`** (any slot item — see below). |
 | `standings` | `rows_ahead` / `rows_behind` (window above/below you when centered), `rows` (size in top-N mode), `center_on_player`, `title`, `show_footer`; its own **`column_order`** list (independent of Relative); `columns.stripe`; `pit_mode`; and a fully mappable **`header`** / **`footer`** (any slot item, plus the standings-only `order_pill` / `title` / `count`). |
+| `laptime_log` | `rows` (how many recent laps to list), `delta_mode` (`previous` lap or session `best`), `show_header`, `temp_icon`, `font_scale` / `header_font_scale`, `alt_row_shading`, and header/text/faster/slower colors. |
+| `fuel_calc` | `title`, `history_laps` (recent laps averaged for the projection), per-feature toggles (`show_title` / `show_pill` / `show_add` / `show_gauge` / `show_stats` / `show_strip` / `show_time` / `show_laps` — hidden sections collapse and the rest reflow), and colors for the accent bar, status pill, add-fuel box, gauge, summary boxes, and the pit-timeline strip. |
 
 Columns are controlled entirely by **`column_order`**: in the settings editor's
 **Column order** group you can drag rows to reorder, pick a column from the
@@ -466,7 +496,7 @@ iRacing exposes no per-car "last pit" value, so the overlay watches
 stop itself — meaning history starts when the overlay launches (or when you
 add the column). Tracking only runs while the pit column is shown.
 | `radar` | `range_pct` (ahead/behind detection window), `ease_side_tau` / `ease_glow_tau`, car/red/yellow/axis/nose colors, element `sizes` (car, bars, glow, nose), `show_nose`, `show_axis`. |
-| `map` | Asphalt/outline/infield/player/corner colors, the car-dot `palette`, `asphalt_width`, `outline_width`, and `show_infield` / `show_corners` / `show_start_finish` toggles. |
+| `map` | Asphalt/outline/infield/player/corner/wind colors, the car-dot `palette`, `asphalt_width`, `outline_width`, and `show_infield` / `show_corners` / `show_start_finish` / `show_pit` / `show_wind` toggles. |
 | `light_hud` | `font_px`, text/accent/accent2/background colors for the simple fuel+delta HUD. |
 
 Example `overlay_config.json` (red text in tables, a trimmed/reordered Relative,

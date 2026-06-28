@@ -38,6 +38,8 @@ from . import version
 from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.dash import DashWidget
+from .widgets.fuel_calc import FuelCalcWidget
+from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
 from .widgets.standings import StandingsWidget
@@ -49,6 +51,8 @@ DEFAULT_GEOMS = {
     "radar": (40, 500, 200, 260),
     "map": (620, 500, 480, 320),
     "dash": (260, 800, 660, 190),
+    "laptime_log": (40, 500, 380, 320),
+    "fuel_calc": (440, 500, 460, 380),
 }
 
 
@@ -101,6 +105,16 @@ class AdvancedSimHUD:
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
         self._green_until = 0.0
+        # Laptime log: the player's completed laps (newest first), each
+        # {"lap": int, "secs": float, "temp_c": float|None}, plus the last seen
+        # lap number so we can detect a lap rollover.
+        self._ll_prev_lap = None
+        self._ll_laps: list[dict] = []
+        # Fuel calculator: per-lap fuel burned (litres, newest first), the lap
+        # we last saw and the fuel level at the start of the current lap.
+        self._fc_prev_lap = None
+        self._fc_lap_start_fuel = None
+        self._fc_use: list[float] = []
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -142,14 +156,19 @@ class AdvancedSimHUD:
         self.radar_widget = RadarWidget()
         self.map_widget = track_map.TrackMapWidget()
         self.dash_widget = DashWidget()
+        self.laptime_widget = LaptimeLogWidget()
+        self.fuel_widget = FuelCalcWidget()
         if self.demo:
             self._load_demo_track()
+            self._seed_demo_laptimes()
 
         self._wrap("standings", self.standings_widget)
         self._wrap("relative", self.relative_widget)
         self._wrap("radar", self.radar_widget)
         self._wrap("map", self.map_widget)
         self._wrap("dash", self.dash_widget)
+        self._wrap("laptime_log", self.laptime_widget)
+        self._wrap("fuel_calc", self.fuel_widget)
 
     @staticmethod
     def _is_shown(key: str) -> bool:
@@ -195,7 +214,8 @@ class AdvancedSimHUD:
 
     def _repaint_all(self) -> None:
         for w in (self.standings_widget, self.relative_widget,
-                  self.radar_widget, self.map_widget, self.dash_widget):
+                  self.radar_widget, self.map_widget, self.dash_widget,
+                  self.laptime_widget, self.fuel_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -230,6 +250,9 @@ class AdvancedSimHUD:
             "sl_blink": info.get("DriverCarSLBlinkRPM"),
             "gears": info.get("DriverCarGearNumForward"),
             "est_lap": float(info.get("DriverCarEstLapTime", 0.0) or 0.0),
+            # Usable tank capacity = max litres * max fill fraction.
+            "fuel_max": (float(info.get("DriverCarFuelMaxLtr", 0.0) or 0.0)
+                         * float(info.get("DriverCarMaxFuelPct", 1.0) or 1.0)),
         }
         # Track name (for the optional header/footer slot) lives in WeekendInfo;
         # only parse it when a slot actually shows it, and only on this throttled
@@ -252,7 +275,8 @@ class AdvancedSimHUD:
 
         # Which widgets are visible: a hidden widget does no reads and no work.
         en = {k: self._is_shown(k)
-              for k in ("standings", "relative", "radar", "map", "dash")}
+              for k in ("standings", "relative", "radar", "map", "dash",
+                        "laptime_log", "fuel_calc")}
         if not any(en.values()):
             return
 
@@ -306,6 +330,10 @@ class AdvancedSimHUD:
             self._update_map(player, lap_pct, surface, drivers)
         if en["dash"]:
             self._update_dash(player, positions, car_lap)
+        if en["laptime_log"]:
+            self._update_laptime_log()
+        if en["fuel_calc"]:
+            self._update_fuel_calc()
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -543,6 +571,78 @@ class AdvancedSimHUD:
         if not arr or idx >= len(arr):
             return "\u2014"
         return self._fmt_laptime(arr[idx])
+
+    # --- laptime log --------------------------------------------------------
+
+    @staticmethod
+    def _fmt_laplog_time(secs) -> str:
+        """A lap time as MM:SS.mmm (zero-padded minutes) for the log."""
+        if not isinstance(secs, (int, float)) or secs <= 0:
+            return "\u2014"
+        m = int(secs // 60)
+        s = secs - m * 60
+        return f"{m:02d}:{s:06.3f}"
+
+    @staticmethod
+    def _fmt_temp(c) -> str:
+        t = config.conv_temp(c)
+        return f"{t:.1f}{config.temp_unit()}" if t is not None else "\u2014"
+
+    def _seed_demo_laptimes(self) -> None:
+        """Prefill the log with a few plausible laps so demo mode looks alive."""
+        seed = [(17, 136.949), (16, 137.151), (15, 136.704), (14, 136.853),
+                (13, 180.165), (11, 142.291), (10, 137.020), (9, 136.840)]
+        self._ll_laps = [{"lap": lp, "secs": t, "temp_c": 23.4} for lp, t in seed]
+        self._ll_prev_lap = 18
+
+    def _update_laptime_log(self) -> None:
+        """Record each completed player lap (time + track temp) and push rows."""
+        try:
+            lap = int(self.ir["Lap"])
+        except (TypeError, ValueError):
+            lap = None
+        if lap is not None:
+            if self._ll_prev_lap is None:
+                self._ll_prev_lap = lap
+            elif lap > self._ll_prev_lap:
+                last = self.ir["LapLastLapTime"]
+                completed = lap - 1
+                if (isinstance(last, (int, float)) and last > 0
+                        and (not self._ll_laps
+                             or self._ll_laps[0]["lap"] != completed)):
+                    temp = self.ir["TrackTemp"]
+                    if temp is None:
+                        temp = self.ir["TrackTempCrew"]
+                    self._ll_laps.insert(0, {"lap": completed,
+                                             "secs": float(last),
+                                             "temp_c": temp})
+                    del self._ll_laps[60:]  # keep memory bounded
+                self._ll_prev_lap = lap
+        self.laptime_widget.set_data(self._build_laptime_rows())
+
+    def _build_laptime_rows(self) -> dict:
+        cfg = config.CFG["laptime_log"]
+        n = max(1, int(cfg.get("rows", 8)))
+        mode = cfg.get("delta_mode", "previous")
+        laps = self._ll_laps
+        best = min((l["secs"] for l in laps if l["secs"] > 0), default=None)
+        rows = []
+        for i, l in enumerate(laps[:n]):
+            secs = l["secs"]
+            if mode == "best":
+                delta = (secs - best) if (best and secs > 0) else None
+                if delta is not None and abs(delta) < 1e-4:
+                    delta = None  # the baseline (best) lap itself
+            else:  # vs the previous (chronologically older) lap
+                prev = laps[i + 1]["secs"] if i + 1 < len(laps) else None
+                delta = (secs - prev) if (prev and secs > 0) else None
+            rows.append({
+                "lap": l["lap"],
+                "time": self._fmt_laplog_time(secs),
+                "delta": delta,
+                "temp": self._fmt_temp(l["temp_c"]),
+            })
+        return {"rows": rows}
 
     def _build_relative_row(self, idx, delta, drivers, positions, surface, car_lap,
                             player, is_player, cols, sess_time, pit_mode) -> dict:
@@ -925,6 +1025,10 @@ class AdvancedSimHUD:
         self._ensure_track(player, lap_pct)
         if config.CFG["map"].get("show_pit", True):
             self._learn_pit(player, lap_pct)
+        if config.CFG["map"].get("show_wind", True):
+            self.map_widget.set_wind(self.ir["WindDir"], self.ir["WindVel"])
+        else:
+            self.map_widget.set_wind(None, 0.0)
 
         on_pit_arr = self.ir["CarIdxOnPitRoad"]
         pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
@@ -1029,14 +1133,19 @@ class AdvancedSimHUD:
             self._pit_enter_pct = None
         self._pit_was_on = on
 
-    # iRacing SessionFlags bitfield groups (irsdk_Flags).
+    # iRacing SessionFlags bitfield bits (irsdk_Flags).
     _FLAG_YELLOW = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
-    _FLAG_BLACK = 0x00010000 | 0x00020000  # black flag + disqualify
-    _FLAG_GREEN = 0x00000004 | 0x00000400  # green + green-held
+    _FLAG_GREEN = 0x00000004 | 0x00000400   # green + green-held
+    _FLAG_BLACK = 0x00010000                # black flag (penalty)
+    _FLAG_DQ = 0x00020000                   # disqualified
+    _FLAG_FURLED = 0x00080000               # furled/rolled black = warning
+    _FLAG_REPAIR = 0x00100000               # meatball (must pit to repair)
 
     def _session_flag(self):
-        """Current flag to show: 'yellow', 'black', 'green' (briefly, on resume)
-        or None. Green only flashes for a few seconds when a yellow clears."""
+        """Current flag to show: 'dq', 'black', 'meatball', 'furled', 'yellow',
+        'green' (briefly, on resume) or None. The personal penalty flags take
+        priority over the caution; green only flashes briefly when a yellow
+        clears."""
         raw = self.ir["SessionFlags"]
         try:
             sf = int(raw) & 0xFFFFFFFF
@@ -1047,15 +1156,21 @@ class AdvancedSimHUD:
             now = time.time()
 
         yellow = bool(sf & self._FLAG_YELLOW)
-        black = bool(sf & self._FLAG_BLACK)
         # Leaving a yellow (or an explicit green wave) opens the green window.
         if self._flag_was_yellow and not yellow:
             secs = float(config.CFG["dash"].get("flag_green_seconds", 3.0) or 3.0)
             self._green_until = now + secs
         self._flag_was_yellow = yellow
 
-        if black:
+        # Personal penalty/black flags first (directed at you), then caution.
+        if sf & self._FLAG_DQ:
+            return "dq"
+        if sf & self._FLAG_BLACK:
             return "black"
+        if sf & self._FLAG_REPAIR:
+            return "meatball"
+        if sf & self._FLAG_FURLED:
+            return "furled"
         if yellow:
             return "yellow"
         if now < self._green_until:
@@ -1113,6 +1228,131 @@ class AdvancedSimHUD:
             return None
         per_lap = per_hr * (est_lap / 3600.0)
         return fuel / per_lap if per_lap > 0 else None
+
+    # --- fuel calculator ----------------------------------------------------
+
+    def _fuel_capacity(self, level):
+        """Usable tank capacity (L), from the session YAML or level/level-pct."""
+        cap = self._car_info.get("fuel_max") or 0.0
+        if cap > 0:
+            return cap
+        pct = self.ir["FuelLevelPct"]
+        if isinstance(level, (int, float)) and isinstance(pct, (int, float)) \
+                and pct > 0.01:
+            return level / pct
+        return None
+
+    def _avg_lap_secs(self):
+        """Average recent lap time (s): logged laps if any, else the est lap."""
+        good = [l["secs"] for l in self._ll_laps if l.get("secs", 0) > 0]
+        if good:
+            return sum(good[:10]) / len(good[:10])
+        est = self._car_info.get("est_lap") or 0.0
+        return est if est > 0 else None
+
+    def _race_remaining(self, lap_avg):
+        """(laps_remaining, time_remaining) for the current session, or Nones."""
+        laps = self.ir["SessionLapsRemainEx"]
+        if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
+            laps = self.ir["SessionLapsRemain"]
+        if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
+            laps = None
+        t = self.ir["SessionTimeRemain"]
+        if not isinstance(t, (int, float)) or t < 0 or t > 604000:
+            t = None
+        if laps is None and t is not None and lap_avg:
+            laps = t / lap_avg
+        if t is None and laps is not None and lap_avg:
+            t = laps * lap_avg
+        return laps, t
+
+    def _update_fuel_calc(self) -> None:
+        fuel = self.ir["FuelLevel"]
+        cap = self._fuel_capacity(fuel)
+        try:
+            lap = int(self.ir["Lap"])
+        except (TypeError, ValueError):
+            lap = None
+
+        # Record fuel burned on each completed lap.
+        if lap is not None and isinstance(fuel, (int, float)):
+            if self._fc_prev_lap is None:
+                self._fc_prev_lap = lap
+                self._fc_lap_start_fuel = fuel
+            elif lap > self._fc_prev_lap:
+                used = (self._fc_lap_start_fuel or 0.0) - fuel
+                if 0.0 < used < (cap or 1e9):
+                    self._fc_use.insert(0, float(used))
+                    n = int(config.CFG["fuel_calc"].get("history_laps", 10) or 10)
+                    del self._fc_use[max(1, n):]
+                self._fc_prev_lap = lap
+                self._fc_lap_start_fuel = fuel
+
+        lap_avg = self._avg_lap_secs()
+        laps_rem, time_rem = self._race_remaining(lap_avg)
+
+        # Usage scenarios. Fall back to the live burn estimate before we have
+        # any per-lap samples.
+        if self._fc_use:
+            u_avg = sum(self._fc_use) / len(self._fc_use)
+            u_max = max(self._fc_use)
+            u_min = min(self._fc_use)
+        else:
+            est = None
+            per_hr = self.ir["FuelUsePerHour"]
+            if per_hr and lap_avg:
+                est = per_hr * (lap_avg / 3600.0)
+            u_avg = u_max = u_min = est
+
+        def scenario(u):
+            if not u or u <= 0 or not isinstance(fuel, (int, float)):
+                return {"usage": u, "laps": None, "pits": None, "refuel": None}
+            laps_on_fuel = fuel / u
+            refuel = None
+            pits = None
+            if laps_rem is not None:
+                refuel = max(0.0, laps_rem * u - fuel)
+                if cap and cap > 0:
+                    pits = refuel / cap
+            return {"usage": u, "laps": laps_on_fuel, "pits": pits,
+                    "refuel": refuel}
+
+        rows = {"avg": scenario(u_avg), "max": scenario(u_max),
+                "min": scenario(u_min)}
+
+        laps_empty = rows["avg"]["laps"]
+        time_empty = (laps_empty * lap_avg) if (laps_empty and lap_avg) else None
+        laps_margin = (laps_empty - laps_rem) if (laps_empty is not None
+                                                  and laps_rem is not None) else None
+        time_margin = (time_empty - time_rem) if (time_empty is not None
+                                                  and time_rem is not None) else None
+        add = rows["avg"]["refuel"]
+
+        # Pit window: with the heaviest usage you must pit soonest, with the
+        # lightest, latest -- that range is the window (in absolute lap numbers).
+        window = None
+        win_open = False
+        strip = {"total": 0, "window": None, "now": None}
+        if lap is not None and rows["max"]["laps"] and rows["min"]["laps"] \
+                and add and add > 0:
+            a = lap + int(rows["max"]["laps"])
+            b = lap + int(rows["min"]["laps"])
+            window = (a, b)
+            win_open = lap >= a - 1
+            if laps_rem is not None and laps_rem > 0:
+                total = max(1, min(40, int(round(laps_rem))))
+                wa = max(0, min(total - 1, int(rows["max"]["laps"])))
+                wb = max(0, min(total - 1, int(rows["min"]["laps"])))
+                strip = {"total": total, "window": (wa, wb), "now": 0}
+
+        self.fuel_widget.set_data({
+            "level": fuel, "cap": cap, "add": add,
+            "window": window, "window_open": win_open,
+            "rows": rows,
+            "time_empty": time_empty, "time_margin": time_margin,
+            "laps_empty": laps_empty, "laps_margin": laps_margin,
+            "strip": strip,
+        })
 
 
 def main() -> int:

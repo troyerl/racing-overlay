@@ -159,6 +159,90 @@ DEFAULTS: dict = {
         "header_icons": {"left": False, "center": False, "right": False},
         "footer_icons": {"left": False, "center": False, "right": False},
     },
+    "laptime_log": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        # How many of your most recent laps to list (newest at the top).
+        "rows": 8,
+        "corner_radius_frac": 0.05,
+        "alt_row_shading": True,
+        "show_header": True,
+        # Row text size (multiple of row height) and the header size on top of it.
+        "font_scale": 0.42,
+        "header_font_scale": 1.0,
+        # Show a thermometer icon before the track temperature column.
+        "temp_icon": True,
+        # What DELTA compares each lap against: "previous" (the lap before it) or
+        # "best" (your best lap so far this session).
+        "delta_mode": "previous",
+        "colors": {
+            # Vertical gradient card matching the dash/tables.
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "border": "#ffffff20",
+            "row_alt": "#ffffff0a",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            # Column headers (LAP / TIME / DELTA / TEMP.).
+            "header": "#ffd23a",
+            # Delta colors: faster (improved) vs slower than the baseline.
+            "faster": "#46df7a",
+            "slower": "#e23b3b",
+        },
+    },
+    "fuel_calc": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        "corner_radius_frac": 0.04,
+        "title": "FUEL CALCULATOR",
+        # How many recent laps of fuel use to average for the projections.
+        "history_laps": 10,
+        # Toggle each feature on/off; hidden sections collapse and the rest
+        # reflow to fill the panel.
+        "show_title": True,
+        "show_pill": True,       # pit-window status pill
+        "show_add": True,        # big "add fuel to finish" box
+        "show_gauge": True,      # fuel level gauge
+        "show_stats": True,      # AVG / MAX / MIN usage grid
+        "show_strip": True,      # PIT lap-timeline strip
+        "show_time": True,       # TIME UNTIL EMPTY box
+        "show_laps": True,       # LAPS UNTIL EMPTY box
+        "colors": {
+            # Vertical gradient card matching the dash/tables.
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "border": "#ffffff20",
+            "accent": "#e23b3b",      # thin top bar
+            "title": "#f4f6f8",
+            "header": "#8b93a1",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "row_alt": "#ffffff12",
+            "cell_dark": "#0b0e12",
+            # Pit-window status pill + the big "add fuel" box.
+            "pill_open": "#46df7a",
+            "pill_closed": "#6e747d",
+            "pill_text": "#06210f",
+            "add_bg": "#0b0e12",
+            "add_text": "#f4f6f8",
+            # Fuel level gauge.
+            "gauge_fill": "#f4f6f8",
+            "gauge_bg": "#0b0e12",
+            "gauge_border": "#ffffff30",
+            # The two summary boxes (time / laps until empty).
+            "box_border": "#46df7a",
+            "box_value": "#f4f6f8",
+            "box_warn": "#e23b3b",
+            # PIT lap-timeline strip.
+            "strip_none": "#333a42",
+            "strip_window": "#46df7a",
+            "strip_now": "#ffd23a",
+        },
+    },
     "radar": {
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
@@ -220,6 +304,11 @@ DEFAULTS: dict = {
         # after flag_green_seconds. flag_blink_hz is the wave/flash rate.
         "show_flags": True,
         "flag_green_seconds": 3.0,
+        # The flag bar flashes ("pulses") when a flag appears, then holds steady.
+        # flag_pulse turns the flash on/off, flag_pulse_seconds is how long it
+        # flashes for, and flag_blink_hz is the flash rate.
+        "flag_pulse": True,
+        "flag_pulse_seconds": 1.5,
         "flag_blink_hz": 2.5,
         # A thin horizontal delta bar across the top (faster = green to the
         # right, slower = red to the left). delta_bar_range is the seconds at
@@ -272,6 +361,15 @@ DEFAULTS: dict = {
             "flag_yellow_text": "#1a1400",
             "flag_black": "#0a0a0a",
             "flag_black_text": "#ffffff",
+            # Meatball (mechanical black flag, must repair) - orange disc style.
+            "flag_meatball": "#ff7a1a",
+            "flag_meatball_text": "#1a0d00",
+            # Furled/rolled black flag = warning.
+            "flag_furled": "#caa23a",
+            "flag_furled_text": "#1a1400",
+            # Disqualified.
+            "flag_dq": "#c0392b",
+            "flag_dq_text": "#ffffff",
             "flag_green": "#46df7a",
             "flag_green_text": "#06210f",
         },
@@ -295,6 +393,8 @@ DEFAULTS: dict = {
         "car_label": "number",
         # Opacity (0..1) of a car's dot while it's on pit road.
         "pit_dot_opacity": 0.45,
+        # Show a small wind compass (arrow + speed) in the map's corner.
+        "show_wind": True,
         # Draw a rounded card behind the whole map. Off by default so only the
         # infield (the area enclosed by the track loop) is shaded.
         "show_panel": False,
@@ -313,6 +413,9 @@ DEFAULTS: dict = {
             "pit_over": "#ffd23a",
             # Fill for a car's dot while it's on pit road (grayed out).
             "pit_car": "#6e747d",
+            # Wind compass arrow + label.
+            "wind": "#9fd0ff",
+            "wind_text": "#eaf3ff",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",

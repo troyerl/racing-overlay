@@ -52,6 +52,7 @@ ENUMS = {
     "units": ["metric", "imperial"],
     "center_mode": ["ring", "pedals"],
     "car_label": ["number", "position"],
+    "delta_mode": ["previous", "best"],
 }
 
 # Friendly display text for raw config option values (combo boxes show these,
@@ -84,13 +85,39 @@ OPTION_LABELS = {
     "ring": "Gear ring", "pedals": "Pedal bars",
     # map car-dot label
     "number": "Car number",
+    # laptime log delta baseline
+    "previous": "Previous lap", "best": "Session best lap",
 }
+
+# Friendly labels for specific config keys whose auto-generated name is too
+# terse to be meaningful. Keyed by "section.key" (preferred) or bare key.
+LABEL_OVERRIDES = {
+    "fuel_calc.title": "Title text",
+    "fuel_calc.history_laps": "Laps to average for fuel use",
+    "fuel_calc.show_title": "Show title bar",
+    "fuel_calc.show_pill": "Show pit-window status pill",
+    "fuel_calc.show_add": "Show fuel-to-add box",
+    "fuel_calc.show_gauge": "Show fuel level gauge",
+    "fuel_calc.show_stats": "Show usage table (avg / max / min)",
+    "fuel_calc.show_strip": "Show pit-window timeline",
+    "fuel_calc.show_time": "Show time-until-empty",
+    "fuel_calc.show_laps": "Show laps-until-empty",
+}
+
+
+def _label_for(path: list) -> str:
+    """Human label for a config leaf: an explicit override, else prettified."""
+    dotted = ".".join(str(p) for p in path)
+    return (LABEL_OVERRIDES.get(dotted)
+            or LABEL_OVERRIDES.get(str(path[-1]))
+            or _pretty(path[-1]))
+
 
 # Special-cased word fixups so labels read naturally (RPM, iRating, ...).
 _WORD_FIXUPS = {
     "rpm": "RPM", "sof": "SoF", "irating": "iRating", "sr": "SR", "ui": "UI",
     "id": "ID", "bg": "background", "frac": "fraction", "px": "size",
-    "tau": "easing", "pct": "percent",
+    "tau": "easing", "pct": "percent", "hz": "rate", "cpu": "CPU", "mem": "memory",
 }
 
 from .widgets.dash import METRIC_KEYS as _DASH_METRICS
@@ -136,6 +163,8 @@ TAB_COLORS = {
     "Table": ACCENT,
     "Relative": ACCENT,
     "Standings": ACCENT,
+    "Laptime Log": YELLOW,
+    "Fuel Calc": ORANGE,
     "Radar": ACCENT,
     "Dash": ACCENT,
     "Map": "#62b5ff",
@@ -738,14 +767,17 @@ class ConfigEditor(QWidget):
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(2, 1, 2, 1)
-        label = QLabel(_pretty(path[-1]))
+        label_text = _label_for(path)
+        label = QLabel(label_text)
         label.setMinimumWidth(150)
+        label.setWordWrap(True)
         h.addWidget(label)
         h.addWidget(self._control(path, default_val, value))
         h.addStretch(1)
         self._rows.append({
             "widget": row,
-            "text": " ".join(_pretty(p) for p in path).lower(),
+            # Searchable on both the friendly label and the raw key path.
+            "text": (label_text + " " + " ".join(_pretty(p) for p in path)).lower(),
             "groups": list(groups),
         })
         return row

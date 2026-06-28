@@ -144,6 +144,8 @@ class FakeIRSDK:
                 "DriverCarSLLastRPM": 7850.0,
                 "DriverCarSLBlinkRPM": 7950.0,
                 "DriverCarGearNumForward": 6,
+                "DriverCarFuelMaxLtr": 60.0,
+                "DriverCarMaxFuelPct": 1.0,
                 "Drivers": [
                     {
                         "CarIdx": i,
@@ -244,13 +246,19 @@ class FakeIRSDK:
             return (14 * 3600.0 + (time.time() - self._start)) % 86400.0
 
         if key == "SessionFlags":
-            # Cycle green -> yellow (caution) -> green resume, with an occasional
-            # black flag, so the dash flag indicator is visible in demo.
-            cyc = (time.time() - self._start) % 45.0
+            # Cycle through the states so the dash flag indicator is visible in
+            # demo: caution -> green resume -> black -> meatball -> furled -> DQ.
+            cyc = (time.time() - self._start) % 60.0
             if cyc < 6.0:
                 return 0x00004000 | 0x00008000   # caution + caution waving
-            if 30.0 <= cyc < 32.0:
+            if 30.0 <= cyc < 33.0:
                 return 0x00010000                # black flag
+            if 36.0 <= cyc < 39.0:
+                return 0x00100000                # meatball (repair)
+            if 42.0 <= cyc < 45.0:
+                return 0x00080000                # furled (warning)
+            if 48.0 <= cyc < 51.0:
+                return 0x00020000                # disqualified
             return 0x00000004                    # green
 
         if key == "PlayerCarMyIncidentCount":
@@ -284,6 +292,9 @@ class FakeIRSDK:
             t = time.time() - self._start
             return max(2.0, 60.0 - t * 0.18)  # liters, slowly burning down
 
+        if key == "FuelLevelPct":
+            return self["FuelLevel"] / 60.0
+
         if key == "LapDeltaToSessionBest":
             t = time.time() - self._start
             return math.sin(t * 0.6) * 0.45  # gentle +/- swing
@@ -293,6 +304,13 @@ class FakeIRSDK:
             if self._on_pit_list()[self.player_idx]:
                 return 15.3
             return self._engine()[0]
+
+        if key == "WindDir":
+            # Slowly rotating wind so the compass visibly moves in the demo.
+            return (time.time() - self._start) * 0.05 % (2 * math.pi)
+
+        if key == "WindVel":
+            return 4.2  # m/s
 
         if key == "RPM":
             return self._engine()[1]

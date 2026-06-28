@@ -7,11 +7,22 @@ Release notes. To cut a release, add a new section to the top and push.
 
 ## 1.1.0 - 2026-06-27
 
+- **Fuel Calculator widget.** A new overlay panel showing current fuel + tank
+  gauge, litres to add to finish, a pit window, AVG/MAX/MIN usage scenarios
+  (usage, laps, pit stops, refuel), and time/laps until empty with a margin
+  warning when you'd run dry before the finish. Each section can be toggled on/off
+  from the settings and the rest reflow to fill the panel.
+- **Laptime Log widget.** A new overlay panel lists your most recent laps with
+  lap number, time, a green/red delta (vs. the previous lap or your session
+  best), and the track temperature — styled to match the timing tables.
+- **Wind compass on the track map.** A small north-up compass in the map's
+  corner shows wind direction (arrow) and speed, toggleable via `map.show_wind`.
 - **Flag bar on the dash.** A thin bar across the top of the dash shows the
-  current flag (yellow `CAUTION`, `BLACK FLAG`, or a transient `GREEN` after a
-  caution clears). It is filled with diagonal racing slashes that frame the
-  centered label, "waves" by flashing, and stops at the incident container so it
-  never overlaps the position box.
+  current flag (`CAUTION`, `BLACK FLAG`, `MEATBALL` for the must-repair flag,
+  `WARNING` for the furled black flag, `DISQUALIFIED`, or a transient `GREEN`
+  after a caution clears). It is filled with diagonal racing slashes that frame
+  the centered label, "waves" by flashing, and stops at the incident container
+  so it never overlaps the position box.
 - **Dash layout polish.** The air-temp / track-temp / time strip sits a little
   lower and is slightly thinner, keeping its rounded ends within the dash.
 - **Independent table fonts.** Header and footer font sizes can now be scaled
