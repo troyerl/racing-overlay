@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.20.0 - 2026-06-29
+
+- **Fix: track map crash while scanning.** The "LAP n/3" scan badge / pit hint
+  overlay was drawn from the wrong place and raised an error during map paint;
+  the map now renders correctly throughout learning.
+
+## 1.19.1 - 2026-06-29
+
+- **Housekeeping.** Ignore local `.env` files in version control so author
+  database credentials (`GRIDGLANCE_MONGODB_URI`) can't be committed by accident.
+
 ## 1.19.0 - 2026-06-29
 
 - **Multi-lap scanning for cleaner maps.** Learning a track now takes three full

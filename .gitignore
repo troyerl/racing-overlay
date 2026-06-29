@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 
+# Secrets / local env (e.g. GRIDGLANCE_MONGODB_URI)
+.env
+.env.*
+!.env.example
+
 # Runtime / user-generated state
 overlay_layout.json
 stderr.txt

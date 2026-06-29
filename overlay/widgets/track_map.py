@@ -724,6 +724,7 @@ class TrackMapWidget(QWidget):
         self._draw_cars(p, tx)
         if mc.get("show_wind", True) and self.wind_dir is not None:
             self._draw_wind(p, rect)
+        self._draw_scan_overlays(p, rect)
 
     def _draw_start_finish(self, p: QPainter, tx) -> None:
         sf_idx = self._index_for_pct(0.0)
@@ -982,5 +983,3 @@ class TrackMapWidget(QWidget):
                 label,
             )
             p.setOpacity(1.0)
-
-        self._draw_scan_overlays(p, rect)
