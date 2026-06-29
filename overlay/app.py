@@ -71,13 +71,19 @@ DEFAULT_GEOMS = {
 SCAN_LAPS = 3
 PIT_PASSES = 3
 
-# Pit route capture: how far off the racing line (as a fraction of the track's
-# bounding-box diagonal) counts as having left the track onto the pit-entry
-# blend, and how close counts as having rejoined it on the pit-exit blend. The
-# rejoin threshold is tighter for hysteresis. A safety cap bounds the exit-blend
+# Pit route capture. The pit lane sits only a little off the racing line, so
+# the entry/exit blend thresholds are derived from the *measured* offset of the
+# lane from the line (PIT_OFFSET_* fractions of it): the car has "left the
+# track" once it's more than ~half-way out to the lane, and has "rejoined" once
+# it drops back near the line. Until that offset is known we fall back to a
+# small fraction of the track's bounding-box diagonal (PIT_*_FRAC), with a tiny
+# diagonal floor to reject GPS/line noise. A safety cap bounds the exit-blend
 # capture in case the car never re-converges (off-track, telemetry gap).
-PIT_DIVERGE_FRAC = 0.030
-PIT_REJOIN_FRAC = 0.020
+PIT_DIVERGE_FRAC = 0.012      # fallback: fraction of diagonal (offset unknown)
+PIT_REJOIN_FRAC = 0.008
+PIT_OFFSET_DIVERGE = 0.55     # diverge at >55% of the measured lane offset
+PIT_OFFSET_REJOIN = 0.40      # rejoin at <40% of it
+PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
 # where the car peeled off the racing line up to the pit-road edge.
@@ -165,6 +171,11 @@ class AdvancedSimHUD:
         self._pit_in_pct_cur = None
         self._pit_exit_pct = None    # lap pct at the OnPitRoad falling edge
         self._pit_exit_ticks = 0     # ticks spent tracing the current exit blend
+        # Max distance of the current pass's lane from the racing line, used to
+        # scale the divergence thresholds, and a snapshot of the rolling buffer
+        # at pit entry from which the entry blend is back-traced at finalize.
+        self._pit_lane_offset = 0.0
+        self._pit_entry_buf: list[tuple] = []
         # Whether the player is currently on the pit route (pit road or a blend),
         # computed in _learn_pit and read when placing the player dot.
         self._player_on_route = False
@@ -1415,6 +1426,8 @@ class AdvancedSimHUD:
         self._pit_in_pct_cur = None
         self._pit_phase = None
         self._pit_exit_ticks = 0
+        self._pit_lane_offset = 0.0
+        self._pit_entry_buf = []
         self._player_on_route = False
         self._pit_recent.clear()
         self._pit_route_latch.clear()
@@ -1629,15 +1642,34 @@ class AdvancedSimHUD:
         return (math.radians(lon) * math.cos(math.radians(lat)),
                 -math.radians(lat))
 
-    def _trace_entry_blend(self, diverge):
-        """Back-trace the rolling GPS buffer to reconstruct the pit-entry blend:
-        the stretch from where the car peeled off the racing line up to the
-        pit-road edge. Returns (points, divergence_lap_pct)."""
-        if diverge is None or not self._pit_recent:
+    def _pit_thresholds(self):
+        """(diverge, rejoin) distance thresholds for the pit-route blends.
+
+        Scaled to the measured lane offset from the racing line once known, else
+        a small fraction of the track diagonal, with a tiny diagonal floor so
+        racing-line/GPS noise doesn't read as leaving the track. (None, None)
+        when there's no track geometry to measure against.
+        """
+        diag = self._track_diag
+        if not diag:
+            return None, None
+        off = self._pit_lane_offset
+        if off and off > 0.0:
+            floor = diag * PIT_OFFSET_FLOOR_FRAC
+            return (max(off * PIT_OFFSET_DIVERGE, floor),
+                    max(off * PIT_OFFSET_REJOIN, floor))
+        return diag * PIT_DIVERGE_FRAC, diag * PIT_REJOIN_FRAC
+
+    @staticmethod
+    def _trace_entry_blend(buf, diverge):
+        """Back-trace a GPS buffer to reconstruct the pit-entry blend: the
+        stretch from where the car peeled off the racing line up to the pit-road
+        edge. Returns (points, divergence_lap_pct)."""
+        if diverge is None or not buf:
             return [], None
         blend = []
         in_pct = None
-        for pct_i, x, y, d in reversed(self._pit_recent):
+        for pct_i, x, y, d in reversed(buf):
             blend.append((x, y))
             if d is not None and d <= diverge:
                 in_pct = pct_i
@@ -1662,8 +1694,7 @@ class AdvancedSimHUD:
         speed = self.ir["Speed"]
         xy = self._player_xy()
         dist = self._dist_to_track(xy[0], xy[1]) if xy is not None else None
-        diverge = self._track_diag * PIT_DIVERGE_FRAC if self._track_diag else None
-        rejoin = self._track_diag * PIT_REJOIN_FRAC if self._track_diag else None
+        diverge, rejoin = self._pit_thresholds()
 
         # Live player position on the map (true GPS); the widget draws the player
         # on the pit route when on pit road or off the racing line (a blend).
@@ -1698,16 +1729,24 @@ class AdvancedSimHUD:
                 self._pit_phase = "lane"
                 self._pit_enter_pct = valid_pct
                 self._pit_exit_pct = None
-                self._pit_in_cur, self._pit_in_pct_cur = \
-                    self._trace_entry_blend(diverge)
+                # Snapshot the approach so the entry blend can be back-traced at
+                # finalize once the lane offset (and thus the threshold) is known.
+                self._pit_entry_buf = list(self._pit_recent)
+                self._pit_lane_offset = 0.0
+                self._pit_in_cur = []
+                self._pit_in_pct_cur = None
                 self._pit_geo_cur = []
                 self._pit_out_cur = []
                 if xy is not None:
                     self._pit_geo_cur.append(xy)
+                if dist is not None:
+                    self._pit_lane_offset = max(self._pit_lane_offset, dist)
         elif self._pit_phase == "lane":
             if on:
                 if xy is not None:
                     self._pit_geo_cur.append(xy)
+                if dist is not None:
+                    self._pit_lane_offset = max(self._pit_lane_offset, dist)
             else:  # left pit road
                 self._pit_exit_pct = valid_pct
                 if rejoin is None:
@@ -1740,16 +1779,23 @@ class AdvancedSimHUD:
 
     def _finalize_pit_pass(self, out_pct) -> None:
         """End the in-progress pit pass and hand its three segments to the
-        accumulator, then reset the capture state machine."""
+        accumulator, then reset the capture state machine.
+
+        The entry blend is back-traced here (not at pit entry) so it can use the
+        threshold scaled to the lane offset measured over this whole pass.
+        """
         if self._pit_enter_pct is not None:
+            diverge, _ = self._pit_thresholds()
+            in_blend, in_pct = self._trace_entry_blend(
+                self._pit_entry_buf, diverge)
             self._record_pit_pass(
                 self._pit_enter_pct,
                 self._pit_exit_pct if self._pit_exit_pct is not None
                 else out_pct,
                 list(self._pit_geo_cur),
-                list(self._pit_in_cur),
+                in_blend,
                 list(self._pit_out_cur),
-                self._pit_in_pct_cur,
+                in_pct,
                 out_pct,
             )
         self._pit_phase = None
@@ -1757,6 +1803,7 @@ class AdvancedSimHUD:
         self._pit_exit_pct = None
         self._pit_in_pct_cur = None
         self._pit_exit_ticks = 0
+        self._pit_entry_buf = []
 
     def _record_pit_pass(self, entry_pct, exit_pct, lane, pit_in, pit_out,
                          in_pct, out_pct) -> None:

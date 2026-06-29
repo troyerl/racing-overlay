@@ -5,6 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.1 - 2026-06-29
+
+- **Fix: pit entry/exit blends not appearing.** The blend detection compared the
+  car's distance from the racing line against a fraction of the whole-track
+  size, which was larger than the pit lane's offset -- so the yellow entry/exit
+  lines came out empty and only the lane drew. The thresholds are now scaled to
+  the pit lane's measured offset from the racing line, so the entry and exit
+  blends are captured reliably.
+- **Author tools: clearer upload diagnostics.** Track-upload failures are now
+  logged (bad credential, blocked Atlas IP, missing `pymongo`) instead of failing
+  silently, a new `tools/check_db.py` reports the sharing setup and can test a
+  real upload, and `tools/sync_tracks.py` now uses the app's per-user `tracks/`
+  folder so it finds maps you scanned in-app.
+
 ## 1.22.0 - 2026-06-29
 
 - **Full pit lane, entry to exit.** Pit scanning now captures the whole route --
