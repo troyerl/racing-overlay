@@ -286,18 +286,31 @@ class BaseTable(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
 
         rows = (self.data or {}).get("rows", [])
-        pad = max(8.0, h * 0.025)
-        header_h = max(26.0, h * 0.12)
-        footer_h = max(24.0, h * 0.11) if self.has_footer() else 0.0
-        body_top = pad + header_h
-        body_h = h - body_top - footer_h - pad
         n = max(1, len(rows))
-        row_h = body_h / n
-        # With only a few rows, don't let them stretch (and the text balloon) to
-        # fill the panel: cap the row height and leave the extra space empty.
-        max_rh_frac = tc.get("max_row_height_frac", 0.0) or 0.0
-        if max_rh_frac > 0:
-            row_h = min(row_h, h * max_rh_frac)
+        fixed_rh = float(tc.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            # Fixed pixel sizing: rows, text and header keep their size no matter
+            # how big the panel is -- dragging it just adds empty space below.
+            row_h = fixed_rh
+            pad = 8.0
+            header_h = round(fixed_rh * 1.25)
+            footer_h = round(fixed_rh * 1.1) if self.has_footer() else 0.0
+            body_top = pad + header_h
+            body_h = h - body_top - footer_h - pad
+            if row_h * n > body_h:  # panel too short: shrink so nothing clips
+                row_h = max(1.0, body_h / n)
+        else:
+            pad = max(8.0, h * 0.025)
+            header_h = max(26.0, h * 0.12)
+            footer_h = max(24.0, h * 0.11) if self.has_footer() else 0.0
+            body_top = pad + header_h
+            body_h = h - body_top - footer_h - pad
+            row_h = body_h / n
+            # With only a few rows, don't let them stretch (and the text balloon)
+            # to fill the panel: cap row height and leave the extra space empty.
+            max_rh_frac = tc.get("max_row_height_frac", 0.0) or 0.0
+            if max_rh_frac > 0:
+                row_h = min(row_h, h * max_rh_frac)
 
         self.draw_header(p, pad, pad, w - 2 * pad, header_h)
 

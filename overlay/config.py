@@ -50,9 +50,15 @@ DEFAULTS: dict = {
     "table": {
         "corner_radius_frac": 0.05,
         "alt_row_shading": True,
+        # Fixed row height in pixels. When > 0, rows, text and header keep this
+        # size no matter how big the panel is dragged -- resizing the panel just
+        # reveals more empty space instead of zooming the table. Set to 0 to fall
+        # back to the old "scale to fit" behavior (capped by max_row_height_frac).
+        "row_height_px": 36,
         # Cap a row's height to this fraction of the panel height so that, when
         # only a few cars are present, rows don't stretch and the text doesn't
         # look zoomed in (extra space is left empty below). 0 disables the cap.
+        # Only used when row_height_px is 0.
         "max_row_height_frac": 0.14,
         "font_scale": 0.40,        # row text size (multiple of row height)
         "gap_font_scale": 1.12,

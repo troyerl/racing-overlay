@@ -16,6 +16,7 @@ Or launch it alongside a live overlay (changes apply instantly):
 
 from __future__ import annotations
 
+import copy
 import sys
 
 from PyQt6.QtCore import (
@@ -125,6 +126,8 @@ OPTION_LABELS = {
 LABEL_OVERRIDES = {
     "check_updates_on_launch": "Check for updates on launch",
     "font_family": "Font",
+    "table.row_height_px": "Fixed row height (px, 0 = scale to fit)",
+    "table.max_row_height_frac": "Max row height (panel fraction)",
     "radar.show_front": "Front sensing",
     "radar.show_rear": "Rear sensing",
     "radar.side_span_pct": "Side marker travel (lap fraction)",
@@ -212,17 +215,23 @@ ORANGE = "#ff9416"
 YELLOW = "#ffd23a"
 BLUE = "#4c9aff"
 
-# Per-tab accent colors so each section reads like its widget's theme.
+# A unique accent color per widget so each section reads like its own theme:
+# its sliders, toggles and sidebar dot all take this color.
 TAB_COLORS = {
-    "General": "#9aa3b2",
-    "Table": ACCENT,
-    "Relative": ACCENT,
-    "Standings": ACCENT,
-    "Laptime Log": YELLOW,
-    "Fuel Calc": ORANGE,
-    "Radar": ACCENT,
-    "Dash": ACCENT,
-    "Map": "#62b5ff",
+    "General": "#9aa3b2",       # neutral gray (global settings)
+    "Table": "#7f8c9a",         # slate (shared table base)
+    "Relative": "#2fe0b0",      # teal
+    "Standings": "#a98bff",     # purple
+    "Laptime Log": YELLOW,      # yellow
+    "Fuel Calc": ORANGE,        # orange
+    "Radar": "#ff5b5b",         # red
+    "Dash": ACCENT,             # green
+    "Inputs": "#28cfe0",        # cyan
+    "Delta Bar": "#9ee84b",     # lime
+    "Flags": "#ff7ec2",         # pink
+    "Lap Compare": "#ffb43a",   # amber
+    "Sector Timing": "#e07bff", # magenta
+    "Map": "#5aa9ff",           # blue
 }
 
 # Section keys shown under the "Settings" top tab (global, non-widget config).
@@ -500,6 +509,18 @@ class ToggleSwitch(QAbstractButton):
         p.end()
 
 
+def _section_reset_qss(accent: str) -> str:
+    """A small ghost button tinted with the section's accent color."""
+    return (
+        "QPushButton#sectionReset {"
+        f" color:{accent}; background:transparent;"
+        f" border:1px solid {accent}55; border-radius:6px;"
+        " padding:4px 12px; font-size:12px; font-weight:600; }"
+        "QPushButton#sectionReset:hover {"
+        f" background:{accent}22; border:1px solid {accent}; }}"
+    )
+
+
 def _num_range(path: list, default):
     """Guess a friendly (lo, hi, step) slider range from a key name + value."""
     key = str(path[-1]).lower()
@@ -522,6 +543,8 @@ def _num_range(path: list, default):
         lo, hi, step = 0, 40, 1
     elif key in ("rows", "rows_ahead", "rows_behind", "history_laps"):
         lo, hi, step = 0, 30, 1
+    elif key == "row_height_px":
+        lo, hi, step = 16, 72, 1
     elif key.endswith("px"):
         lo, hi, step = 6, 48, 1
     elif is_float:
@@ -536,7 +559,7 @@ def _num_range(path: list, default):
 class NumberControl(QWidget):
     """A slider paired with a precise spin box for any numeric value."""
 
-    def __init__(self, path: list, default, value, on_change):
+    def __init__(self, path: list, default, value, on_change, accent: str = ACCENT):
         super().__init__()
         self.is_float = isinstance(default, float)
         self.lo, self.hi, self.step = _num_range(path, default)
@@ -554,6 +577,18 @@ class NumberControl(QWidget):
         self.slider.setValue(self._to_slider(value))
         self.slider.setMinimumWidth(140)
         self.slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Tint the fill + handle with this widget's accent color (overrides the
+        # global green slider style for this instance only).
+        self.slider.setStyleSheet(
+            "QSlider::groove:horizontal { height:5px; border-radius:3px;"
+            " background:#232831; }"
+            "QSlider::add-page:horizontal { height:5px; border-radius:3px;"
+            " background:#232831; }"
+            "QSlider::sub-page:horizontal { height:5px; border-radius:3px;"
+            f" background:{accent}; }}"
+            "QSlider::handle:horizontal { width:16px; height:16px; margin:-6px 0;"
+            f" border-radius:8px; background:#f4f6f8; border:2px solid {accent}; }}"
+            "QSlider::handle:horizontal:hover { background:#ffffff; }")
 
         # Coerce the stored value to the spin's type: a QSpinBox rejects floats,
         # and a config edited by hand (or left over from an older default) can
@@ -695,7 +730,11 @@ class NavItem(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(self._color)
             p.drawRoundedRect(QRectF(r.left() + 3, r.center().y() - 8, 3, 16), 1.5, 1.5)
-        dot = QColor(self._color) if self._dot_on else QColor("#4d535d")
+        # Always the widget's own color; dimmed (translucent) when the widget is
+        # off so the dot still doubles as an enabled/disabled indicator.
+        dot = QColor(self._color)
+        if not self._dot_on:
+            dot.setAlpha(70)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(dot)
         p.drawEllipse(QPointF(r.right() - 6, r.center().y()), 4.0, 4.0)
@@ -1395,9 +1434,21 @@ class ConfigEditor(QWidget):
         v.setContentsMargins(6, 4, 10, 8)
         v.setSpacing(9)
 
+        head_row = QHBoxLayout()
+        head_row.setContentsMargins(0, 0, 0, 0)
         head = QLabel(title)
         head.setObjectName("pageTitle")
-        v.addWidget(head)
+        head_row.addWidget(head)
+        head_row.addStretch(1)
+        if key != "__general__":
+            reset_btn = QPushButton("Reset to defaults")
+            reset_btn.setObjectName("sectionReset")
+            reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            reset_btn.setStyleSheet(_section_reset_qss(color))
+            reset_btn.clicked.connect(
+                lambda _=False, k=key, t=title: self._reset_section(k, t))
+            head_row.addWidget(reset_btn)
+        v.addLayout(head_row)
 
         if key == "__general__":
             v.addWidget(self._about_card())
@@ -1581,16 +1632,16 @@ class ConfigEditor(QWidget):
             return combo
         if _is_color(path, default_val):
             return ColorButton(value, lambda v, p=path: self._set(p, v))
+        # The General/Table tabs use a muted gray that's nearly invisible as an
+        # "on" color, so their sliders/toggles fall back to the green accent.
+        accent = ACCENT if (not color or color.lower() in ("#9aa3b2", "#7f8c9a")) else color
         if isinstance(default_val, bool):
-            # The General tab uses a muted gray that's nearly invisible as an
-            # "on" color, so toggles there fall back to the green accent.
-            accent = ACCENT if (not color or color.lower() == "#9aa3b2") else color
             sw = ToggleSwitch(checked=bool(value), accent=accent)
             sw.toggled.connect(lambda v, p=path: self._set(p, bool(v)))
             return sw
         if isinstance(default_val, (int, float)):
             return NumberControl(path, default_val, value,
-                                 lambda v, p=path: self._set(p, v))
+                                 lambda v, p=path: self._set(p, v), accent=accent)
         edit = QLineEdit(str(value))
         edit.setMinimumWidth(180)
         edit.textChanged.connect(lambda v, p=path: self._set(p, v))
@@ -1751,6 +1802,20 @@ class ConfigEditor(QWidget):
         if self.autosave_sw.isChecked():
             self._save_timer.start(400)
         self._flash(msg)
+
+    def _reset_section(self, key: str, title: str) -> None:
+        """Restore a single widget's settings to their built-in defaults."""
+        self.working[key] = copy.deepcopy(config.DEFAULTS[key])
+        if self.live_sw.isChecked():
+            config.apply_edits(self._edit_ctx, self.working)
+        if self.autosave_sw.isChecked():
+            self._save_timer.start(400)
+            self._flash(f"Reset {title} \u2014 saving\u2026")
+        else:
+            self._flash(f"Reset {title} to defaults \u2014 unsaved")
+        # Rebuild so every control (and the nav dot) reflects the defaults.
+        self._build_nav_and_pages()
+        self._filter(self.search.text())
 
     def _reload(self) -> None:
         self._save_timer.stop()
