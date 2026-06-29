@@ -34,6 +34,79 @@ CONFIG_FILE = paths.data_file("overlay_config.json")
 TABLE_COLUMNS = ["badge", "position", "car_number", "name", "license",
                  "irating", "pit", "gap", "last_lap", "best_lap"]
 
+# Shared styling defaults for the timing tables. Each table (Relative, Standings)
+# gets its *own* copy of these so they can be themed and sized independently from
+# the settings editor -- changing one never touches the other.
+_TABLE_STYLE: dict = {
+    "corner_radius_frac": 0.05,
+    "alt_row_shading": True,
+    # Fixed row height in pixels. When > 0, rows, text and header keep this
+    # size no matter how big the panel is dragged -- resizing the panel just
+    # reveals more empty space instead of zooming the table. Set to 0 to fall
+    # back to the old "scale to fit" behavior (capped by max_row_height_frac).
+    "row_height_px": 36,
+    # Cap a row's height to this fraction of the panel height so that, when
+    # only a few cars are present, rows don't stretch and the text doesn't
+    # look zoomed in (extra space is left empty below). 0 disables the cap.
+    # Only used when row_height_px is 0.
+    "max_row_height_frac": 0.14,
+    "font_scale": 0.40,        # row text size (multiple of row height)
+    "gap_font_scale": 1.12,
+    # The license pill shows iRating + class (e.g. "1.4k R"). When this is on,
+    # iRating is abbreviated ("1.4k"); turn it off to show the full number
+    # ("1432"). Also applies to the iRating column and the SOF readouts.
+    "irating_abbreviate": True,
+    # Header / footer text size, independent of the row font above.
+    "header_font_scale": 1.0,
+    "footer_font_scale": 1.0,
+    "row_ease_tau": 0.16,
+    "fade_ease_tau": 0.12,
+    "widths": {  # as multiples of row height
+        "badge": 0.95,
+        "position": 1.25,
+        "car_number": 1.60,
+        "gap": 1.70,
+        "irating": 1.20,
+        "license": 1.20,
+        "pit": 2.10,
+        "last_lap": 2.90,
+        "best_lap": 2.90,
+        "gutter": 0.18,
+    },
+    "colors": {
+        # Vertical gradient card matching the dash (top lighter -> bottom dark).
+        "bg": "#1b1f26f2",
+        "bg_top": "#1b1f26f2",
+        "bg_bottom": "#0f1216f2",
+        "border": "#ffffff20",
+        "cell_dark": "#0b0e12",
+        "row_alt": "#ffffff0a",
+        "player_row": "#8a5a18b4",
+        # Lapped-traffic row tints: "threat" (red) = a car a lap ahead that
+        # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
+        "threat": "#7a1a1adc",
+        "lapped": "#13386edc",
+        "text": "#f4f6f8",
+        "muted": "#8b93a1",
+        "irating_bg": "#eef0f2",
+        "irating_text": "#14161a",
+        "badge_player": "#ff9416",
+        "badge_pit_bg": "#ebeef0",
+        "badge_pit_text": "#141414",
+        "badge_lap": "#7638c4",
+        "badge_empty_border": "#ffffff28",
+        "badge_empty_fill": "#00000078",
+    },
+    "license_colors": {
+        "R": "#d34a3c",
+        "D": "#e0791a",
+        "C": "#d6b400",
+        "B": "#3a9b3a",
+        "A": "#2f6bd8",
+        "P": "#1a1a1a",
+    },
+}
+
 DEFAULTS: dict = {
     "font_family": "Segoe UI",
     # Global multiplier applied to every text size in every widget. Raise it to
@@ -47,72 +120,8 @@ DEFAULTS: dict = {
     # Check GitHub for a newer release when the app launches (silent unless an
     # update is found). The "Check for Updates" button works regardless.
     "check_updates_on_launch": True,
-    "table": {
-        "corner_radius_frac": 0.05,
-        "alt_row_shading": True,
-        # Fixed row height in pixels. When > 0, rows, text and header keep this
-        # size no matter how big the panel is dragged -- resizing the panel just
-        # reveals more empty space instead of zooming the table. Set to 0 to fall
-        # back to the old "scale to fit" behavior (capped by max_row_height_frac).
-        "row_height_px": 36,
-        # Cap a row's height to this fraction of the panel height so that, when
-        # only a few cars are present, rows don't stretch and the text doesn't
-        # look zoomed in (extra space is left empty below). 0 disables the cap.
-        # Only used when row_height_px is 0.
-        "max_row_height_frac": 0.14,
-        "font_scale": 0.40,        # row text size (multiple of row height)
-        "gap_font_scale": 1.12,
-        # Header / footer text size, independent of the row font above.
-        "header_font_scale": 1.0,
-        "footer_font_scale": 1.0,
-        "row_ease_tau": 0.16,
-        "fade_ease_tau": 0.12,
-        "widths": {  # as multiples of row height
-            "badge": 0.95,
-            "position": 1.25,
-            "car_number": 1.60,
-            "gap": 1.70,
-            "irating": 1.70,
-            "license": 2.00,
-            "pit": 2.10,
-            "last_lap": 2.90,
-            "best_lap": 2.90,
-            "gutter": 0.18,
-        },
-        "colors": {
-            # Vertical gradient card matching the dash (top lighter -> bottom dark).
-            "bg": "#1b1f26f2",
-            "bg_top": "#1b1f26f2",
-            "bg_bottom": "#0f1216f2",
-            "border": "#ffffff20",
-            "cell_dark": "#0b0e12",
-            "row_alt": "#ffffff0a",
-            "player_row": "#8a5a18b4",
-            # Lapped-traffic row tints: "threat" (red) = a car a lap ahead that
-            # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
-            "threat": "#7a1a1adc",
-            "lapped": "#13386edc",
-            "text": "#f4f6f8",
-            "muted": "#8b93a1",
-            "irating_bg": "#eef0f2",
-            "irating_text": "#14161a",
-            "badge_player": "#ff9416",
-            "badge_pit_bg": "#ebeef0",
-            "badge_pit_text": "#141414",
-            "badge_lap": "#7638c4",
-            "badge_empty_border": "#ffffff28",
-            "badge_empty_fill": "#00000078",
-        },
-        "license_colors": {
-            "R": "#d34a3c",
-            "D": "#e0791a",
-            "C": "#d6b400",
-            "B": "#3a9b3a",
-            "A": "#2f6bd8",
-            "P": "#1a1a1a",
-        },
-    },
     "relative": {
+        **copy.deepcopy(_TABLE_STYLE),
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -144,6 +153,7 @@ DEFAULTS: dict = {
         "footer_icons": {"left": False, "center": False, "right": False},
     },
     "standings": {
+        **copy.deepcopy(_TABLE_STYLE),
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -685,10 +695,36 @@ CONTEXTS = ("race", "garage")
 CONTEXT_LABELS = {"race": "On track", "garage": "In garage"}
 
 
+def _migrate_table_split(user: dict) -> dict:
+    """Fold a legacy shared "table" section into per-table settings.
+
+    Older configs stored all table styling under one "table" key shared by both
+    tables. Tables are now themed independently, so copy those overrides into
+    both "relative" and "standings" (anything already set on a table wins) and
+    drop the old key. Handled for the base config and the nested garage diff.
+    """
+    if not isinstance(user, dict):
+        return user
+    user = copy.deepcopy(user)
+
+    def fold(d: dict) -> None:
+        tbl = d.pop("table", None)
+        if not isinstance(tbl, dict):
+            return
+        for sec in ("relative", "standings"):
+            existing = d.get(sec) if isinstance(d.get(sec), dict) else {}
+            d[sec] = _deep_merge(tbl, existing)
+
+    fold(user)
+    if isinstance(user.get(GARAGE_KEY), dict):
+        fold(user[GARAGE_KEY])
+    return user
+
+
 def _read_user() -> dict:
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-            return json.load(fh)
+            return _migrate_table_split(json.load(fh))
     except (OSError, ValueError):
         return {}
 
@@ -832,6 +868,11 @@ def use_section(name: str | None) -> None:
     """Mark which widget section is painting (set at the top of paintEvent)."""
     global _active_section
     _active_section = name
+
+
+def active_section() -> str | None:
+    """The widget section currently painting (set via use_section)."""
+    return _active_section
 
 
 def text_scale_for(section: str | None = None) -> float:

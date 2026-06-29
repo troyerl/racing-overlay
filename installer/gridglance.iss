@@ -32,6 +32,11 @@ Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
+; In-app updates run this installer with /VERYSILENT. Close the running app so
+; its files can be replaced, but don't let the restart manager relaunch it --
+; the [Run] entry below handles relaunching exactly once.
+CloseApplications=yes
+RestartApplications=no
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -49,4 +54,6 @@ Name: "{group}\Uninstall GridGlance"; Filename: "{uninstallexe}"
 Name: "{userdesktop}\GridGlance"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch GridGlance"; Flags: nowait postinstall skipifsilent
+; No "skipifsilent" so a /VERYSILENT in-app update still relaunches the app when
+; it finishes. In an interactive install this shows as the usual "Launch" tick.
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch GridGlance"; Flags: nowait postinstall

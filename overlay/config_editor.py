@@ -126,8 +126,13 @@ OPTION_LABELS = {
 LABEL_OVERRIDES = {
     "check_updates_on_launch": "Check for updates on launch",
     "font_family": "Font",
-    "table.row_height_px": "Fixed row height (px, 0 = scale to fit)",
-    "table.max_row_height_frac": "Max row height (panel fraction)",
+    "row_height_px": "Fixed row height (px, 0 = scale to fit)",
+    "max_row_height_frac": "Max row height (panel fraction)",
+    "irating_abbreviate": "Abbreviate iRating (1.4k vs 1432)",
+    "font_scale": "Row text size",
+    "gap_font_scale": "Gap column text size",
+    "header_font_scale": "Header text size (independent of rows)",
+    "footer_font_scale": "Footer text size (independent of rows)",
     "radar.show_front": "Front sensing",
     "radar.show_rear": "Rear sensing",
     "radar.side_span_pct": "Side marker travel (lap fraction)",
@@ -236,7 +241,7 @@ TAB_COLORS = {
 
 # Section keys shown under the "Settings" top tab (global, non-widget config).
 # Everything else is a widget and lives under the "Widgets" top tab.
-SETTINGS_SECTION_KEYS = {"__general__", "table"}
+SETTINGS_SECTION_KEYS = {"__general__"}
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
@@ -1244,8 +1249,8 @@ class ConfigEditor(QWidget):
         box.setText(f"GridGlance {ver} is available "
                     f"(you have v{version.__version__}).")
         box.setInformativeText(
-            "Download and install it now? The app will close to finish "
-            "updating.")
+            "Update and restart now? GridGlance will close, update itself "
+            "and reopen automatically -- no setup steps.")
         notes = (info.get("notes") or "").strip()
         if notes:
             box.setDetailedText(notes)
@@ -1309,7 +1314,7 @@ class ConfigEditor(QWidget):
         if self._dl_dialog is not None:
             self._dl_dialog.close()
             self._dl_dialog = None
-        self._update_status.setText("Update downloaded \u2014 launching installer\u2026")
+        self._update_status.setText("Updating \u2014 GridGlance will reopen\u2026")
         self._launch_installer(path)
 
     def _on_download_failed(self, msg: str) -> None:
@@ -1323,11 +1328,15 @@ class ConfigEditor(QWidget):
 
     def _launch_installer(self, path: str) -> None:
         import os
+        import subprocess
         try:
             if os.name == "nt":
-                os.startfile(path)  # type: ignore[attr-defined]
+                # /VERYSILENT: no setup wizard. The installer closes the running
+                # app, replaces its files and relaunches it automatically, so the
+                # update looks like the app just restarting on the new version.
+                subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES",
+                                  "/NORESTART"])
             else:
-                import subprocess
                 subprocess.Popen([path])
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(

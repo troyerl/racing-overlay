@@ -51,7 +51,14 @@ def ease(current: float, target: float, dt: float, tau: float = 0.12) -> float:
 
 
 def _tcfg() -> dict:
-    return config.CFG["table"]
+    # Each table (relative / standings) now carries its own styling, so resolve
+    # against the section currently painting. Falls back to whichever table
+    # section exists if called outside a paint pass.
+    sec = config.active_section()
+    cfg = config.CFG
+    if sec in ("relative", "standings") and isinstance(cfg.get(sec), dict):
+        return cfg[sec]
+    return cfg.get("relative") or cfg.get("standings") or {}
 
 
 def col(key: str) -> QColor:
@@ -138,22 +145,38 @@ class BaseTable(QWidget):
         for it in items:
             groups.get(it.get("align", "left"), groups["left"]).append(it)
 
+        def gwidth(grp):
+            return sum(it["w"] for it in grp) + spacing * max(0, len(grp) - 1)
+
+        lw = gwidth(groups["left"])
+        rw = gwidth(groups["right"])
+        cw = gwidth(groups["center"])
+
+        # Left hugs the left edge, right hugs the right edge. The center group is
+        # centered in the *gap between* the two side groups rather than on the
+        # whole row -- so as the table narrows the empty space shrinks first and
+        # the far-right element stays put instead of being overrun. Only once the
+        # gap is fully closed do the elements start to touch.
+        left_end = x + lw
+        right_start = x + w - rw
+        min_gap = spacing * 0.35
+        slot = right_start - left_end
+        cx_center = left_end + (slot - cw) / 2.0
+        cx_center = max(left_end + min_gap,
+                        min(cx_center, right_start - min_gap - cw))
+
         cx = x
         for it in groups["left"]:
             it["draw"](p, cx, y, h)
             cx += it["w"] + spacing
 
-        grp = groups["right"]
-        total = sum(it["w"] for it in grp) + spacing * max(0, len(grp) - 1)
-        cx = x + w - total
-        for it in grp:
+        cx = right_start
+        for it in groups["right"]:
             it["draw"](p, cx, y, h)
             cx += it["w"] + spacing
 
-        grp = groups["center"]
-        total = sum(it["w"] for it in grp) + spacing * max(0, len(grp) - 1)
-        cx = x + w / 2 - total / 2
-        for it in grp:
+        cx = cx_center
+        for it in groups["center"]:
             it["draw"](p, cx, y, h)
             cx += it["w"] + spacing
 
@@ -184,9 +207,9 @@ class BaseTable(QWidget):
             p.drawLine(int(x), int(y), int(x + w), int(y))
         d = self.data or {}
         slots = d.get("slots", {})
-        # Header and footer text size are configured independently of the rows.
-        mult = _tcfg().get(f"{group}_font_scale", 1.0) or 1.0
-        fs = h * 0.42 * mult
+        # The band height (h) already scales with this group's font scale, so the
+        # text size follows it and stays independent of the row text size.
+        fs = h * 0.42
         items = []
         for pos in ("left", "center", "right"):
             key = gcfg.get(pos, "none")
@@ -287,22 +310,27 @@ class BaseTable(QWidget):
 
         rows = (self.data or {}).get("rows", [])
         n = max(1, len(rows))
+        # Header / footer band heights scale with their own font scale so larger
+        # header/footer text grows the band (instead of clipping) and is fully
+        # independent of the row text size.
+        hscale = max(0.3, tc.get("header_font_scale", 1.0) or 1.0)
+        fscale = max(0.3, tc.get("footer_font_scale", 1.0) or 1.0)
         fixed_rh = float(tc.get("row_height_px", 0) or 0)
         if fixed_rh > 0:
             # Fixed pixel sizing: rows, text and header keep their size no matter
             # how big the panel is -- dragging it just adds empty space below.
             row_h = fixed_rh
             pad = 8.0
-            header_h = round(fixed_rh * 1.25)
-            footer_h = round(fixed_rh * 1.1) if self.has_footer() else 0.0
+            header_h = round(fixed_rh * 1.25 * hscale)
+            footer_h = round(fixed_rh * 1.1 * fscale) if self.has_footer() else 0.0
             body_top = pad + header_h
             body_h = h - body_top - footer_h - pad
             if row_h * n > body_h:  # panel too short: shrink so nothing clips
                 row_h = max(1.0, body_h / n)
         else:
             pad = max(8.0, h * 0.025)
-            header_h = max(26.0, h * 0.12)
-            footer_h = max(24.0, h * 0.11) if self.has_footer() else 0.0
+            header_h = max(26.0, h * 0.12) * hscale
+            footer_h = (max(24.0, h * 0.11) * fscale) if self.has_footer() else 0.0
             body_top = pad + header_h
             body_h = h - body_top - footer_h - pad
             row_h = body_h / n
@@ -508,18 +536,23 @@ class BaseTable(QWidget):
                    str(row.get("position", "")))
 
     def _draw_license(self, p, row, x, y, lw, h, fs):
-        # The whole pill takes the license-class color; text sits on top with a
-        # contrasting color. Shows the class letter + safety rating (e.g. "A 3.45").
-        cell = QRectF(x, y + h * 0.2, lw, h * 0.6)
+        # A class-colored pill that hugs its text: shows iRating + class letter
+        # (e.g. "1.4k R"). The pill is sized to the text plus a little padding
+        # rather than filling the whole column.
         letter = str(row.get("lic_class", ""))
+        ir = str(row.get("irating", "")).strip()
+        text = " ".join(t for t in (ir, letter) if t) or "\u2014"
         bg = license_color(letter)
+        p.setFont(tfont(fs * 0.84))
+        tw = p.fontMetrics().horizontalAdvance(text)
+        pad_x = fs * 0.32
+        pill_h = h * 0.54
+        pill_w = min(lw, tw + 2 * pad_x)
+        cell = QRectF(x, y + (h - pill_h) / 2.0, pill_w, pill_h)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)
         p.drawRoundedRect(cell, 4, 4)
-        sr = str(row.get("sr", "")).strip()
-        text = (f"{letter} {sr}".strip() if letter else sr)
         p.setPen(_contrast_text(bg))
-        p.setFont(tfont(fs * 0.78))
         p.drawText(cell, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_irating(self, p, row, x, y, iw, h, fs):

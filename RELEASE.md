@@ -14,8 +14,23 @@ Release notes. To cut a release, add a new section to the top and push.
 - **Tables no longer zoom when resized.** The Relative and Standings tables now use
   a fixed row height, so dragging a table bigger in edit mode just adds empty space
   instead of ballooning the text, row height and columns. Tune it with the new
-  "Fixed row height" slider under Settings > Table (set it to 0 to go back to the
-  old scale-to-fit behavior).
+  "Fixed row height" slider (set it to 0 to go back to the old scale-to-fit
+  behavior).
+- **Relative and Standings are now themed independently.** The shared "Table" tab
+  is gone -- each table has its own full set of settings (colors, column widths,
+  fonts, row height and more) on its own page, so changing one never affects the
+  other. Your existing table settings are migrated onto both tables on upgrade.
+- **Cleaner driver rating pill.** The license pill now reads "1.4k R" (iRating +
+  class) and hugs its text instead of padding out the column. A new toggle switches
+  iRating between short (1.4k) and full (1432) form, per table.
+- **Independent header/footer text size.** Header and footer text can now be scaled
+  separately from the row text (and from each other); the band grows to fit so
+  larger text no longer clips.
+- **Smarter header/footer fit.** Narrowing a table now closes the gaps between the
+  header/footer items first instead of running the far-right element off the edge.
+- **Seamless updates.** Installing an update no longer walks through the setup
+  wizard -- GridGlance closes, updates itself silently and reopens on the new
+  version automatically.
 
 ## 1.13.0 - 2026-06-29
 

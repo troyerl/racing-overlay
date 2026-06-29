@@ -613,7 +613,8 @@ class AdvancedSimHUD:
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
-            "irating": self._fmt_irating(d.get("IRating")) if cols.get("irating") else "",
+            "irating": (self._fmt_irating(d.get("IRating"), "standings")
+                        if cols.get("irating") or cols.get("license") else ""),
             "pit": pit,
             "gap_text": gap_text,
             "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
@@ -706,10 +707,15 @@ class AdvancedSimHUD:
         })
 
     @staticmethod
-    def _fmt_irating(ir) -> str:
+    def _fmt_irating(ir, section: str | None = None) -> str:
         if not ir:
             return "--"
-        return f"{ir / 1000:.1f}k" if ir >= 1000 else str(int(ir))
+        ir = int(round(ir))
+        sec = config.CFG.get(section or "", {})
+        abbreviate = sec.get("irating_abbreviate", True) if isinstance(sec, dict) else True
+        if abbreviate and ir >= 1000:
+            return f"{ir / 1000:.1f}k"
+        return str(ir)
 
     @staticmethod
     def _parse_license(lic_str):
@@ -852,7 +858,8 @@ class AdvancedSimHUD:
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
-            "irating": self._fmt_irating(d.get("IRating")) if cols.get("irating") else "",
+            "irating": (self._fmt_irating(d.get("IRating"), "relative")
+                        if cols.get("irating") or cols.get("license") else ""),
             "pit": pit,
             "gap": abs(delta) if cols.get("gap") else None,
             "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
@@ -919,11 +926,11 @@ class AdvancedSimHUD:
                                        car_lap, lap_est),
         })
 
-    def _sof(self, drivers) -> str:
+    def _sof(self, drivers, section=None) -> str:
         irs = [d.get("IRating") for d in drivers.values() if d.get("IRating")]
         if not irs:
             return "--"
-        return self._fmt_irating(sum(irs) / len(irs))
+        return self._fmt_irating(sum(irs) / len(irs), section)
 
     # --- header / footer slot values ---------------------------------------
 
@@ -937,18 +944,18 @@ class AdvancedSimHUD:
         out: dict = {}
         for k in config.table_slot_items(section):
             val = self._slot_value(k, drivers, positions, player, car_lap,
-                                   lap_est, count)
+                                   lap_est, count, section)
             if val is not None:
                 out[k] = val
         return out
 
     def _slot_value(self, key, drivers, positions, player, car_lap, lap_est,
-                    count):
+                    count, section=None):
         ir = self.ir
         if key == "sof":
-            return self._sof(drivers)
+            return self._sof(drivers, section)
         if key == "class_sof":
-            return self._class_sof(drivers, player)
+            return self._class_sof(drivers, player, section)
         if key == "position":
             pos = positions[player] if positions and player is not None else None
             total = sum(1 for x in positions if x and x > 0) if positions else None
@@ -1000,15 +1007,15 @@ class AdvancedSimHUD:
             return count
         return None
 
-    def _class_sof(self, drivers, player) -> str:
+    def _class_sof(self, drivers, player, section=None) -> str:
         cid = self._player_class(drivers, player)
         if cid is None:
-            return self._sof(drivers)
+            return self._sof(drivers, section)
         irs = [d.get("IRating") for d in drivers.values()
                if d.get("IRating") and d.get("CarClassID") == cid]
         if not irs:
             return "--"
-        return self._fmt_irating(sum(irs) / len(irs))
+        return self._fmt_irating(sum(irs) / len(irs), section)
 
     def _class_position(self, drivers, positions, player) -> str:
         cp = self.ir["CarIdxClassPosition"]
@@ -1812,7 +1819,9 @@ def _prompt_update(app, hud, info) -> None:
     box = QMessageBox()
     box.setWindowTitle("Update available")
     box.setIcon(QMessageBox.Icon.Information)
-    box.setText(f"GridGlance {info['version']} is available. Install it now?")
+    box.setText(f"GridGlance {info['version']} is available. Update and "
+                f"restart now?\n\nThe app will close, update itself and reopen "
+                f"automatically -- no setup steps.")
     notes = (info.get("notes") or "").strip()
     if notes:
         box.setDetailedText(notes)
@@ -1823,12 +1832,19 @@ def _prompt_update(app, hud, info) -> None:
 
 
 def _run_installer(app, path) -> None:
-    """Launch the downloaded installer and quit so it can replace files."""
+    """Silently apply the update and quit so it can replace files + relaunch.
+
+    On Windows the installer runs with /VERYSILENT so there's no setup wizard:
+    it closes the running app, swaps in the new files and the installer's [Run]
+    entry relaunches GridGlance automatically -- the user just sees the app
+    reopen on the new version.
+    """
     try:
+        import subprocess
         if os.name == "nt":
-            os.startfile(path)  # type: ignore[attr-defined]
+            subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES",
+                              "/NORESTART"])
         else:
-            import subprocess
             subprocess.Popen([path])
     except Exception:
         return
