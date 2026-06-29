@@ -26,7 +26,9 @@ def resource_dir() -> str:
     return _REPO_ROOT
 
 
-_APP_DIR_NAME = "Racing Overlay"
+_APP_DIR_NAME = "GridGlance"
+# The app's previous name; its per-user folder is migrated once on rename.
+_OLD_APP_DIR_NAMES = ("Racing Overlay",)
 # Files that used to live next to the code; migrated once into the user folder.
 _LEGACY_FILES = ("overlay_config.json", "overlay_layout.json",
                  "lap_compare_best.json")
@@ -47,10 +49,11 @@ def _user_base() -> str:
 def data_dir() -> str:
     """A writable directory for config, layout and learned tracks.
 
-    Always a per-user folder (e.g. ``%LOCALAPPDATA%/Racing Overlay`` on Windows,
-    ``~/Library/Application Support/Racing Overlay`` on macOS) so settings live
-    outside the code tree and survive app updates/reinstalls. Settings that used
-    to sit next to the code are migrated here once.
+    Always a per-user folder (e.g. ``%LOCALAPPDATA%/GridGlance`` on Windows,
+    ``~/Library/Application Support/GridGlance`` on macOS) so settings live
+    outside the code tree and survive app updates/reinstalls. Settings from the
+    old code-relative location, or from the app's previous name, are migrated
+    here once.
     """
     d = os.path.join(_user_base(), _APP_DIR_NAME)
     os.makedirs(d, exist_ok=True)
@@ -59,22 +62,40 @@ def data_dir() -> str:
 
 
 def _migrate_legacy(dst: str) -> None:
-    """Copy any pre-existing settings from the old code-relative location into
-    the per-user folder, once, without clobbering files already there."""
+    """Bring forward any pre-existing settings, once, without clobbering files
+    already in ``dst``: first from the app's previous per-user folder(s) (a
+    rename), then from the old code-relative location."""
     global _migrated
     if _migrated:
         return
     _migrated = True
-    if os.path.abspath(_REPO_ROOT) == os.path.abspath(dst):
-        return
-    for name in _LEGACY_FILES:
-        old = os.path.join(_REPO_ROOT, name)
-        new = os.path.join(dst, name)
+
+    def _copy_file(old: str, new: str) -> None:
         if os.path.exists(old) and not os.path.exists(new):
             try:
                 shutil.copy2(old, new)
             except OSError:
                 pass
+
+    # Previous app name -> new app name (copy config/layout/best laps + tracks).
+    for old_name in _OLD_APP_DIR_NAMES:
+        old_dir = os.path.join(_user_base(), old_name)
+        if not os.path.isdir(old_dir) or os.path.abspath(old_dir) == os.path.abspath(dst):
+            continue
+        for name in _LEGACY_FILES:
+            _copy_file(os.path.join(old_dir, name), os.path.join(dst, name))
+        old_tracks = os.path.join(old_dir, "tracks")
+        if os.path.isdir(old_tracks):
+            new_tracks = os.path.join(dst, "tracks")
+            os.makedirs(new_tracks, exist_ok=True)
+            for name in os.listdir(old_tracks):
+                _copy_file(os.path.join(old_tracks, name),
+                           os.path.join(new_tracks, name))
+
+    # Files that used to sit next to the code (dev checkout).
+    if os.path.abspath(_REPO_ROOT) != os.path.abspath(dst):
+        for name in _LEGACY_FILES:
+            _copy_file(os.path.join(_REPO_ROOT, name), os.path.join(dst, name))
 
 
 def data_file(name: str) -> str:

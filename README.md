@@ -1,4 +1,4 @@
-# Racing Overlay
+# GridGlance
 
 A native (non-browser) multi-widget iRacing HUD built with PyQt6 (Dash/RPM,
 Relative, Standings, Radar, 2D Track Map, Laptime Log and Fuel Calculator). It
@@ -51,8 +51,8 @@ Windows to get a Windows `.exe` &mdash; PyInstaller can't cross-compile):
 python build_windows.py
 ```
 
-This produces `dist/Racing Overlay/Racing Overlay.exe` and drops a **"Racing
-Overlay" shortcut on your Desktop** (the build auto-installs PyInstaller/Pillow
+This produces `dist/GridGlance/GridGlance.exe` and drops a **"GridGlance"
+shortcut on your Desktop** (the build auto-installs PyInstaller/Pillow
 if needed and converts `assets/app.png` into the app icon). From then on just
 double-click the desktop icon.
 
@@ -70,7 +70,7 @@ on a Windows runner, which:
    [`RELEASE.md`](RELEASE.md) and stamps that version + your repo into
    `overlay/version.py`,
 2. builds the app with PyInstaller and packages a one-click **installer**
-   (`Racing-Overlay-Setup-<version>.exe`) with [Inno Setup](https://jrsoftware.org/isinfo.php),
+   (`GridGlance-Setup-<version>.exe`) with [Inno Setup](https://jrsoftware.org/isinfo.php),
 3. **creates a git tag (`v<version>`) and a GitHub Release** using the
    `RELEASE.md` notes and attaches the installer.
 
@@ -602,4 +602,4 @@ Performance work that *is* real (and keeps the animations):
 Icons use [Font Awesome 6 Free](https://fontawesome.com) (Solid), bundled at
 `assets/fonts/fa-solid-900.ttf`. The font is licensed under the SIL OFL 1.1 and
 the icons under CC BY 4.0.
-# racing-overlay
+# GridGlance

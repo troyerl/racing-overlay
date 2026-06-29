@@ -80,12 +80,12 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             "/DMyAppVersion=${{ steps.ver.outputs.version }}" `
-            "installer\racing_overlay.iss"
+            "installer\gridglance.iss"
 
       - name: Publish release (creates the tag)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: Racing Overlay ${{ steps.ver.outputs.version }}
+          name: GridGlance ${{ steps.ver.outputs.version }}
           body_path: RELEASE_NOTES.md
           files: installer_output/*.exe

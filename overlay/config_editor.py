@@ -932,7 +932,7 @@ class ConfigEditor(QWidget):
         # can start/stop the widgets. None when launched standalone.
         self._overlay = overlay
         self.setObjectName("root")
-        self.setWindowTitle("Overlay Settings")
+        self.setWindowTitle("GridGlance Settings")
         self.resize(880, 820)
         self.setMinimumSize(720, 560)
         self.setStyleSheet(STYLE)
@@ -1111,7 +1111,7 @@ class ConfigEditor(QWidget):
         h.setSpacing(12)
         texts = QVBoxLayout()
         texts.setSpacing(1)
-        t = QLabel(f"Racing Overlay  v{version.__version__}")
+        t = QLabel(f"GridGlance  v{version.__version__}")
         t.setObjectName("enableTitle")
         self._update_status = QLabel("Check GitHub for the latest version.")
         self._update_status.setObjectName("enableHint")
@@ -1141,9 +1141,9 @@ class ConfigEditor(QWidget):
         if not path:
             return
         box = QMessageBox(self)
-        box.setWindowTitle("Uninstall Racing Overlay")
+        box.setWindowTitle("Uninstall GridGlance")
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setText("Uninstall Racing Overlay?")
+        box.setText("Uninstall GridGlance?")
         box.setInformativeText(
             "This closes the app and starts the Windows uninstaller. Your saved "
             "settings and learned tracks (in your user folder) are left in place.")
@@ -1202,7 +1202,7 @@ class ConfigEditor(QWidget):
         box = QMessageBox(self)
         box.setWindowTitle("Update available")
         box.setIcon(QMessageBox.Icon.Information)
-        box.setText(f"Racing Overlay {ver} is available "
+        box.setText(f"GridGlance {ver} is available "
                     f"(you have v{version.__version__}).")
         box.setInformativeText(
             "Download and install it now? The app will close to finish "

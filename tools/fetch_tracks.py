@@ -55,7 +55,7 @@ _DEFAULT_TRACKS = os.path.join(_ROOT, "tracks")
 REPO = "iTelemetry/iracing-tracks"
 RAW = f"https://raw.githubusercontent.com/{REPO}/main"
 API_CONTENTS = f"https://api.github.com/repos/{REPO}/contents"
-_HEADERS = {"User-Agent": "racing-overlay-fetch-tracks"}
+_HEADERS = {"User-Agent": "gridglance-fetch-tracks"}
 
 
 def _ssl_context() -> ssl.SSLContext:

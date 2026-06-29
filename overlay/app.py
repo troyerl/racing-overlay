@@ -1757,8 +1757,19 @@ def main() -> int:
     # away; --no-settings skips opening the settings window.
     start_now = "--start" in sys.argv or demo
     open_settings = "--no-settings" not in sys.argv
+    # Give Windows an explicit app identity so the taskbar uses our icon (not the
+    # generic python/pythonw one) and groups/pins the app under it. Must be set
+    # before any window is created.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "GridGlance.App")
+        except Exception:  # noqa: BLE001
+            pass
     app = QApplication(sys.argv)
-    app.setApplicationName("Racing Overlay")
+    app.setApplicationName("GridGlance")
+    app.setDesktopFileName("GridGlance")
     icon_path = paths.app_icon()
     if icon_path:
         from PyQt6.QtGui import QIcon
@@ -1801,7 +1812,7 @@ def _prompt_update(app, hud, info) -> None:
     box = QMessageBox()
     box.setWindowTitle("Update available")
     box.setIcon(QMessageBox.Icon.Information)
-    box.setText(f"Racing Overlay {info['version']} is available. Install it now?")
+    box.setText(f"GridGlance {info['version']} is available. Install it now?")
     notes = (info.get("notes") or "").strip()
     if notes:
         box.setDetailedText(notes)
@@ -1832,7 +1843,7 @@ def _install_tray(app, hud, icon_path):
     from PyQt6.QtGui import QIcon
     icon = QIcon(icon_path) if icon_path else app.windowIcon()
     tray = QSystemTrayIcon(icon, app)
-    tray.setToolTip("Racing Overlay")
+    tray.setToolTip("GridGlance")
     menu = QMenu()
     act_settings = menu.addAction("Open Settings")
     act_toggle = menu.addAction("Start Overlay")

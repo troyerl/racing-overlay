@@ -23,7 +23,7 @@ from . import version
 _API = "https://api.github.com/repos/{repo}"
 _HEADERS = {
     "Accept": "application/vnd.github+json",
-    "User-Agent": "RacingOverlay-Updater",
+    "User-Agent": "GridGlance-Updater",
 }
 
 
@@ -90,7 +90,7 @@ def download(url: str, on_progress=None) -> str:
     If given, ``on_progress(bytes_done, bytes_total)`` is called as bytes
     arrive (bytes_total is 0 when the server doesn't send a Content-Length).
     """
-    fd, path = tempfile.mkstemp(suffix=".exe", prefix="RacingOverlaySetup-")
+    fd, path = tempfile.mkstemp(suffix=".exe", prefix="GridGlanceSetup-")
     os.close(fd)
     req = urllib.request.Request(url, headers={"User-Agent": _HEADERS["User-Agent"]})
     with urllib.request.urlopen(req) as resp, open(path, "wb") as fh:

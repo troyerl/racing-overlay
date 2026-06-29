@@ -5,6 +5,16 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.13.0 - 2026-06-29
+
+- **Renamed to GridGlance.** The app, window titles, installer, shortcuts and the
+  "Apps & features" entry now use the new name. Your existing settings, layout,
+  saved best laps and learned tracks are migrated automatically from the old
+  location, so nothing is lost on upgrade.
+- **New app icon.** The dashboard badge now shows as a clean transparent circle
+  (no square background) across the taskbar, window, tray, installer and the
+  installed-programs list.
+
 ## 1.12.0 - 2026-06-29
 
 - **Fix: oval turn detection.** Paired oval corners (T1-T2, T3-T4) used to read as
@@ -30,7 +40,7 @@ Release notes. To cut a release, add a new section to the top and push.
   against your all-time best for that combo.
 - **Consistency readout.** A footer shows your lap-time spread over recent clean
   laps (green when tight, red when loose) -- ideal for practice.
-- **Settings now live in a per-user folder** (`%LOCALAPPDATA%\Racing Overlay` on
+- **Settings now live in a per-user folder** (`%LOCALAPPDATA%\GridGlance` on
   Windows), separate from the app, so updates never overwrite your config, layout,
   learned tracks or saved best laps. Existing settings are migrated automatically.
 - **Clean installs start with every overlay off** -- turn on just the widgets you

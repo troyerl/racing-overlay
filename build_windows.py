@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Build a standalone Racing Overlay app and put a shortcut on the Desktop.
+"""Build a standalone GridGlance app and put a shortcut on the Desktop.
 
 Run this ONCE (on the machine you want to use the overlay on):
 
     python build_windows.py
 
-It produces ``dist/Racing Overlay/Racing Overlay.exe`` (a self-contained folder
-you can move anywhere) and, on Windows, drops a "Racing Overlay" shortcut on your
+It produces ``dist/GridGlance/GridGlance.exe`` (a self-contained folder
+you can move anywhere) and, on Windows, drops a "GridGlance" shortcut on your
 Desktop. After that just double-click the desktop icon -- no terminal needed.
 
 Notes
@@ -22,7 +22,7 @@ import subprocess
 import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
-APP_NAME = "Racing Overlay"
+APP_NAME = "GridGlance"
 ENTRY = os.path.join(ROOT, "run.py")
 PNG = os.path.join(ROOT, "assets", "app.png")
 ICO = os.path.join(ROOT, "assets", "app.ico")
@@ -98,7 +98,7 @@ def make_desktop_shortcut(exe: str) -> None:
     )
     try:
         subprocess.check_call(["powershell", "-NoProfile", "-Command", ps])
-        print("Created desktop shortcut: Racing Overlay")
+        print("Created desktop shortcut: GridGlance")
     except Exception as exc:  # noqa: BLE001
         print(f"Could not create desktop shortcut automatically: {exc}")
 
@@ -109,7 +109,7 @@ def main() -> int:
     # CI passes --no-shortcut (it packages an installer instead).
     if "--no-shortcut" not in sys.argv:
         make_desktop_shortcut(exe)
-        print("\nDone. Double-click the 'Racing Overlay' desktop icon to launch.")
+        print("\nDone. Double-click the 'GridGlance' desktop icon to launch.")
     return 0
 
 
