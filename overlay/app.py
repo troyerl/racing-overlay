@@ -42,6 +42,7 @@ from .widgets.delta_bar import DeltaBarWidget
 from .widgets.flags import FlagsWidget
 from .widgets.fuel_calc import FuelCalcWidget
 from .widgets.inputs import InputTraceWidget
+from .widgets.lap_compare import LapCompareEngine, LapCompareWidget
 from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
@@ -61,6 +62,7 @@ DEFAULT_GEOMS = {
     "delta_bar": (380, 60, 420, 120),
     "flags": (820, 60, 320, 150),
     "sector_timing": (380, 200, 360, 170),
+    "lap_compare": (40, 60, 380, 320),
 }
 
 
@@ -121,6 +123,9 @@ class AdvancedSimHUD:
         self._pit_t0 = None
         # Sector timing: derives sector splits from lap-distance crossings.
         self._sector_timer = SectorTimer()
+        # Lap compare: records per-lap input traces and analyses corners.
+        self._lap_engine = LapCompareEngine()
+        self._track_len_m = 0.0  # parsed once from the session info
         # Flag state: remember whether we were under yellow so we can flash a
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
@@ -190,9 +195,11 @@ class AdvancedSimHUD:
         self.delta_bar_widget = DeltaBarWidget()
         self.flags_widget = FlagsWidget()
         self.sector_widget = SectorTimingWidget()
+        self.lap_compare_widget = LapCompareWidget()
         if self.demo:
             self._load_demo_track()
             self._seed_demo_laptimes()
+            self._lap_engine.seed_demo()
 
         self._wrap("standings", self.standings_widget)
         self._wrap("relative", self.relative_widget)
@@ -205,6 +212,7 @@ class AdvancedSimHUD:
         self._wrap("delta_bar", self.delta_bar_widget)
         self._wrap("flags", self.flags_widget)
         self._wrap("sector_timing", self.sector_widget)
+        self._wrap("lap_compare", self.lap_compare_widget)
 
     @staticmethod
     def _is_shown(key: str) -> bool:
@@ -277,7 +285,7 @@ class AdvancedSimHUD:
                   self.radar_widget, self.map_widget, self.dash_widget,
                   self.laptime_widget, self.fuel_widget, self.inputs_widget,
                   self.delta_bar_widget, self.flags_widget,
-                  self.sector_widget):
+                  self.sector_widget, self.lap_compare_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -380,7 +388,7 @@ class AdvancedSimHUD:
         en = {k: self._is_shown(k)
               for k in ("standings", "relative", "radar", "map", "dash",
                         "laptime_log", "fuel_calc", "inputs", "delta_bar",
-                        "flags", "sector_timing")}
+                        "flags", "sector_timing", "lap_compare")}
         if not any(en.values()):
             return
 
@@ -391,7 +399,8 @@ class AdvancedSimHUD:
         positions = self.ir["CarIdxPosition"] if need_order else None
         lap_pct = (self.ir["CarIdxLapDistPct"]
                    if (en["radar"] or en["map"] or en["standings"]
-                       or en["relative"] or en["sector_timing"]) else None)
+                       or en["relative"] or en["sector_timing"]
+                       or en["lap_compare"]) else None)
         # Used by the tables to tell genuine lapped traffic from same-lap cars.
         self._lap_pct = lap_pct
         surface = (self.ir["CarIdxTrackSurface"]
@@ -449,6 +458,8 @@ class AdvancedSimHUD:
             self._update_flags()
         if en["sector_timing"]:
             self._update_sectors(player, lap_pct)
+        if en["lap_compare"]:
+            self._update_lap_compare(player, lap_pct)
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -1508,6 +1519,74 @@ class AdvancedSimHUD:
             return starts
         n = max(1, int(config.CFG["sector_timing"].get("sectors", 3) or 3))
         return [i / n for i in range(n)]
+
+    def _update_lap_compare(self, player, lap_pct) -> None:
+        """Record the player's lap and feed the corner-by-corner comparison."""
+        if not self.demo:  # demo keeps its seeded benchmark; no persistence
+            self._lap_engine.set_identity(self._lap_compare_key(),
+                                          self._car_info.get("redline"))
+        pct = None
+        if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
+                and 0 <= player < len(lap_pct)):
+            pct = lap_pct[player]
+        surf = self.ir["PlayerTrackSurface"]
+        off_track = surf == oc.TRK_OFF_TRACK
+        self._lap_engine.update(
+            pct,
+            on_pit=bool(self.ir["OnPitRoad"]),
+            throttle=self.ir["Throttle"],
+            brake=self.ir["Brake"],
+            steer=self._steer_norm(),
+            speed=self.ir["Speed"],
+            laptime=self.ir["LapCurrentLapTime"],
+            last_lap_time=self.ir["LapLastLapTime"],
+            lat=self.ir["LatAccel"],
+            lon=self.ir["LongAccel"],
+            gear=self.ir["Gear"],
+            rpm=self.ir["RPM"],
+            off_track=off_track,
+            incidents=self.ir["PlayerCarMyIncidentCount"],
+            corner_pcts=self._corner_pcts(),
+            track_len=self._track_length_m(),
+        )
+        self.lap_compare_widget.set_data(self._lap_engine.snapshot())
+
+    def _lap_compare_key(self):
+        """A stable "<track>::<car>" key so the benchmark persists per combo."""
+        wk = self.ir["WeekendInfo"]
+        track = ""
+        if isinstance(wk, dict):
+            track = str(wk.get("TrackID") or wk.get("TrackName") or "")
+        car = ""
+        drv = self._driver_cache.get(self.ir["PlayerCarIdx"]) if self._driver_cache else None
+        if isinstance(drv, dict):
+            car = str(drv.get("CarPath") or drv.get("CarID") or "")
+        if not track and not car:
+            return None
+        return f"{track}::{car}"
+
+    def _corner_pcts(self):
+        """Corner (pct, label) pairs from the map, when a layout is known."""
+        w = getattr(self, "map_widget", None)
+        if w is None:
+            return []
+        return getattr(w, "corners", None) or getattr(w, "_auto_corners", None) or []
+
+    def _track_length_m(self) -> float:
+        """Track length in meters, parsed once from the session info."""
+        if self._track_len_m:
+            return self._track_len_m
+        wk = self.ir["WeekendInfo"]
+        s = wk.get("TrackLength") if isinstance(wk, dict) else None
+        if isinstance(s, str):
+            parts = s.split()
+            try:
+                val = float(parts[0])
+            except (ValueError, IndexError):
+                return 0.0
+            unit = parts[1].lower() if len(parts) > 1 else "km"
+            self._track_len_m = val * (1609.344 if unit.startswith("mi") else 1000.0)
+        return self._track_len_m
 
     def _fuel_laps(self):
         """Estimate laps of fuel remaining from level, burn rate and lap time."""

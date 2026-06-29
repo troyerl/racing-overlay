@@ -5,6 +5,26 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.10.0 - 2026-06-28
+
+- **New Lap Compare widget.** Benchmarks your current lap against your best lap,
+  corner by corner, and tells you *why* you're slow. It records throttle, brake,
+  steering, speed, cornering load, gear and rpm against track position, auto-detects
+  the turns, and ranks the corners costing you time with plain-language tips --
+  apex speed, braking point, getting back to throttle, **coasting** (time on neither
+  pedal), **trail-braking to the apex**, **"too cautious here, push harder
+  mid-corner" when you're using less grip than your best**, slowest-point-too-early,
+  jerky steering, and short-shifting / hitting the limiter. Shows a big live delta,
+  a delta-over-distance trace, and the corner list in track order (first corner at
+  the top). Tip text wraps so nothing gets cut off.
+- **Trustworthy benchmark.** Laps with an off-track or a fresh incident are
+  automatically discarded, so a dirty lap never becomes your reference.
+- **Best lap persists per car + track.** Your benchmark is saved and restored when
+  you load back into the same car at the same track, so you're always comparing
+  against your all-time best for that combo.
+- **Consistency readout.** A footer shows your lap-time spread over recent clean
+  laps (green when tight, red when loose) -- ideal for practice.
+
 ## 1.9.0 - 2026-06-28
 
 - **New Delta Bar widget.** A big, standalone live time delta: a large signed

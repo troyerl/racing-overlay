@@ -541,6 +541,34 @@ DEFAULTS: dict = {
             "flag_checker_text": "#f4f6f8",
         },
     },
+    "lap_compare": {
+        # Show or hide this whole widget (its window + all of its per-tick work).
+        "show": True,
+        # Per-widget text size, multiplied by the global text_scale.
+        "text_scale": 1.0,
+        # Max number of corner rows listed (worst-first).
+        "max_turns": 6,
+        # Only list corners where you gained/lost at least this many seconds.
+        "min_time_loss": 0.03,
+        # Show the big live delta-to-best (vs the last completed lap's delta).
+        "show_live_delta": True,
+        # Show the delta-over-distance sparkline.
+        "show_graph": True,
+        "colors": {
+            "bg_top": "#1b1f26",
+            "bg_bottom": "#0f1216",
+            "panel_border": "#ffffff20",
+            "accent": "#e23b3b",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "faster": "#46df7a",
+            "slower": "#e23b3b",
+            "chip_bg": "#262b34",
+            "graph_bg": "#0b0d11",
+            "grid": "#ffffff1f",
+            "graph_line": "#ffd23a",
+        },
+    },
     "sector_timing": {
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,

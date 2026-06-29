@@ -153,6 +153,10 @@ LABEL_OVERRIDES = {
     "delta_bar.show_value": "Show numeric delta",
     "flags.idle_text": "Text when no flag is flying",
     "sector_timing.sectors": "Sector count (fallback)",
+    "lap_compare.max_turns": "Max corners listed",
+    "lap_compare.min_time_loss": "Min time delta to list a corner (s)",
+    "lap_compare.show_live_delta": "Show live delta to best",
+    "lap_compare.show_graph": "Show delta-over-distance trace",
 }
 
 

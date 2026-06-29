@@ -111,11 +111,30 @@ class FakeIRSDK:
             out.append(((lap + i * 3) % 8 == 0) and frac < 0.06)
         return out
 
+    def _lap_jitter(self) -> float:
+        """A small deterministic per-lap wobble (-1..1) so consecutive laps differ
+        slightly -- lets the lap-compare demo show believable corner deltas."""
+        lap = int(self._total_laps()[self.player_idx])
+        return (((lap * 37) % 7) - 3) / 3.0
+
+    def _drive_profile(self, frac: float):
+        """(throttle, brake, steer_angle, speed_factor) for the player at a given
+        lap fraction -- three corners a lap, shifted a touch each lap."""
+        jit = self._lap_jitter()
+        base = 0.5 + 0.5 * math.sin((frac + 0.012 * jit) * 2 * math.pi * 3 - 1.2)
+        corner = max(0.0, 1.0 - base)
+        throttle = max(0.0, min(1.0, 0.12 + base - max(0.0, 0.08 * jit)))
+        brake = max(0.0, min(1.0, corner * 1.5 - 0.45))
+        steer = 3.6 * corner * math.sin(frac * 2 * math.pi * 1.5)
+        return throttle, brake, steer, base
+
     def _engine(self):
         """Plausible (speed_ms, rpm, gear) for the player from lap position."""
         frac = self._lap_pct()[self.player_idx]
-        # Three "corners" a lap: speed dips and recovers around the loop.
-        spd = 90.0 + 150.0 * (0.5 + 0.5 * math.sin(frac * 2 * math.pi * 3 - 1.2))
+        # Three "corners" a lap: speed dips and recovers around the loop, with a
+        # small per-lap variation in how deep the corners are.
+        base = 0.5 + 0.5 * math.sin(frac * 2 * math.pi * 3 - 1.2)
+        spd = 90.0 + 150.0 * base + 6.0 * self._lap_jitter() * (1.0 - base)
         spd = max(65.0, min(258.0, spd))
         bands = [(0, 60), (60, 100), (100, 140), (140, 180), (180, 220), (220, 320)]
         gear, rpm = 1, 6000.0
@@ -284,7 +303,7 @@ class FakeIRSDK:
 
         if key == "WeekendInfo":
             return {"TrackID": "_demo", "TrackDisplayName": "Demo Speedpark",
-                    "TrackConfigName": "Oval",
+                    "TrackConfigName": "Oval", "TrackLength": "4.00 km",
                     "WeekendOptions": {"IncidentLimit": 17}}
 
         if key == "SplitTimeInfo":
@@ -343,12 +362,14 @@ class FakeIRSDK:
             return self._engine()[2]
 
         if key == "Throttle":
-            t = time.time() - self._start
-            return max(0.0, min(1.0, 0.55 + 0.5 * math.sin(t * 0.9)))
+            if self._on_pit_list()[self.player_idx]:
+                return 0.2
+            return self._drive_profile(self._lap_pct()[self.player_idx])[0]
 
         if key == "Brake":
-            t = time.time() - self._start
-            return max(0.0, min(1.0, 0.75 * math.sin(t * 0.9 - 2.3)))
+            if self._on_pit_list()[self.player_idx]:
+                return 0.0
+            return self._drive_profile(self._lap_pct()[self.player_idx])[1]
 
         if key == "Clutch":
             # iRacing reports 1.0 = fully engaged (pedal up); blip toward 0
@@ -360,10 +381,26 @@ class FakeIRSDK:
             return self["Brake"] > 0.55  # ABS "kicks in" under hard braking
 
         if key == "SteeringWheelAngle":
-            t = time.time() - self._start
-            return 3.2 * math.sin(t * 0.7)   # radians, weaving back and forth
+            return self._drive_profile(self._lap_pct()[self.player_idx])[2]
         if key == "SteeringWheelAngleMax":
             return 5.0                        # radians of lock (for normalizing)
+
+        if key == "LapDist":
+            return self._lap_pct()[self.player_idx] * 4000.0  # meters along lap
+
+        if key == "PlayerTrackSurface":
+            return (oc.TRK_IN_PIT_STALL if self._on_pit_list()[self.player_idx]
+                    else oc.TRK_ON_TRACK)
+
+        if key == "LatAccel":
+            # Cornering load: peaks through the three corners a lap.
+            frac = self._lap_pct()[self.player_idx]
+            base = 0.5 + 0.5 * math.sin(frac * 2 * math.pi * 3 - 1.2)
+            return max(0.0, 1.0 - base) * 16.0 * math.sin(frac * 2 * math.pi * 1.5)
+
+        if key == "LongAccel":
+            prof = self._drive_profile(self._lap_pct()[self.player_idx])
+            return (prof[0] - prof[1]) * 9.0  # throttle minus brake, ~m/s^2
 
         if key == "PlayerCarPosition":
             return self["CarIdxPosition"][self.player_idx]
