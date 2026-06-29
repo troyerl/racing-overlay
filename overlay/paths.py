@@ -26,20 +26,55 @@ def resource_dir() -> str:
     return _REPO_ROOT
 
 
+_APP_DIR_NAME = "Racing Overlay"
+# Files that used to live next to the code; migrated once into the user folder.
+_LEGACY_FILES = ("overlay_config.json", "overlay_layout.json",
+                 "lap_compare_best.json")
+_migrated = False
+
+
+def _user_base() -> str:
+    """Platform-appropriate per-user data root."""
+    if sys.platform.startswith("win"):
+        return os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(os.path.expanduser("~"), "Library",
+                            "Application Support")
+    return (os.environ.get("XDG_DATA_HOME")
+            or os.path.join(os.path.expanduser("~"), ".local", "share"))
+
+
 def data_dir() -> str:
     """A writable directory for config, layout and learned tracks.
 
-    For a packaged build this is a per-user folder (so it stays writable and
-    survives reinstalls/updates even if the app is installed under Program
-    Files). In a dev checkout it's the repo root, preserving existing behavior.
+    Always a per-user folder (e.g. ``%LOCALAPPDATA%/Racing Overlay`` on Windows,
+    ``~/Library/Application Support/Racing Overlay`` on macOS) so settings live
+    outside the code tree and survive app updates/reinstalls. Settings that used
+    to sit next to the code are migrated here once.
     """
-    if frozen():
-        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-        d = os.path.join(base, "Racing Overlay")
-    else:
-        d = _REPO_ROOT
+    d = os.path.join(_user_base(), _APP_DIR_NAME)
     os.makedirs(d, exist_ok=True)
+    _migrate_legacy(d)
     return d
+
+
+def _migrate_legacy(dst: str) -> None:
+    """Copy any pre-existing settings from the old code-relative location into
+    the per-user folder, once, without clobbering files already there."""
+    global _migrated
+    if _migrated:
+        return
+    _migrated = True
+    if os.path.abspath(_REPO_ROOT) == os.path.abspath(dst):
+        return
+    for name in _LEGACY_FILES:
+        old = os.path.join(_REPO_ROOT, name)
+        new = os.path.join(dst, name)
+        if os.path.exists(old) and not os.path.exists(new):
+            try:
+                shutil.copy2(old, new)
+            except OSError:
+                pass
 
 
 def data_file(name: str) -> str:

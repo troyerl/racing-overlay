@@ -5,7 +5,7 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
-## 1.10.0 - 2026-06-28
+## 1.11.0 - 2026-06-29
 
 - **New Lap Compare widget.** Benchmarks your current lap against your best lap,
   corner by corner, and tells you *why* you're slow. It records throttle, brake,
@@ -24,6 +24,14 @@ Release notes. To cut a release, add a new section to the top and push.
   against your all-time best for that combo.
 - **Consistency readout.** A footer shows your lap-time spread over recent clean
   laps (green when tight, red when loose) -- ideal for practice.
+- **Settings now live in a per-user folder** (`%LOCALAPPDATA%\Racing Overlay` on
+  Windows), separate from the app, so updates never overwrite your config, layout,
+  learned tracks or saved best laps. Existing settings are migrated automatically.
+- **Clean installs start with every overlay off** -- turn on just the widgets you
+  want from Settings.
+- **Lower CPU.** Static widgets (flags, sector timing, lap compare) now only
+  repaint when their data actually changes instead of every frame, and the costly
+  session-info reads behind the lap-compare and sector widgets are cached.
 
 ## 1.9.0 - 2026-06-28
 

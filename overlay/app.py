@@ -126,6 +126,10 @@ class AdvancedSimHUD:
         # Lap compare: records per-lap input traces and analyses corners.
         self._lap_engine = LapCompareEngine()
         self._track_len_m = 0.0  # parsed once from the session info
+        # Cached session-info reads (refreshed on a throttle, not every tick).
+        self._lc_key = None
+        self._sector_starts_cache = None
+        self._session_info_counter = 0
         # Flag state: remember whether we were under yellow so we can flash a
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
@@ -383,6 +387,8 @@ class AdvancedSimHUD:
         # Switch the garage vs on-track profile before anything else, so widget
         # visibility + content reflect the right context this tick.
         self._update_context()
+        # Drives the ~1 s throttle on expensive session-info (YAML) reads.
+        self._session_info_counter += 1
 
         # Which widgets are visible: a hidden widget does no reads and no work.
         en = {k: self._is_shown(k)
@@ -1506,7 +1512,14 @@ class AdvancedSimHUD:
             self.ir["LapBestLapTime"]))
 
     def _sector_starts(self):
-        """Sector start percentages from the session, else N equal divisions."""
+        """Sector start percentages from the session, else N equal divisions.
+
+        The session layout is static, so this expensive YAML read is cached and
+        only refreshed on the ~1 s throttle counter.
+        """
+        if (self._sector_starts_cache is not None
+                and self._session_info_counter % 60 != 0):
+            return self._sector_starts_cache
         info = self.ir["SplitTimeInfo"]
         starts = []
         secs = info.get("Sectors") if isinstance(info, dict) else None
@@ -1515,10 +1528,11 @@ class AdvancedSimHUD:
                 pct = s.get("SectorStartPct") if isinstance(s, dict) else None
                 if isinstance(pct, (int, float)):
                     starts.append(float(pct))
-        if starts:
-            return starts
-        n = max(1, int(config.CFG["sector_timing"].get("sectors", 3) or 3))
-        return [i / n for i in range(n)]
+        if not starts:
+            n = max(1, int(config.CFG["sector_timing"].get("sectors", 3) or 3))
+            starts = [i / n for i in range(n)]
+        self._sector_starts_cache = starts
+        return starts
 
     def _update_lap_compare(self, player, lap_pct) -> None:
         """Record the player's lap and feed the corner-by-corner comparison."""
@@ -1552,7 +1566,13 @@ class AdvancedSimHUD:
         self.lap_compare_widget.set_data(self._lap_engine.snapshot())
 
     def _lap_compare_key(self):
-        """A stable "<track>::<car>" key so the benchmark persists per combo."""
+        """A stable "<track>::<car>" key so the benchmark persists per combo.
+
+        Track + car don't change mid-stint, so the result is cached and only
+        recomputed on the ~1 s throttle counter (the WeekendInfo read is costly).
+        """
+        if self._lc_key is not None and self._session_info_counter % 60 != 0:
+            return self._lc_key
         wk = self.ir["WeekendInfo"]
         track = ""
         if isinstance(wk, dict):
@@ -1561,9 +1581,8 @@ class AdvancedSimHUD:
         drv = self._driver_cache.get(self.ir["PlayerCarIdx"]) if self._driver_cache else None
         if isinstance(drv, dict):
             car = str(drv.get("CarPath") or drv.get("CarID") or "")
-        if not track and not car:
-            return None
-        return f"{track}::{car}"
+        self._lc_key = f"{track}::{car}" if (track or car) else None
+        return self._lc_key
 
     def _corner_pcts(self):
         """Corner (pct, label) pairs from the map, when a layout is known."""

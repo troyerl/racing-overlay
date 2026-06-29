@@ -3,8 +3,10 @@ Central configuration for every overlay widget.
 
 Everything visual or behavioral (colors, fonts, sizes, toggles, row counts,
 ranges, animation speeds) is defined here as defaults and can be overridden by an
-`overlay_config.json` file placed next to the scripts. Only the keys you want to
-change need to appear in that file -- it is deep-merged over the defaults.
+`overlay_config.json` file in the per-user data folder (see paths.data_dir), kept
+separate from the code so app updates never overwrite your settings. Only the keys
+you want to change need to appear in that file -- it is deep-merged over the
+defaults.
 
 Generate a full, editable template with:
     python3 sim_hud.py --dump-config        # writes overlay_config.json
@@ -692,6 +694,30 @@ def _split_user(user: dict) -> tuple[dict, dict]:
     return user, garage
 
 
+def _widget_sections() -> list[str]:
+    """Top-level config sections that represent a toggleable widget panel."""
+    return [k for k, v in DEFAULTS.items()
+            if isinstance(v, dict) and "show" in v]
+
+
+def ensure_user_config() -> None:
+    """On first launch (no config file yet) write one with every widget hidden.
+
+    The settings file lives in the per-user data folder (see paths.data_dir),
+    separate from the code, so app updates never overwrite it. A clean install
+    starts with all overlays off; you turn on the ones you want in Settings.
+    """
+    if os.path.exists(CONFIG_FILE):
+        return
+    data = {k: {"show": False} for k in _widget_sections()}
+    try:
+        os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
+        with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+    except OSError:
+        pass
+
+
 def load() -> dict:
     """Load defaults merged with the base (on-track) overlay_config.json."""
     base_user, _ = _split_user(_read_user())
@@ -703,6 +729,9 @@ def load_garage() -> dict:
     _, garage = _split_user(_read_user())
     return garage
 
+
+# Create a fresh, all-widgets-off config on first launch, then load it.
+ensure_user_config()
 
 # The base ("On track") config and the sparse garage overrides.
 BASE: dict = load()

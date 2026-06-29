@@ -126,7 +126,10 @@ class SectorTimingWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_data(self, data: dict) -> None:
-        self.data = data or {}
+        data = data or {}
+        if data == self.data:
+            return
+        self.data = data
         self.update()
 
     def _cfg(self) -> dict:
