@@ -22,6 +22,7 @@ Corrections vs. the common template:
 from __future__ import annotations
 
 import collections
+import logging
 import math
 import os
 import sys
@@ -49,6 +50,8 @@ from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
 from .widgets.sector_timing import SectorTimer, SectorTimingWidget
 from .widgets.standings import StandingsWidget
+
+log = logging.getLogger("gridglance.app")
 
 # Default window geometry per panel: (x, y, w, h). Overridden by saved layout.
 DEFAULT_GEOMS = {
@@ -1496,13 +1499,27 @@ class AdvancedSimHUD:
             self._track_diag = 0.0
 
     def _dist_to_track(self, x: float, y: float) -> float | None:
-        """Min distance from (x, y) to the cached racing line. None if unknown."""
+        """Min distance from (x, y) to the racing line, measured to the nearest
+        *segment* of the (closed) polyline -- not just the nearest vertex, which
+        would add discretization noise on the order of the small pit offset we're
+        trying to detect. None if there's no geometry."""
         pts = self._track_pts
-        if not pts:
+        if not pts or len(pts) < 2:
             return None
+        n = len(pts)
         best = float("inf")
-        for px, py in pts:
-            d = (px - x) * (px - x) + (py - y) * (py - y)
+        for i in range(n):
+            ax, ay = pts[i]
+            bx, by = pts[(i + 1) % n]  # wrap: the track is a closed loop
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            if seg2 <= 0.0:
+                t = 0.0
+            else:
+                t = ((x - ax) * dx + (y - ay) * dy) / seg2
+                t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+            px, py = ax + dx * t, ay + dy * t
+            d = (x - px) * (x - px) + (y - py) * (y - py)
             if d < best:
                 best = d
         return math.sqrt(best)
@@ -1822,15 +1839,29 @@ class AdvancedSimHUD:
             return  # already finalized; use "Rescan pits" to redo
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct))
+        n = len(self._pit_passes)
+        n_in = len(pit_in) if pit_in else 0
+        n_out = len(pit_out) if pit_out else 0
+        # Diagnostics: surfaces whether the entry/exit blends were captured (they
+        # need track geometry to measure divergence from the racing line).
+        log.warning("pit pass %d/%d: entry_blend=%d lane=%d exit_blend=%d "
+                    "lane_offset=%.3e track_geom=%s",
+                    n, PIT_PASSES, n_in, len(lane) if lane else 0, n_out,
+                    self._pit_lane_offset, bool(self._track_pts))
         # Preview the latest pass (span + geometry) while gathering more.
         self.map_widget.set_pit((entry_pct, exit_pct), self._pit_speed_ms)
         if lane and len(lane) >= 2:
             self.map_widget.set_pit_path(lane)
         self.map_widget.set_pit_blends(pit_in, pit_out)
         self.map_widget.set_pit_route_pct(in_pct, out_pct)
-        n = len(self._pit_passes)
         if n < PIT_PASSES:
-            self.map_widget.flash_hint(f"Pit pass {n}/{PIT_PASSES}")
+            if not self._track_pts:
+                hint = f"Pit pass {n}/{PIT_PASSES} \u00b7 no track geometry"
+            elif n_in < 2 or n_out < 2:
+                hint = f"Pit pass {n}/{PIT_PASSES} \u00b7 blend not captured"
+            else:
+                hint = f"Pit pass {n}/{PIT_PASSES}"
+            self.map_widget.flash_hint(hint)
             return
 
         passes = self._pit_passes
