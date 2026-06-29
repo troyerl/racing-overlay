@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.21.0 - 2026-06-29
+
+- **Local `.env` files are now loaded automatically.** Author/dev database
+  credentials placed in a `.env` (in the working directory, repo root, or next
+  to the executable) are picked up on launch -- no need to `export` them in your
+  shell first. Real environment variables still take precedence.
+- **Simpler author setup.** Setting a single `GRIDGLANCE_MONGODB_URI` now drives
+  both reads and writes, so one read-write connection string is enough to unlock
+  the scan/record controls and download maps. `GRIDGLANCE_MONGODB_READ_URI`
+  remains a read-only override and, by design, never enables write/dev mode on
+  its own.
+
 ## 1.20.0 - 2026-06-29
 
 - **Fix: track map crash while scanning.** The "LAP n/3" scan badge / pit hint

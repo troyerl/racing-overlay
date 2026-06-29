@@ -21,10 +21,51 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import threading
 from datetime import datetime, timezone
 
 from PyQt6.QtCore import QObject, pyqtSignal
+
+
+def _load_dotenv() -> None:
+    """Populate ``os.environ`` from a local ``.env`` file as a dev convenience.
+
+    Real environment variables always win; we only fill in keys that aren't
+    already set. We look in the current working directory, the repo root, and
+    next to a frozen executable so it works both from source and from a build.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(os.getcwd(), ".env"),
+        os.path.join(os.path.dirname(here), ".env"),  # repo root (../ of overlay/)
+    ]
+    if getattr(sys, "frozen", False):
+        candidates.append(os.path.join(os.path.dirname(sys.executable), ".env"))
+
+    seen: set[str] = set()
+    for path in candidates:
+        if path in seen or not os.path.isfile(path):
+            continue
+        seen.add(path)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, val = line.partition("=")
+                    key = key.strip()
+                    if key.startswith("export "):
+                        key = key[len("export "):].strip()
+                    val = val.strip().strip('"').strip("'")
+                    if key and key not in os.environ:
+                        os.environ[key] = val
+        except OSError:
+            pass
+
+
+_load_dotenv()
 
 # ---------------------------------------------------------------------------
 # Credentials
@@ -39,9 +80,15 @@ from PyQt6.QtCore import QObject, pyqtSignal
 #    database. Leave it empty to disable cloud downloads entirely.
 #
 # 2. Read-write (author/dev only) -- do NOT put this in code. Set it in your
-#    shell/.env so it never ships:
+#    shell or a local .env (auto-loaded by _load_dotenv) so it never ships:
 #
-#      export GRIDGLANCE_MONGODB_URI="mongodb+srv://gg_dev:PASSWORD@cluster.xxxxx.mongodb.net/"
+#      GRIDGLANCE_MONGODB_URI="mongodb+srv://gg_dev:PASSWORD@cluster.xxxxx.mongodb.net/"
+#
+#    This is the ONLY variable that unlocks the scan/record (write) controls.
+#    GRIDGLANCE_MONGODB_READ_URI only redirects reads and never grants write
+#    access, even if the string you put there happens to have write permission.
+#    A single GRIDGLANCE_MONGODB_URI is enough for an author: it drives both
+#    reads and writes.
 #
 _READ_URI_DEFAULT = "mongodb+srv://GridGlanceUser:3w69ejWh1WGKenQa@gridglance.dguyept.mongodb.net/?appName=GridGlance"
 
@@ -65,10 +112,15 @@ _clients_lock = threading.Lock()
 
 
 def _read_uri() -> str:
-    """The read-only URI: the env var if set, else the hard-coded default."""
-    env = os.environ.get("GRIDGLANCE_MONGODB_READ_URI")
-    if env and env.strip():
-        return env.strip()
+    """The URI used for reads.
+
+    Prefers the dedicated read override, then the author's read-write URI (so a
+    dev only needs to set one variable), then the hard-coded default.
+    """
+    for var in ("GRIDGLANCE_MONGODB_READ_URI", "GRIDGLANCE_MONGODB_URI"):
+        val = (os.environ.get(var) or "").strip()
+        if val:
+            return val
     return _READ_URI_DEFAULT.strip()
 
 
