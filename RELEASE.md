@@ -5,7 +5,7 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
-## 1.14.0 - 2026-06-29
+## 1.15.0 - 2026-06-29
 
 - **Per-widget reset.** Every widget's settings page now has a "Reset to defaults"
   button (tinted in that widget's color) that restores just that widget's settings,
