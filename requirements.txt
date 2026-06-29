@@ -3,3 +3,6 @@ pyirsdk>=1.3.5
 # psutil is optional. The CPU% / Memory% header-footer slots fall back to native
 # OS calls (Windows ctypes / Linux /proc), but psutil enables them on macOS too.
 psutil>=5.9
+# Shared track maps (MongoDB Atlas). The [srv] extra pulls dnspython for
+# mongodb+srv:// URIs. Imported lazily, so the app still runs without it.
+pymongo[srv]>=4.6

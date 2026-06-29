@@ -5,6 +5,36 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.18.0 - 2026-06-29
+
+- **Community track maps.** Track maps are now shared through the cloud, so the
+  first time you visit a track GridGlance downloads its map instead of making you
+  drive a lap to learn it. Maps still learn locally (and are uploaded by the
+  author) so the library keeps growing. Toggle it off on the new App settings
+  page to stay fully offline.
+- **Auto-sync on launch.** The shared library is the source of truth: on every
+  start GridGlance refreshes the maps it has already cached, pulling any that
+  changed since last time (it only transfers what actually changed). If the track
+  you're on was updated, the live map reloads itself.
+- **Bounded cache.** Downloaded maps are cached so revisits are instant and
+  offline-friendly, but the cache is capped (least-recently-used maps are
+  evicted past the limit) so it can't grow unbounded as you visit more tracks.
+  Your own bundled/learned maps are never evicted.
+- **Multi-lap scanning for cleaner maps.** Learning a track now takes three full
+  laps, averaged together into one smooth line (a "LAP n/3" badge shows
+  progress) before the map is saved and uploaded. The pit lane unlocks only
+  after the track scan finishes and is confirmed over three pit passes (averaged,
+  start/finish-aware) before its data is saved/uploaded; passing the pits earlier
+  shows a "Finish track scan first" hint.
+- **Real pit lane on the map.** The pit lane is now drawn from its actual
+  recorded route -- from where you leave the track to where you rejoin -- instead
+  of an approximation offset from the racing line. The geometry is captured from
+  your GPS over the three pit passes, averaged, and saved/shared with the track.
+- **Author tools.** Running from source with a read-write database URI unlocks
+  uploading: the "Rescan track" / "Rescan pits" controls appear, learned maps are
+  pushed automatically, and `tools/sync_tracks.py` bulk-uploads or downloads the
+  whole library.
+
 ## 1.17.0 - 2026-06-29
 
 - **Auto-switch presets by league.** Bind a preset to one or more league sessions

@@ -57,7 +57,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import config, paths, version
+from . import config, paths, track_store, version
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
@@ -417,7 +417,39 @@ def _carbon_tile() -> QPixmap:
     return pm
 
 
-class Combo(QComboBox):
+class _WheelGuard:
+    """Mixin: the mouse wheel only changes the control once it has focus.
+
+    Sliders, spin boxes and combos otherwise eat wheel scrolls while you're just
+    trying to scroll the settings page, nudging values by accident. With this,
+    an unfocused control ignores the wheel so it bubbles up to the scroll area;
+    click (or tab) into the control first to adjust it with the wheel.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def wheelEvent(self, event):  # noqa: N802 (Qt naming)
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+class _Slider(_WheelGuard, QSlider):
+    pass
+
+
+class _SpinBox(_WheelGuard, QSpinBox):
+    pass
+
+
+class _DoubleSpinBox(_WheelGuard, QDoubleSpinBox):
+    pass
+
+
+class Combo(_WheelGuard, QComboBox):
     """A dropdown that paints its own chevron, flipping up while the list is open."""
 
     def __init__(self, parent=None):
@@ -592,7 +624,7 @@ class NumberControl(QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(12)
 
-        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider = _Slider(Qt.Orientation.Horizontal)
         self.slider.setRange(0, self.steps)
         self.slider.setValue(self._to_slider(value))
         self.slider.setMinimumWidth(140)
@@ -616,13 +648,13 @@ class NumberControl(QWidget):
         if not isinstance(value, (int, float)):
             value = default
         if self.is_float:
-            self.spin = QDoubleSpinBox()
+            self.spin = _DoubleSpinBox()
             self.spin.setDecimals(3)
             self.spin.setRange(-1_000_000.0, 1_000_000.0)
             self.spin.setSingleStep(self.step)
             self.spin.setValue(float(value))
         else:
-            self.spin = QSpinBox()
+            self.spin = _SpinBox()
             self.spin.setRange(-1_000_000, 1_000_000)
             self.spin.setSingleStep(max(1, int(self.step)))
             self.spin.setValue(int(round(value)))
@@ -1491,6 +1523,7 @@ class ConfigEditor(QWidget):
             v.addWidget(note)
             v.addWidget(self._about_card())
             v.addWidget(self._auto_switch_card())
+            v.addWidget(self._cloud_tracks_card())
             v.addStretch(1)
             return page
 
@@ -1559,6 +1592,10 @@ class ConfigEditor(QWidget):
         return card, body
 
     def _add_map_actions(self, lay) -> None:
+        # Re-scanning re-learns / overwrites a track's saved shape, which is an
+        # authoring action -- only expose it to users with write access.
+        if not track_store.can_write():
+            return
         rescan = QPushButton("\u21BB  Rescan track now")
         rescan.setObjectName("warn")
         rescan.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1954,6 +1991,33 @@ class ConfigEditor(QWidget):
     def _set_auto_switch(self, setter, on: bool) -> None:
         setter(bool(on))
         self._flash("Auto-switch updated")
+
+    def _cloud_tracks_card(self) -> QFrame:
+        """General-page card: opt in/out of shared (cloud) track maps."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Community track maps")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Download shared track maps automatically the first time "
+                      "you visit a track, instead of driving a lap to learn it. "
+                      "Turn off to stay fully offline.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+        w, sw = self._opt_toggle("Download shared track maps",
+                                 config.cloud_tracks())
+        sw.toggled.connect(self._toggle_cloud_tracks)
+        v.addWidget(w)
+        return card
+
+    def _toggle_cloud_tracks(self, on: bool) -> None:
+        config.set_cloud_tracks(bool(on))
+        self._flash("Community track maps on" if on
+                    else "Community track maps off")
 
     def _preset_cars_card(self) -> QFrame:
         """Card on the General page to bind cars that auto-load this preset."""

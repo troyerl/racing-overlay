@@ -67,7 +67,14 @@ def build(icon: str | None) -> str:
         "--name", APP_NAME,
         "--windowed",                       # no console window
         "--add-data", f"{os.path.join(ROOT, 'assets')}{sep}assets",
-        "--add-data", f"{os.path.join(ROOT, 'tracks')}{sep}tracks",
+        # Ship ONLY the demo track -- real maps come from the cloud, never the
+        # bundle. (Bundling the whole tracks/ folder would ship any maps a dev
+        # happened to scan locally before building.)
+        "--add-data", f"{os.path.join(ROOT, 'tracks', '_demo.json')}{sep}tracks",
+        # pymongo + dnspython (mongodb+srv) are imported lazily, so PyInstaller's
+        # static analysis can miss them -- bundle them explicitly.
+        "--hidden-import", "pymongo",
+        "--hidden-import", "dns",
     ]
     if icon:
         args += ["--icon", icon]

@@ -33,6 +33,7 @@ from . import common as oc
 from . import config
 from . import paths
 from . import sysstats
+from . import track_store
 from . import version
 from .panel import PanelWindow
 from .widgets import track_map
@@ -63,6 +64,11 @@ DEFAULT_GEOMS = {
     "sector_timing": (380, 200, 360, 170),
     "lap_compare": (40, 60, 380, 320),
 }
+
+# Multi-lap scanning: how many full laps the track map needs, and how many pit
+# passes the pit lane needs, before each is finalized (saved + uploaded).
+SCAN_LAPS = 3
+PIT_PASSES = 3
 
 
 class AdvancedSimHUD:
@@ -127,6 +133,24 @@ class AdvancedSimHUD:
         self._pit_speed_ms = 0.0
         self._pit_s0 = None  # speed/time samples for steady-cruise detection
         self._pit_t0 = None
+        # Real pit-lane geometry: the player's GPS trace from leaving the track
+        # to rejoining it. _pit_geo_cur accumulates the current pass; _pit_path
+        # holds the finalized (averaged) lane.
+        self._pit_geo_cur: list[tuple[float, float]] = []
+        self._pit_path = None
+        # Multi-lap scan progress: the track map finalizes only after SCAN_LAPS
+        # *complete* laps; the pit lane only after PIT_PASSES passes (and only
+        # once the track scan is done). _scan_seen_lap is the lap we were on when
+        # scanning began (its remainder is a partial lap that must not count);
+        # _scan_anchor_lap is the lap number at the first start/finish crossing,
+        # from which whole laps are counted. Pit passes accumulate
+        # (entry_pct, exit_pct, speed).
+        self._scan_seen_lap = None
+        self._scan_anchor_lap = None
+        self._scan_laps = 0
+        self._scan_done = False
+        # Each completed pit pass: (entry_pct, exit_pct, speed, geo_points).
+        self._pit_passes: list[tuple] = []
         # Sector timing: derives sector splits from lap-distance crossings.
         self._sector_timer = SectorTimer()
         # Lap compare: records per-lap input traces and analyses corners.
@@ -161,6 +185,16 @@ class AdvancedSimHUD:
         self._dr_t = None
         self._dr_last_pct = None
         self.tracks_dir = paths.tracks_dir()
+        # Shared (cloud) track maps: download missing tracks on demand, and
+        # (author only) upload ones learned locally. All DB I/O is off-thread.
+        self._track_sync = track_store.TrackSync()
+        self._track_sync.fetched.connect(self._on_remote_track)
+        self._track_sync.synced.connect(self._on_tracks_synced)
+        self._remote_tried: set = set()  # track ids we've already asked for
+        # MongoDB is the source of truth: on launch, refresh the local cache so
+        # any maps the author changed are pulled in (runs off the GUI thread).
+        if not self.demo and config.cloud_tracks():
+            self._track_sync.sync_down_async(self.tracks_dir)
         # The overlay widgets start hidden; the settings window (or --start)
         # turns them on, and they keep running after settings is closed.
         self._overlay_running = False
@@ -1133,7 +1167,7 @@ class AdvancedSimHUD:
 
     def _ensure_track(self, player, lap_pct) -> None:
         """Prefer a bundled per-track file (by TrackID); else learn from GPS."""
-        if self.demo or self._track_loaded or self._path_builder.complete:
+        if self.demo or self._track_loaded or self._scan_done:
             return
 
         # Look for a bundled file once we actually know the track (WeekendInfo
@@ -1150,6 +1184,14 @@ class AdvancedSimHUD:
                 if not self._force_learn:
                     track_file = track_map.find_track_file(
                         self._track_id, self.tracks_dir)
+                    if not track_file and config.cloud_tracks() \
+                            and self._track_id is not None \
+                            and self._track_id not in self._remote_tried:
+                        # No local file -- ask the shared library for it while we
+                        # start learning from GPS as a fallback. The download
+                        # lands in _on_remote_track if it beats the learner.
+                        self._remote_tried.add(self._track_id)
+                        self._track_sync.fetch_async(self._track_id)
                     if track_file:
                         try:
                             pts, sf, corners, _, meta = track_map.load_track(
@@ -1160,7 +1202,15 @@ class AdvancedSimHUD:
                                 self._pit_speed_ms = meta.get("pit_speed", 0.0)
                                 self.map_widget.set_pit(
                                     self._pit_span, self._pit_speed_ms)
+                            if meta.get("pit_path"):
+                                self._pit_path = meta["pit_path"]
+                                self.map_widget.set_pit_path(self._pit_path)
                             self._track_loaded = True
+                            # A complete track is present, so pit scanning is
+                            # immediately allowed (no 3-lap learn needed).
+                            self._scan_done = True
+                            # Mark as just-used so LRU eviction keeps it around.
+                            track_store.touch(self.tracks_dir, self._track_id)
                             return
                         except Exception:
                             pass  # fall back to GPS learning
@@ -1182,21 +1232,109 @@ class AdvancedSimHUD:
             if xy is not None:
                 b.add_xy(pct, xy[0], xy[1])
 
+        # Count only *complete* laps: ignore the partial lap in progress when the
+        # scan began by anchoring at the first start/finish crossing, then count
+        # whole laps from there. Rebuild the averaged path each new lap so it
+        # visibly refines, and show a "LAP n/3" badge.
+        lap = self.ir["Lap"]
+        if isinstance(lap, int) and lap >= 0:
+            if self._scan_seen_lap is None:
+                self._scan_seen_lap = lap
+            if self._scan_anchor_lap is None:
+                if lap > self._scan_seen_lap:  # first crossing -> start counting
+                    self._scan_anchor_lap = lap
+                    # Drop the partial lap's samples so only the 3 complete laps
+                    # feed the averaged map (the last preview stays on screen).
+                    b.reset()
+            else:
+                laps_done = max(0, lap - self._scan_anchor_lap)
+                if laps_done != self._scan_laps:
+                    self._scan_laps = laps_done
+                    b.rebuild()
+        self.map_widget.set_scan_status(
+            f"LAP {min(self._scan_laps + 1, SCAN_LAPS)}/{SCAN_LAPS}")
+
         if b.version != self._map_version:
             self._map_version = b.version
             self.map_widget.set_path(b.path)
         elif not b.ready:
             self.map_widget.set_progress(b.coverage())
 
-        # Once the full loop is learned, persist it so we skip learning next time.
-        if b.complete and not self._track_saved:
+        # Finalize only after SCAN_LAPS full laps AND a fully-covered loop, then
+        # persist + share it (so we skip learning next time / others can use it).
+        if (not self._scan_done and self._scan_laps >= SCAN_LAPS
+                and b.coverage() >= 0.96):
+            self._scan_done = True
             self._track_saved = True
+            self.map_widget.set_scan_status("")
+            self.map_widget.flash_hint("Track saved \u00b7 scan the pits")
             try:
                 track_map.save_learned_track(
                     self.tracks_dir, self._track_id, b.path, self._learn_name,
                     pit_span=self._pit_span, pit_speed=self._pit_speed_ms)
             except Exception:
                 pass
+            # Share the freshly learned map (no-op unless we have write access).
+            if config.cloud_tracks():
+                self._track_sync.upload_local_async(
+                    self.tracks_dir, self._track_id)
+
+    def _on_tracks_synced(self, n) -> None:
+        """Startup cache refresh finished; if the map we're showing was one of
+        the tracks that changed, reload it so the live view is up to date."""
+        if self.demo or not n or self._force_learn or self._track_id is None:
+            return
+        path = track_map.find_track_file(self._track_id, self.tracks_dir)
+        if not path:
+            return
+        try:
+            pts, sf, corners, _, meta = track_map.load_track(path)
+        except Exception:
+            return
+        self.map_widget.set_track(pts, sf, corners)
+        if meta.get("pit_span"):
+            self._pit_span = meta["pit_span"]
+            self._pit_speed_ms = meta.get("pit_speed", 0.0)
+            self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+        if meta.get("pit_path"):
+            self._pit_path = meta["pit_path"]
+            self.map_widget.set_pit_path(self._pit_path)
+        self._track_loaded = True
+        self._track_saved = True
+        self._scan_done = True
+
+    def _on_remote_track(self, track_id, doc) -> None:
+        """A shared track map arrived from the cloud (off the GUI thread).
+
+        Only adopt it if we haven't already loaded/learned this track locally,
+        so a download can't clobber a scan in progress or a bundled file.
+        """
+        if not doc or track_id != self._track_id:
+            return
+        if self._track_loaded or self._path_builder.complete:
+            return
+        try:
+            path = track_store.write_local(self.tracks_dir, doc)
+            if not path:
+                return
+            pts, sf, corners, _, meta = track_map.load_track(path)
+            self.map_widget.set_track(pts, sf, corners)
+            if meta.get("pit_span"):
+                self._pit_span = meta["pit_span"]
+                self._pit_speed_ms = meta.get("pit_speed", 0.0)
+                self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+            if meta.get("pit_path"):
+                self._pit_path = meta["pit_path"]
+                self.map_widget.set_pit_path(self._pit_path)
+            self._track_loaded = True
+            self._track_saved = True
+            self._scan_done = True
+            # A new track just landed in the cache -- trim old ones (keeping the
+            # one we're using) so the folder stays bounded.
+            track_store.enforce_cache_limit(
+                self.tracks_dir, protect=[self._track_id])
+        except Exception:
+            pass
 
     def _rescan_track(self) -> None:
         """Forget the current (saved or loaded) scan and re-learn from scratch.
@@ -1211,6 +1349,14 @@ class AdvancedSimHUD:
         self._track_saved = False
         self._map_version = 0
         self._path_builder = track_map.TrackPathBuilder()
+        # Restart the multi-lap scan from scratch (pit depends on the track, so
+        # its passes reset too).
+        self._scan_seen_lap = None
+        self._scan_anchor_lap = None
+        self._scan_laps = 0
+        self._scan_done = False
+        self._pit_passes = []
+        self.map_widget.set_scan_status("")
         # Reset dead-reckoning so the new scan starts from a clean origin.
         self._dr_x = self._dr_y = 0.0
         self._dr_t = None
@@ -1222,6 +1368,8 @@ class AdvancedSimHUD:
         self._pit_speed_ms = 0.0
         self._pit_s0 = None
         self._pit_t0 = None
+        self._pit_geo_cur = []
+        self._pit_path = None
         # Clear the drawn map back to the "learning" placeholder.
         self.map_widget.set_track(None)
         self.map_widget.set_progress(0.0)
@@ -1239,11 +1387,15 @@ class AdvancedSimHUD:
         self._pit_span = None
         self._pit_speed_ms = 0.0
         self._pit_s0 = self._pit_t0 = None
+        self._pit_geo_cur = []
+        self._pit_path = None
+        self._pit_passes = []  # re-learn the pit over PIT_PASSES fresh passes
         self.map_widget.clear_pit()
         if self._track_id is not None:
             try:
                 track_map.update_track_meta(
-                    self.tracks_dir, self._track_id, pit_span=None, pit_speed=None)
+                    self.tracks_dir, self._track_id, pit_span=None,
+                    pit_speed=None, pit_path=None)
             except Exception:
                 pass
 
@@ -1364,6 +1516,13 @@ class AdvancedSimHUD:
         if on:
             self._learn_pit_speed(speed)
             self.map_widget.set_pit_live(speed)
+            # Trace the actual pit-lane route from the player's GPS (same
+            # projection as the track builder, so it shares the map's frame).
+            lat, lon = self.ir["Lat"], self.ir["Lon"]
+            if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
+                gx = math.radians(lon) * math.cos(math.radians(lat))
+                gy = -math.radians(lat)
+                self._pit_geo_cur.append((gx, gy))
             # Keep the limit badge current while cruising (if the span is known).
             if self._pit_span is not None:
                 self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
@@ -1371,26 +1530,93 @@ class AdvancedSimHUD:
             self._pit_s0 = self._pit_t0 = None
             self.map_widget.set_pit_live(None)
 
-        # Rising edge -> entering pit road; record where on the lap it happened.
+        # Rising edge -> entering pit road; record where on the lap it happened
+        # and start a fresh geometry trace for this pass.
         if on and not self._pit_was_on:
+            self._pit_geo_cur = []
             if pct is not None and 0.0 <= pct <= 1.0:
                 self._pit_enter_pct = pct
-        # Falling edge -> left pit road; finalize the span and persist it.
+        # Falling edge -> left pit road; record this pass (it only finalizes
+        # after PIT_PASSES passes, and only once the track scan is done).
         elif (not on) and self._pit_was_on and self._pit_enter_pct is not None:
             if pct is not None and 0.0 <= pct <= 1.0:
-                self._pit_span = (self._pit_enter_pct, pct)
-                self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
-                if self._track_id is not None:
-                    try:
-                        track_map.update_track_meta(
-                            self.tracks_dir, self._track_id,
-                            pit_span=[round(self._pit_span[0], 5),
-                                      round(self._pit_span[1], 5)],
-                            pit_speed=round(self._pit_speed_ms, 3))
-                    except Exception:
-                        pass
+                self._record_pit_pass(self._pit_enter_pct, pct,
+                                      list(self._pit_geo_cur))
             self._pit_enter_pct = None
         self._pit_was_on = on
+
+    def _record_pit_pass(self, entry_pct: float, exit_pct: float, geo) -> None:
+        """Accumulate a completed pit pass; finalize after PIT_PASSES of them.
+
+        Locked until the track scan (SCAN_LAPS laps) is done -- a pass driven
+        before then just flashes a hint. Once enough passes are gathered, the
+        entry/exit are circular-averaged, the recorded lane geometries are
+        averaged into one path, and the pit data is saved + uploaded.
+        """
+        if not self._scan_done:
+            self.map_widget.flash_hint("Finish track scan first")
+            return
+        if len(self._pit_passes) >= PIT_PASSES:
+            return  # already finalized; use "Rescan pits" to redo
+        self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms, geo))
+        # Preview the latest pass (span + its raw geometry) while gathering more.
+        self.map_widget.set_pit((entry_pct, exit_pct), self._pit_speed_ms)
+        if geo and len(geo) >= 2:
+            self.map_widget.set_pit_path(geo)
+        n = len(self._pit_passes)
+        if n < PIT_PASSES:
+            self.map_widget.flash_hint(f"Pit pass {n}/{PIT_PASSES}")
+            return
+        span = self._avg_pit_span(self._pit_passes)
+        speed = sum(p[2] for p in self._pit_passes) / n
+        self._pit_path = self._avg_pit_path([p[3] for p in self._pit_passes])
+        self._pit_span = span
+        self._pit_speed_ms = speed
+        self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+        self.map_widget.set_pit_path(self._pit_path)
+        self.map_widget.flash_hint("Pit lane saved")
+        if self._track_id is not None:
+            fields = dict(pit_span=[round(span[0], 5), round(span[1], 5)],
+                          pit_speed=round(speed, 3))
+            if self._pit_path:
+                fields["pit_path"] = [[round(x, 7), round(y, 7)]
+                                      for x, y in self._pit_path]
+            try:
+                track_map.update_track_meta(
+                    self.tracks_dir, self._track_id, **fields)
+            except Exception:
+                pass
+            if config.cloud_tracks():
+                self._track_sync.upload_local_async(
+                    self.tracks_dir, self._track_id)
+
+    @staticmethod
+    def _avg_pit_span(passes) -> tuple:
+        """Circular mean of entry/exit lap percentages across passes, so a pit
+        lane that straddles the start/finish line (e.g. 0.98 & 0.04) averages
+        correctly instead of collapsing to mid-lap."""
+        def circ(vals):
+            sx = sum(math.cos(2 * math.pi * v) for v in vals)
+            sy = sum(math.sin(2 * math.pi * v) for v in vals)
+            if sx == 0.0 and sy == 0.0:
+                return vals[0]
+            return (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
+        return (circ([p[0] for p in passes]), circ([p[1] for p in passes]))
+
+    @staticmethod
+    def _avg_pit_path(geos, n: int = 120):
+        """Average the recorded pit-lane traces into one smooth path.
+
+        Each pass is resampled to n arc-length-even points (entry -> exit) and
+        the passes are averaged point-by-point. Returns None if no usable GPS
+        geometry was captured (e.g. dead-reckoning fallback)."""
+        usable = [g for g in geos if g and len(g) >= 2]
+        if not usable:
+            return None
+        res = [track_map._resample_open(g, n) for g in usable]
+        m = len(res)
+        return [(sum(r[k][0] for r in res) / m, sum(r[k][1] for r in res) / m)
+                for k in range(n)]
 
     # iRacing SessionFlags bitfield bits (irsdk_Flags).
     _FLAG_CHECKERED = 0x00000001           # session finished

@@ -798,6 +798,7 @@ def ensure_user_config() -> None:
         "auto_switch_by_league": True,
         "auto_switch_by_car": True,
         "auto_switch_to_default": True,
+        "cloud_tracks": True,
         "presets": {DEFAULT_PRESET: {"config": off, "layout": {}, "cars": [],
                                      "leagues": [], "default": True}},
     }
@@ -864,6 +865,7 @@ def _load_all() -> None:
     """(Re)load every preset + the active selection from disk into memory."""
     global _PRESETS, ACTIVE_PRESET, BASE, GARAGE
     global AUTO_SWITCH_BY_LEAGUE, AUTO_SWITCH_BY_CAR, AUTO_SWITCH_TO_DEFAULT
+    global CLOUD_TRACKS
     raw = _read_user()
     presets: dict = {}
     for name, entry in (raw.get("presets") or {}).items():
@@ -875,6 +877,7 @@ def _load_all() -> None:
     AUTO_SWITCH_BY_LEAGUE = bool(raw.get("auto_switch_by_league", True))
     AUTO_SWITCH_BY_CAR = bool(raw.get("auto_switch_by_car", True))
     AUTO_SWITCH_TO_DEFAULT = bool(raw.get("auto_switch_to_default", True))
+    CLOUD_TRACKS = bool(raw.get("cloud_tracks", True))
     active = raw.get("active_preset")
     ACTIVE_PRESET = active if active in _PRESETS else next(iter(_PRESETS))
     _ensure_one_default()
@@ -892,6 +895,7 @@ ACTIVE_PRESET: str = DEFAULT_PRESET
 AUTO_SWITCH_BY_LEAGUE: bool = True
 AUTO_SWITCH_BY_CAR: bool = True
 AUTO_SWITCH_TO_DEFAULT: bool = True
+CLOUD_TRACKS: bool = True
 BASE: dict = {}
 GARAGE: dict = {}
 _load_all()
@@ -1172,6 +1176,7 @@ def _serialize() -> dict:
         "auto_switch_by_league": AUTO_SWITCH_BY_LEAGUE,
         "auto_switch_by_car": AUTO_SWITCH_BY_CAR,
         "auto_switch_to_default": AUTO_SWITCH_TO_DEFAULT,
+        "cloud_tracks": CLOUD_TRACKS,
         "presets": presets,
     }
 
@@ -1392,6 +1397,17 @@ def auto_switch_to_default() -> bool:
 def set_auto_switch_to_default(value: bool) -> None:
     global AUTO_SWITCH_TO_DEFAULT
     AUTO_SWITCH_TO_DEFAULT = bool(value)
+    save_profiles()
+
+
+def cloud_tracks() -> bool:
+    """Whether to download (and, for authors, upload) shared track maps."""
+    return CLOUD_TRACKS
+
+
+def set_cloud_tracks(value: bool) -> None:
+    global CLOUD_TRACKS
+    CLOUD_TRACKS = bool(value)
     save_profiles()
 
 

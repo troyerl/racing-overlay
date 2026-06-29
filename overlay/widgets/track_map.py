@@ -19,7 +19,7 @@ import json
 import math
 import os
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath,
                          QPen)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
@@ -114,6 +114,40 @@ def _resample_by_length(points: list[tuple[float, float]], n: int):
             a, b = pts[i], pts[i + 1]
             out.append((a[0] + (b[0] - a[0]) * local, a[1] + (b[1] - a[1]) * local))
         target += step
+    return out
+
+
+def _resample_open(points: list[tuple[float, float]], n: int):
+    """Resample an OPEN polyline (e.g. a pit lane) into n arc-length-even points.
+
+    Unlike _resample_by_length this does not close the loop, so the first and
+    last points stay put -- important for a pit lane that starts where you leave
+    the track and ends where you rejoin it.
+    """
+    if len(points) < 2 or n < 2:
+        return list(points)
+    seg_len = []
+    total = 0.0
+    for a, b in zip(points, points[1:]):
+        d = math.hypot(b[0] - a[0], b[1] - a[1])
+        seg_len.append(d)
+        total += d
+    if total == 0:
+        return [points[0]] * n
+    out = []
+    step = total / (n - 1)
+    for k in range(n):
+        target = step * k
+        acc = 0.0
+        for i, d in enumerate(seg_len):
+            if acc + d >= target or i == len(seg_len) - 1:
+                local = (target - acc) / d if d else 0.0
+                local = min(max(local, 0.0), 1.0)
+                a, b = points[i], points[i + 1]
+                out.append((a[0] + (b[0] - a[0]) * local,
+                            a[1] + (b[1] - a[1]) * local))
+                break
+            acc += d
     return out
 
 
@@ -303,6 +337,8 @@ def load_track(path: str, n: int = 720):
         meta["pit_span"] = (float(data["pit_span"][0]), float(data["pit_span"][1]))
     if data.get("pit_speed"):
         meta["pit_speed"] = float(data["pit_speed"])
+    if isinstance(data.get("pit_path"), list) and len(data["pit_path"]) >= 2:
+        meta["pit_path"] = [(float(a), float(b)) for a, b in data["pit_path"]]
     return points, sf, corners, data.get("name", ""), meta
 
 
@@ -317,11 +353,13 @@ class TrackPathBuilder:
 
     def __init__(self, bins: int = 720, first_frac: float = 0.55):
         self.bins = bins
-        self._samples: list[tuple[float, float] | None] = [None] * bins
+        # Per-bin running average: [sum_x, sum_y, count], or None until sampled.
+        # Averaging lets multiple laps smooth each other out into one clean line.
+        self._samples: list[list[float] | None] = [None] * bins
         self._filled = 0
         self.first_frac = first_frac      # coverage needed for the first preview
         self.ready = False                # a (possibly partial) path is available
-        self.complete = False             # essentially the whole lap is sampled
+        self.complete = False             # one full lap's worth of bins sampled
         self.path: list[tuple[float, float]] | None = None
         self.version = 0                  # bumped whenever path is rebuilt
         self._built_at = 0
@@ -359,39 +397,59 @@ class TrackPathBuilder:
         """Add an already-projected (x, y) sample at the given lap pct.
 
         Used both by the GPS path (via add) and by dead-reckoned positions when
-        GPS isn't available.
+        GPS isn't available. Samples keep accumulating across laps (they feed a
+        per-bin running average), so the path never stops refining -- the caller
+        decides when enough laps have been driven to finalize the scan.
         """
         if pct is None or x is None or y is None:
             return
         if not (0.0 <= pct <= 1.0):
             return
         i = min(int(pct * self.bins), self.bins - 1)
-        if self._samples[i] is None:
+        s = self._samples[i]
+        if s is None:
+            self._samples[i] = [x, y, 1.0]
             self._filled += 1
-        self._samples[i] = (x, y)
+        else:
+            s[0] += x
+            s[1] += y
+            s[2] += 1.0
 
-        if self.complete:
-            return
         cov = self._filled / self.bins
+        if cov >= 0.96:
+            self.complete = True
         # First preview at first_frac, then rebuild every +4% of new coverage so
-        # the shape sharpens as you keep driving.
+        # the shape sharpens while the first lap fills in. Once the loop is fully
+        # covered, further refinement comes from rebuild() (once per lap).
         grew = (self._filled - self._built_at) >= max(1, int(self.bins * 0.04))
         if (not self.ready and cov >= self.first_frac) or (self.ready and grew):
             self._build()
             self._built_at = self._filled
             self.ready = True
             self.version += 1
-            if cov >= 0.96:
-                self.complete = True
+
+    def rebuild(self) -> None:
+        """Force a rebuild from the current per-bin averages (e.g. after a lap)."""
+        if not self._filled:
+            return
+        self._build()
+        self.ready = True
+        self.version += 1
 
     def _build(self) -> None:
         n = self.bins
-        filled = [i for i, s in enumerate(self._samples) if s]
+        # Collapse each filled bin's running sum into its average point first.
+        avg: list[tuple[float, float] | None] = [None] * n
+        filled: list[int] = []
+        for i, s in enumerate(self._samples):
+            if s and s[2]:
+                avg[i] = (s[0] / s[2], s[1] / s[2])
+                filled.append(i)
         if not filled:
             return
         path: list[tuple[float, float]] = []
         for i in range(n):
-            s = self._samples[i]
+            s = avg[i]
             if s:
                 path.append(s)
                 continue
@@ -400,7 +458,7 @@ class TrackPathBuilder:
                 j <= i for j in filled
             ) else filled[-1]
             fwd = next((j for j in filled if j >= i), filled[0])
-            a, b = self._samples[back], self._samples[fwd]
+            a, b = avg[back], avg[fwd]
             span = (fwd - back) % n or 1
             t = ((i - back) % n) / span
             path.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
@@ -424,6 +482,10 @@ class TrackMapWidget(QWidget):
         self.pit_span: tuple[float, float] | None = None
         self.pit_speed_ms: float = 0.0
         self.pit_live_ms: float | None = None
+        # The real pit-lane geometry (model-space points, same frame as path),
+        # from where you leave the track to where you rejoin. When present it's
+        # drawn instead of the inward-offset approximation of pit_span.
+        self.pit_path: list[tuple[float, float]] | None = None
         # Wind: bearing the wind blows FROM (radians, clockwise from North) and
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
@@ -432,6 +494,13 @@ class TrackMapWidget(QWidget):
         self.cars: list[tuple[float, str, str, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
         self._progress_pct = -1
+        # Multi-lap scan UI: a persistent "LAP n/3" badge while scanning, plus a
+        # transient hint (e.g. "Finish track scan first") that auto-clears.
+        self._scan_text = ""
+        self._hint_text = ""
+        self._hint_timer = QTimer(self)
+        self._hint_timer.setSingleShot(True)
+        self._hint_timer.timeout.connect(self._clear_hint)
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -447,6 +516,24 @@ class TrackMapWidget(QWidget):
         self.placeholder = f"LEARNING TRACK\u2026  {pct}%  \u00b7  drive a lap"
         if self.path is None:  # only the placeholder needs repainting
             self.update()
+
+    def set_scan_status(self, text: str) -> None:
+        """Show (or clear) a small scan badge like 'LAP 2/3' over the map."""
+        text = text or ""
+        if text == self._scan_text:
+            return
+        self._scan_text = text
+        self.update()
+
+    def flash_hint(self, text: str, ms: int = 2600) -> None:
+        """Briefly show a hint banner (e.g. when the pit is scanned too early)."""
+        self._hint_text = text or ""
+        self.update()
+        self._hint_timer.start(ms)
+
+    def _clear_hint(self) -> None:
+        self._hint_text = ""
+        self.update()
 
     def set_track(self, path, start_finish: float = 0.0, corners=None) -> None:
         self.path = path
@@ -464,6 +551,7 @@ class TrackMapWidget(QWidget):
             self.pit_span = None
             self.pit_speed_ms = 0.0
             self.pit_live_ms = None
+            self.pit_path = None
         self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
@@ -473,11 +561,18 @@ class TrackMapWidget(QWidget):
             self.pit_speed_ms = float(speed_ms)
         self.update()
 
+    def set_pit_path(self, path) -> None:
+        """Set (or clear) the real pit-lane geometry: model-space (x, y) points."""
+        self.pit_path = ([(float(x), float(y)) for x, y in path]
+                         if path and len(path) >= 2 else None)
+        self.update()
+
     def clear_pit(self) -> None:
         """Forget the learned pit lane (used when rescanning the pits)."""
         self.pit_span = None
         self.pit_speed_ms = 0.0
         self.pit_live_ms = None
+        self.pit_path = None
         self.update()
 
     def set_pit_live(self, speed_ms) -> None:
@@ -509,6 +604,31 @@ class TrackMapWidget(QWidget):
         n = len(self.path)
         return int(((pct - self.start_finish) % 1.0) * n) % n
 
+    def _draw_scan_overlays(self, p: QPainter, rect: QRectF) -> None:
+        """Scan badge (top, e.g. 'LAP 2/3') and a transient hint banner (bottom)."""
+        if self._scan_text:
+            p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+            fm = p.fontMetrics()
+            bw = fm.horizontalAdvance(self._scan_text) + 14.0
+            bh = fm.height() + 4.0
+            br = QRectF((rect.width() - bw) / 2.0, 6.0, bw, bh)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0, 150))
+            p.drawRoundedRect(br, 6, 6)
+            p.setPen(QColor(240, 240, 240))
+            p.drawText(br, Qt.AlignmentFlag.AlignCenter, self._scan_text)
+        if self._hint_text:
+            p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+            fm = p.fontMetrics()
+            bw = fm.horizontalAdvance(self._hint_text) + 18.0
+            bh = fm.height() + 5.0
+            br = QRectF((rect.width() - bw) / 2.0, rect.height() - bh - 8.0, bw, bh)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(184, 70, 38, 215))
+            p.drawRoundedRect(br, 6, 6)
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(br, Qt.AlignmentFlag.AlignCenter, self._hint_text)
+
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -530,6 +650,7 @@ class TrackMapWidget(QWidget):
         if not self.path:
             p.setPen(QColor(220, 220, 220))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.placeholder)
+            self._draw_scan_overlays(p, rect)
             return
 
         # Orientation: mirror (flip x) then rotate in 90-degree steps. Applied in
@@ -550,8 +671,11 @@ class TrackMapWidget(QWidget):
             return x, y
 
         mpts = [model(pt) for pt in self.path]
-        xs = [m[0] for m in mpts]
-        ys = [m[1] for m in mpts]
+        # Include the pit-lane geometry in the fit so it isn't clipped if it
+        # runs a little outside the racing loop's bounds.
+        fit = mpts + ([model(pt) for pt in self.pit_path] if self.pit_path else [])
+        xs = [m[0] for m in fit]
+        ys = [m[1] for m in fit]
         minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
         pad = 26.0
         avail_w = rect.width() - 2 * pad
@@ -588,7 +712,7 @@ class TrackMapWidget(QWidget):
         p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 2)))
         p.drawPath(qpath)
 
-        if mc.get("show_pit", True) and self.pit_span is not None:
+        if mc.get("show_pit", True) and (self.pit_path or self.pit_span is not None):
             self._draw_pit(p, tx)
         if mc.get("show_corners", True):
             corners = self.corners
@@ -617,6 +741,13 @@ class TrackMapWidget(QWidget):
         )
 
     def _draw_pit(self, p: QPainter, tx) -> None:
+        # Prefer the real recorded pit-lane geometry; fall back to the inward
+        # offset approximation of pit_span when no geometry is available.
+        if self.pit_path and len(self.pit_path) >= 2:
+            self._draw_pit_path(p, tx)
+            return
+        if self.pit_span is None:
+            return
         n = len(self.path)
         if n < 3:
             return
@@ -659,6 +790,32 @@ class TrackMapWidget(QWidget):
         ln = math.hypot(dx, dy) or 1.0
         anchor = QPointF(entry.x() - dx / ln * 22.0, entry.y() - dy / ln * 22.0)
         self._draw_pit_label(p, anchor)
+
+    def _draw_pit_path(self, p: QPainter, tx) -> None:
+        """Draw the real pit lane: an asphalt underlay plus a dashed pit line,
+        following the recorded route from track-exit to track-rejoin."""
+        mc = _mcfg()
+        pts = [tx(q) for q in self.pit_path]
+        lane = QPainterPath()
+        lane.moveTo(pts[0])
+        for q in pts[1:]:
+            lane.lineTo(q)
+        # Asphalt underlay so it reads as a real road surface like the track.
+        base = QPen(_mcol("asphalt"), max(3.0, mc.get("asphalt_width", 11) * 0.6))
+        base.setCapStyle(Qt.PenCapStyle.RoundCap)
+        base.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(base)
+        p.drawPath(lane)
+        # Dashed pit-colored centre line on top.
+        pen = QPen(_mcol("pit"), 2.2)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setDashPattern([4, 3])
+        p.setPen(pen)
+        p.drawPath(lane)
+        self._draw_pit_label(p, pts[0])
 
     def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
         live = self.pit_live_ms
@@ -825,3 +982,5 @@ class TrackMapWidget(QWidget):
                 label,
             )
             p.setOpacity(1.0)
+
+        self._draw_scan_overlays(p, rect)
