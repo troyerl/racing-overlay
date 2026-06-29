@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.19.0 - 2026-06-29
+
+- **Multi-lap scanning for cleaner maps.** Learning a track now takes three full
+  laps, averaged together into one smooth line (a "LAP n/3" badge shows
+  progress, and the partial lap you start on doesn't count) before the map is
+  saved and uploaded. The pit lane unlocks only after the track scan finishes
+  and is confirmed over three pit passes (averaged, start/finish-aware) before
+  its data is saved/uploaded; passing the pits earlier shows a "Finish track
+  scan first" hint.
+- **Real pit lane on the map.** The pit lane is now drawn from its actual
+  recorded route -- from where you leave the track to where you rejoin -- instead
+  of an approximation offset from the racing line. The geometry is captured from
+  your GPS over the three pit passes, averaged, and saved/shared with the track.
+- **Flexible database credentials.** The shared-maps read connection string now
+  comes from the `GRIDGLANCE_MONGODB_READ_URI` environment variable when set,
+  falling back to a built-in default -- so a deployment can point at its own
+  database without rebuilding. (Also fixes the read URI not being applied.)
+
 ## 1.18.0 - 2026-06-29
 
 - **Community track maps.** Track maps are now shared through the cloud, so the
@@ -20,16 +38,6 @@ Release notes. To cut a release, add a new section to the top and push.
   offline-friendly, but the cache is capped (least-recently-used maps are
   evicted past the limit) so it can't grow unbounded as you visit more tracks.
   Your own bundled/learned maps are never evicted.
-- **Multi-lap scanning for cleaner maps.** Learning a track now takes three full
-  laps, averaged together into one smooth line (a "LAP n/3" badge shows
-  progress) before the map is saved and uploaded. The pit lane unlocks only
-  after the track scan finishes and is confirmed over three pit passes (averaged,
-  start/finish-aware) before its data is saved/uploaded; passing the pits earlier
-  shows a "Finish track scan first" hint.
-- **Real pit lane on the map.** The pit lane is now drawn from its actual
-  recorded route -- from where you leave the track to where you rejoin -- instead
-  of an approximation offset from the racing line. The geometry is captured from
-  your GPS over the three pit passes, averaged, and saved/shared with the track.
 - **Author tools.** Running from source with a read-write database URI unlocks
   uploading: the "Rescan track" / "Rescan pits" controls appear, learned maps are
   pushed automatically, and `tools/sync_tracks.py` bulk-uploads or downloads the

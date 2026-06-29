@@ -19,7 +19,6 @@ if the dependency is missing -- cloud features just stay disabled.
 
 from __future__ import annotations
 
-import base64
 import json
 import os
 import threading
@@ -32,21 +31,19 @@ from PyQt6.QtCore import QObject, pyqtSignal
 # ---------------------------------------------------------------------------
 # WHERE TO ADD CREDENTIALS:
 #
-# 1. Read-only (shipped to everyone) -- paste your Atlas *read-only* user's SRV
-#    URI here, base64-encoded so it isn't a plain-text string in the binary.
-#    It is NOT a real secret (anyone can extract it); it just must be scoped to
-#    read-only on the gridglance database. Generate the value with:
-#
-#      python -c "import base64; print(base64.b64encode(b'mongodb+srv://gg_read:PASSWORD@cluster.xxxxx.mongodb.net/').decode())"
-#
-#    Leave it empty to disable cloud downloads entirely.
+# 1. Read-only (shipped to everyone) -- the read URI is taken from the
+#    GRIDGLANCE_MONGODB_READ_URI environment variable if it's set; otherwise it
+#    falls back to the hard-coded default below. Paste your Atlas *read-only*
+#    user's SRV URI here. It is NOT a real secret (anyone can extract it from
+#    the binary); it just must be scoped to read-only on the gridglance
+#    database. Leave it empty to disable cloud downloads entirely.
 #
 # 2. Read-write (author/dev only) -- do NOT put this in code. Set it in your
 #    shell/.env so it never ships:
 #
 #      export GRIDGLANCE_MONGODB_URI="mongodb+srv://gg_dev:PASSWORD@cluster.xxxxx.mongodb.net/"
 #
-_READ_URI_B64 = "mongodb+srv://GridGlanceUser:3w69ejWh1WGKenQa@gridglance.dguyept.mongodb.net/?appName=GridGlance"
+_READ_URI_DEFAULT = "mongodb+srv://GridGlanceUser:3w69ejWh1WGKenQa@gridglance.dguyept.mongodb.net/?appName=GridGlance"
 
 _DB_NAME = "gridglance"
 _COLLECTION = "tracks"
@@ -68,16 +65,11 @@ _clients_lock = threading.Lock()
 
 
 def _read_uri() -> str:
-    """The embedded read-only URI (env override wins; handy for local testing)."""
+    """The read-only URI: the env var if set, else the hard-coded default."""
     env = os.environ.get("GRIDGLANCE_MONGODB_READ_URI")
-    if env:
+    if env and env.strip():
         return env.strip()
-    if _READ_URI_B64:
-        try:
-            return base64.b64decode(_READ_URI_B64).decode("utf-8").strip()
-        except Exception:
-            return ""
-    return ""
+    return _READ_URI_DEFAULT.strip()
 
 
 def _write_uri() -> str:
