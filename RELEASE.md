@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.12.0 - 2026-06-29
+
+- **Fix: oval turn detection.** Paired oval corners (T1-T2, T3-T4) used to read as
+  a single turn because the wheel never unwinds between them; Lap Compare now
+  splits them at the speed dip for each apex, so a four-corner oval shows all four.
+
 ## 1.11.0 - 2026-06-29
 
 - **New Lap Compare widget.** Benchmarks your current lap against your best lap,

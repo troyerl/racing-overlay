@@ -208,8 +208,15 @@ class LapCompareEngine:
             s = steer[i] if steer[i] is not None else 0.5
             bk = brake[i] if brake[i] is not None else 0.0
             active.append(abs(s - 0.5) > 0.06 or bk > 0.15)
+        min_len = int(N_BINS * 0.015)
         runs = self._group(active, merge_gap=int(N_BINS * 0.02),
-                           min_len=int(N_BINS * 0.015))
+                           min_len=min_len)
+        # Ovals: T1-T2 (and T3-T4) are one continuous-steer region, so split a
+        # run wherever the speed trace shows two apexes with a chute between.
+        split: list = []
+        for s, e in runs:
+            split.extend(self._split_run(s, e, spd, min_len))
+        runs = split
         turns = []
         for idx, (s, e) in enumerate(runs, 1):
             seg = [spd[i] for i in range(s, e + 1) if spd[i] is not None]
@@ -246,6 +253,44 @@ class LapCompareEngine:
             else:
                 merged.append(r)
         return [tuple(r) for r in merged if r[1] - r[0] >= min_len]
+
+    @staticmethod
+    def _split_run(s: int, e: int, spd: list, min_len: int,
+                   prom: float = 0.03) -> list:
+        """Split one cornering region into separate turns at speed valleys.
+
+        Paired oval corners (T1-T2, T3-T4) read as a single steer-and-brake
+        region because the wheel never unwinds between them. Their two apexes
+        still show as two speed minima with a small peak (the chute) between, so
+        we cut the run at any peak that rises >= `prom` above the lower apex.
+        """
+        v = [spd[i] for i in range(s, e + 1)]
+        if len(v) < 3 or any(x is None for x in v):
+            return [(s, e)]
+        w = max(2, min_len // 2)
+        # Local minima (valleys), de-duplicated across flat stretches.
+        minima: list[int] = []
+        for k in range(len(v)):
+            lo, hi = max(0, k - w), min(len(v), k + w + 1)
+            if v[k] <= min(v[lo:hi]) + 1e-9 and not (minima and k - minima[-1] <= w):
+                minima.append(k)
+        if len(minima) <= 1:
+            return [(s, e)]
+        # Cut at the speed peak between consecutive prominent valleys.
+        cuts: list[int] = []
+        for a, b in zip(minima, minima[1:]):
+            peak_k = max(range(a, b + 1), key=lambda k: v[k])
+            base = max(v[a], v[b])
+            if v[peak_k] > 0 and (v[peak_k] - base) / v[peak_k] >= prom:
+                cuts.append(peak_k)
+        if not cuts:
+            return [(s, e)]
+        runs, start = [], 0
+        for c in cuts:
+            runs.append((s + start, s + c))
+            start = c + 1
+        runs.append((s + start, e))
+        return [(a, b) for a, b in runs if b - a >= min_len] or [(s, e)]
 
     def _label(self, apex_bin: int, seq: int) -> str:
         apex_pct = apex_bin / N_BINS
