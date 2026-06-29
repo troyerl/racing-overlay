@@ -31,11 +31,15 @@ class PanelWindow(QWidget):
         default_geom: tuple[int, int, int, int],
         layout_state: dict,
         click_through: bool = True,
+        on_save=None,
     ):
         super().__init__()
         self.key = key
         self.click_through = click_through
         self.layout_state = layout_state
+        # Where geometry changes are persisted. Defaults to the standalone layout
+        # file; the app passes config.save_active_layout so layouts are per-preset.
+        self._on_save = on_save or layout_store.save_layout
         self._content = content
         self._drag_offset = None
         self._grip = None
@@ -139,4 +143,4 @@ class PanelWindow(QWidget):
     def _save_geometry(self) -> None:
         g = self.geometry()
         self.layout_state[self.key] = [g.x(), g.y(), g.width(), g.height()]
-        layout_store.save_layout(self.layout_state)
+        self._on_save(self.layout_state)

@@ -5,6 +5,36 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.17.0 - 2026-06-29
+
+- **Auto-switch presets by league.** Bind a preset to one or more league sessions
+  (General page: "Add current league") and GridGlance activates it automatically
+  when you join that league.
+- **A default preset, always.** Mark any preset as your default with the new
+  "Default preset" toggle in the preset bar. Exactly one preset is always the
+  default -- it acts like a radio button, so you change it by choosing a different
+  preset, and your only preset is locked as the default.
+- **Smart switch order.** Auto-switching now resolves in priority order: a bound
+  league wins over a bound car, which wins over your default. Each rule has its own
+  on/off switch in the new "Auto-switch presets" card on the General page.
+
+## 1.16.0 - 2026-06-26
+
+- **Config presets.** Build multiple complete overlay setups and switch between
+  them from a new "Preset" bar at the top of Settings. Each preset is fully
+  independent: its own on-track and in-garage settings, its own widget layout
+  (window positions and sizes), and its own car bindings -- so a "League" set
+  and a "Practice" set never step on each other. Create, duplicate, rename and
+  delete presets right from the bar.
+- **Per-preset layouts.** Window positions and sizes are now saved per preset,
+  so each setup remembers exactly where you put its widgets.
+- **Auto-switch by car.** Bind cars to a preset (General page: "Add current car")
+  and turn on "Auto-switch by car" to have GridGlance activate the matching
+  preset automatically when you hop into a car.
+- **Safer config writes.** Settings are now written atomically (temp file +
+  rename) so a crash mid-save can't corrupt your configuration. Existing
+  settings and your saved layout are migrated into a "Default" preset on upgrade.
+
 ## 1.15.0 - 2026-06-29
 
 - **Per-widget reset.** Every widget's settings page now has a "Reset to defaults"

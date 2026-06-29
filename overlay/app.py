@@ -31,7 +31,6 @@ from PyQt6.QtWidgets import QApplication
 
 from . import common as oc
 from . import config
-from . import layout_store
 from . import paths
 from . import sysstats
 from . import version
@@ -83,9 +82,16 @@ class AdvancedSimHUD:
 
         # Repaint + re-apply widget visibility when the config changes (editor UI).
         config.on_change(self._on_config_change)
+        # Reapply the saved window layout when the active preset changes.
+        config.on_preset_change(self._on_preset_change)
         # Let the settings UI trigger a fresh track scan on demand.
         config.on_rescan(self._rescan_track)
         config.on_rescan_pits(self._rescan_pits)
+        # Last-seen car path + LeagueID (drives auto-switch of presets); the
+        # league id is cached because reading WeekendInfo is an expensive parse.
+        self._last_car_path: str | None = None
+        self._last_league_id: int | None = None
+        self._league_id_cache: int | None = None
 
         self._driver_cache: dict[int, dict] = {}
         # CarIdx values of pace/safety cars, so they're never shown as competitors.
@@ -163,7 +169,9 @@ class AdvancedSimHUD:
         # you're not in the sim); updated each tick.
         self._connected = False
 
-        self._layout_state = layout_store.load_layout()
+        # Layout is per-preset; the active preset's saved geometries live here and
+        # changes are persisted back through config (which writes the active preset).
+        self._layout_state = config.active_layout()
         self.panels: list[PanelWindow] = []
         self._build_panels()
 
@@ -181,6 +189,7 @@ class AdvancedSimHUD:
             DEFAULT_GEOMS[key],
             self._layout_state,
             click_through=self.click_through,
+            on_save=config.save_active_layout,
         )
         self.panels.append(win)
         self._win_by_key[key] = win
@@ -283,6 +292,63 @@ class AdvancedSimHUD:
     def _on_config_change(self, _cfg) -> None:
         self._apply_visibility()
         self._repaint_all()
+
+    def _on_preset_change(self, _name) -> None:
+        """Reapply the newly active preset's saved window layout to every panel."""
+        self._layout_state.clear()
+        self._layout_state.update(config.active_layout())
+        for key, win in self._win_by_key.items():
+            geom = self._layout_state.get(key) or DEFAULT_GEOMS.get(key)
+            if geom:
+                win.setGeometry(int(geom[0]), int(geom[1]),
+                                int(geom[2]), int(geom[3]))
+        self._apply_visibility()
+        self._repaint_all()
+
+    def current_car(self) -> tuple[str, str]:
+        """The player's current (car_path, display_name), or ("", "") if unknown.
+
+        Used by the settings UI to bind "the car I'm driving now" to a preset.
+        """
+        try:
+            idx = self.ir["PlayerCarIdx"]
+            drv = self._driver_cache.get(idx) if self._driver_cache else None
+            if isinstance(drv, dict):
+                path = str(drv.get("CarPath") or "")
+                name = str(drv.get("CarScreenName") or path)
+                return path, name
+        except Exception:
+            pass
+        return "", ""
+
+    def current_league(self) -> tuple[int, str]:
+        """The current session's (LeagueID, label), or (0, "") if not a league.
+
+        Reads WeekendInfo directly (only called on demand from the settings UI),
+        so it reflects the live session rather than the throttled cache.
+        """
+        wk = self.ir["WeekendInfo"] if self.ir else None
+        lid = 0
+        if isinstance(wk, dict):
+            try:
+                lid = int(wk.get("LeagueID") or 0)
+            except (TypeError, ValueError):
+                lid = 0
+        return (lid, f"League {lid}") if lid > 0 else (0, "")
+
+    def _session_league_id(self) -> int:
+        """Current LeagueID (0 if none), re-read from WeekendInfo at most ~1/sec."""
+        if self._league_id_cache is not None and self._session_info_counter % 60:
+            return self._league_id_cache
+        wk = self.ir["WeekendInfo"] if self.ir else None
+        lid = 0
+        if isinstance(wk, dict):
+            try:
+                lid = int(wk.get("LeagueID") or 0)
+            except (TypeError, ValueError):
+                lid = 0
+        self._league_id_cache = lid
+        return lid
 
     def _repaint_all(self) -> None:
         for w in (self.standings_widget, self.relative_widget,
@@ -1351,6 +1417,29 @@ class AdvancedSimHUD:
         ctx = "garage" if in_garage else "race"
         if ctx != config.active_context():
             config.set_context(ctx)
+        self._maybe_auto_switch_preset()
+
+    def _maybe_auto_switch_preset(self) -> None:
+        """Switch presets to match the session: league, then car, then default.
+
+        Re-evaluated whenever the car or league changes, so leaving a bound car
+        or league falls back through the chain (and to the default if enabled).
+        """
+        if self.demo or not config.auto_switch_enabled():
+            return
+        # Make sure we know the player's car even when no driver-list widget is
+        # enabled this tick (the call is internally throttled, so it's cheap).
+        if not self._driver_cache:
+            self._drivers()
+        car, _name = self.current_car()
+        league_id = self._session_league_id()
+        if car == self._last_car_path and league_id == self._last_league_id:
+            return
+        self._last_car_path = car
+        self._last_league_id = league_id
+        target = config.preset_for_session(league_id, car)
+        if target and target != config.active_preset():
+            config.set_active_preset(target)
 
     def _session_flag(self):
         """Current flag to show: 'checkered', 'red', 'dq', 'black', 'meatball',

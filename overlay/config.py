@@ -23,6 +23,7 @@ import os
 
 from PyQt6.QtGui import QColor
 
+from . import layout_store
 from . import paths
 
 CONFIG_FILE = paths.data_file("overlay_config.json")
@@ -694,6 +695,12 @@ GARAGE_KEY = "garage"
 CONTEXTS = ("race", "garage")
 CONTEXT_LABELS = {"race": "On track", "garage": "In garage"}
 
+# Presets are named config sets. Each one bundles its own on-track + in-garage
+# config, its own widget layout, and an optional list of cars that auto-activate
+# it. One preset is active at a time; the race/garage profiles still auto-switch
+# within it. The settings file is "schema 2": {active_preset, presets:{...}}.
+DEFAULT_PRESET = "Default"
+
 
 def _migrate_table_split(user: dict) -> dict:
     """Fold a legacy shared "table" section into per-table settings.
@@ -721,10 +728,43 @@ def _migrate_table_split(user: dict) -> dict:
     return user
 
 
+def _to_v2(raw: dict) -> dict:
+    """Upgrade a legacy single-config file to the multi-preset v2 layout.
+
+    A v1 file is the whole config (base diff + optional "garage"); it becomes the
+    "Default" preset, pulling in the old standalone overlay_layout.json as that
+    preset's layout. A v2 file (already has "presets") is returned unchanged.
+    """
+    if not isinstance(raw, dict):
+        return {}
+    if isinstance(raw.get("presets"), dict):
+        return raw
+    return {
+        "schema": 2,
+        "active_preset": DEFAULT_PRESET,
+        "auto_switch_by_car": True,
+        "presets": {
+            DEFAULT_PRESET: {
+                "config": raw,
+                "layout": layout_store.load_layout(),
+                "cars": [],
+            }
+        },
+    }
+
+
+def _atomic_write(path: str, data: dict) -> None:
+    """Write JSON via a temp file + rename so a crash can't corrupt the file."""
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, path)
+
+
 def _read_user() -> dict:
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-            return _migrate_table_split(json.load(fh))
+            return _to_v2(json.load(fh))
     except (OSError, ValueError):
         return {}
 
@@ -751,33 +791,110 @@ def ensure_user_config() -> None:
     """
     if os.path.exists(CONFIG_FILE):
         return
-    data = {k: {"show": False} for k in _widget_sections()}
+    off = {k: {"show": False} for k in _widget_sections()}
+    data = {
+        "schema": 2,
+        "active_preset": DEFAULT_PRESET,
+        "auto_switch_by_league": True,
+        "auto_switch_by_car": True,
+        "auto_switch_to_default": True,
+        "presets": {DEFAULT_PRESET: {"config": off, "layout": {}, "cars": [],
+                                     "leagues": [], "default": True}},
+    }
     try:
         os.makedirs(os.path.dirname(CONFIG_FILE), exist_ok=True)
-        with open(CONFIG_FILE, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
+        _atomic_write(CONFIG_FILE, data)
     except OSError:
         pass
 
 
-def load() -> dict:
-    """Load defaults merged with the base (on-track) overlay_config.json."""
-    base_user, _ = _split_user(_read_user())
-    return _deep_merge(DEFAULTS, base_user)
+def _int_list(values) -> list:
+    """Coerce an iterable to a list of ints, dropping anything non-numeric."""
+    out: list = []
+    for v in (values or []):
+        try:
+            out.append(int(v))
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
-def load_garage() -> dict:
-    """Load just the sparse garage overrides from disk."""
-    _, garage = _split_user(_read_user())
-    return garage
+def _blank_preset() -> dict:
+    """A fresh preset: defaults, but with every widget toggled off so you opt in."""
+    base = copy.deepcopy(DEFAULTS)
+    for key in _widget_sections():
+        base[key]["show"] = False
+    return {"base": base, "garage": {}, "layout": {}, "cars": [],
+            "leagues": [], "default": False}
 
 
-# Create a fresh, all-widgets-off config on first launch, then load it.
+def _deserialize_preset(entry: dict) -> dict:
+    """Build a live preset (base + garage + layout + cars + leagues) from disk."""
+    cfg = _migrate_table_split(entry.get("config") or {})
+    base_user, garage = _split_user(cfg)
+    return {
+        "base": _deep_merge(DEFAULTS, base_user),
+        "garage": garage,
+        "layout": dict(entry.get("layout") or {}),
+        "cars": [str(c) for c in (entry.get("cars") or [])],
+        "leagues": _int_list(entry.get("leagues")),
+        "default": bool(entry.get("default", False)),
+    }
+
+
+def _ensure_one_default() -> None:
+    """Maintain the invariant that exactly one preset is marked as the default.
+
+    If none (or several) are flagged on disk, keep the first flagged one, else
+    promote the active preset (falling back to the first) so the default-fallback
+    auto-switch always resolves to a real preset.
+    """
+    if not _PRESETS:
+        return
+    flagged = [n for n, p in _PRESETS.items() if p.get("default")]
+    if len(flagged) == 1:
+        return
+    keep = flagged[0] if flagged else (
+        ACTIVE_PRESET if ACTIVE_PRESET in _PRESETS else next(iter(_PRESETS)))
+    for name, p in _PRESETS.items():
+        p["default"] = (name == keep)
+
+
+def _load_all() -> None:
+    """(Re)load every preset + the active selection from disk into memory."""
+    global _PRESETS, ACTIVE_PRESET, BASE, GARAGE
+    global AUTO_SWITCH_BY_LEAGUE, AUTO_SWITCH_BY_CAR, AUTO_SWITCH_TO_DEFAULT
+    raw = _read_user()
+    presets: dict = {}
+    for name, entry in (raw.get("presets") or {}).items():
+        if isinstance(entry, dict):
+            presets[str(name)] = _deserialize_preset(entry)
+    if not presets:
+        presets = {DEFAULT_PRESET: _blank_preset()}
+    _PRESETS = presets
+    AUTO_SWITCH_BY_LEAGUE = bool(raw.get("auto_switch_by_league", True))
+    AUTO_SWITCH_BY_CAR = bool(raw.get("auto_switch_by_car", True))
+    AUTO_SWITCH_TO_DEFAULT = bool(raw.get("auto_switch_to_default", True))
+    active = raw.get("active_preset")
+    ACTIVE_PRESET = active if active in _PRESETS else next(iter(_PRESETS))
+    _ensure_one_default()
+    BASE = _PRESETS[ACTIVE_PRESET]["base"]
+    GARAGE = _PRESETS[ACTIVE_PRESET]["garage"]
+
+
+# Create a fresh, all-widgets-off config on first launch, then load every preset.
 ensure_user_config()
 
-# The base ("On track") config and the sparse garage overrides.
-BASE: dict = load()
-GARAGE: dict = load_garage()
+# Named config sets and which one is active. BASE/GARAGE always alias the active
+# preset's on-track config + sparse garage override (kept for the rest of the app).
+_PRESETS: dict = {}
+ACTIVE_PRESET: str = DEFAULT_PRESET
+AUTO_SWITCH_BY_LEAGUE: bool = True
+AUTO_SWITCH_BY_CAR: bool = True
+AUTO_SWITCH_TO_DEFAULT: bool = True
+BASE: dict = {}
+GARAGE: dict = {}
+_load_all()
 
 # The active context (set from telemetry) and an optional editor preview pin
 # that overrides it so the settings UI can show the profile being edited.
@@ -895,6 +1012,24 @@ def _notify() -> None:
             pass
 
 
+# Callbacks fired when the *active preset* changes (so the overlay can reapply
+# that preset's saved window layout). Separate from _listeners (config content).
+_preset_listeners: list = []
+
+
+def on_preset_change(callback) -> None:
+    """Register a callback(name) fired when the active preset changes."""
+    _preset_listeners.append(callback)
+
+
+def _notify_preset() -> None:
+    for cb in list(_preset_listeners):
+        try:
+            cb(ACTIVE_PRESET)
+        except Exception:
+            pass
+
+
 def set_cfg(new_cfg: dict, notify: bool = True) -> dict:
     """Replace the base (on-track) config and recompute the live config.
 
@@ -905,12 +1040,11 @@ def set_cfg(new_cfg: dict, notify: bool = True) -> dict:
 
 
 def reload() -> dict:
-    """Reload both profiles from disk and recompute the live config."""
-    global BASE, GARAGE
-    BASE = load()
-    GARAGE = load_garage()
+    """Reload every preset from disk and recompute the live config."""
+    _load_all()
     _compute_cfg()
     _notify()
+    _notify_preset()
     return CFG
 
 
@@ -968,9 +1102,10 @@ def editor_full(ctx: str) -> dict:
 
 
 def apply_base(full_cfg: dict, notify: bool = True) -> dict:
-    """Replace the base (on-track) profile with a full config dict."""
+    """Replace the active preset's base (on-track) profile with a full config."""
     global BASE
     BASE = copy.deepcopy(full_cfg)
+    _PRESETS[ACTIVE_PRESET]["base"] = BASE
     _compute_cfg()
     if notify:
         _notify()
@@ -978,9 +1113,10 @@ def apply_base(full_cfg: dict, notify: bool = True) -> dict:
 
 
 def apply_garage(full_cfg: dict, notify: bool = True) -> dict:
-    """Set the garage profile from a full dict, keeping only the diff vs base."""
+    """Set the active preset's garage profile, keeping only the diff vs base."""
     global GARAGE
     GARAGE = diff_from_defaults(full_cfg, BASE)
+    _PRESETS[ACTIVE_PRESET]["garage"] = GARAGE
     _compute_cfg()
     if notify:
         _notify()
@@ -994,24 +1130,280 @@ def apply_edits(ctx: str, full_cfg: dict, notify: bool = True) -> dict:
 
 
 def clear_garage(notify: bool = True) -> dict:
-    """Drop all garage overrides (garage then mirrors the on-track profile)."""
+    """Drop the active preset's garage overrides (it mirrors on-track again)."""
     global GARAGE
     GARAGE = {}
+    _PRESETS[ACTIVE_PRESET]["garage"] = GARAGE
     _compute_cfg()
     if notify:
         _notify()
     return CFG
 
 
+def _sync_active() -> None:
+    """Push the live BASE/GARAGE back into the active preset record."""
+    _PRESETS[ACTIVE_PRESET]["base"] = BASE
+    _PRESETS[ACTIVE_PRESET]["garage"] = GARAGE
+
+
+def _serialize() -> dict:
+    """The full schema-2 document: every preset's sparse config + layout + cars."""
+    _sync_active()
+    presets: dict = {}
+    for name, p in _PRESETS.items():
+        cfg = diff_from_defaults(p["base"])
+        garage_sparse = diff_from_defaults(_deep_merge(p["base"], p["garage"]),
+                                           p["base"])
+        if garage_sparse:
+            cfg[GARAGE_KEY] = garage_sparse
+        entry: dict = {"config": cfg}
+        if p.get("layout"):
+            entry["layout"] = p["layout"]
+        if p.get("cars"):
+            entry["cars"] = p["cars"]
+        if p.get("leagues"):
+            entry["leagues"] = p["leagues"]
+        if p.get("default"):
+            entry["default"] = True
+        presets[name] = entry
+    return {
+        "schema": 2,
+        "active_preset": ACTIVE_PRESET,
+        "auto_switch_by_league": AUTO_SWITCH_BY_LEAGUE,
+        "auto_switch_by_car": AUTO_SWITCH_BY_CAR,
+        "auto_switch_to_default": AUTO_SWITCH_TO_DEFAULT,
+        "presets": presets,
+    }
+
+
 def save_profiles(path: str = CONFIG_FILE) -> dict:
-    """Persist the base profile (minimal) plus any sparse garage overrides."""
-    data = diff_from_defaults(BASE)
-    garage_sparse = diff_from_defaults(_deep_merge(BASE, GARAGE), BASE)
-    if garage_sparse:
-        data[GARAGE_KEY] = garage_sparse
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2)
+    """Persist every preset (active selection, configs, layouts, car bindings)."""
+    data = _serialize()
+    _atomic_write(path, data)
     return data
+
+
+# --- preset management -----------------------------------------------------
+
+def presets() -> list:
+    """Names of all presets, in order."""
+    return list(_PRESETS.keys())
+
+
+def active_preset() -> str:
+    return ACTIVE_PRESET
+
+
+def set_active_preset(name: str, notify: bool = True, persist: bool = True) -> dict:
+    """Switch the active preset, swapping in its on-track/garage config."""
+    global ACTIVE_PRESET, BASE, GARAGE
+    if name not in _PRESETS or name == ACTIVE_PRESET:
+        return CFG
+    _sync_active()
+    ACTIVE_PRESET = name
+    BASE = _PRESETS[name]["base"]
+    GARAGE = _PRESETS[name]["garage"]
+    _compute_cfg()
+    if persist:
+        save_profiles()
+    if notify:
+        _notify()
+        _notify_preset()
+    return CFG
+
+
+def create_preset(name: str, copy_from: str | None = None,
+                  activate: bool = True) -> bool:
+    """Create a new preset (blank, or copied from an existing one)."""
+    name = (name or "").strip()
+    if not name or name in _PRESETS:
+        return False
+    if copy_from and copy_from in _PRESETS:
+        if copy_from == ACTIVE_PRESET:
+            _sync_active()
+        src = _PRESETS[copy_from]
+        _PRESETS[name] = {
+            "base": copy.deepcopy(src["base"]),
+            "garage": copy.deepcopy(src["garage"]),
+            "layout": copy.deepcopy(src["layout"]),
+            # Car/league bindings + default flag are unique per preset; don't copy.
+            "cars": [],
+            "leagues": [],
+            "default": False,
+        }
+    else:
+        _PRESETS[name] = _blank_preset()
+    if activate:
+        set_active_preset(name)
+    else:
+        save_profiles()
+    return True
+
+
+def duplicate_preset(src: str, name: str) -> bool:
+    return create_preset(name, copy_from=src)
+
+
+def rename_preset(old: str, new: str) -> bool:
+    global ACTIVE_PRESET
+    new = (new or "").strip()
+    if old not in _PRESETS or not new or new == old or new in _PRESETS:
+        return False
+    renamed = {(new if k == old else k): v for k, v in _PRESETS.items()}
+    _PRESETS.clear()
+    _PRESETS.update(renamed)
+    if ACTIVE_PRESET == old:
+        ACTIVE_PRESET = new
+    save_profiles()
+    return True
+
+
+def delete_preset(name: str) -> bool:
+    """Delete a preset; refuses to remove the last one. Falls back to another."""
+    global ACTIVE_PRESET, BASE, GARAGE
+    if name not in _PRESETS or len(_PRESETS) <= 1:
+        return False
+    was_active = name == ACTIVE_PRESET
+    del _PRESETS[name]
+    if was_active:
+        ACTIVE_PRESET = next(iter(_PRESETS))
+        BASE = _PRESETS[ACTIVE_PRESET]["base"]
+        GARAGE = _PRESETS[ACTIVE_PRESET]["garage"]
+        _compute_cfg()
+    # Deleting the default preset must promote another so one always remains.
+    _ensure_one_default()
+    save_profiles()
+    if was_active:
+        _notify()
+        _notify_preset()
+    return True
+
+
+def preset_cars(name: str | None = None) -> list:
+    p = _PRESETS.get(name or ACTIVE_PRESET)
+    return list(p["cars"]) if p else []
+
+
+def set_preset_cars(name: str, cars) -> None:
+    if name in _PRESETS:
+        _PRESETS[name]["cars"] = [str(c) for c in cars]
+        save_profiles()
+
+
+def preset_for_car(car_path: str) -> str | None:
+    """The first preset bound to this car path (for auto-switching), or None."""
+    if not car_path:
+        return None
+    for name, p in _PRESETS.items():
+        if car_path in (p.get("cars") or []):
+            return name
+    return None
+
+
+def preset_leagues(name: str | None = None) -> list:
+    p = _PRESETS.get(name or ACTIVE_PRESET)
+    return list(p["leagues"]) if p else []
+
+
+def set_preset_leagues(name: str, leagues) -> None:
+    if name in _PRESETS:
+        _PRESETS[name]["leagues"] = _int_list(leagues)
+        save_profiles()
+
+
+def preset_for_league(league_id) -> str | None:
+    """The first preset bound to this iRacing LeagueID, or None."""
+    try:
+        league_id = int(league_id)
+    except (TypeError, ValueError):
+        return None
+    if league_id <= 0:
+        return None
+    for name, p in _PRESETS.items():
+        if league_id in (p.get("leagues") or []):
+            return name
+    return None
+
+
+def default_preset() -> str | None:
+    """The name of the preset flagged as the default (always one once loaded)."""
+    for name, p in _PRESETS.items():
+        if p.get("default"):
+            return name
+    return None
+
+
+def set_default_preset(name: str) -> None:
+    """Mark one preset as the default, clearing the flag on all others (radio)."""
+    if name not in _PRESETS:
+        return
+    for n, p in _PRESETS.items():
+        p["default"] = (n == name)
+    save_profiles()
+
+
+def preset_for_session(league_id, car_path: str) -> str | None:
+    """Resolve which preset a session should use, honoring each auto-switch toggle.
+
+    Priority: a bound league wins over a bound car, which wins over the default.
+    """
+    if AUTO_SWITCH_BY_LEAGUE:
+        name = preset_for_league(league_id)
+        if name:
+            return name
+    if AUTO_SWITCH_BY_CAR:
+        name = preset_for_car(car_path)
+        if name:
+            return name
+    if AUTO_SWITCH_TO_DEFAULT:
+        return default_preset()
+    return None
+
+
+def auto_switch_enabled() -> bool:
+    """True if any auto-switch rule is active (so the overlay should evaluate)."""
+    return AUTO_SWITCH_BY_LEAGUE or AUTO_SWITCH_BY_CAR or AUTO_SWITCH_TO_DEFAULT
+
+
+def auto_switch_by_league() -> bool:
+    return AUTO_SWITCH_BY_LEAGUE
+
+
+def set_auto_switch_by_league(value: bool) -> None:
+    global AUTO_SWITCH_BY_LEAGUE
+    AUTO_SWITCH_BY_LEAGUE = bool(value)
+    save_profiles()
+
+
+def auto_switch_by_car() -> bool:
+    return AUTO_SWITCH_BY_CAR
+
+
+def set_auto_switch_by_car(value: bool) -> None:
+    global AUTO_SWITCH_BY_CAR
+    AUTO_SWITCH_BY_CAR = bool(value)
+    save_profiles()
+
+
+def auto_switch_to_default() -> bool:
+    return AUTO_SWITCH_TO_DEFAULT
+
+
+def set_auto_switch_to_default(value: bool) -> None:
+    global AUTO_SWITCH_TO_DEFAULT
+    AUTO_SWITCH_TO_DEFAULT = bool(value)
+    save_profiles()
+
+
+def active_layout() -> dict:
+    """A copy of the active preset's saved window layout (key -> [x,y,w,h])."""
+    return copy.deepcopy(_PRESETS[ACTIVE_PRESET]["layout"])
+
+
+def save_active_layout(layout: dict) -> None:
+    """Store + persist the active preset's window layout."""
+    _PRESETS[ACTIVE_PRESET]["layout"] = copy.deepcopy(layout)
+    save_profiles()
 
 
 _MISSING = object()

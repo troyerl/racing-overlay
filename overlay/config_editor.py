@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFrame,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -224,6 +225,7 @@ BLUE = "#4c9aff"
 # its sliders, toggles and sidebar dot all take this color.
 TAB_COLORS = {
     "General": "#9aa3b2",       # neutral gray (global settings)
+    "App": "#9aa3b2",           # neutral gray (global, preset-independent)
     "Table": "#7f8c9a",         # slate (shared table base)
     "Relative": "#2fe0b0",      # teal
     "Standings": "#a98bff",     # purple
@@ -240,8 +242,9 @@ TAB_COLORS = {
 }
 
 # Section keys shown under the "Settings" top tab (global, non-widget config).
-# Everything else is a widget and lives under the "Widgets" top tab.
-SETTINGS_SECTION_KEYS = {"__general__"}
+# Everything else is a widget and lives under the "Widgets" top tab. "__app__"
+# holds preset-independent settings (updates, preset auto-switching).
+SETTINGS_SECTION_KEYS = {"__general__", "__app__"}
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
@@ -469,6 +472,18 @@ class ToggleSwitch(QAbstractButton):
 
     def set_accent(self, color: str) -> None:
         self._accent = QColor(color)
+        self.update()
+
+    def set_checked_silent(self, on: bool) -> None:
+        """Set the state + knob position without emitting toggled (no animation).
+
+        Programmatic setChecked() with signals blocked skips the toggled-driven
+        animation, so the knob would otherwise stay put; sync _pos directly.
+        """
+        self.blockSignals(True)
+        self.setChecked(on)
+        self.blockSignals(False)
+        self._pos = 1.0 if on else 0.0
         self.update()
 
     def _animate(self, on: bool) -> None:
@@ -993,6 +1008,10 @@ class ConfigEditor(QWidget):
         self._updater = None
         self._dl_dialog = None
         self._dl_canceled = False
+        # Friendly names for car paths / league ids bound to presets
+        # (best-effort, from the running overlay when a session is detected).
+        self._car_labels: dict[str, str] = {}
+        self._league_labels: dict[int, str] = {}
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 16, 18, 14)
@@ -1004,6 +1023,10 @@ class ConfigEditor(QWidget):
         subtitle.setObjectName("subtitle")
         root.addWidget(title)
         root.addWidget(subtitle)
+
+        # Preset selector: each preset is a complete, independent config + layout
+        # (e.g. a "League" set vs a "Practice" set, or different cars).
+        root.addLayout(self._build_preset_bar())
 
         # Profile selector: edit the on-track vs in-garage configuration.
         prof = QHBoxLayout()
@@ -1367,9 +1390,9 @@ class ConfigEditor(QWidget):
         self._accordions.clear()
         self._nav_items.clear()
 
-        # General first (Settings tab), then the rest alphabetically by title so
-        # the widget vertical tabs read A-Z (Dash, Fuel Calc, Laptime Log, ...).
-        self._sections = [("__general__", "General")] + sorted(
+        # General + App first (Settings tab), then the rest alphabetically by
+        # title so the widget vertical tabs read A-Z (Dash, Fuel Calc, ...).
+        self._sections = [("__general__", "General"), ("__app__", "App")] + sorted(
             ((k, _pretty(k)) for k, val in config.DEFAULTS.items()
              if isinstance(val, dict)),
             key=lambda kt: kt[1].lower())
@@ -1378,7 +1401,7 @@ class ConfigEditor(QWidget):
             self.stack.addWidget(self._scroll(self._build_page(key, title, color)))
             nav = NavItem(title, color)
             nav.clicked.connect(lambda i=idx: self._select(i))
-            if key != "__general__" and "show" in config.DEFAULTS[key]:
+            if key not in ("__general__", "__app__") and "show" in config.DEFAULTS.get(key, {}):
                 nav.set_dot(bool(_get_at(self.working, [key, "show"])))
             self._nav_items[key] = nav
             self.nav_lay.addWidget(nav)
@@ -1449,7 +1472,7 @@ class ConfigEditor(QWidget):
         head.setObjectName("pageTitle")
         head_row.addWidget(head)
         head_row.addStretch(1)
-        if key != "__general__":
+        if key not in ("__general__", "__app__"):
             reset_btn = QPushButton("Reset to defaults")
             reset_btn.setObjectName("sectionReset")
             reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1459,8 +1482,21 @@ class ConfigEditor(QWidget):
             head_row.addWidget(reset_btn)
         v.addLayout(head_row)
 
-        if key == "__general__":
+        if key == "__app__":
+            # Preset-independent (global) settings: updates + preset auto-switch.
+            note = QLabel("These are global settings \u2014 switching presets "
+                          "won't change them.")
+            note.setObjectName("subtitle")
+            note.setWordWrap(True)
+            v.addWidget(note)
             v.addWidget(self._about_card())
+            v.addWidget(self._auto_switch_card())
+            v.addStretch(1)
+            return page
+
+        if key == "__general__":
+            v.addWidget(self._preset_leagues_card())
+            v.addWidget(self._preset_cars_card())
             scalars = {k: val for k, val in config.DEFAULTS.items()
                        if not isinstance(val, dict)}
             self._populate(v, scalars, [], color, [])
@@ -1732,6 +1768,339 @@ class ConfigEditor(QWidget):
     def _flash(self, msg: str) -> None:
         self.status.setText(msg)
         self._status_timer.start(2500)
+
+    # --- presets -------------------------------------------------------------
+
+    def _build_preset_bar(self):
+        """Top row to pick/manage presets (independent config + layout sets)."""
+        bar = QHBoxLayout()
+        bar.setSpacing(8)
+        lbl = QLabel("Preset")
+        lbl.setStyleSheet("background: transparent; color: #aab2bf; "
+                          "font-weight: 700;")
+        self.preset_combo = Combo()
+        self.preset_combo.setObjectName("ctxCombo")
+        self._refresh_preset_combo()
+        self.preset_combo.currentIndexChanged.connect(self._change_preset)
+        bar.addWidget(lbl)
+        bar.addWidget(self.preset_combo)
+        for text, slot, obj in (
+            ("New", self._new_preset, ""),
+            ("Duplicate", self._dup_preset, ""),
+            ("Rename", self._rename_preset, ""),
+            ("Delete", self._delete_preset, "danger"),
+        ):
+            b = QPushButton(text)
+            if obj:
+                b.setObjectName(obj)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(slot)
+            bar.addWidget(b)
+        bar.addStretch(1)
+        self.default_w, self.default_sw = self._opt_toggle("Default preset", False)
+        self.default_sw.toggled.connect(self._toggle_default)
+        self.default_w.setToolTip(
+            "Use this preset when no league or car preset matches. Exactly one "
+            "preset is always the default, so you set it by choosing another.")
+        bar.addWidget(self.default_w)
+        self._update_default_toggle()
+        return bar
+
+    def _refresh_preset_combo(self) -> None:
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.clear()
+        for name in config.presets():
+            self.preset_combo.addItem(name, name)
+        i = self.preset_combo.findData(config.active_preset())
+        self.preset_combo.setCurrentIndex(max(0, i))
+        self.preset_combo.blockSignals(False)
+
+    def _after_preset_change(self, msg: str) -> None:
+        """Rebuild the editor around the now-active preset and flash a status."""
+        self._refresh_preset_combo()
+        self.working = config.editor_full(self._edit_ctx)
+        config.set_preview_context(self._edit_ctx)
+        self._cur_index = 0
+        self._build_nav_and_pages()
+        self._filter(self.search.text())
+        self._refresh_preset_cars()
+        self._refresh_preset_leagues()
+        self._update_default_toggle()
+        self._flash(msg)
+
+    def _change_preset(self) -> None:
+        new = self.preset_combo.currentData()
+        if not new or new == config.active_preset():
+            return
+        # Capture pending edits to the preset we're leaving, then switch.
+        self._save_timer.stop()
+        config.apply_edits(self._edit_ctx, self.working, notify=False)
+        config.set_active_preset(new)
+        self._after_preset_change(f"Switched to \u201c{new}\u201d")
+
+    def _ask_name(self, title: str, label: str, default: str = "") -> str | None:
+        name, ok = QInputDialog.getText(self, title, label, text=default)
+        if not ok:
+            return None
+        name = name.strip()
+        if not name:
+            return None
+        if name in config.presets():
+            QMessageBox.warning(self, title,
+                                f"A preset named \u201c{name}\u201d already exists.")
+            return None
+        return name
+
+    def _new_preset(self) -> None:
+        name = self._ask_name("New preset", "Preset name:")
+        if not name:
+            return
+        config.apply_edits(self._edit_ctx, self.working, notify=False)
+        config.create_preset(name, activate=True)
+        self._after_preset_change(f"Created \u201c{name}\u201d")
+
+    def _dup_preset(self) -> None:
+        src = config.active_preset()
+        name = self._ask_name("Duplicate preset", "New preset name:",
+                              default=f"{src} copy")
+        if not name:
+            return
+        config.apply_edits(self._edit_ctx, self.working, notify=False)
+        config.save_profiles()
+        config.duplicate_preset(src, name)
+        self._after_preset_change(f"Duplicated to \u201c{name}\u201d")
+
+    def _rename_preset(self) -> None:
+        old = config.active_preset()
+        name = self._ask_name("Rename preset", "New name:", default=old)
+        if not name:
+            return
+        config.apply_edits(self._edit_ctx, self.working, notify=False)
+        config.rename_preset(old, name)
+        self._refresh_preset_combo()
+        self._update_default_toggle()
+        self._flash(f"Renamed to \u201c{name}\u201d")
+
+    def _delete_preset(self) -> None:
+        name = config.active_preset()
+        if len(config.presets()) <= 1:
+            QMessageBox.warning(self, "Delete preset",
+                                "You can't delete your only preset.")
+            return
+        box = QMessageBox(self)
+        box.setWindowTitle("Delete preset")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText(f"Delete the preset \u201c{name}\u201d?")
+        box.setInformativeText("Its config and saved layout will be removed. "
+                               "This can't be undone.")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes
+                               | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.No)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        config.delete_preset(name)
+        self._after_preset_change(f"Deleted \u201c{name}\u201d")
+
+    def _update_default_toggle(self) -> None:
+        """Reflect/enforce the radio rule: the current default can't be unset."""
+        sw = getattr(self, "default_sw", None)
+        if sw is None:
+            return
+        is_default = config.default_preset() == config.active_preset()
+        sw.set_checked_silent(is_default)
+        # You set the default by choosing a *different* preset, so the current
+        # default (and the only preset, which is forced default) is locked on.
+        sw.setEnabled(not is_default)
+
+    def _toggle_default(self, on: bool) -> None:
+        if not on:
+            # Radio behavior: can't clear the default directly; re-check it.
+            self._update_default_toggle()
+            return
+        config.set_default_preset(config.active_preset())
+        self._update_default_toggle()
+        self._flash(f"\u201c{config.active_preset()}\u201d is now the default preset")
+
+    def _auto_switch_card(self) -> QFrame:
+        """General-page card with the three independent auto-switch toggles."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Auto-switch presets")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Activate a preset to match the session. When more than one "
+                      "rule applies, league wins over car, and car wins over your "
+                      "default.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+        rules = (
+            ("In a league with a bound preset",
+             config.auto_switch_by_league, config.set_auto_switch_by_league),
+            ("Driving a car with a bound preset",
+             config.auto_switch_by_car, config.set_auto_switch_by_car),
+            ("Otherwise, use my default preset",
+             config.auto_switch_to_default, config.set_auto_switch_to_default),
+        )
+        for label, getter, setter in rules:
+            w, sw = self._opt_toggle(label, getter())
+            sw.toggled.connect(lambda on, s=setter: self._set_auto_switch(s, on))
+            v.addWidget(w)
+        return card
+
+    def _set_auto_switch(self, setter, on: bool) -> None:
+        setter(bool(on))
+        self._flash("Auto-switch updated")
+
+    def _preset_cars_card(self) -> QFrame:
+        """Card on the General page to bind cars that auto-load this preset."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Auto-load this preset for cars")
+        t.setObjectName("enableTitle")
+        hint = QLabel("When you drive one of these cars, GridGlance switches to "
+                      "this preset (needs the car auto-switch rule on).")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+        self._cars_list = QListWidget()
+        self._cars_list.setObjectName("orderList")
+        self._cars_list.setMaximumHeight(120)
+        v.addWidget(self._cars_list)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        add_btn = QPushButton("Add current car")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._add_current_car)
+        rem_btn = QPushButton("Remove selected")
+        rem_btn.setObjectName("danger")
+        rem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        rem_btn.clicked.connect(self._remove_selected_car)
+        row.addWidget(add_btn)
+        row.addWidget(rem_btn)
+        row.addStretch(1)
+        v.addLayout(row)
+        self._refresh_preset_cars()
+        return card
+
+    def _refresh_preset_cars(self) -> None:
+        lst = getattr(self, "_cars_list", None)
+        if lst is None:
+            return
+        lst.clear()
+        for path in config.preset_cars():
+            item = QListWidgetItem(self._car_labels.get(path, path))
+            item.setData(Qt.ItemDataRole.UserRole, path)
+            lst.addItem(item)
+
+    def _add_current_car(self) -> None:
+        car = ("", "")
+        if self._overlay is not None and hasattr(self._overlay, "current_car"):
+            car = self._overlay.current_car()
+        path, name = car
+        if not path:
+            QMessageBox.information(
+                self, "Add car",
+                "No car detected. Start the overlay and get in a car in "
+                "iRacing first.")
+            return
+        self._car_labels[path] = name or path
+        cars = config.preset_cars()
+        if path not in cars:
+            cars.append(path)
+            config.set_preset_cars(config.active_preset(), cars)
+        self._refresh_preset_cars()
+        self._flash(f"Bound {name or path} to this preset")
+
+    def _remove_selected_car(self) -> None:
+        lst = getattr(self, "_cars_list", None)
+        if lst is None or lst.currentItem() is None:
+            return
+        path = lst.currentItem().data(Qt.ItemDataRole.UserRole)
+        cars = [c for c in config.preset_cars() if c != path]
+        config.set_preset_cars(config.active_preset(), cars)
+        self._refresh_preset_cars()
+
+    def _preset_leagues_card(self) -> QFrame:
+        """Card on the General page to bind leagues that auto-load this preset."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Auto-load this preset for leagues")
+        t.setObjectName("enableTitle")
+        hint = QLabel("When you're in one of these league sessions, GridGlance "
+                      "switches to this preset (needs the league auto-switch rule "
+                      "on). League takes priority over car.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+        self._leagues_list = QListWidget()
+        self._leagues_list.setObjectName("orderList")
+        self._leagues_list.setMaximumHeight(120)
+        v.addWidget(self._leagues_list)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        add_btn = QPushButton("Add current league")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._add_current_league)
+        rem_btn = QPushButton("Remove selected")
+        rem_btn.setObjectName("danger")
+        rem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        rem_btn.clicked.connect(self._remove_selected_league)
+        row.addWidget(add_btn)
+        row.addWidget(rem_btn)
+        row.addStretch(1)
+        v.addLayout(row)
+        self._refresh_preset_leagues()
+        return card
+
+    def _refresh_preset_leagues(self) -> None:
+        lst = getattr(self, "_leagues_list", None)
+        if lst is None:
+            return
+        lst.clear()
+        for lid in config.preset_leagues():
+            item = QListWidgetItem(self._league_labels.get(lid, f"League {lid}"))
+            item.setData(Qt.ItemDataRole.UserRole, lid)
+            lst.addItem(item)
+
+    def _add_current_league(self) -> None:
+        league = (0, "")
+        if self._overlay is not None and hasattr(self._overlay, "current_league"):
+            league = self._overlay.current_league()
+        lid, label = league
+        if not lid:
+            QMessageBox.information(
+                self, "Add league",
+                "No league session detected. Join the league session in "
+                "iRacing first.")
+            return
+        self._league_labels[lid] = label or f"League {lid}"
+        leagues = config.preset_leagues()
+        if lid not in leagues:
+            leagues.append(lid)
+            config.set_preset_leagues(config.active_preset(), leagues)
+        self._refresh_preset_leagues()
+        self._flash(f"Bound {self._league_labels[lid]} to this preset")
+
+    def _remove_selected_league(self) -> None:
+        lst = getattr(self, "_leagues_list", None)
+        if lst is None or lst.currentItem() is None:
+            return
+        lid = lst.currentItem().data(Qt.ItemDataRole.UserRole)
+        leagues = [x for x in config.preset_leagues() if x != lid]
+        config.set_preset_leagues(config.active_preset(), leagues)
+        self._refresh_preset_leagues()
 
     # --- profile (context) switching ----------------------------------------
 
