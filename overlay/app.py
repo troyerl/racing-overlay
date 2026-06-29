@@ -21,6 +21,7 @@ Corrections vs. the common template:
 
 from __future__ import annotations
 
+import collections
 import math
 import os
 import sys
@@ -69,6 +70,18 @@ DEFAULT_GEOMS = {
 # passes the pit lane needs, before each is finalized (saved + uploaded).
 SCAN_LAPS = 3
 PIT_PASSES = 3
+
+# Pit route capture: how far off the racing line (as a fraction of the track's
+# bounding-box diagonal) counts as having left the track onto the pit-entry
+# blend, and how close counts as having rejoined it on the pit-exit blend. The
+# rejoin threshold is tighter for hysteresis. A safety cap bounds the exit-blend
+# capture in case the car never re-converges (off-track, telemetry gap).
+PIT_DIVERGE_FRAC = 0.030
+PIT_REJOIN_FRAC = 0.020
+PIT_BLEND_MAX_PTS = 1200
+# Rolling GPS buffer length (ticks) used to back-trace the entry blend from
+# where the car peeled off the racing line up to the pit-road edge.
+PIT_RECENT_MAX = 900
 
 
 class AdvancedSimHUD:
@@ -134,10 +147,37 @@ class AdvancedSimHUD:
         self._pit_s0 = None  # speed/time samples for steady-cruise detection
         self._pit_t0 = None
         # Real pit-lane geometry: the player's GPS trace from leaving the track
-        # to rejoining it. _pit_geo_cur accumulates the current pass; _pit_path
-        # holds the finalized (averaged) lane.
-        self._pit_geo_cur: list[tuple[float, float]] = []
+        # to rejoining it, split into three parts -- the entry blend (track ->
+        # pit road), the lane itself (on pit road), and the exit blend (pit road
+        # -> track). The *_cur lists accumulate the current pass; the finalized
+        # (averaged-over-passes) versions are stored without the suffix.
+        self._pit_geo_cur: list[tuple[float, float]] = []  # current lane
+        self._pit_in_cur: list[tuple[float, float]] = []   # current entry blend
+        self._pit_out_cur: list[tuple[float, float]] = []  # current exit blend
         self._pit_path = None
+        self._pit_in = None
+        self._pit_out = None
+        self._pit_in_pct = None   # lap pct where the car left the racing line
+        self._pit_out_pct = None  # lap pct where it rejoined the racing line
+        # Pit-route capture state machine: None (on track), "lane" (on pit road),
+        # or "exit" (off pit road but still tracing the exit blend until rejoin).
+        self._pit_phase = None
+        self._pit_in_pct_cur = None
+        self._pit_exit_pct = None    # lap pct at the OnPitRoad falling edge
+        self._pit_exit_ticks = 0     # ticks spent tracing the current exit blend
+        # Whether the player is currently on the pit route (pit road or a blend),
+        # computed in _learn_pit and read when placing the player dot.
+        self._player_on_route = False
+        # Rolling (pct, x, y, dist_to_track) buffer for back-tracing the entry
+        # blend, and a cache of the racing-line geometry to measure divergence.
+        self._pit_recent: collections.deque = collections.deque(
+            maxlen=PIT_RECENT_MAX)
+        self._track_pts: list[tuple[float, float]] | None = None
+        self._track_diag = 0.0
+        # Per-opponent latch: once a car is seen on pit road we keep treating it
+        # as "on the pit route" (so it follows the exit blend) until its lap pct
+        # passes the rejoin point. idx -> True while latched.
+        self._pit_route_latch: dict[int, bool] = {}
         # Multi-lap scan progress: the track map finalizes only after SCAN_LAPS
         # *complete* laps; the pit lane only after PIT_PASSES passes (and only
         # once the track scan is done). _scan_seen_lap is the lap we were on when
@@ -1197,14 +1237,8 @@ class AdvancedSimHUD:
                             pts, sf, corners, _, meta = track_map.load_track(
                                 track_file)
                             self.map_widget.set_track(pts, sf, corners)
-                            if meta.get("pit_span"):
-                                self._pit_span = meta["pit_span"]
-                                self._pit_speed_ms = meta.get("pit_speed", 0.0)
-                                self.map_widget.set_pit(
-                                    self._pit_span, self._pit_speed_ms)
-                            if meta.get("pit_path"):
-                                self._pit_path = meta["pit_path"]
-                                self.map_widget.set_pit_path(self._pit_path)
+                            self._set_track_geom(pts)
+                            self._apply_pit_meta(meta)
                             self._track_loaded = True
                             # A complete track is present, so pit scanning is
                             # immediately allowed (no 3-lap learn needed).
@@ -1266,6 +1300,8 @@ class AdvancedSimHUD:
                 and b.coverage() >= 0.96):
             self._scan_done = True
             self._track_saved = True
+            # Cache the finished loop so pit-route divergence can be measured.
+            self._set_track_geom(b.path)
             self.map_widget.set_scan_status("")
             self.map_widget.flash_hint("Track saved \u00b7 scan the pits")
             try:
@@ -1292,13 +1328,8 @@ class AdvancedSimHUD:
         except Exception:
             return
         self.map_widget.set_track(pts, sf, corners)
-        if meta.get("pit_span"):
-            self._pit_span = meta["pit_span"]
-            self._pit_speed_ms = meta.get("pit_speed", 0.0)
-            self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
-        if meta.get("pit_path"):
-            self._pit_path = meta["pit_path"]
-            self.map_widget.set_pit_path(self._pit_path)
+        self._set_track_geom(pts)
+        self._apply_pit_meta(meta)
         self._track_loaded = True
         self._track_saved = True
         self._scan_done = True
@@ -1319,13 +1350,8 @@ class AdvancedSimHUD:
                 return
             pts, sf, corners, _, meta = track_map.load_track(path)
             self.map_widget.set_track(pts, sf, corners)
-            if meta.get("pit_span"):
-                self._pit_span = meta["pit_span"]
-                self._pit_speed_ms = meta.get("pit_speed", 0.0)
-                self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
-            if meta.get("pit_path"):
-                self._pit_path = meta["pit_path"]
-                self.map_widget.set_pit_path(self._pit_path)
+            self._set_track_geom(pts)
+            self._apply_pit_meta(meta)
             self._track_loaded = True
             self._track_saved = True
             self._scan_done = True
@@ -1362,17 +1388,37 @@ class AdvancedSimHUD:
         self._dr_t = None
         self._dr_last_pct = None
         # Forget the learned pit lane too (set_track(None) clears it on the map).
-        self._pit_was_on = False
-        self._pit_enter_pct = None
-        self._pit_span = None
-        self._pit_speed_ms = 0.0
-        self._pit_s0 = None
-        self._pit_t0 = None
-        self._pit_geo_cur = []
-        self._pit_path = None
+        self._reset_pit_state()
+        # The track geometry is being relearned, so drop the divergence cache.
+        self._track_pts = None
+        self._track_diag = 0.0
         # Clear the drawn map back to the "learning" placeholder.
         self.map_widget.set_track(None)
         self.map_widget.set_progress(0.0)
+
+    def _reset_pit_state(self) -> None:
+        """Clear all in-progress and learned pit-lane / pit-route state."""
+        self._pit_was_on = False
+        self._pit_enter_pct = None
+        self._pit_exit_pct = None
+        self._pit_span = None
+        self._pit_speed_ms = 0.0
+        self._pit_s0 = self._pit_t0 = None
+        self._pit_geo_cur = []
+        self._pit_in_cur = []
+        self._pit_out_cur = []
+        self._pit_path = None
+        self._pit_in = None
+        self._pit_out = None
+        self._pit_in_pct = None
+        self._pit_out_pct = None
+        self._pit_in_pct_cur = None
+        self._pit_phase = None
+        self._pit_exit_ticks = 0
+        self._player_on_route = False
+        self._pit_recent.clear()
+        self._pit_route_latch.clear()
+        self._pit_passes = []
 
     def _rescan_pits(self) -> None:
         """Forget just the learned pit lane and re-learn it on the next pit pass.
@@ -1382,20 +1428,14 @@ class AdvancedSimHUD:
         """
         if self.demo:
             return
-        self._pit_was_on = False
-        self._pit_enter_pct = None
-        self._pit_span = None
-        self._pit_speed_ms = 0.0
-        self._pit_s0 = self._pit_t0 = None
-        self._pit_geo_cur = []
-        self._pit_path = None
-        self._pit_passes = []  # re-learn the pit over PIT_PASSES fresh passes
+        self._reset_pit_state()  # re-learn the pit over PIT_PASSES fresh passes
         self.map_widget.clear_pit()
         if self._track_id is not None:
             try:
                 track_map.update_track_meta(
                     self.tracks_dir, self._track_id, pit_span=None,
-                    pit_speed=None, pit_path=None)
+                    pit_speed=None, pit_path=None, pit_in=None, pit_out=None,
+                    pit_in_pct=None, pit_out_pct=None)
             except Exception:
                 pass
 
@@ -1429,6 +1469,48 @@ class AdvancedSimHUD:
         self._dr_last_pct = pct
         return (self._dr_x, self._dr_y), wrapped
 
+    def _set_track_geom(self, pts) -> None:
+        """Cache the racing-line geometry (and its bounding-box diagonal) so we
+        can measure how far the car has strayed from it when learning the pit
+        route. Accepts any iterable of (x, y) points."""
+        pts = [(float(x), float(y)) for x, y in pts] if pts else None
+        self._track_pts = pts
+        if pts:
+            xs = [p[0] for p in pts]
+            ys = [p[1] for p in pts]
+            self._track_diag = math.hypot(max(xs) - min(xs), max(ys) - min(ys))
+        else:
+            self._track_diag = 0.0
+
+    def _dist_to_track(self, x: float, y: float) -> float | None:
+        """Min distance from (x, y) to the cached racing line. None if unknown."""
+        pts = self._track_pts
+        if not pts:
+            return None
+        best = float("inf")
+        for px, py in pts:
+            d = (px - x) * (px - x) + (py - y) * (py - y)
+            if d < best:
+                best = d
+        return math.sqrt(best)
+
+    def _apply_pit_meta(self, meta) -> None:
+        """Push loaded pit geometry (span / speed / lane / blend lines / route
+        extent) from a track file into both our state and the map widget."""
+        if meta.get("pit_span"):
+            self._pit_span = meta["pit_span"]
+            self._pit_speed_ms = meta.get("pit_speed", 0.0)
+            self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+        if meta.get("pit_path"):
+            self._pit_path = meta["pit_path"]
+            self.map_widget.set_pit_path(self._pit_path)
+        self._pit_in = meta.get("pit_in")
+        self._pit_out = meta.get("pit_out")
+        self.map_widget.set_pit_blends(self._pit_in, self._pit_out)
+        self._pit_in_pct = meta.get("pit_in_pct")
+        self._pit_out_pct = meta.get("pit_out_pct")
+        self.map_widget.set_pit_route_pct(self._pit_in_pct, self._pit_out_pct)
+
     def _update_map(self, player, lap_pct, surface, drivers) -> None:
         if player is None or not lap_pct or not surface:
             return
@@ -1445,6 +1527,7 @@ class AdvancedSimHUD:
         pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
         use_pos = config.CFG["map"].get("car_label", "number") == "position"
         positions = self.ir["CarIdxPosition"] if use_pos else None
+        route = self._route_interval()  # (lo, hi) lap-% extent, or None
         cars = []
         for idx, pct in enumerate(lap_pct):
             if pct is None or pct < 0.0 or pct > 1.0:
@@ -1455,6 +1538,7 @@ class AdvancedSimHUD:
             # Show cars that are on track or on pit road; skip garage/off-world.
             if surface[idx] != oc.TRK_ON_TRACK and not on_pit and not is_player:
                 continue
+            on_route = self._car_on_route(idx, pct, on_pit, is_player, route)
             d = drivers.get(idx)
             if use_pos and positions and idx < len(positions) and positions[idx]:
                 num = str(positions[idx])
@@ -1466,8 +1550,48 @@ class AdvancedSimHUD:
                 if is_player
                 else palette[idx % len(palette)]
             )
-            cars.append((pct, num, color, is_player, on_pit))
+            cars.append((pct, num, color, is_player, on_route))
         self.map_widget.set_cars(cars)
+
+    def _route_interval(self):
+        """The pit route's lap-% extent (divergence -> rejoin), preferring the
+        learned blend extents and falling back to the lane span. None if unknown.
+        """
+        lo, hi = self._pit_in_pct, self._pit_out_pct
+        if lo is None or hi is None:
+            if self._pit_span is None:
+                return None
+            lo, hi = self._pit_span
+        return (lo, hi)
+
+    @staticmethod
+    def _pct_in_interval(pct, lo, hi) -> bool:
+        """Whether pct lies within the circular interval [lo, hi] (driving dir)."""
+        span = (hi - lo) % 1.0
+        if span <= 1e-6:
+            return False
+        return ((pct - lo) % 1.0) <= span
+
+    def _car_on_route(self, idx, pct, on_pit, is_player, route) -> bool:
+        """Decide whether a car should be drawn on the pit route this tick.
+
+        The player uses real GPS (set in _learn_pit), so we trust on-pit-road or
+        being off the racing line. Opponents have no GPS, so we latch them onto
+        the route once seen on pit road and hold them (through the exit blend)
+        until their lap pct leaves the route extent -- they rejoin the track.
+        """
+        if is_player:
+            return on_pit or self._player_on_route
+        latched = self._pit_route_latch.get(idx, False)
+        if on_pit:
+            latched = True
+        elif latched and route is not None:
+            if not self._pct_in_interval(pct, route[0], route[1]):
+                latched = False  # past the rejoin point -> back on track
+        elif latched and route is None:
+            latched = False
+        self._pit_route_latch[idx] = latched
+        return on_pit or latched
 
     # iRacing EngineWarnings bitfield: pit speed limiter engaged.
     _PIT_LIMITER_BIT = 0x10
@@ -1496,12 +1620,36 @@ class AdvancedSimHUD:
         if (limiter or steady) and speed > self._pit_speed_ms:
             self._pit_speed_ms = speed
 
-    def _learn_pit(self, player, lap_pct) -> None:
-        """Learn where pit road is (entry/exit lap pct) and its speed limit.
+    def _player_xy(self):
+        """The player's position projected into the map's model frame, or None
+        when GPS (Lat/Lon) is unavailable."""
+        lat, lon = self.ir["Lat"], self.ir["Lon"]
+        if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
+            return None
+        return (math.radians(lon) * math.cos(math.radians(lat)),
+                -math.radians(lat))
 
-        Entry/exit come from the player's OnPitRoad edges; the limit is the
-        top speed seen while the pit limiter is engaged (it holds the car at the
-        cap). Also feeds the map the live pit-lane speed for an over-limit warning.
+    def _trace_entry_blend(self, diverge):
+        """Back-trace the rolling GPS buffer to reconstruct the pit-entry blend:
+        the stretch from where the car peeled off the racing line up to the
+        pit-road edge. Returns (points, divergence_lap_pct)."""
+        if diverge is None or not self._pit_recent:
+            return [], None
+        blend = []
+        in_pct = None
+        for pct_i, x, y, d in reversed(self._pit_recent):
+            blend.append((x, y))
+            if d is not None and d <= diverge:
+                in_pct = pct_i
+                break
+        blend.reverse()
+        return (blend if len(blend) >= 2 else []), in_pct
+
+    def _learn_pit(self, player, lap_pct) -> None:
+        """Learn pit road from the player's pass: the lane's entry/exit lap pct,
+        the speed limit, and the real geometry of the whole route -- the yellow
+        entry blend (track -> pit road), the lane, and the exit blend (pit road
+        -> track) -- captured from GPS using divergence from the racing line.
         """
         if player is None or not lap_pct:
             return
@@ -1512,75 +1660,159 @@ class AdvancedSimHUD:
         on = bool(on)
         pct = lap_pct[player]
         speed = self.ir["Speed"]
+        xy = self._player_xy()
+        dist = self._dist_to_track(xy[0], xy[1]) if xy is not None else None
+        diverge = self._track_diag * PIT_DIVERGE_FRAC if self._track_diag else None
+        rejoin = self._track_diag * PIT_REJOIN_FRAC if self._track_diag else None
+
+        # Live player position on the map (true GPS); the widget draws the player
+        # on the pit route when on pit road or off the racing line (a blend).
+        # Once the route extent is known, only count "off the line" near the pit
+        # area so a wide line elsewhere can't be mistaken for pitting.
+        self.map_widget.set_player_xy(xy)
+        off_line = (dist is not None and diverge is not None and dist > diverge)
+        route = self._route_interval()
+        if (off_line and route is not None
+                and pct is not None and 0.0 <= pct <= 1.0):
+            off_line = self._pct_in_interval(pct, route[0], route[1])
+        self._player_on_route = on or off_line
+
+        # Rolling buffer for back-tracing the entry blend.
+        if xy is not None and pct is not None and 0.0 <= pct <= 1.0:
+            self._pit_recent.append((pct, xy[0], xy[1], dist))
 
         if on:
             self._learn_pit_speed(speed)
             self.map_widget.set_pit_live(speed)
-            # Trace the actual pit-lane route from the player's GPS (same
-            # projection as the track builder, so it shares the map's frame).
-            lat, lon = self.ir["Lat"], self.ir["Lon"]
-            if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
-                gx = math.radians(lon) * math.cos(math.radians(lat))
-                gy = -math.radians(lat)
-                self._pit_geo_cur.append((gx, gy))
-            # Keep the limit badge current while cruising (if the span is known).
             if self._pit_span is not None:
                 self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
         else:
             self._pit_s0 = self._pit_t0 = None
             self.map_widget.set_pit_live(None)
 
-        # Rising edge -> entering pit road; record where on the lap it happened
-        # and start a fresh geometry trace for this pass.
-        if on and not self._pit_was_on:
-            self._pit_geo_cur = []
-            if pct is not None and 0.0 <= pct <= 1.0:
-                self._pit_enter_pct = pct
-        # Falling edge -> left pit road; record this pass (it only finalizes
-        # after PIT_PASSES passes, and only once the track scan is done).
-        elif (not on) and self._pit_was_on and self._pit_enter_pct is not None:
-            if pct is not None and 0.0 <= pct <= 1.0:
-                self._record_pit_pass(self._pit_enter_pct, pct,
-                                      list(self._pit_geo_cur))
-            self._pit_enter_pct = None
+        valid_pct = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
+
+        # --- Pit-route capture state machine (builds the averaged geometry) ---
+        if self._pit_phase is None:
+            if on and not self._pit_was_on:  # entering pit road
+                self._pit_phase = "lane"
+                self._pit_enter_pct = valid_pct
+                self._pit_exit_pct = None
+                self._pit_in_cur, self._pit_in_pct_cur = \
+                    self._trace_entry_blend(diverge)
+                self._pit_geo_cur = []
+                self._pit_out_cur = []
+                if xy is not None:
+                    self._pit_geo_cur.append(xy)
+        elif self._pit_phase == "lane":
+            if on:
+                if xy is not None:
+                    self._pit_geo_cur.append(xy)
+            else:  # left pit road
+                self._pit_exit_pct = valid_pct
+                if rejoin is None:
+                    # No racing-line reference: finalize at the edge (no exit
+                    # blend), matching the simpler legacy behaviour.
+                    self._finalize_pit_pass(valid_pct)
+                else:
+                    self._pit_phase = "exit"
+                    self._pit_exit_ticks = 0
+                    self._pit_out_cur = []
+                    if self._pit_geo_cur:
+                        self._pit_out_cur.append(self._pit_geo_cur[-1])
+                    if xy is not None:
+                        self._pit_out_cur.append(xy)
+        elif self._pit_phase == "exit":
+            if on:  # dipped back onto pit road -> resume the lane
+                self._pit_phase = "lane"
+                if xy is not None:
+                    self._pit_geo_cur.append(xy)
+            else:
+                self._pit_exit_ticks += 1
+                if xy is not None:
+                    self._pit_out_cur.append(xy)
+                rejoined = (rejoin is not None and dist is not None
+                            and dist <= rejoin)
+                capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
+                if rejoined or capped:
+                    self._finalize_pit_pass(valid_pct)
         self._pit_was_on = on
 
-    def _record_pit_pass(self, entry_pct: float, exit_pct: float, geo) -> None:
+    def _finalize_pit_pass(self, out_pct) -> None:
+        """End the in-progress pit pass and hand its three segments to the
+        accumulator, then reset the capture state machine."""
+        if self._pit_enter_pct is not None:
+            self._record_pit_pass(
+                self._pit_enter_pct,
+                self._pit_exit_pct if self._pit_exit_pct is not None
+                else out_pct,
+                list(self._pit_geo_cur),
+                list(self._pit_in_cur),
+                list(self._pit_out_cur),
+                self._pit_in_pct_cur,
+                out_pct,
+            )
+        self._pit_phase = None
+        self._pit_enter_pct = None
+        self._pit_exit_pct = None
+        self._pit_in_pct_cur = None
+        self._pit_exit_ticks = 0
+
+    def _record_pit_pass(self, entry_pct, exit_pct, lane, pit_in, pit_out,
+                         in_pct, out_pct) -> None:
         """Accumulate a completed pit pass; finalize after PIT_PASSES of them.
 
         Locked until the track scan (SCAN_LAPS laps) is done -- a pass driven
-        before then just flashes a hint. Once enough passes are gathered, the
-        entry/exit are circular-averaged, the recorded lane geometries are
-        averaged into one path, and the pit data is saved + uploaded.
+        before then just flashes a hint. Each pass carries the lane geometry,
+        the entry/exit blend lines, and the lap-% extent of the whole route.
+        Once enough passes are gathered everything is averaged (percentages by
+        circular mean, polylines by arc-length resampling) and saved + uploaded.
         """
         if not self._scan_done:
             self.map_widget.flash_hint("Finish track scan first")
             return
         if len(self._pit_passes) >= PIT_PASSES:
             return  # already finalized; use "Rescan pits" to redo
-        self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms, geo))
-        # Preview the latest pass (span + its raw geometry) while gathering more.
+        self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
+                                 lane, pit_in, pit_out, in_pct, out_pct))
+        # Preview the latest pass (span + geometry) while gathering more.
         self.map_widget.set_pit((entry_pct, exit_pct), self._pit_speed_ms)
-        if geo and len(geo) >= 2:
-            self.map_widget.set_pit_path(geo)
+        if lane and len(lane) >= 2:
+            self.map_widget.set_pit_path(lane)
+        self.map_widget.set_pit_blends(pit_in, pit_out)
+        self.map_widget.set_pit_route_pct(in_pct, out_pct)
         n = len(self._pit_passes)
         if n < PIT_PASSES:
             self.map_widget.flash_hint(f"Pit pass {n}/{PIT_PASSES}")
             return
-        span = self._avg_pit_span(self._pit_passes)
-        speed = sum(p[2] for p in self._pit_passes) / n
-        self._pit_path = self._avg_pit_path([p[3] for p in self._pit_passes])
+
+        passes = self._pit_passes
+        span = self._avg_pit_span(passes)
+        speed = sum(p[2] for p in passes) / n
+        self._pit_path = self._avg_pit_path([p[3] for p in passes])
+        self._pit_in = self._avg_pit_path([p[4] for p in passes])
+        self._pit_out = self._avg_pit_path([p[5] for p in passes])
+        self._pit_in_pct = self._circ_mean([p[6] for p in passes])
+        self._pit_out_pct = self._circ_mean([p[7] for p in passes])
         self._pit_span = span
         self._pit_speed_ms = speed
         self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
         self.map_widget.set_pit_path(self._pit_path)
+        self.map_widget.set_pit_blends(self._pit_in, self._pit_out)
+        self.map_widget.set_pit_route_pct(self._pit_in_pct, self._pit_out_pct)
         self.map_widget.flash_hint("Pit lane saved")
         if self._track_id is not None:
             fields = dict(pit_span=[round(span[0], 5), round(span[1], 5)],
                           pit_speed=round(speed, 3))
-            if self._pit_path:
-                fields["pit_path"] = [[round(x, 7), round(y, 7)]
-                                      for x, y in self._pit_path]
+            for key, seg in (("pit_path", self._pit_path),
+                             ("pit_in", self._pit_in),
+                             ("pit_out", self._pit_out)):
+                if seg:
+                    fields[key] = [[round(x, 7), round(y, 7)] for x, y in seg]
+            if self._pit_in_pct is not None:
+                fields["pit_in_pct"] = round(self._pit_in_pct, 5)
+            if self._pit_out_pct is not None:
+                fields["pit_out_pct"] = round(self._pit_out_pct, 5)
             try:
                 track_map.update_track_meta(
                     self.tracks_dir, self._track_id, **fields)
@@ -1591,17 +1823,25 @@ class AdvancedSimHUD:
                     self.tracks_dir, self._track_id)
 
     @staticmethod
-    def _avg_pit_span(passes) -> tuple:
+    def _circ_mean(vals):
+        """Circular mean of lap percentages (handles start/finish wrap), or None
+        if no usable values are given."""
+        vals = [v for v in vals if v is not None]
+        if not vals:
+            return None
+        sx = sum(math.cos(2 * math.pi * v) for v in vals)
+        sy = sum(math.sin(2 * math.pi * v) for v in vals)
+        if sx == 0.0 and sy == 0.0:
+            return vals[0]
+        return (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
+
+    @classmethod
+    def _avg_pit_span(cls, passes) -> tuple:
         """Circular mean of entry/exit lap percentages across passes, so a pit
         lane that straddles the start/finish line (e.g. 0.98 & 0.04) averages
         correctly instead of collapsing to mid-lap."""
-        def circ(vals):
-            sx = sum(math.cos(2 * math.pi * v) for v in vals)
-            sy = sum(math.sin(2 * math.pi * v) for v in vals)
-            if sx == 0.0 and sy == 0.0:
-                return vals[0]
-            return (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
-        return (circ([p[0] for p in passes]), circ([p[1] for p in passes]))
+        return (cls._circ_mean([p[0] for p in passes]),
+                cls._circ_mean([p[1] for p in passes]))
 
     @staticmethod
     def _avg_pit_path(geos, n: int = 120):

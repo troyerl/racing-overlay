@@ -657,6 +657,9 @@ DEFAULTS: dict = {
             "pit": "#ff4d4d",
             "pit_text": "#ffffff",
             "pit_over": "#ffd23a",
+            # Pit entry/exit blend lines (the yellow "commit" lanes that join the
+            # pit road to the track), drawn as dashed yellow slashes.
+            "pit_blend": "#ffd23a",
             # Fill for a car's dot while it's on pit road (grayed out).
             "pit_car": "#6e747d",
             # Wind compass arrow + label.

@@ -36,6 +36,11 @@ def _mcol(key: str) -> QColor:
     return config.qcolor(_mcfg()["colors"][key])
 
 
+def _mcol_def(key: str, default: str) -> QColor:
+    """Like _mcol but tolerant of older configs missing a newly-added key."""
+    return config.qcolor(_mcfg().get("colors", {}).get(key, default))
+
+
 def car_palette() -> list:
     return _mcfg()["palette"]
 
@@ -337,8 +342,13 @@ def load_track(path: str, n: int = 720):
         meta["pit_span"] = (float(data["pit_span"][0]), float(data["pit_span"][1]))
     if data.get("pit_speed"):
         meta["pit_speed"] = float(data["pit_speed"])
-    if isinstance(data.get("pit_path"), list) and len(data["pit_path"]) >= 2:
-        meta["pit_path"] = [(float(a), float(b)) for a, b in data["pit_path"]]
+    for key in ("pit_path", "pit_in", "pit_out"):
+        seg = data.get(key)
+        if isinstance(seg, list) and len(seg) >= 2:
+            meta[key] = [(float(a), float(b)) for a, b in seg]
+    for key in ("pit_in_pct", "pit_out_pct"):
+        if data.get(key) is not None:
+            meta[key] = float(data[key])
     return points, sf, corners, data.get("name", ""), meta
 
 
@@ -486,12 +496,31 @@ class TrackMapWidget(QWidget):
         # from where you leave the track to where you rejoin. When present it's
         # drawn instead of the inward-offset approximation of pit_span.
         self.pit_path: list[tuple[float, float]] | None = None
+        # The entry/exit "blend" lines: the yellow commit lanes joining the
+        # track to pit road (pit_in) and pit road back to the track (pit_out).
+        self.pit_in: list[tuple[float, float]] | None = None
+        self.pit_out: list[tuple[float, float]] | None = None
+        # Lap-% extent of the whole pit route (divergence -> rejoin), used to
+        # place cars onto the route by their CarIdxLapDistPct.
+        self.pit_in_pct: float | None = None
+        self.pit_out_pct: float | None = None
+        # The player's live position (model-space x, y) from real GPS, used to
+        # draw the player exactly on the pit route while pitting. None when not
+        # available / not pitting.
+        self.player_xy: tuple[float, float] | None = None
+        # Cache: the concatenated pit route (in + lane + out) and its cumulative
+        # arc lengths, rebuilt whenever any pit geometry changes.
+        self._route_pts: list[tuple[float, float]] | None = None
+        self._route_cum: list[float] = []
         # Wind: bearing the wind blows FROM (radians, clockwise from North) and
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
         self.wind_speed_ms: float = 0.0
-        # Each car: (lap_pct, label, color_hex, is_player)
-        self.cars: list[tuple[float, str, str, bool]] = []
+        # Each car: (lap_pct, label, color_hex, is_player, on_route). on_route is
+        # true when the car is on the pit route (pit road, or -- for the player
+        # via GPS, or an opponent latched between pit entry and rejoin -- a blend
+        # lane); such cars are drawn along the real pit geometry, grayed/faded.
+        self.cars: list[tuple[float, str, str, bool, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
         self._progress_pct = -1
         # Multi-lap scan UI: a persistent "LAP n/3" badge while scanning, plus a
@@ -552,6 +581,12 @@ class TrackMapWidget(QWidget):
             self.pit_speed_ms = 0.0
             self.pit_live_ms = None
             self.pit_path = None
+            self.pit_in = None
+            self.pit_out = None
+            self.pit_in_pct = None
+            self.pit_out_pct = None
+            self.player_xy = None
+            self._invalidate_route()
         self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
@@ -561,11 +596,40 @@ class TrackMapWidget(QWidget):
             self.pit_speed_ms = float(speed_ms)
         self.update()
 
+    @staticmethod
+    def _clean_poly(path):
+        return ([(float(x), float(y)) for x, y in path]
+                if path and len(path) >= 2 else None)
+
     def set_pit_path(self, path) -> None:
         """Set (or clear) the real pit-lane geometry: model-space (x, y) points."""
-        self.pit_path = ([(float(x), float(y)) for x, y in path]
-                         if path and len(path) >= 2 else None)
+        self.pit_path = self._clean_poly(path)
+        self._invalidate_route()
         self.update()
+
+    def set_pit_blends(self, pit_in, pit_out) -> None:
+        """Set (or clear) the entry/exit blend lines (model-space polylines)."""
+        self.pit_in = self._clean_poly(pit_in)
+        self.pit_out = self._clean_poly(pit_out)
+        self._invalidate_route()
+        self.update()
+
+    def set_pit_route_pct(self, in_pct, out_pct) -> None:
+        """Set the lap-% extent (divergence -> rejoin) of the full pit route."""
+        self.pit_in_pct = float(in_pct) if in_pct is not None else None
+        self.pit_out_pct = float(out_pct) if out_pct is not None else None
+
+    def set_player_xy(self, xy) -> None:
+        """Set the player's live (model-space) position, or None to clear.
+
+        Used to draw the player exactly on the pit route from real GPS.
+        """
+        new = (float(xy[0]), float(xy[1])) if xy is not None else None
+        if new == self.player_xy:
+            return
+        self.player_xy = new
+        if self.path is not None:
+            self.update()
 
     def clear_pit(self) -> None:
         """Forget the learned pit lane (used when rescanning the pits)."""
@@ -573,7 +637,74 @@ class TrackMapWidget(QWidget):
         self.pit_speed_ms = 0.0
         self.pit_live_ms = None
         self.pit_path = None
+        self.pit_in = None
+        self.pit_out = None
+        self.pit_in_pct = None
+        self.pit_out_pct = None
+        self.player_xy = None
+        self._invalidate_route()
         self.update()
+
+    def _invalidate_route(self) -> None:
+        self._route_pts = None
+        self._route_cum = []
+
+    def _ensure_route(self) -> None:
+        """(Re)build the concatenated pit route (in + lane + out) and the
+        cumulative arc length at each point, used to place cars along it."""
+        if self._route_pts is not None:
+            return
+        pts: list[tuple[float, float]] = []
+        for seg in (self.pit_in, self.pit_path, self.pit_out):
+            if not seg:
+                continue
+            # Avoid duplicating the shared joint point between segments.
+            if pts and seg and pts[-1] == seg[0]:
+                pts.extend(seg[1:])
+            else:
+                pts.extend(seg)
+        self._route_pts = pts if len(pts) >= 2 else None
+        cum = [0.0]
+        if self._route_pts:
+            for a, b in zip(self._route_pts, self._route_pts[1:]):
+                cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        self._route_cum = cum
+
+    def _pos_on_route(self, t: float):
+        """Model-space point at arc-length fraction t in [0, 1] of the route."""
+        self._ensure_route()
+        pts, cum = self._route_pts, self._route_cum
+        if not pts:
+            return None
+        total = cum[-1]
+        if total <= 0.0:
+            return pts[0]
+        target = min(max(t, 0.0), 1.0) * total
+        for i in range(len(pts) - 1):
+            if cum[i + 1] >= target:
+                seg = cum[i + 1] - cum[i]
+                local = (target - cum[i]) / seg if seg else 0.0
+                a, b = pts[i], pts[i + 1]
+                return (a[0] + (b[0] - a[0]) * local,
+                        a[1] + (b[1] - a[1]) * local)
+        return pts[-1]
+
+    def _route_t_for_pct(self, pct: float):
+        """Map a car's lap pct onto an arc-length fraction of the pit route.
+
+        Uses the route's lap-% extent (pit_in_pct -> pit_out_pct), falling back
+        to pit_span when the blend extents aren't known (older tracks).
+        """
+        lo = self.pit_in_pct
+        hi = self.pit_out_pct
+        if lo is None or hi is None:
+            if self.pit_span is None:
+                return None
+            lo, hi = self.pit_span
+        span = (hi - lo) % 1.0
+        if span <= 1e-6:
+            return None
+        return ((pct - lo) % 1.0) / span
 
     def set_pit_live(self, speed_ms) -> None:
         """Update the player's live pit-lane speed (None when not in the pits)."""
@@ -671,9 +802,12 @@ class TrackMapWidget(QWidget):
             return x, y
 
         mpts = [model(pt) for pt in self.path]
-        # Include the pit-lane geometry in the fit so it isn't clipped if it
-        # runs a little outside the racing loop's bounds.
-        fit = mpts + ([model(pt) for pt in self.pit_path] if self.pit_path else [])
+        # Include the pit-lane geometry (lane + entry/exit blends) in the fit so
+        # it isn't clipped if it runs a little outside the racing loop's bounds.
+        fit = list(mpts)
+        for seg in (self.pit_path, self.pit_in, self.pit_out):
+            if seg:
+                fit.extend(model(pt) for pt in seg)
         xs = [m[0] for m in fit]
         ys = [m[1] for m in fit]
         minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
@@ -712,7 +846,9 @@ class TrackMapWidget(QWidget):
         p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 2)))
         p.drawPath(qpath)
 
-        if mc.get("show_pit", True) and (self.pit_path or self.pit_span is not None):
+        if mc.get("show_pit", True) and (self.pit_path or self.pit_in
+                                         or self.pit_out
+                                         or self.pit_span is not None):
             self._draw_pit(p, tx)
         if mc.get("show_corners", True):
             corners = self.corners
@@ -745,6 +881,11 @@ class TrackMapWidget(QWidget):
         # Prefer the real recorded pit-lane geometry; fall back to the inward
         # offset approximation of pit_span when no geometry is available.
         if self.pit_path and len(self.pit_path) >= 2:
+            # Yellow blend lines first, so the lane reads on top where they join.
+            if self.pit_in and len(self.pit_in) >= 2:
+                self._draw_pit_blend(p, tx, self.pit_in)
+            if self.pit_out and len(self.pit_out) >= 2:
+                self._draw_pit_blend(p, tx, self.pit_out)
             self._draw_pit_path(p, tx)
             return
         if self.pit_span is None:
@@ -817,6 +958,23 @@ class TrackMapWidget(QWidget):
         p.setPen(pen)
         p.drawPath(lane)
         self._draw_pit_label(p, pts[0])
+
+    def _draw_pit_blend(self, p: QPainter, tx, seg) -> None:
+        """Draw a pit entry/exit blend line as dashed yellow 'slash' marks --
+        the commit lane that joins the track to pit road (and back)."""
+        pts = [tx(q) for q in seg]
+        path = QPainterPath()
+        path.moveTo(pts[0])
+        for q in pts[1:]:
+            path.lineTo(q)
+        pen = QPen(_mcol_def("pit_blend", "#ffd23a"), 2.4)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        pen.setCapStyle(Qt.PenCapStyle.FlatCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        pen.setDashPattern([3, 4])  # short, steep "slash" dashes
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(pen)
+        p.drawPath(path)
 
     def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
         live = self.pit_live_ms
@@ -944,15 +1102,30 @@ class TrackMapWidget(QWidget):
         p.setFont(QFont(config.CFG.get("font_family", "Arial"), sz, QFont.Weight.Bold))
         cc = tx(self._centroid)
         off = _mcfg().get("asphalt_width", 11) * 0.85 + 3.0
+        has_route = bool(self.pit_path and len(self.pit_path) >= 2)
         # Draw the player last so it sits on top of traffic.
         for pct, label, color, is_player, on_pit in sorted(
                 self.cars, key=lambda c: c[3]):
-            c = tx(self.path[self._index_for_pct(pct)])
-            # Cars on pit road sit on the inner pit lane, not the racing line.
+            c = None
+            # Cars on the pit route follow the real pit geometry. The player is
+            # placed from true GPS; others are mapped onto the route by lap pct.
             if on_pit:
-                dx, dy = c.x() - cc.x(), c.y() - cc.y()
-                ln = math.hypot(dx, dy) or 1.0
-                c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
+                if is_player and self.player_xy is not None:
+                    c = tx(self.player_xy)
+                elif has_route:
+                    t = self._route_t_for_pct(pct)
+                    if t is not None:
+                        pos = self._pos_on_route(t)
+                        if pos is not None:
+                            c = tx(pos)
+            if c is None:
+                c = tx(self.path[self._index_for_pct(pct)])
+                # No real geometry: nudge an on-pit car toward the infield so it
+                # reads as a separate lane beside the racing line.
+                if on_pit:
+                    dx, dy = c.x() - cc.x(), c.y() - cc.y()
+                    ln = math.hypot(dx, dy) or 1.0
+                    c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
             r = 12.5 if is_player else 9.0
             # Cars in the pits are grayed out and faded back.
             if on_pit:

@@ -28,9 +28,11 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from overlay import track_store  # noqa: E402
+from overlay import paths, track_store  # noqa: E402
 
-_TRACKS = os.path.join(_ROOT, "tracks")
+# Use the same per-user tracks directory the app reads/writes (e.g.
+# %LOCALAPPDATA%/GridGlance/tracks), so --upload finds maps you scanned in-app.
+_TRACKS = paths.tracks_dir()
 
 
 def _local_ids() -> list:

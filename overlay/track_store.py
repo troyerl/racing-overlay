@@ -20,12 +20,15 @@ if the dependency is missing -- cloud features just stay disabled.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import threading
 from datetime import datetime, timezone
 
 from PyQt6.QtCore import QObject, pyqtSignal
+
+log = logging.getLogger("gridglance.tracks")
 
 
 def _load_dotenv() -> None:
@@ -139,6 +142,61 @@ def read_available() -> bool:
     return bool(_read_uri() or _write_uri())
 
 
+def _mask_uri(uri: str) -> str:
+    """Hide the password in a connection string for safe display/logging."""
+    if not uri:
+        return "(none)"
+    try:
+        scheme, rest = uri.split("://", 1)
+        if "@" in rest:
+            creds, host = rest.split("@", 1)
+            user = creds.split(":", 1)[0]
+            return f"{scheme}://{user}:***@{host}"
+        return f"{scheme}://{rest}"
+    except Exception:
+        return "(set)"
+
+
+def diagnose() -> dict:
+    """Probe the sharing setup and return a structured status (for a CLI / log).
+
+    Reports which URIs are configured and whether a live ping succeeds for the
+    read and (if present) write connections, capturing the real error so a
+    misconfigured credential or blocked Atlas IP is easy to spot.
+    """
+    info: dict = {
+        "pymongo": False,
+        "read_uri": _mask_uri(_read_uri()),
+        "write_uri": _mask_uri(_write_uri()),
+        "can_write": can_write(),
+        "read_ping": None,
+        "write_ping": None,
+        "read_error": "",
+        "write_error": "",
+    }
+    try:
+        import pymongo  # noqa: F401
+        info["pymongo"] = True
+    except Exception as exc:
+        info["read_error"] = f"pymongo import failed: {exc}"
+        return info
+
+    def _ping(write: bool):
+        try:
+            col = _collection(write=write)
+            if col is None:
+                return None, "no connection (URI unset?)"
+            col.database.client.admin.command("ping")
+            return True, ""
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    info["read_ping"], info["read_error"] = _ping(False)
+    if _write_uri():
+        info["write_ping"], info["write_error"] = _ping(True)
+    return info
+
+
 def _collection(write: bool):
     """A pymongo collection handle, or None if unconfigured / pymongo missing."""
     global _read_client, _write_client
@@ -147,18 +205,25 @@ def _collection(write: bool):
         return None
     try:
         from pymongo import MongoClient
-    except Exception:
+    except Exception as exc:
+        log.warning("pymongo not available (%s); install it with "
+                    "'pip install pymongo[srv]'", exc)
         return None
-    with _clients_lock:
-        if write:
-            if _write_client is None:
-                _write_client = MongoClient(uri, **_CLIENT_KW)
-            client = _write_client
-        else:
-            if _read_client is None:
-                _read_client = MongoClient(uri, **_CLIENT_KW)
-            client = _read_client
-    return client[_DB_NAME][_COLLECTION]
+    try:
+        with _clients_lock:
+            if write:
+                if _write_client is None:
+                    _write_client = MongoClient(uri, **_CLIENT_KW)
+                client = _write_client
+            else:
+                if _read_client is None:
+                    _read_client = MongoClient(uri, **_CLIENT_KW)
+                client = _read_client
+        return client[_DB_NAME][_COLLECTION]
+    except Exception as exc:
+        log.warning("could not create Mongo %s client: %s: %s",
+                    "write" if write else "read", type(exc).__name__, exc)
+        return None
 
 
 def normalize(doc: dict) -> dict:
@@ -174,12 +239,16 @@ def normalize(doc: dict) -> dict:
                     if "pct" in c and "label" in c],
         "schema": 1,
     }
-    for key in ("pit_span", "pit_speed", "source", "learned"):
+    for key in ("pit_span", "pit_speed", "source", "learned",
+                "pit_in_pct", "pit_out_pct"):
         if doc.get(key) is not None:
             out[key] = doc[key]
-    if isinstance(doc.get("pit_path"), list) and len(doc["pit_path"]) >= 2:
-        out["pit_path"] = [[round(float(x), 9), round(float(y), 9)]
-                           for x, y in doc["pit_path"]]
+    # The pit-lane geometry plus its entry/exit blend lines (open polylines).
+    for key in ("pit_path", "pit_in", "pit_out"):
+        seg = doc.get(key)
+        if isinstance(seg, list) and len(seg) >= 2:
+            out[key] = [[round(float(x), 9), round(float(y), 9)]
+                        for x, y in seg]
     out["updated_at"] = datetime.now(timezone.utc).isoformat()
     return out
 
@@ -198,8 +267,15 @@ def fetch_track(track_id) -> dict | None:
 
 
 def upload_doc(doc: dict) -> bool:
-    """Upsert a track document (author only). False if not permitted / failed."""
+    """Upsert a track document (author only). False if not permitted / failed.
+
+    The collection (``gridglance.tracks``) is created automatically by MongoDB
+    on the first successful upsert. Failures are logged (not raised) so a
+    misconfigured credential or blocked network is visible in the app console.
+    """
     if not can_write():
+        log.warning("track upload skipped: no read-write URI. Set "
+                    "GRIDGLANCE_MONGODB_URI (NOT just GRIDGLANCE_MONGODB_READ_URI).")
         return False
     col = _collection(write=True)
     if col is None:
@@ -207,11 +283,15 @@ def upload_doc(doc: dict) -> bool:
     try:
         clean = normalize(doc)
         if clean.get("track_id") is None or not clean.get("points"):
+            log.warning("track upload skipped: missing track_id or points")
             return False
         col.update_one({"track_id": clean["track_id"]},
                        {"$set": clean}, upsert=True)
+        log.info("uploaded track %s to %s.%s",
+                 clean["track_id"], _DB_NAME, _COLLECTION)
         return True
-    except Exception:
+    except Exception as exc:
+        log.warning("track upload failed: %s: %s", type(exc).__name__, exc)
         return False
 
 

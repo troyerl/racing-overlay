@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.0 - 2026-06-29
+
+- **Full pit lane, entry to exit.** Pit scanning now captures the whole route --
+  the entry blend where you leave the racing line, the pit lane itself, and the
+  exit blend back onto the track (e.g. the long merge down an oval's back
+  stretch). The entry/exit blends are detected from how far the car strays from
+  the racing line, averaged over the three pit passes, and saved/shared with the
+  track.
+- **Yellow commit lines on the map.** The entry and exit blend sections are
+  drawn as dashed yellow "slash" lines (themeable via the new `pit_blend` map
+  color), with the pit lane itself still in the pit color between them.
+- **Cars follow the pit route.** While pitting, your car is drawn on the real
+  pit geometry from live GPS -- peeling off, down the lane, and merging back onto
+  the track. Other cars are mapped onto the route by track position once they're
+  on pit road and held through the exit blend until they rejoin.
+
 ## 1.21.0 - 2026-06-29
 
 - **Local `.env` files are now loaded automatically.** Author/dev database
