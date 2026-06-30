@@ -1914,38 +1914,44 @@ class AdvancedSimHUD:
                          0.015 * self._track_diag)
         return lane_w, sgn
 
-    def _reanchor_lane_parallel(self, seg):
-        """Snap an oval pit lane onto a constant infield offset at each lap %.
+    def _reanchor_blend_to_track(self, seg):
+        """Rebuild entry/exit blend segments on the racing line by lap %.
 
-        Each captured sample keeps its own lap % (including S/F wrap) but the
-        lateral position comes from the racing line + infield normal, undoing
-        dead-reckoning drift that otherwise cuts diagonally across the infield.
+        Used only for the yellow/blue blend lines, not the main pit lane (which
+        stays at the LSQ-aligned captured positions). On ovals the offset is
+        forced toward the infield; on road courses the captured lateral offset
+        is preserved.
         """
-        if not seg or not self._track_pts or not self._seg_has_pct(seg):
+        if not seg or not self._track_pts:
             return self._seg_to_xy(seg)
-        lane_w = self._pit_lane_offset
-        if not lane_w or lane_w <= 0.0:
-            dists = []
-            for pct, x, y in seg:
-                near, nx, ny = self._nearest_on_track_at_pct(x, y, pct)
-                if near is not None:
-                    dists.append(abs((x - near[0]) * nx + (y - near[1]) * ny))
-            lane_w = sorted(dists)[len(dists) // 2] if dists else 0.0
-        if lane_w <= 0.0:
-            return self._seg_to_xy(seg)
+        if not self._seg_has_pct(seg):
+            return seg
         out = []
         for pct, x, y in seg:
             if pct is None:
                 out.append((x, y))
                 continue
             tp = self._track_point_at_pct(pct)
-            if tp is None:
+            nx, ny = self._track_normal_at_pct(pct)
+            if self._track_is_oval:
+                sgn = self._pit_infield_sign(pct)
+                nx, ny = sgn * nx, sgn * ny
+                off = self._pit_lane_offset
+                if not off or off <= 0.0:
+                    ntp, nnx, nny = self._nearest_on_track_at_pct(x, y, pct)
+                    if ntp is not None:
+                        off = abs((x - ntp[0]) * nnx + (y - ntp[1]) * nny)
+                if tp is None or not off:
+                    out.append((x, y))
+                    continue
+                out.append((tp[0] + nx * off, tp[1] + ny * off))
+                continue
+            near, _, _ = self._nearest_on_track_at_pct(x, y, pct)
+            if tp is None or near is None:
                 out.append((x, y))
                 continue
-            sgn = self._pit_infield_sign(pct)
-            nx, ny = self._track_normal_at_pct(pct)
-            nx, ny = sgn * nx, sgn * ny
-            out.append((tp[0] + nx * lane_w, tp[1] + ny * lane_w))
+            off = (x - near[0]) * nx + (y - near[1]) * ny
+            out.append((tp[0] + nx * off, tp[1] + ny * off))
         return out
 
     def _append_exit_extension(self, pit_out, surf_pct, limit, *,
@@ -2019,50 +2025,6 @@ class AdvancedSimHUD:
                 ln = math.hypot(dx, dy) or 1.0
                 bnx, bny = -dy / ln, dx / ln
         return best, bnx, bny
-
-    def _reanchor_by_lap_pct(self, seg):
-        """Rebuild a captured segment using drift-free lap % for its position
-        around the circuit and the aligned frame for its lateral offset.
-
-        Dead reckoning drifts in both dimensions, but lap % is exact. After the
-        similarity alignment puts the segment in the track's frame, each point's
-        signed offset from the racing line at its lap % is preserved while its
-        longitudinal position is snapped to that % -- so the lane sits beside
-        the track instead of drifting on top of it.
-        """
-        if not seg or not self._track_pts:
-            return self._seg_to_xy(seg)
-        if not self._seg_has_pct(seg):
-            return seg
-        out = []
-        for pct, x, y in seg:
-            if pct is None:
-                out.append((x, y))
-                continue
-            tp = self._track_point_at_pct(pct)
-            nx, ny = self._track_normal_at_pct(pct)
-            if self._track_is_oval:
-                sgn = self._pit_infield_sign(pct)
-                nx, ny = sgn * nx, sgn * ny
-                near = tp
-                off = self._pit_lane_offset
-                if not off or off <= 0.0:
-                    ntp, nnx, nny = self._nearest_on_track_at_pct(x, y, pct)
-                    if ntp is not None:
-                        near = ntp
-                        off = abs((x - near[0]) * nnx + (y - near[1]) * nny)
-                if tp is None or not off:
-                    out.append((x, y))
-                    continue
-                out.append((tp[0] + nx * off, tp[1] + ny * off))
-                continue
-            near, _, _ = self._nearest_on_track_at_pct(x, y, pct)
-            if tp is None or near is None:
-                out.append((x, y))
-                continue
-            off = (x - near[0]) * nx + (y - near[1]) * ny
-            out.append((tp[0] + nx * off, tp[1] + ny * off))
-        return out
 
     def _nearest_on_track(self, x, y):
         """Closest point on the racing-line polyline to (x, y) plus the unit
@@ -2787,20 +2749,15 @@ class AdvancedSimHUD:
             return
         if len(self._pit_passes) >= PIT_PASSES:
             return  # already finalized; use "Rescan pits" to redo
-        # Correct dead-reckoning drift. Entry/exit blends are short and hug the
-        # track, so re-anchor them by lap % (exact). The main pit lane is left
-        # in the LSQ-aligned frame only -- on a road course the lane can span
-        # most of a lap in CarIdxLapDistPct while physically running just the
-        # pit straight; re-anchoring that by % would wrap the lane around the
-        # whole circuit.
+        # Correct dead-reckoning drift via LSQ. Entry/exit blends are re-anchored
+        # to the racing line by lap % (they hug the track). The main pit lane
+        # keeps the LSQ-aligned captured positions only -- it is traced from
+        # the car's path on pit road, not synthesized from lap %.
         pit_in, lane, pit_out = self._align_pit_to_track(
             pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
-        pit_in = self._seg_to_xy(self._reanchor_by_lap_pct(pit_in))
-        if self._track_is_oval and self._seg_has_pct(lane):
-            lane = self._reanchor_lane_parallel(lane)
-        else:
-            lane = self._seg_to_xy(lane)
-        pit_out = self._seg_to_xy(self._reanchor_by_lap_pct(pit_out))
+        pit_in = self._seg_to_xy(self._reanchor_blend_to_track(pit_in))
+        lane = self._seg_to_xy(lane)
+        pit_out = self._seg_to_xy(self._reanchor_blend_to_track(pit_out))
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct,
                                  self._pit_lane_offset, capped))
