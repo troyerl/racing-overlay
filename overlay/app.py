@@ -1970,7 +1970,8 @@ class AdvancedSimHUD:
         pit_in, lane, pit_out = self._align_pit_to_track(
             pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
-                                 lane, pit_in, pit_out, in_pct, out_pct))
+                                 lane, pit_in, pit_out, in_pct, out_pct,
+                                 self._pit_lane_offset))
         n = len(self._pit_passes)
         n_in = len(pit_in) if pit_in else 0
         n_out = len(pit_out) if pit_out else 0
@@ -1997,9 +1998,20 @@ class AdvancedSimHUD:
             self.map_widget.flash_hint(hint)
             return
 
-        passes = self._pit_passes
+        # Discard outlier passes (e.g. the first lap after the track scan, before
+        # dead reckoning re-zeros at the line) so they don't corrupt the mean.
+        passes = self._select_pit_passes(self._pit_passes)
+        m = len(passes)
+        log.warning("pit finalize: kept %d/%d passes, offsets=%s",
+                    m, len(self._pit_passes),
+                    [round(p[8], 1) for p in passes])
+        # Base the blend trim corridor on the kept passes' (median) lane offset,
+        # not whatever the last raw pass happened to measure.
+        kept_offs = sorted(p[8] for p in passes if p[8])
+        if kept_offs:
+            self._pit_lane_offset = kept_offs[len(kept_offs) // 2]
         span = self._avg_pit_span(passes)
-        speed = sum(p[2] for p in passes) / n
+        speed = sum(p[2] for p in passes) / m
         self._pit_path = self._avg_pit_path([p[3] for p in passes])
         self._pit_in = self._trim_blend(
             self._avg_pit_path([p[4] for p in passes]), "head")
@@ -2047,6 +2059,31 @@ class AdvancedSimHUD:
         if sx == 0.0 and sy == 0.0:
             return vals[0]
         return (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
+
+    @staticmethod
+    def _select_pit_passes(passes):
+        """Drop outlier pit passes before averaging.
+
+        Dead reckoning can be wildly off on the first lap after the track scan
+        (before it re-zeros at the start/finish line), so a pass whose measured
+        lane offset is far from the median is discarded, as are passes that
+        failed to capture both blend lines when other passes managed to. Falls
+        back to all passes if filtering would leave nothing.
+        """
+        if len(passes) <= 1:
+            return list(passes)
+        offs = sorted(p[8] for p in passes if p[8])
+        kept = list(passes)
+        if offs:
+            mid = offs[len(offs) // 2]
+            near = [p for p in passes if p[8] and 0.6 * mid <= p[8] <= 1.6 * mid]
+            if near:
+                kept = near
+        both = [p for p in kept
+                if p[4] and len(p[4]) >= 2 and p[5] and len(p[5]) >= 2]
+        if both:
+            kept = both
+        return kept or list(passes)
 
     @classmethod
     def _avg_pit_span(cls, passes) -> tuple:
