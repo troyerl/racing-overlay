@@ -91,6 +91,11 @@ PIT_REJOIN_HOLD = 30          # ticks (~0.5s @ 60Hz) the car must hold near the
                               # toward it mid-exit no longer ends the lane early
 PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
+# The car regains the racing line (distance -> 0) a little before iRacing's
+# painted pit-exit commitment line actually ends down the straight. Keep tracing
+# the exit for this many ticks (~2s @ 60Hz) past the detected merge so the drawn
+# lane reaches the real end of the commitment zone instead of stopping early.
+PIT_EXIT_EXTEND = 120
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
 # where the car peeled off the racing line up to the pit-road edge.
 PIT_RECENT_MAX = 900
@@ -178,6 +183,7 @@ class AdvancedSimHUD:
         self._pit_exit_pct = None    # lap pct at the OnPitRoad falling edge
         self._pit_exit_ticks = 0     # ticks spent tracing the current exit blend
         self._pit_rejoin_ticks = 0   # consecutive ticks held near the racing line
+        self._pit_exit_extend = -1   # >=0 once merged: ticks traced past the merge
         self._pit_exit_dbg: list = []  # (pct, dist) samples over the exit, for logs
         # Max distance of the current pass's lane from the racing line, used to
         # scale the divergence thresholds, and a snapshot of the rolling buffer
@@ -1440,6 +1446,7 @@ class AdvancedSimHUD:
         self._pit_phase = None
         self._pit_exit_ticks = 0
         self._pit_rejoin_ticks = 0
+        self._pit_exit_extend = -1
         self._pit_lane_offset = 0.0
         self._pit_entry_buf = []
         self._player_on_route = False
@@ -1967,6 +1974,7 @@ class AdvancedSimHUD:
                     self._pit_phase = "exit"
                     self._pit_exit_ticks = 0
                     self._pit_rejoin_ticks = 0
+                    self._pit_exit_extend = -1
                     self._pit_exit_dbg = [(valid_pct, dist)]
                     self._pit_out_cur = []
                     if self._pit_geo_cur:
@@ -1992,13 +2000,22 @@ class AdvancedSimHUD:
                     self._pit_rejoin_ticks = 0
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
-                if rejoined or capped:
-                    self._log_exit_profile(
-                        "rejoined" if rejoined else "capped", rejoin)
+                if self._pit_exit_extend >= 0:
+                    # Already merged -- keep tracing a little further so the drawn
+                    # lane reaches the end of iRacing's painted commitment line,
+                    # which runs on past where the car first regains the line.
+                    self._pit_exit_extend += 1
+                    if self._pit_exit_extend >= PIT_EXIT_EXTEND or capped:
+                        self._log_exit_profile("rejoined", rejoin)
+                        self._finalize_pit_pass(valid_pct, capped=False)
+                elif capped:
                     # A capped pass never actually merged (the driver kept going,
                     # e.g. looping back to re-pit), so its exit blend is garbage;
                     # flag it so finalize ignores it when building the exit lane.
-                    self._finalize_pit_pass(valid_pct, capped=capped)
+                    self._log_exit_profile("capped", rejoin)
+                    self._finalize_pit_pass(valid_pct, capped=True)
+                elif rejoined:
+                    self._pit_exit_extend = 0  # start tracing past the merge
         self._pit_was_on = on
 
     def _log_exit_profile(self, reason, rejoin) -> None:
@@ -2055,6 +2072,7 @@ class AdvancedSimHUD:
         self._pit_exit_pct = None
         self._pit_in_pct_cur = None
         self._pit_exit_ticks = 0
+        self._pit_exit_extend = -1
         self._pit_entry_buf = []
 
     def _record_pit_pass(self, entry_pct, exit_pct, lane, pit_in, pit_out,

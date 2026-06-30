@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.3 - 2026-06-29
+
+- **Pit exit lane now reaches the end of the commitment line.** The car regains
+  the racing line a little before iRacing's painted pit-exit line actually ends
+  down the straight, so the drawn lane was stopping short. The exit is now traced
+  for a short stretch past the detected merge (tunable via `PIT_EXIT_EXTEND`) so
+  the yellow line continues down the straight like the real commitment zone.
+
 ## 1.22.2 - 2026-06-29
 
 - **Fix: pit exit lane running too far / onto the track.** If a pit pass never
