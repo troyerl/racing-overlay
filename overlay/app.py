@@ -1695,6 +1695,98 @@ class AdvancedSimHUD:
         x1, y1 = pts[(i + 1) % n]
         return (x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac)
 
+    def _track_normal_at_pct(self, pct):
+        """Unit normal (left of tangent) on the racing line at a lap fraction."""
+        pts = self._track_pts
+        if not pts or len(pts) < 2 or pct is None:
+            return 0.0, 0.0
+        n = len(pts)
+        f = (pct % 1.0) * n
+        i = int(f) % n
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        dx, dy = x1 - x0, y1 - y0
+        ln = math.hypot(dx, dy) or 1.0
+        return -dy / ln, dx / ln
+
+    @staticmethod
+    def _seg_has_pct(seg) -> bool:
+        return bool(seg and len(seg[0]) == 3)
+
+    @staticmethod
+    def _seg_to_xy(seg):
+        """Drop lap-% metadata, returning plain (x, y) points."""
+        if not seg:
+            return seg
+        if len(seg[0]) == 3:
+            return [(x, y) for _, x, y in seg]
+        return list(seg)
+
+    @staticmethod
+    def _pct_past(from_pct, to_pct) -> float:
+        """Lap-fraction travelled forward from ``from_pct`` to ``to_pct``."""
+        if from_pct is None or to_pct is None:
+            return 0.0
+        d = (to_pct - from_pct) % 1.0
+        return 0.0 if d > 0.5 else d
+
+    def _nearest_on_track_at_pct(self, x, y, pct, window: float = 0.08):
+        """Closest point on the racing line near ``pct`` (lap-fraction window)."""
+        pts = self._track_pts
+        if not pts or len(pts) < 2 or pct is None:
+            return None, 0.0, 0.0
+        n = len(pts)
+        c = int((pct % 1.0) * n)
+        w = max(1, int(window * n))
+        idxs = ((c + k) % n for k in range(-w, w + 1))
+        best = None
+        bd = float("inf")
+        bnx = bny = 0.0
+        for i in idxs:
+            ax, ay = pts[i]
+            bx, by = pts[(i + 1) % n]
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            t = 0.0 if seg2 <= 0.0 else ((x - ax) * dx + (y - ay) * dy) / seg2
+            t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+            px, py = ax + dx * t, ay + dy * t
+            d = (x - px) * (x - px) + (y - py) * (y - py)
+            if d < bd:
+                bd = d
+                best = (px, py)
+                ln = math.hypot(dx, dy) or 1.0
+                bnx, bny = -dy / ln, dx / ln
+        return best, bnx, bny
+
+    def _reanchor_by_lap_pct(self, seg):
+        """Rebuild a captured segment using drift-free lap % for its position
+        around the circuit and the aligned frame for its lateral offset.
+
+        Dead reckoning drifts in both dimensions, but lap % is exact. After the
+        similarity alignment puts the segment in the track's frame, each point's
+        signed offset from the racing line at its lap % is preserved while its
+        longitudinal position is snapped to that % -- so the lane sits beside
+        the track instead of drifting on top of it.
+        """
+        if not seg or not self._track_pts:
+            return self._seg_to_xy(seg)
+        if not self._seg_has_pct(seg):
+            return seg
+        out = []
+        for pct, x, y in seg:
+            if pct is None:
+                out.append((x, y))
+                continue
+            tp = self._track_point_at_pct(pct)
+            nx, ny = self._track_normal_at_pct(pct)
+            near, _, _ = self._nearest_on_track_at_pct(x, y, pct)
+            if tp is None or near is None:
+                out.append((x, y))
+                continue
+            off = (x - near[0]) * nx + (y - near[1]) * ny
+            out.append((tp[0] + nx * off, tp[1] + ny * off))
+        return out
+
     def _nearest_on_track(self, x, y):
         """Closest point on the racing-line polyline to (x, y) plus the unit
         normal there, taken as the left of the driving tangent -- a *consistent*
@@ -1866,13 +1958,17 @@ class AdvancedSimHUD:
             return pit_in, lane, pit_out
 
         def apply(ax, ay, bx, by, ca, sa):
+            def xf_xy(x, y):
+                dx, dy = x - ax, y - ay
+                return (bx + ca * dx - sa * dy, by + sa * dx + ca * dy)
+
             def xf(seg):
-                out = []
-                for x, y in seg:
-                    dx, dy = x - ax, y - ay
-                    out.append((bx + ca * dx - sa * dy,
-                                by + sa * dx + ca * dy))
-                return out
+                if not seg:
+                    return seg
+                if self._seg_has_pct(seg):
+                    return [(p, *xf_xy(x, y)) for p, x, y in seg]
+                return [xf_xy(x, y) for x, y in seg]
+
             return (xf(pit_in) if pit_in else pit_in,
                     xf(lane) if lane else lane,
                     xf(pit_out) if pit_out else pit_out)
@@ -2095,25 +2191,22 @@ class AdvancedSimHUD:
         stretch from where the car peeled off the racing line up to the pit-road
         edge. Returns (points, divergence_lap_pct).
 
+        Points are ``(lap_pct, x, y)`` so the entry can be re-anchored by lap %.
         ``max_pct`` caps how far back (in lap fraction from the pit-road edge)
-        the blend is allowed to reach, so the entry line doesn't run the whole
-        way back to where the car first drifted off the racing line. When
-        ``stop_on_diverge`` is False the trace runs purely to ``max_pct`` and
-        ignores the (drift-prone) distance test -- used when ``max_pct`` is the
-        exact, drift-free entry blend line from iRacing's surface zone."""
+        the blend is allowed to reach. When ``stop_on_diverge`` is False the
+        trace runs purely to ``max_pct`` and ignores the distance test."""
         if (diverge is None and stop_on_diverge) or not buf:
             return [], None
         edge_pct = buf[-1][0]
         blend = []
         in_pct = None
         for pct_i, x, y, d in reversed(buf):
-            # Stop once we've reached back the allowed lap-% from the pit edge.
             if (max_pct is not None and pct_i is not None
                     and edge_pct is not None
                     and ((edge_pct - pct_i) % 1.0) > max_pct):
                 in_pct = pct_i
                 break
-            blend.append((x, y))
+            blend.append((pct_i, x, y))
             if stop_on_diverge and d is not None and d <= diverge:
                 in_pct = pct_i
                 break
@@ -2219,14 +2312,14 @@ class AdvancedSimHUD:
                 self._pit_in_pct_cur = None
                 self._pit_geo_cur = []
                 self._pit_out_cur = []
-                if xy is not None:
-                    self._pit_geo_cur.append(xy)
+                if xy is not None and valid_pct is not None:
+                    self._pit_geo_cur.append((valid_pct, xy[0], xy[1]))
                 if dist is not None:
                     self._pit_lane_offset = max(self._pit_lane_offset, dist)
         elif self._pit_phase == "lane":
             if on:
-                if xy is not None:
-                    self._pit_geo_cur.append(xy)
+                if xy is not None and valid_pct is not None:
+                    self._pit_geo_cur.append((valid_pct, xy[0], xy[1]))
                 if dist is not None:
                     self._pit_lane_offset = max(self._pit_lane_offset, dist)
             else:  # left pit road
@@ -2244,17 +2337,17 @@ class AdvancedSimHUD:
                     self._pit_out_cur = []
                     if self._pit_geo_cur:
                         self._pit_out_cur.append(self._pit_geo_cur[-1])
-                    if xy is not None:
-                        self._pit_out_cur.append(xy)
+                    if xy is not None and valid_pct is not None:
+                        self._pit_out_cur.append((valid_pct, xy[0], xy[1]))
         elif self._pit_phase == "exit":
             if on:  # dipped back onto pit road -> resume the lane
                 self._pit_phase = "lane"
-                if xy is not None:
-                    self._pit_geo_cur.append(xy)
+                if xy is not None and valid_pct is not None:
+                    self._pit_geo_cur.append((valid_pct, xy[0], xy[1]))
             else:
                 self._pit_exit_ticks += 1
-                if xy is not None:
-                    self._pit_out_cur.append(xy)
+                if xy is not None and valid_pct is not None:
+                    self._pit_out_cur.append((valid_pct, xy[0], xy[1]))
                 self._pit_exit_dbg.append((valid_pct, dist, surf))
                 # Once the car is back on the racing line, record it as a
                 # drift-free anchor (true lap % <-> dead-reckon position) for the
@@ -2272,17 +2365,18 @@ class AdvancedSimHUD:
                     self._pit_rejoin_ticks = 0
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
-                # Prefer iRacing's own blend line (surface flip to OnTrack): it's
-                # exact and drift-free, so the exit ends where the car truly
-                # rejoins regardless of track type. Fall back to the distance
-                # rejoin only when the surface zone never reported it.
+                # iRacing's surface flip (ApproachingPits -> OnTrack) is the
+                # exact, drift-free exit blend line. Use it as the merge anchor
+                # and measure pit_exit_extend_pct forward from there so the
+                # slider stretches the commitment line past the blend. Distance
+                # rejoin fires too early (dist ~0 while still in ApproachingPits)
+                # and must not override the surface anchor.
                 reason = None
-                if self._pit_merge_pct is None and self._pit_surf_exit_pct \
-                        is not None:
+                if self._pit_surf_exit_pct is not None:
                     self._pit_merge_pct = self._pit_surf_exit_pct
                     reason = "surface"
                 elif self._pit_merge_pct is None and rejoined:
-                    self._pit_merge_pct = valid_pct  # distance fallback
+                    self._pit_merge_pct = valid_pct
                     reason = "rejoined"
                 if self._pit_merge_pct is not None:
                     # Merged -- optionally keep tracing a little past the blend
@@ -2359,6 +2453,9 @@ class AdvancedSimHUD:
                 span = (self._pit_enter_pct - entry_line) % 1.0
                 if span > 0.5:        # nonsense span (stale boundary) -> fallback
                     entry_line = None
+                else:
+                    # Slider adds extra length past the surface entry line.
+                    span = min(0.5, span + self.pit_entry_max_pct)
             if entry_line is not None:
                 in_blend, in_pct = self._trace_entry_blend(
                     self._pit_entry_buf, diverge, max_pct=span,
@@ -2366,14 +2463,23 @@ class AdvancedSimHUD:
             else:
                 in_blend, in_pct = self._trace_entry_blend(
                     self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
+            # Trim exit blend: keep everything up to surface merge + extension.
+            pit_out = list(self._pit_out_cur)
+            if self._pit_surf_exit_pct is not None:
+                limit = self.pit_exit_extend_pct
+                if self._seg_has_pct(pit_out):
+                    pit_out = [(p, x, y) for p, x, y in pit_out
+                               if p is None or self._pct_past(
+                                   self._pit_surf_exit_pct, p) <= limit + 0.003]
+                out_pct = (self._pit_surf_exit_pct + limit) % 1.0
             self._record_pit_pass(
                 self._pit_enter_pct,
                 self._pit_exit_pct if self._pit_exit_pct is not None
                 else out_pct,
                 list(self._pit_geo_cur),
                 in_blend,
-                list(self._pit_out_cur),
-                in_pct,
+                pit_out,
+                in_pct if in_pct is not None else self._pit_surf_entry_pct,
                 out_pct,
                 capped,
             )
@@ -2402,11 +2508,16 @@ class AdvancedSimHUD:
             return
         if len(self._pit_passes) >= PIT_PASSES:
             return  # already finalized; use "Rescan pits" to redo
-        # Correct dead-reckoning drift by snapping this pass onto the track at
-        # its known entry/exit lap percentages before storing/previewing, so all
-        # passes share the racing-line frame and average together cleanly.
+        # Correct dead-reckoning drift, then snap each segment longitudinally to
+        # its drift-free lap % so the lane sits beside the track, not on it.
         pit_in, lane, pit_out = self._align_pit_to_track(
             pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
+        pit_in = self._reanchor_by_lap_pct(pit_in)
+        lane = self._reanchor_by_lap_pct(lane)
+        pit_out = self._reanchor_by_lap_pct(pit_out)
+        pit_in = self._seg_to_xy(pit_in)
+        lane = self._seg_to_xy(lane)
+        pit_out = self._seg_to_xy(pit_out)
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct,
                                  self._pit_lane_offset, capped))
@@ -2455,8 +2566,8 @@ class AdvancedSimHUD:
         # continuous lines -- the parallel-lane nudge and per-pass averaging can
         # otherwise leave little offset 'steps'. Endpoints stay anchored; two
         # passes iron the steps out without dragging the ends off the track.
-        self._pit_path = track_map._smooth_open(
-            self._avg_pit_path([p[3] for p in passes]), passes=2)
+        self._pit_path = track_map._smooth_open(self._offset_blend_parallel(
+            self._avg_pit_path([p[3] for p in passes])), passes=2)
         self._pit_in = track_map._smooth_open(self._offset_blend_parallel(
             self._avg_pit_path([p[4] for p in passes])), passes=2)
         # The exit blend must come only from passes that genuinely merged back

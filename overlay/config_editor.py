@@ -1671,14 +1671,14 @@ class ConfigEditor(QWidget):
     # min%, max%). Values are lap fractions shown/edited as whole percents.
     _PIT_TUNERS = (
         ("exit_extend", "PIT_EXIT_EXTEND_PCT", "Pit exit lane length",
-         "How far past iRacing's real exit blend line the lane is drawn. 0 ends "
-         "it exactly at the blend line; raise it to stretch out to a longer "
-         "painted commitment line (e.g. a superspeedway exit).",
+         "Extra length past iRacing's exit blend line (surface ApproachingPits "
+         "-> OnTrack). 0 ends at the blend line; raise to match a longer "
+         "painted commitment line (ovals often ~16%, road courses ~5-8%).",
          0, 30),
         ("entry_max", "PIT_ENTRY_MAX_PCT", "Pit entry lane length",
-         "Cap on how far back up the track the entry lane reaches. Raise for a "
-         "longer entry line, lower for a shorter one.",
-         2, 20),
+         "Extra length past iRacing's entry blend line (surface OnTrack -> "
+         "ApproachingPits). Raise for a longer yellow entry line.",
+         0, 20),
     )
 
     def _pit_tuning_card(self) -> QFrame:
