@@ -1526,6 +1526,70 @@ class AdvancedSimHUD:
                 best = d
         return math.sqrt(best)
 
+    def _track_point_at_pct(self, pct):
+        """Interpolate the racing-line point at a lap fraction. The cached track
+        polyline is ordered by lap %, so index = pct * n. None without geometry."""
+        pts = self._track_pts
+        if not pts:
+            return None
+        n = len(pts)
+        if n == 1 or pct is None:
+            return pts[0]
+        f = (pct % 1.0) * n
+        i = int(f) % n
+        frac = f - math.floor(f)
+        x0, y0 = pts[i]
+        x1, y1 = pts[(i + 1) % n]
+        return (x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac)
+
+    def _align_pit_to_track(self, pit_in, lane, pit_out,
+                            in_pct, out_pct, entry_pct, exit_pct):
+        """Snap a captured pit route onto the track at its known entry/exit lap
+        percentages.
+
+        Dead reckoning drifts over a lap, so by the time the pit is reached the
+        captured geometry has rotated/scaled away from the multi-lap-averaged
+        racing line. We know two true anchor points -- where the route leaves the
+        track (entry) and where it rejoins (exit) -- from lap %, which is not
+        subject to drift. Fitting a similarity transform (translate + rotate +
+        uniform scale) through those two correspondences pulls the whole route
+        back onto the track. A no-op when there's no track geometry.
+        """
+        if not self._track_pts:
+            return pit_in, lane, pit_out
+        head = pit_in if pit_in else lane
+        tail = pit_out if pit_out else lane
+        if not head or not tail:
+            return pit_in, lane, pit_out
+        s0, s1 = head[0], tail[-1]
+        p0 = in_pct if pit_in else entry_pct
+        p1 = out_pct if pit_out else exit_pct
+        t0 = self._track_point_at_pct(p0)
+        t1 = self._track_point_at_pct(p1)
+        if t0 is None or t1 is None:
+            return pit_in, lane, pit_out
+        sx, sy = s1[0] - s0[0], s1[1] - s0[1]
+        tx_, ty_ = t1[0] - t0[0], t1[1] - t0[1]
+        src_len = math.hypot(sx, sy)
+        tgt_len = math.hypot(tx_, ty_)
+        if src_len < 1e-9 or tgt_len < 1e-9:
+            return pit_in, lane, pit_out
+        scale = tgt_len / src_len
+        ang = math.atan2(ty_, tx_) - math.atan2(sy, sx)
+        ca, sa = math.cos(ang) * scale, math.sin(ang) * scale
+
+        def xf(seg):
+            out = []
+            for x, y in seg:
+                dx, dy = x - s0[0], y - s0[1]
+                out.append((t0[0] + ca * dx - sa * dy,
+                            t0[1] + sa * dx + ca * dy))
+            return out
+
+        return (xf(pit_in) if pit_in else pit_in,
+                xf(lane) if lane else lane,
+                xf(pit_out) if pit_out else pit_out)
+
     def _apply_pit_meta(self, meta) -> None:
         """Push loaded pit geometry (span / speed / lane / blend lines / route
         extent) from a track file into both our state and the map widget."""
@@ -1855,6 +1919,11 @@ class AdvancedSimHUD:
             return
         if len(self._pit_passes) >= PIT_PASSES:
             return  # already finalized; use "Rescan pits" to redo
+        # Correct dead-reckoning drift by snapping this pass onto the track at
+        # its known entry/exit lap percentages before storing/previewing, so all
+        # passes share the racing-line frame and average together cleanly.
+        pit_in, lane, pit_out = self._align_pit_to_track(
+            pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct))
         n = len(self._pit_passes)
