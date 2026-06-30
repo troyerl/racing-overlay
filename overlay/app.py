@@ -178,6 +178,7 @@ class AdvancedSimHUD:
         self._pit_exit_pct = None    # lap pct at the OnPitRoad falling edge
         self._pit_exit_ticks = 0     # ticks spent tracing the current exit blend
         self._pit_rejoin_ticks = 0   # consecutive ticks held near the racing line
+        self._pit_exit_dbg: list = []  # (pct, dist) samples over the exit, for logs
         # Max distance of the current pass's lane from the racing line, used to
         # scale the divergence thresholds, and a snapshot of the rolling buffer
         # at pit entry from which the entry blend is back-traced at finalize.
@@ -1938,6 +1939,7 @@ class AdvancedSimHUD:
                     self._pit_phase = "exit"
                     self._pit_exit_ticks = 0
                     self._pit_rejoin_ticks = 0
+                    self._pit_exit_dbg = [(valid_pct, dist)]
                     self._pit_out_cur = []
                     if self._pit_geo_cur:
                         self._pit_out_cur.append(self._pit_geo_cur[-1])
@@ -1952,6 +1954,7 @@ class AdvancedSimHUD:
                 self._pit_exit_ticks += 1
                 if xy is not None:
                     self._pit_out_cur.append(xy)
+                self._pit_exit_dbg.append((valid_pct, dist))
                 # Require the car to *hold* near the racing line for a moment, so
                 # a brief dip toward it (noise, or the apron passing close) won't
                 # finalize the exit before the real merge point.
@@ -1962,8 +1965,36 @@ class AdvancedSimHUD:
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
                 if rejoined or capped:
+                    self._log_exit_profile(
+                        "rejoined" if rejoined else "capped", rejoin)
                     self._finalize_pit_pass(valid_pct)
         self._pit_was_on = on
+
+    def _log_exit_profile(self, reason, rejoin) -> None:
+        """Log how the car's distance-to-racing-line evolved over the pit exit,
+        so we can see where (lap %) and why it decided the car had merged.
+
+        Each entry is `pct@dist`; the threshold the car must drop under to count
+        as rejoined is printed too. If dist drops under the threshold well before
+        the real merge, the racing line is too close to the apron there.
+        """
+        dbg = self._pit_exit_dbg
+        if not dbg:
+            return
+        step = max(1, len(dbg) // 24)  # ~24 evenly spaced samples
+        prof = []
+        for i in range(0, len(dbg), step):
+            pct, dist = dbg[i]
+            prof.append(f"{(pct if pct is not None else -1):.3f}@"
+                        f"{(dist if dist is not None else -1):.0f}")
+        dists = [d for _, d in dbg if d is not None]
+        log.warning(
+            "pit exit: reason=%s rejoin_thr=%.1f ticks=%d min_dist=%.1f "
+            "end_pct=%.3f profile=[%s]",
+            reason, rejoin if rejoin is not None else -1.0, len(dbg),
+            min(dists) if dists else -1.0,
+            (dbg[-1][0] if dbg[-1][0] is not None else -1.0),
+            " ".join(prof))
 
     def _finalize_pit_pass(self, out_pct) -> None:
         """End the in-progress pit pass and hand its three segments to the
