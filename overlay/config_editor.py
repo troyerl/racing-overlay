@@ -1778,8 +1778,14 @@ class ConfigEditor(QWidget):
         else:
             self._pit_speed_spin.setValue(0.0)
             self._num_turns_spin.setValue(0)
-            self._authoring_status.setText(
-                "Load a scanned track in the overlay to edit metadata.")
+            if state.get("demo"):
+                self._authoring_status.setText(
+                    "Track metadata editing needs a live iRacing session "
+                    "(demo mode has no TrackID).")
+            else:
+                self._authoring_status.setText(
+                    "Join a session and load a track in the overlay to edit "
+                    "metadata.")
             self._corner_edit_sw.setChecked(False)
         self._pit_speed_spin.blockSignals(False)
         self._num_turns_spin.blockSignals(False)
@@ -1789,19 +1795,27 @@ class ConfigEditor(QWidget):
         if self._overlay is None or not hasattr(self._overlay, "set_pit_speed_authoring"):
             return
         ms = value / 2.2369362921 if config.is_imperial() else value / 3.6
-        self._overlay.set_pit_speed_authoring(ms)
-        self._authoring_status.setText(
-            f"Pit speed saved ({value:.1f} {config.speed_unit()}).")
-        self._flash("Pit speed saved")
+        if self._overlay.set_pit_speed_authoring(ms):
+            self._authoring_status.setText(
+                f"Pit speed saved ({value:.1f} {config.speed_unit()}).")
+            self._flash("Pit speed saved")
+        else:
+            self._authoring_status.setText(
+                "Could not save pit speed (no local track file).")
+            self._flash("Save failed")
 
     def _num_turns_authoring_changed(self, value: int) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_num_turns_authoring"):
             return
-        self._overlay.set_num_turns_authoring(value)
-        self._refresh_track_authoring()
-        label = str(value) if value else "auto"
-        self._authoring_status.setText(f"Corners updated ({label}) and saved.")
-        self._flash("Corner count saved")
+        if self._overlay.set_num_turns_authoring(value):
+            self._refresh_track_authoring()
+            label = str(value) if value else "auto"
+            self._authoring_status.setText(f"Corners updated ({label}) and saved.")
+            self._flash("Corner count saved")
+        else:
+            self._authoring_status.setText(
+                "Could not save corner count (no local track file).")
+            self._flash("Save failed")
 
     def _corner_edit_toggled(self, on: bool) -> None:
         self._sync_corner_edit_mode()

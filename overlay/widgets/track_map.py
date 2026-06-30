@@ -434,12 +434,57 @@ def save_learned_track(tracks_dir: str, track_id, points, name: str = "",
     return path
 
 
+def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
+                      start_finish: float = 0.0, corners=None,
+                      pit_span=None, pit_speed: float = 0.0,
+                      num_turns=None, pit_path=None, pit_in=None,
+                      pit_out=None, pit_in_pct=None, pit_out_pct=None,
+                      learned: bool = False) -> bool:
+    """Create tracks/<id>.json from in-memory state when no local file exists.
+
+    Authoring edits patch the on-disk file; this ensures one exists when the
+    overlay is showing a track loaded only from the cloud or an in-session scan.
+    """
+    if track_id is None or not points or len(points) < 2:
+        return False
+    path = os.path.join(tracks_dir, f"{track_id}.json")
+    if os.path.exists(path):
+        return True
+    data: dict = {
+        "track_id": track_id,
+        "name": name or "",
+        "points": [[round(float(x), 9), round(float(y), 9)] for x, y in points],
+        "start_finish": float(start_finish or 0.0),
+        "corners": corners if corners is not None else [],
+    }
+    if learned:
+        data["learned"] = True
+    if pit_span is not None:
+        data["pit_span"] = [round(float(pit_span[0]), 5), round(float(pit_span[1]), 5)]
+    if pit_speed:
+        data["pit_speed"] = round(float(pit_speed), 3)
+    if num_turns:
+        data["num_turns"] = int(num_turns)
+    for key, seg in (("pit_path", pit_path), ("pit_in", pit_in), ("pit_out", pit_out)):
+        if isinstance(seg, list) and len(seg) >= 2:
+            data[key] = [[round(float(x), 7), round(float(y), 7)] for x, y in seg]
+    for key, val in (("pit_in_pct", pit_in_pct), ("pit_out_pct", pit_out_pct)):
+        if val is not None:
+            data[key] = round(float(val), 5)
+    os.makedirs(tracks_dir, exist_ok=True)
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh)
+    os.replace(tmp, path)
+    return True
+
+
 def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
     """Patch extra keys (e.g. pit_span, pit_speed) into an existing track file.
 
     Used to record pit data learned after the geometry was already saved/loaded.
     A field whose value is None is removed from the file instead. No-op if the
-    file doesn't exist yet (the data is written by save_learned_track instead).
+    file doesn't exist yet -- call ``ensure_track_file`` first when authoring.
     """
     if track_id is None or not fields:
         return False

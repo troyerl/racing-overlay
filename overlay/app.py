@@ -508,26 +508,60 @@ class AdvancedSimHUD:
         """Snapshot for the Track Scan authoring tab (pit speed, corners)."""
         mw = self.map_widget
         n = self._track_turns if self._track_turns else mw.num_turns
+        has_geom = mw.path is not None and len(mw.path) >= 2
         return {
-            "has_track": mw.path is not None and self._track_id is not None,
+            "has_track": (not self.demo and self._track_id is not None and has_geom),
+            "demo": self.demo,
             "pit_speed_ms": self._pit_speed_ms,
             "num_turns": n,
             "corner_count": len(mw.display_corners()),
         }
 
+    def _refresh_settings_authoring(self) -> None:
+        """Re-sync Track Scan controls after a track loads in the background."""
+        w = self._settings_window
+        if w is not None and hasattr(w, "_refresh_track_authoring"):
+            w._refresh_track_authoring()
+
+    def _ensure_local_track_file(self) -> bool:
+        """Make sure tracks/<id>.json exists so metadata edits can be saved."""
+        if self._track_id is None or not self.map_widget.path:
+            return False
+        corners = track_map.corners_to_json(self.map_widget.display_corners())
+        pit_span = self._pit_span
+        return track_map.ensure_track_file(
+            self.tracks_dir, self._track_id, self.map_widget.path,
+            name=self._learn_name,
+            start_finish=self.map_widget.start_finish,
+            corners=corners,
+            pit_span=pit_span,
+            pit_speed=self._pit_speed_ms,
+            num_turns=self._track_turns or self.map_widget.num_turns,
+            pit_path=self._pit_path,
+            pit_in=self._pit_in,
+            pit_out=self._pit_out,
+            pit_in_pct=self._pit_in_pct,
+            pit_out_pct=self._pit_out_pct,
+            learned=bool(self._scan_done and not self._track_loaded))
+
     def _persist_track_meta(self, **fields) -> bool:
         """Write track metadata locally and push to the cloud when allowed."""
         if self._track_id is None or not fields:
             return False
+        if not self._ensure_local_track_file():
+            return False
         try:
-            track_map.update_track_meta(self.tracks_dir, self._track_id, **fields)
+            ok = track_map.update_track_meta(
+                self.tracks_dir, self._track_id, **fields)
         except Exception:
+            return False
+        if not ok:
             return False
         if config.cloud_tracks():
             self._track_sync.upload_local_async(self.tracks_dir, self._track_id)
         return True
 
-    def set_pit_speed_authoring(self, speed_ms: float) -> None:
+    def set_pit_speed_authoring(self, speed_ms: float) -> bool:
         """Override the learned pit speed limit and save to the track record."""
         speed_ms = max(0.0, float(speed_ms))
         self._pit_speed_ms = speed_ms
@@ -536,9 +570,10 @@ class AdvancedSimHUD:
         elif speed_ms > 0:
             self.map_widget.pit_speed_ms = speed_ms
             self.map_widget.update()
-        self._persist_track_meta(pit_speed=round(speed_ms, 3) if speed_ms else None)
+        return self._persist_track_meta(
+            pit_speed=round(speed_ms, 3) if speed_ms else None)
 
-    def set_num_turns_authoring(self, n: int) -> None:
+    def set_num_turns_authoring(self, n: int) -> bool:
         """Set the official corner count, re-detect labels, and save."""
         try:
             val = int(n)
@@ -552,20 +587,23 @@ class AdvancedSimHUD:
             fields["num_turns"] = self._track_turns
         else:
             fields["num_turns"] = None
-        self._persist_track_meta(**fields)
+        return self._persist_track_meta(**fields)
 
     def set_corner_edit_mode(self, enabled: bool) -> None:
         """Toggle drag-to-move corner labels on the map widget."""
         self.map_widget.set_corner_edit(
             enabled, self._save_corners_authoring if enabled else None)
 
-    def _save_corners_authoring(self) -> None:
+    def _save_corners_authoring(self) -> bool:
         """Persist manually placed corner labels."""
         corners = track_map.corners_to_json(self.map_widget.corners)
         fields: dict = {"corners": corners}
         if self._track_turns:
             fields["num_turns"] = self._track_turns
-        self._persist_track_meta(**fields)
+        ok = self._persist_track_meta(**fields)
+        if not ok:
+            self.map_widget.flash_hint("Could not save corner labels")
+        return ok
 
     def _pit_scan_active(self) -> bool:
         """True while the track is scanned but pit data still needs gathering."""
@@ -1477,8 +1515,11 @@ class AdvancedSimHUD:
                             pts, sf, corners, _, meta = track_map.load_track(
                                 track_file)
                             self.map_widget.set_track(pts, sf, corners)
+                            saved_turns = _coerce_int(meta.get("num_turns"))
                             self.map_widget.set_num_turns(
-                                self._track_turns or meta.get("num_turns"))
+                                self._track_turns or saved_turns)
+                            if saved_turns and not self._track_turns:
+                                self._track_turns = saved_turns
                             self._set_track_geom(pts)
                             self._apply_pit_meta(meta)
                             self._track_loaded = True
@@ -1487,6 +1528,7 @@ class AdvancedSimHUD:
                             self._scan_done = True
                             # Mark as just-used so LRU eviction keeps it around.
                             track_store.touch(self.tracks_dir, self._track_id)
+                            self._refresh_settings_authoring()
                             return
                         except Exception:
                             pass  # fall back to GPS learning
@@ -1552,6 +1594,7 @@ class AdvancedSimHUD:
             if config.cloud_tracks():
                 self._track_sync.upload_local_async(
                     self.tracks_dir, self._track_id)
+            self._refresh_settings_authoring()
 
     def _on_tracks_synced(self, n) -> None:
         """Startup cache refresh finished; if the map we're showing was one of
@@ -1572,6 +1615,7 @@ class AdvancedSimHUD:
         self._track_loaded = True
         self._track_saved = True
         self._scan_done = True
+        self._refresh_settings_authoring()
 
     def _on_remote_track(self, track_id, doc) -> None:
         """A shared track map arrived from the cloud (off the GUI thread).
@@ -1579,7 +1623,7 @@ class AdvancedSimHUD:
         Only adopt it if we haven't already loaded/learned this track locally,
         so a download can't clobber a scan in progress or a bundled file.
         """
-        if not doc or track_id != self._track_id:
+        if not doc or not track_store.same_track_id(track_id, self._track_id):
             return
         if self._track_loaded or self._path_builder.complete:
             return
@@ -1589,8 +1633,10 @@ class AdvancedSimHUD:
                 return
             pts, sf, corners, _, meta = track_map.load_track(path)
             self.map_widget.set_track(pts, sf, corners)
-            self.map_widget.set_num_turns(
-                self._track_turns or meta.get("num_turns"))
+            saved_turns = _coerce_int(meta.get("num_turns"))
+            self.map_widget.set_num_turns(self._track_turns or saved_turns)
+            if saved_turns and not self._track_turns:
+                self._track_turns = saved_turns
             self._set_track_geom(pts)
             self._apply_pit_meta(meta)
             self._track_loaded = True
@@ -1600,6 +1646,7 @@ class AdvancedSimHUD:
             # one we're using) so the folder stays bounded.
             track_store.enforce_cache_limit(
                 self.tracks_dir, protect=[self._track_id])
+            self._refresh_settings_authoring()
         except Exception:
             pass
 
@@ -1824,19 +1871,8 @@ class AdvancedSimHUD:
         d = (to_pct - from_pct) % 1.0
         return 0.0 if d > 0.5 else d
 
-    def _append_exit_extension(self, pit_out, surf_pct, limit):
-        """Extend the exit blend forward along the racing line past the surface
-        merge, tapering lateral offset to zero.
-
-        Avoids following the car through corners after rejoin -- on a road course
-        the driver often hits esses immediately while the painted commitment
-        line runs straight beside the track.
-        """
-        if limit <= 0.0 or not self._track_pts or surf_pct is None:
-            return pit_out
-        merge_tp = self._track_point_at_pct(surf_pct)
-        if merge_tp is None:
-            return pit_out
+    def _exit_extension_params(self, pit_out, surf_pct):
+        """Side sign and lane width for synthesizing a post-merge exit extension."""
         lane_w = 0.0
         sgn = 1.0
         if pit_out:
@@ -1850,19 +1886,49 @@ class AdvancedSimHUD:
         if lane_w <= 0.0:
             lane_w = max(0.15 * self._pit_lane_offset,
                          0.015 * self._track_diag)
+        return lane_w, sgn
+
+    def _append_exit_extension(self, pit_out, surf_pct, limit, *,
+                               constant_offset: bool = False):
+        """Extend the exit blend forward along the racing line past the surface
+        merge.
+
+        Road courses taper lateral offset to zero over the full extension (the
+        car often dives into the next corner). Ovals hold a constant apron
+        offset parallel to the track, tapering to zero only at the exit point
+        (same taper length as ``_offset_blend_parallel``).
+        """
+        if limit <= 0.0 or not self._track_pts or surf_pct is None:
+            return pit_out
+        lane_w, sgn = self._exit_extension_params(pit_out, surf_pct)
         if lane_w <= 0.0:
             return pit_out
         n = max(6, int(limit * 120))
+        pcts = [(surf_pct + limit * k / n) % 1.0 for k in range(n + 1)]
+        track_pts = [self._track_point_at_pct(p) for p in pcts]
+        arcs = [0.0]
+        for i in range(1, len(track_pts)):
+            a, b = track_pts[i - 1], track_pts[i]
+            if a is not None and b is not None:
+                arcs.append(arcs[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+            else:
+                arcs.append(arcs[-1])
+        total_arc = arcs[-1]
+        taper_len = lane_w * 2.5
         ext = []
         for k in range(1, n + 1):
-            t = k / n
-            pct = (surf_pct + limit * t) % 1.0
-            tp = self._track_point_at_pct(pct)
+            pct = pcts[k]
+            tp = track_pts[k]
             if tp is None:
                 continue
             nx, ny = self._track_normal_at_pct(pct)
             nx, ny = sgn * nx, sgn * ny
-            off = lane_w * (1.0 - t)
+            if constant_offset:
+                remaining = total_arc - arcs[k]
+                off = (lane_w * min(1.0, remaining / taper_len)
+                       if taper_len > 0 else 0.0)
+            else:
+                off = lane_w * (1.0 - k / n)
             ext.append((pct, tp[0] + nx * off, tp[1] + ny * off))
         return list(pit_out) + ext
 
@@ -2143,11 +2209,16 @@ class AdvancedSimHUD:
         extent) from a track file into both our state and the map widget. A meta
         with no pit data fully clears any previous pit lane (e.g. when leaving
         the demo or switching to a track that hasn't been scanned)."""
+        if meta.get("pit_speed"):
+            self._pit_speed_ms = float(meta["pit_speed"])
         if not meta.get("pit_span"):
             self._pit_span = None
             self._pit_path = self._pit_in = self._pit_out = None
             self._pit_in_pct = self._pit_out_pct = None
             self.map_widget.clear_pit()
+            if self._pit_speed_ms > 0:
+                self.map_widget.pit_speed_ms = self._pit_speed_ms
+                self.map_widget.update()
             return
         self._pit_span = meta["pit_span"]
         self._pit_speed_ms = meta.get("pit_speed", 0.0)
@@ -2503,31 +2574,10 @@ class AdvancedSimHUD:
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
                 # iRacing's surface flip (ApproachingPits -> OnTrack) is the
-                # exact, drift-free exit blend line. Road courses finalize as
-                # soon as it is seen and synthesize the commitment extension
-                # along the racing line (the car often dives into the next
-                # corner). Ovals keep tracing the car for pit_exit_extend_pct
-                # past that line -- the apron runs parallel to the straight and
-                # a racing-line arc would wrap around the outside of the track.
-                reason = None
+                # exact, drift-free exit blend line. Finalize as soon as it is
+                # seen -- the post-merge commitment length is synthesized in
+                # finalize (constant-offset parallel on ovals, full taper on road).
                 if self._pit_surf_exit_pct is not None:
-                    self._pit_merge_pct = self._pit_surf_exit_pct
-                    reason = "surface"
-                elif self._pit_merge_pct is None and rejoined:
-                    self._pit_merge_pct = valid_pct
-                    reason = "rejoined"
-                if self._track_is_oval:
-                    if self._pit_merge_pct is not None:
-                        past = (valid_pct - self._pit_merge_pct) % 1.0
-                        if past > 0.5:
-                            past = 0.0
-                        if past >= self.pit_exit_extend_pct or capped:
-                            self._log_exit_profile(reason or "rejoined", rejoin)
-                            self._finalize_pit_pass(valid_pct, capped=False)
-                    elif capped:
-                        self._log_exit_profile("capped", rejoin)
-                        self._finalize_pit_pass(valid_pct, capped=True)
-                elif self._pit_surf_exit_pct is not None:
                     self._log_exit_profile("surface", rejoin)
                     self._finalize_pit_pass(valid_pct, capped=False)
                 elif rejoined:
@@ -2611,24 +2661,20 @@ class AdvancedSimHUD:
             else:
                 in_blend, in_pct = self._trace_entry_blend(
                     self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
-            # Exit blend: road courses synthesize the post-merge extension along
-            # the racing line; ovals keep the car-traced path up to the limit.
+            # Exit blend: trim to the surface merge, then synthesize the painted
+            # commitment extension (constant-offset parallel on ovals, tapering
+            # merge on road courses).
             pit_out = list(self._pit_out_cur)
             if self._pit_surf_exit_pct is not None:
                 limit = self.pit_exit_extend_pct
                 tol = 0.003
-                if self._track_is_oval:
-                    if self._seg_has_pct(pit_out):
-                        pit_out = [(p, x, y) for p, x, y in pit_out
-                                   if p is None or self._pct_past(
-                                       self._pit_surf_exit_pct, p) <= limit + tol]
-                else:
-                    if self._seg_has_pct(pit_out):
-                        pit_out = [(p, x, y) for p, x, y in pit_out
-                                   if p is None or self._pct_past(
-                                       self._pit_surf_exit_pct, p) <= tol]
-                    pit_out = self._append_exit_extension(
-                        pit_out, self._pit_surf_exit_pct, limit)
+                if self._seg_has_pct(pit_out):
+                    pit_out = [(p, x, y) for p, x, y in pit_out
+                               if p is None or self._pct_past(
+                                   self._pit_surf_exit_pct, p) <= tol]
+                pit_out = self._append_exit_extension(
+                    pit_out, self._pit_surf_exit_pct, limit,
+                    constant_offset=self._track_is_oval)
                 out_pct = (self._pit_surf_exit_pct + limit) % 1.0
             self._record_pit_pass(
                 self._pit_enter_pct,

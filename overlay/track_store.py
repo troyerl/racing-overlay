@@ -252,6 +252,35 @@ def normalize(doc: dict) -> dict:
     return out
 
 
+def track_id_variants(track_id) -> list:
+    """Mongo / filename may store TrackID as int or str -- try both."""
+    if track_id is None:
+        return []
+    out: list = [track_id]
+    try:
+        s = str(track_id)
+        if s not in out:
+            out.append(s)
+        i = int(s)
+        if i not in out:
+            out.append(i)
+    except (TypeError, ValueError):
+        pass
+    return out
+
+
+def same_track_id(a, b) -> bool:
+    """True when two TrackID values refer to the same layout."""
+    if a is None or b is None:
+        return False
+    if a == b:
+        return True
+    try:
+        return str(a) == str(b)
+    except Exception:
+        return False
+
+
 def fetch_track(track_id) -> dict | None:
     """Look up a single track by iRacing TrackID. None on miss / any error."""
     if track_id is None:
@@ -260,7 +289,11 @@ def fetch_track(track_id) -> dict | None:
     if col is None:
         return None
     try:
-        return col.find_one({"track_id": track_id}, {"_id": 0})
+        for tid in track_id_variants(track_id):
+            doc = col.find_one({"track_id": tid}, {"_id": 0})
+            if doc:
+                return doc
+        return None
     except Exception:
         return None
 
