@@ -20,8 +20,8 @@ import math
 import os
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath,
-                         QPen)
+from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QMouseEvent, QPainter,
+                         QPainterPath, QPen)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
@@ -350,6 +350,29 @@ def detect_corners(path, start_finish: float = 0.0,
     return corners
 
 
+def _parse_corner(c) -> tuple[float, str, float, float]:
+    """Normalize a corner to (lap_pct, label, model_offset_x, model_offset_y)."""
+    if isinstance(c, dict):
+        return (float(c["pct"]), str(c["label"]),
+                float(c.get("ox", 0.0)), float(c.get("oy", 0.0)))
+    pct, label = float(c[0]), str(c[1])
+    ox = float(c[2]) if len(c) > 2 else 0.0
+    oy = float(c[3]) if len(c) > 3 else 0.0
+    return pct, label, ox, oy
+
+
+def corners_to_json(corners) -> list[dict]:
+    """Serialize corners for a track file / MongoDB document."""
+    out = []
+    for pct, label, ox, oy in (_parse_corner(c) for c in (corners or [])):
+        d = {"pct": round(pct, 5), "label": label}
+        if ox or oy:
+            d["ox"] = round(ox, 7)
+            d["oy"] = round(oy, 7)
+        out.append(d)
+    return out
+
+
 # --- Per-track files --------------------------------------------------------
 #
 # A track file is keyed by iRacing's TrackID and lives in tracks/<id>.json or
@@ -460,7 +483,8 @@ def load_track(path: str, n: int = 720):
     raw = [(float(a), float(b)) for a, b in data["points"]]
     points = _resample_by_length(raw, n)
     sf = float(data.get("start_finish", 0.0))
-    corners = [(float(c["pct"]), str(c["label"])) for c in data.get("corners", [])]
+    corners = [_parse_corner(c) for c in data.get("corners", [])
+               if isinstance(c, dict) and "pct" in c and "label" in c]
     meta: dict = {}
     if isinstance(data.get("pit_span"), (list, tuple)) and len(data["pit_span"]) == 2:
         meta["pit_span"] = (float(data["pit_span"][0]), float(data["pit_span"][1]))
@@ -662,6 +686,16 @@ class TrackMapWidget(QWidget):
         self._hint_timer = QTimer(self)
         self._hint_timer.setSingleShot(True)
         self._hint_timer.timeout.connect(self._clear_hint)
+        # Corner authoring (Track Scan tab): drag labels on the map.
+        self.corner_edit_mode = False
+        self._corner_edit_cb = None
+        self._drag_corner: int | None = None
+        self._drag_last: QPointF | None = None
+        self._corner_hit: list[tuple[QRectF, int]] = []
+        self._layout_scale = 1.0
+        self._layout_mirror = False
+        self._layout_rot = 0
+        self.setMouseTracking(True)
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -699,7 +733,7 @@ class TrackMapWidget(QWidget):
     def set_track(self, path, start_finish: float = 0.0, corners=None) -> None:
         self.path = path
         self.start_finish = start_finish
-        self.corners = corners or []
+        self.corners = [_parse_corner(c) for c in (corners or [])]
         if path:
             self._centroid = (
                 sum(pt[0] for pt in path) / len(path),
@@ -737,6 +771,35 @@ class TrackMapWidget(QWidget):
             self._auto_corners = detect_corners(self.path, self.start_finish,
                                                 target=self.num_turns)
             self.update()
+
+    def set_corners(self, corners) -> None:
+        """Replace the displayed corner list (manual authoring)."""
+        self.corners = [_parse_corner(c) for c in (corners or [])]
+        self.update()
+
+    def regenerate_corners(self) -> None:
+        """Re-detect corners from geometry using the current ``num_turns``."""
+        if not self.path:
+            return
+        detected = detect_corners(self.path, self.start_finish,
+                                  target=self.num_turns)
+        self.set_corners([(p, l, 0.0, 0.0) for p, l in detected])
+
+    def display_corners(self) -> list[tuple[float, str, float, float]]:
+        """Corners to draw: saved manual list, else auto-detected."""
+        if self.corners:
+            return list(self.corners)
+        return [(p, l, 0.0, 0.0) for p, l in self._auto_corners]
+
+    def set_corner_edit(self, enabled: bool, callback=None) -> None:
+        """Enable dragging corner labels on the map (write-access authoring)."""
+        self.corner_edit_mode = bool(enabled)
+        self._corner_edit_cb = callback if enabled else None
+        self._drag_corner = None
+        self._drag_last = None
+        self.setCursor(Qt.CursorShape.OpenHandCursor if enabled
+                       else Qt.CursorShape.ArrowCursor)
+        self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
         """Set the pit-lane stretch (entry_pct, exit_pct) and learned limit."""
@@ -968,6 +1031,9 @@ class TrackMapWidget(QWidget):
         scale = min(avail_w / span_x, avail_h / span_y)
         ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
         oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
+        self._layout_scale = scale
+        self._layout_mirror = mirror
+        self._layout_rot = rot
 
         def tx(pt):
             mx, my = model(pt)
@@ -999,10 +1065,7 @@ class TrackMapWidget(QWidget):
                                          or self.pit_span is not None):
             self._draw_pit(p, tx)
         if mc.get("show_corners", True):
-            corners = self.corners
-            if not corners and mc.get("auto_corners", True):
-                corners = self._auto_corners
-            self._draw_corners(p, tx, corners)
+            self._draw_corners(p, tx, self.display_corners())
         if mc.get("show_start_finish", True):
             self._draw_start_finish(p, tx)
         self._draw_cars(p, tx)
@@ -1252,33 +1315,124 @@ class TrackMapWidget(QWidget):
         p.setPen(_mcol("wind_text"))
         p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _model_delta(self, dsx: float, dsy: float) -> tuple[float, float]:
+        """Convert a screen-space drag delta to model-space offset."""
+        s = self._layout_scale or 1.0
+        x, y = dsx / s, dsy / s
+        rot = self._layout_rot
+        if rot == 90:
+            x, y = -y, x
+        elif rot == 180:
+            x, y = -x, -y
+        elif rot == 270:
+            x, y = y, -x
+        if self._layout_mirror:
+            x = -x
+        return x, y
+
+    def _screen_delta(self, mx: float, my: float) -> tuple[float, float]:
+        """Convert a model-space offset to screen-space pixels."""
+        x, y = mx, my
+        if self._layout_mirror:
+            x = -x
+        rot = self._layout_rot
+        if rot == 90:
+            x, y = y, -x
+        elif rot == 180:
+            x, y = -x, -y
+        elif rot == 270:
+            x, y = -y, x
+        s = self._layout_scale or 1.0
+        return x * s, y * s
+
+    def _corner_at(self, pos: QPointF) -> int | None:
+        for rect, idx in self._corner_hit:
+            if rect.contains(pos):
+                return idx
+        return None
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (self.corner_edit_mode and self.path and event.button()
+                == Qt.MouseButton.LeftButton):
+            idx = self._corner_at(event.position())
+            if idx is not None:
+                self._drag_corner = idx
+                self._drag_last = event.position()
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_corner is not None and self._drag_last is not None:
+            pos = event.position()
+            dx = pos.x() - self._drag_last.x()
+            dy = pos.y() - self._drag_last.y()
+            self._drag_last = pos
+            mx, my = self._model_delta(dx, dy)
+            corners = list(self.display_corners())
+            if 0 <= self._drag_corner < len(corners):
+                pct, label, ox, oy = _parse_corner(corners[self._drag_corner])
+                corners[self._drag_corner] = (pct, label, ox + mx, oy + my)
+                self.set_corners(corners)
+                self.update()
+            event.accept()
+            return
+        if self.corner_edit_mode and self.path:
+            idx = self._corner_at(event.position())
+            self.setCursor(Qt.CursorShape.OpenHandCursor if idx is not None
+                           else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_corner is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_corner = None
+            self._drag_last = None
+            self.setCursor(Qt.CursorShape.OpenHandCursor
+                           if self.corner_edit_mode else Qt.CursorShape.ArrowCursor)
+            if self._corner_edit_cb:
+                self._corner_edit_cb()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
     def _draw_corners(self, p: QPainter, tx, corners=None) -> None:
-        corners = self.corners if corners is None else corners
+        corners = self.display_corners() if corners is None else corners
         if not corners:
+            self._corner_hit = []
             return
         fam = config.CFG.get("font_family", "Arial")
         sz = max(5, round(8 * config.text_scale_for("map")))
         p.setFont(QFont(fam, sz, QFont.Weight.Bold))
         fm = p.fontMetrics()
-        # Push the label outside the asphalt, working in screen space so it
-        # behaves the same for normalized track files and GPS-learned paths.
         cc = tx(self._centroid)
         asph = _mcfg().get("asphalt_width", 11)
         off = asph * 0.5 + sz + 8.0
         bh = fm.height() + 4
-        for pct, label in corners:
+        self._corner_hit = []
+        for idx, corner in enumerate(corners):
+            pct, label, ox, oy = _parse_corner(corner)
             s = tx(self.path[self._index_for_pct(pct)])
             dx, dy = s.x() - cc.x(), s.y() - cc.y()
             ln = math.hypot(dx, dy) or 1.0
             ax = s.x() + dx / ln * off
             ay = s.y() + dy / ln * off
+            if ox or oy:
+                sx, sy = self._screen_delta(ox, oy)
+                ax += sx
+                ay += sy
             bw = max(bh, fm.horizontalAdvance(label) + 12)
             rect = QRectF(ax - bw / 2, ay - bh / 2, bw, bh)
-            p.setBrush(_mcol("corner_bg"))
+            if self.corner_edit_mode:
+                p.setBrush(QColor(255, 200, 60, 220 if idx == self._drag_corner
+                                  else 160))
+            else:
+                p.setBrush(_mcol("corner_bg"))
             p.setPen(Qt.PenStyle.NoPen)
             p.drawRoundedRect(rect, 4, 4)
             p.setPen(_mcol("corner_text"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+            self._corner_hit.append((rect, idx))
 
     def _draw_cars(self, p: QPainter, tx) -> None:
         sz = max(5, round(8 * config.text_scale_for("map")))

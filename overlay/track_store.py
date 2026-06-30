@@ -234,9 +234,8 @@ def normalize(doc: dict) -> dict:
         "points": [[round(float(x), 9), round(float(y), 9)]
                    for x, y in (doc.get("points") or [])],
         "start_finish": float(doc.get("start_finish", 0.0) or 0.0),
-        "corners": [{"pct": float(c["pct"]), "label": str(c["label"])}
-                    for c in (doc.get("corners") or [])
-                    if "pct" in c and "label" in c],
+        "corners": [dict(c) for c in (doc.get("corners") or [])
+                    if isinstance(c, dict) and "pct" in c and "label" in c],
         "schema": 1,
     }
     for key in ("pit_span", "pit_speed", "source", "learned",

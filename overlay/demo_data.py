@@ -333,6 +333,7 @@ class FakeIRSDK:
         if key == "WeekendInfo":
             return {"TrackID": "_demo", "TrackDisplayName": "Demo Speedpark",
                     "TrackConfigName": "Oval", "TrackLength": "4.00 km",
+                    "TrackType": "oval course", "Category": "Oval",
                     "WeekendOptions": {"IncidentLimit": 17}}
 
         if key == "SplitTimeInfo":

@@ -8,20 +8,34 @@ The blend lines themselves now come straight from iRacing's own track-surface
 zones (OnTrack <-> ApproachingPits), which are exact and drift-free. The
 values below control how much *extra* length to draw past those lines so the
 lane matches painted commitment zones (often longer than the surface flip).
-Tune per track in the Track Scan tab sliders; these are session-start defaults.
+Tune per track in the Track Scan tab sliders; session defaults are chosen from
+``WeekendInfo.TrackType`` / ``Category`` when a session starts.
 
 Both are expressed as a lap fraction (e.g. 0.16 = 16% of a lap), so they read
 the same regardless of car speed.
 """
 
-# Extra distance (lap fraction) to keep tracing the exit lane *past* iRacing's
-# exit blend line (the ApproachingPits -> OnTrack surface flip, ~0.108 at
-# Watkins Glen). 0 ends exactly at that line, which is usually too short --
-# the painted commitment line runs further. Raise for longer exits (ovals often
-# need ~0.12-0.16; road courses often ~0.04-0.08). Tune live in Track Scan.
-PIT_EXIT_EXTEND_PCT = 0.05
+# Road-course defaults (also used for dirt road).
+PIT_EXIT_EXTEND_PCT_ROAD = 0.05
+PIT_ENTRY_MAX_PCT_ROAD = 0.03
 
-# Extra lap fraction to extend the entry blend *past* iRacing's entry blend line
-# (OnTrack -> ApproachingPits). Added on top of the surface boundary when that
-# zone is reported; otherwise used alone as the back-trace cap from pit road.
-PIT_ENTRY_MAX_PCT = 0.08
+# Oval defaults (asphalt and dirt oval).
+PIT_EXIT_EXTEND_PCT_OVAL = 0.16
+PIT_ENTRY_MAX_PCT_OVAL = 0.08
+
+
+def pit_blend_defaults(weekend: dict | None) -> tuple[float, float]:
+    """Return (entry_max_pct, exit_extend_pct) from WeekendInfo track type.
+
+    Uses ``TrackType`` and ``Category`` (case-insensitive). Dirt road counts
+    as road; dirt oval counts as oval.
+    """
+    wk = weekend or {}
+    tt = str(wk.get("TrackType") or "")
+    cat = str(wk.get("Category") or "")
+    cfg = str(wk.get("TrackConfigName") or "")
+    blob = f"{tt} {cat} {cfg}".lower()
+    is_oval = "oval" in blob and "road" not in blob
+    if is_oval:
+        return PIT_ENTRY_MAX_PCT_OVAL, PIT_EXIT_EXTEND_PCT_OVAL
+    return PIT_ENTRY_MAX_PCT_ROAD, PIT_EXIT_EXTEND_PCT_ROAD

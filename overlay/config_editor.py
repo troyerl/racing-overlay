@@ -1506,6 +1506,10 @@ class ConfigEditor(QWidget):
             nav = self._nav_items.get(key)
             if nav:
                 nav.setSelected(idx == index)
+        self._sync_corner_edit_mode()
+        if (0 <= index < len(self._sections)
+                and self._sections[index][0] == "__scan__"):
+            self._refresh_track_authoring()
 
     def _scroll(self, inner: QWidget) -> QScrollArea:
         area = QScrollArea()
@@ -1566,14 +1570,15 @@ class ConfigEditor(QWidget):
 
         if key == "__scan__":
             note = QLabel("Authoring tools \u2014 you see these because you have "
-                          "write access. Re-scan the current track or just its "
-                          "pit lane, and fine-tune the pit blend lengths for this "
-                          "session.")
+                          "write access. Re-scan the track or pit lane, tune blend "
+                          "lengths (session only), and edit pit speed / corner labels "
+                          "(saved to the cloud).")
             note.setObjectName("subtitle")
             note.setWordWrap(True)
             v.addWidget(note)
             v.addWidget(self._scan_actions_card())
             v.addWidget(self._pit_tuning_card())
+            v.addWidget(self._track_authoring_card())
             v.addStretch(1)
             return page
 
@@ -1667,19 +1672,153 @@ class ConfigEditor(QWidget):
         v.addWidget(hint2)
         return card
 
-    # Pit blend-length sliders: (overlay attr, constants default, label, hint,
-    # min%, max%). Values are lap fractions shown/edited as whole percents.
+    # Pit blend-length sliders: (kind, label, hint, min%, max%). Values are lap
+    # fractions shown/edited as whole percents; Reset uses track-type defaults.
     _PIT_TUNERS = (
-        ("exit_extend", "PIT_EXIT_EXTEND_PCT", "Pit exit lane length",
+        ("exit_extend", "Pit exit lane length",
          "Extra length past iRacing's exit blend line (surface ApproachingPits "
-         "-> OnTrack). 0 ends at the blend line; raise to match a longer "
-         "painted commitment line (ovals often ~16%, road courses ~5-8%).",
+         "-> OnTrack). 0 ends at the blend line; defaults are 16% (oval) or "
+         "5% (road).",
          0, 30),
-        ("entry_max", "PIT_ENTRY_MAX_PCT", "Pit entry lane length",
+        ("entry_max", "Pit entry lane length",
          "Extra length past iRacing's entry blend line (surface OnTrack -> "
-         "ApproachingPits). Raise for a longer yellow entry line.",
+         "ApproachingPits). Defaults are 8% (oval) or 3% (road).",
          0, 20),
     )
+
+    def _track_authoring_card(self) -> QFrame:
+        """Track Scan tab: edit pit speed, corner count, and label positions."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Track metadata")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Changes save to the track file and cloud immediately "
+                      "when a track is loaded.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+
+        unit = config.speed_unit()
+        pit_row = QHBoxLayout()
+        pit_lbl = QLabel(f"Pit speed limit ({unit})")
+        pit_lbl.setObjectName("rowLabel")
+        self._pit_speed_spin = QDoubleSpinBox()
+        self._pit_speed_spin.setRange(0.0, 120.0 if unit == "MPH" else 200.0)
+        self._pit_speed_spin.setDecimals(1)
+        self._pit_speed_spin.setSingleStep(1.0)
+        self._pit_speed_spin.valueChanged.connect(self._pit_speed_authoring_changed)
+        pit_row.addWidget(pit_lbl)
+        pit_row.addStretch(1)
+        pit_row.addWidget(self._pit_speed_spin)
+        v.addLayout(pit_row)
+
+        turn_row = QHBoxLayout()
+        turn_lbl = QLabel("Number of corners")
+        turn_lbl.setObjectName("rowLabel")
+        self._num_turns_spin = QSpinBox()
+        self._num_turns_spin.setRange(0, 30)
+        self._num_turns_spin.setSpecialValueText("Auto")
+        self._num_turns_spin.valueChanged.connect(self._num_turns_authoring_changed)
+        turn_row.addWidget(turn_lbl)
+        turn_row.addStretch(1)
+        turn_row.addWidget(self._num_turns_spin)
+        v.addLayout(turn_row)
+
+        edit_row = QHBoxLayout()
+        edit_texts = QVBoxLayout()
+        edit_texts.setSpacing(1)
+        edit_title = QLabel("Edit corner labels on map")
+        edit_title.setObjectName("rowLabel")
+        edit_hint = QLabel("Drag corner numbers on the track map to reposition "
+                           "them; release to save.")
+        edit_hint.setObjectName("enableHint")
+        edit_hint.setWordWrap(True)
+        edit_texts.addWidget(edit_title)
+        edit_texts.addWidget(edit_hint)
+        edit_row.addLayout(edit_texts, 1)
+        self._corner_edit_sw = ToggleSwitch(accent="#b84626")
+        self._corner_edit_sw.toggled.connect(self._corner_edit_toggled)
+        edit_row.addWidget(self._corner_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
+        v.addLayout(edit_row)
+
+        self._authoring_status = QLabel("")
+        self._authoring_status.setObjectName("enableHint")
+        self._authoring_status.setWordWrap(True)
+        v.addWidget(self._authoring_status)
+        self._refresh_track_authoring()
+        return card
+
+    def _refresh_track_authoring(self) -> None:
+        """Sync Track Scan metadata controls from the running overlay."""
+        if not hasattr(self, "_pit_speed_spin"):
+            return
+        enabled = False
+        state = {}
+        if self._overlay is not None and hasattr(self._overlay, "track_authoring_state"):
+            state = self._overlay.track_authoring_state()
+            enabled = bool(state.get("has_track"))
+        self._pit_speed_spin.blockSignals(True)
+        self._num_turns_spin.blockSignals(True)
+        self._pit_speed_spin.setEnabled(enabled)
+        self._num_turns_spin.setEnabled(enabled)
+        self._corner_edit_sw.setEnabled(enabled)
+        if enabled:
+            ms = float(state.get("pit_speed_ms") or 0.0)
+            self._pit_speed_spin.setValue(config.conv_speed(ms) if ms else 0.0)
+            n = state.get("num_turns")
+            self._num_turns_spin.setValue(int(n) if n else 0)
+            cnt = state.get("corner_count", 0)
+            self._authoring_status.setText(
+                f"{cnt} corner labels on map."
+                if cnt else "No corner labels yet.")
+        else:
+            self._pit_speed_spin.setValue(0.0)
+            self._num_turns_spin.setValue(0)
+            self._authoring_status.setText(
+                "Load a scanned track in the overlay to edit metadata.")
+            self._corner_edit_sw.setChecked(False)
+        self._pit_speed_spin.blockSignals(False)
+        self._num_turns_spin.blockSignals(False)
+        self._sync_corner_edit_mode()
+
+    def _pit_speed_authoring_changed(self, value: float) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "set_pit_speed_authoring"):
+            return
+        ms = value / 2.2369362921 if config.is_imperial() else value / 3.6
+        self._overlay.set_pit_speed_authoring(ms)
+        self._authoring_status.setText(
+            f"Pit speed saved ({value:.1f} {config.speed_unit()}).")
+        self._flash("Pit speed saved")
+
+    def _num_turns_authoring_changed(self, value: int) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "set_num_turns_authoring"):
+            return
+        self._overlay.set_num_turns_authoring(value)
+        self._refresh_track_authoring()
+        label = str(value) if value else "auto"
+        self._authoring_status.setText(f"Corners updated ({label}) and saved.")
+        self._flash("Corner count saved")
+
+    def _corner_edit_toggled(self, on: bool) -> None:
+        self._sync_corner_edit_mode()
+        if on:
+            self._authoring_status.setText(
+                "Corner edit on \u2014 drag labels on the map.")
+
+    def _sync_corner_edit_mode(self) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "set_corner_edit_mode"):
+            return
+        on = False
+        if hasattr(self, "_corner_edit_sw"):
+            cur_key = (self._sections[self._cur_index][0]
+                       if 0 <= self._cur_index < len(self._sections) else None)
+            on = (cur_key == "__scan__" and self._corner_edit_sw.isChecked()
+                  and self._corner_edit_sw.isEnabled())
+        self._overlay.set_corner_edit_mode(on)
 
     def _pit_tuning_card(self) -> QFrame:
         """Track Scan tab card: live, session-only pit blend-length sliders.
@@ -1705,8 +1844,12 @@ class ConfigEditor(QWidget):
         cur = self._overlay.pit_tuning() if (
             self._overlay is not None and hasattr(self._overlay, "pit_tuning")
         ) else None
-        for kind, const_name, label, row_hint, lo, hi in self._PIT_TUNERS:
-            default = float(getattr(constants, const_name))
+        if self._overlay is not None and hasattr(self._overlay, "pit_tuning_defaults"):
+            defaults = self._overlay.pit_tuning_defaults()
+        else:
+            defaults = constants.pit_blend_defaults(None)
+        for kind, label, row_hint, lo, hi in self._PIT_TUNERS:
+            default = defaults[1] if kind == "exit_extend" else defaults[0]
             if cur is not None:
                 live = cur[1] if kind == "exit_extend" else cur[0]
             else:
@@ -1953,6 +2096,7 @@ class ConfigEditor(QWidget):
         if self._overlay is not None:
             self._refresh_overlay_btn()
             self._sync_edit_switch()
+            self._refresh_track_authoring()
 
     def _rescan_track(self) -> None:
         if config.request_rescan():
@@ -2438,6 +2582,8 @@ class ConfigEditor(QWidget):
     # --- preview lifecycle --------------------------------------------------
 
     def closeEvent(self, event):  # noqa: N802
+        if self._overlay is not None and hasattr(self._overlay, "set_corner_edit_mode"):
+            self._overlay.set_corner_edit_mode(False)
         # Stop pinning the live overlay to the edited profile; resume the
         # telemetry-driven context.
         config.set_preview_context(None)

@@ -178,9 +178,11 @@ class AdvancedSimHUD:
         self._pit_speed_ms = 0.0
         # Session-only overrides of the pit blend-length dials (constants.py).
         # The settings "Track Scan" tab tunes these live for the running session;
-        # they're never persisted, so they reset to the defaults on relaunch.
-        self.pit_entry_max_pct = constants.PIT_ENTRY_MAX_PCT
-        self.pit_exit_extend_pct = constants.PIT_EXIT_EXTEND_PCT
+        # they're never persisted -- on relaunch they reset when WeekendInfo arrives.
+        self.pit_entry_max_pct, self.pit_exit_extend_pct = (
+            constants.pit_blend_defaults(None))
+        self._pit_blend_defaults = (self.pit_entry_max_pct,
+                                    self.pit_exit_extend_pct)
         self._pit_s0 = None  # speed/time samples for steady-cruise detection
         self._pit_t0 = None
         # Real pit-lane geometry: the player's GPS trace from leaving the track
@@ -486,16 +488,83 @@ class AdvancedSimHUD:
         """
         return (self.pit_entry_max_pct, self.pit_exit_extend_pct)
 
+    def pit_tuning_defaults(self) -> tuple[float, float]:
+        """Track-type defaults for the pit blend dials (entry, exit)."""
+        return self._pit_blend_defaults
+
     def set_pit_tuning(self, entry_max: float | None = None,
                        exit_extend: float | None = None) -> None:
         """Override the pit blend-length dials for the running session only.
 
-        Not persisted: the next launch reverts to the constants.py defaults.
+        Not persisted: the next launch reverts to the track-type defaults.
         """
         if entry_max is not None:
             self.pit_entry_max_pct = float(entry_max)
         if exit_extend is not None:
             self.pit_exit_extend_pct = float(exit_extend)
+
+    def track_authoring_state(self) -> dict:
+        """Snapshot for the Track Scan authoring tab (pit speed, corners)."""
+        mw = self.map_widget
+        n = self._track_turns if self._track_turns else mw.num_turns
+        return {
+            "has_track": mw.path is not None and self._track_id is not None,
+            "pit_speed_ms": self._pit_speed_ms,
+            "num_turns": n,
+            "corner_count": len(mw.display_corners()),
+        }
+
+    def _persist_track_meta(self, **fields) -> bool:
+        """Write track metadata locally and push to the cloud when allowed."""
+        if self._track_id is None or not fields:
+            return False
+        try:
+            track_map.update_track_meta(self.tracks_dir, self._track_id, **fields)
+        except Exception:
+            return False
+        if config.cloud_tracks():
+            self._track_sync.upload_local_async(self.tracks_dir, self._track_id)
+        return True
+
+    def set_pit_speed_authoring(self, speed_ms: float) -> None:
+        """Override the learned pit speed limit and save to the track record."""
+        speed_ms = max(0.0, float(speed_ms))
+        self._pit_speed_ms = speed_ms
+        if self._pit_span is not None:
+            self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+        elif speed_ms > 0:
+            self.map_widget.pit_speed_ms = speed_ms
+            self.map_widget.update()
+        self._persist_track_meta(pit_speed=round(speed_ms, 3) if speed_ms else None)
+
+    def set_num_turns_authoring(self, n: int) -> None:
+        """Set the official corner count, re-detect labels, and save."""
+        try:
+            val = int(n)
+        except (TypeError, ValueError):
+            val = 0
+        self._track_turns = val if val > 0 else None
+        self.map_widget.set_num_turns(self._track_turns)
+        self.map_widget.regenerate_corners()
+        fields = {"corners": track_map.corners_to_json(self.map_widget.corners)}
+        if self._track_turns:
+            fields["num_turns"] = self._track_turns
+        else:
+            fields["num_turns"] = None
+        self._persist_track_meta(**fields)
+
+    def set_corner_edit_mode(self, enabled: bool) -> None:
+        """Toggle drag-to-move corner labels on the map widget."""
+        self.map_widget.set_corner_edit(
+            enabled, self._save_corners_authoring if enabled else None)
+
+    def _save_corners_authoring(self) -> None:
+        """Persist manually placed corner labels."""
+        corners = track_map.corners_to_json(self.map_widget.corners)
+        fields: dict = {"corners": corners}
+        if self._track_turns:
+            fields["num_turns"] = self._track_turns
+        self._persist_track_meta(**fields)
 
     def _pit_scan_active(self) -> bool:
         """True while the track is scanned but pit data still needs gathering."""
@@ -1384,6 +1453,10 @@ class AdvancedSimHUD:
                 # corners exactly the way the sim does (ovals and road courses).
                 self._track_turns = _coerce_int(weekend.get("TrackNumTurns"))
                 self.map_widget.set_num_turns(self._track_turns)
+                self.pit_entry_max_pct, self.pit_exit_extend_pct = (
+                    constants.pit_blend_defaults(weekend))
+                self._pit_blend_defaults = (self.pit_entry_max_pct,
+                                            self.pit_exit_extend_pct)
                 # On a rescan we skip the saved/bundled file and re-learn; the
                 # new scan then overwrites tracks/<id>.json when complete.
                 if not self._force_learn:
