@@ -1871,10 +1871,36 @@ class AdvancedSimHUD:
         d = (to_pct - from_pct) % 1.0
         return 0.0 if d > 0.5 else d
 
+    def _track_centroid(self):
+        """Center of the racing-line loop (used for infield/outfield on ovals)."""
+        pts = self._track_pts
+        if not pts:
+            return 0.0, 0.0
+        return (sum(p[0] for p in pts) / len(pts),
+                sum(p[1] for p in pts) / len(pts))
+
+    def _pit_infield_sign(self, pct) -> float:
+        """+1 / -1 so ``sign * track_normal`` points toward the loop centroid."""
+        if pct is None or not self._track_pts:
+            return 1.0
+        tp = self._track_point_at_pct(pct)
+        if tp is None:
+            return 1.0
+        nx, ny = self._track_normal_at_pct(pct)
+        cx, cy = self._track_centroid()
+        dot = (cx - tp[0]) * nx + (cy - tp[1]) * ny
+        return 1.0 if dot >= 0.0 else -1.0
+
     def _exit_extension_params(self, pit_out, surf_pct):
         """Side sign and lane width for synthesizing a post-merge exit extension."""
         lane_w = 0.0
         sgn = 1.0
+        if self._track_is_oval and surf_pct is not None:
+            sgn = self._pit_infield_sign(surf_pct)
+            lane_w = self._pit_lane_offset
+            if not lane_w or lane_w <= 0.0:
+                lane_w = max(0.015 * self._track_diag, 1.0)
+            return lane_w, sgn
         if pit_out:
             last = pit_out[-1]
             lx, ly = (last[1], last[2]) if len(last) == 3 else last
@@ -1887,6 +1913,40 @@ class AdvancedSimHUD:
             lane_w = max(0.15 * self._pit_lane_offset,
                          0.015 * self._track_diag)
         return lane_w, sgn
+
+    def _reanchor_lane_parallel(self, seg):
+        """Snap an oval pit lane onto a constant infield offset at each lap %.
+
+        Each captured sample keeps its own lap % (including S/F wrap) but the
+        lateral position comes from the racing line + infield normal, undoing
+        dead-reckoning drift that otherwise cuts diagonally across the infield.
+        """
+        if not seg or not self._track_pts or not self._seg_has_pct(seg):
+            return self._seg_to_xy(seg)
+        lane_w = self._pit_lane_offset
+        if not lane_w or lane_w <= 0.0:
+            dists = []
+            for pct, x, y in seg:
+                near, nx, ny = self._nearest_on_track_at_pct(x, y, pct)
+                if near is not None:
+                    dists.append(abs((x - near[0]) * nx + (y - near[1]) * ny))
+            lane_w = sorted(dists)[len(dists) // 2] if dists else 0.0
+        if lane_w <= 0.0:
+            return self._seg_to_xy(seg)
+        out = []
+        for pct, x, y in seg:
+            if pct is None:
+                out.append((x, y))
+                continue
+            tp = self._track_point_at_pct(pct)
+            if tp is None:
+                out.append((x, y))
+                continue
+            sgn = self._pit_infield_sign(pct)
+            nx, ny = self._track_normal_at_pct(pct)
+            nx, ny = sgn * nx, sgn * ny
+            out.append((tp[0] + nx * lane_w, tp[1] + ny * lane_w))
+        return out
 
     def _append_exit_extension(self, pit_out, surf_pct, limit, *,
                                constant_offset: bool = False):
@@ -1981,6 +2041,21 @@ class AdvancedSimHUD:
                 continue
             tp = self._track_point_at_pct(pct)
             nx, ny = self._track_normal_at_pct(pct)
+            if self._track_is_oval:
+                sgn = self._pit_infield_sign(pct)
+                nx, ny = sgn * nx, sgn * ny
+                near = tp
+                off = self._pit_lane_offset
+                if not off or off <= 0.0:
+                    ntp, nnx, nny = self._nearest_on_track_at_pct(x, y, pct)
+                    if ntp is not None:
+                        near = ntp
+                        off = abs((x - near[0]) * nnx + (y - near[1]) * nny)
+                if tp is None or not off:
+                    out.append((x, y))
+                    continue
+                out.append((tp[0] + nx * off, tp[1] + ny * off))
+                continue
             near, _, _ = self._nearest_on_track_at_pct(x, y, pct)
             if tp is None or near is None:
                 out.append((x, y))
@@ -2721,7 +2796,10 @@ class AdvancedSimHUD:
         pit_in, lane, pit_out = self._align_pit_to_track(
             pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
         pit_in = self._seg_to_xy(self._reanchor_by_lap_pct(pit_in))
-        lane = self._seg_to_xy(lane)
+        if self._track_is_oval and self._seg_has_pct(lane):
+            lane = self._reanchor_lane_parallel(lane)
+        else:
+            lane = self._seg_to_xy(lane)
         pit_out = self._seg_to_xy(self._reanchor_by_lap_pct(pit_out))
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct,
@@ -2854,14 +2932,19 @@ class AdvancedSimHUD:
             return kept
 
         offs = sorted(p[8] for p in kept if p[8] and p[8] > 0)
+        lo = offs[0] if offs else 0.0
         if len(offs) >= 2:
-            lo = offs[0]
             # Reject passes whose lane offset blew up vs the best capture (e.g.
-            # 35 m vs 12 m on a road course after dead-reckoning drift).
+            # 513 m vs 35 m on an oval after dead-reckoning drift).
             cap = max(lo * 2.0, lo + 8.0)
             near = [p for p in kept if p[8] and p[8] <= cap]
             if near:
                 kept = near
+        # Absolute sanity cap -- dead reckoning can report 100 m+ before LSQ.
+        max_abs = max(120.0, lo * 4.0) if lo > 0 else 120.0
+        kept = [p for p in kept if not p[8] or p[8] <= max_abs]
+        if not kept and passes:
+            kept = [min(passes, key=lambda p: p[8] or float("inf"))]
         return kept
 
     @classmethod
