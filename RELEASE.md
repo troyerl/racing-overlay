@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.6 - 2026-06-30
+
+- **Pit exit lane reaches further down the track.** With the merge now detected
+  accurately, the post-merge extension (`PIT_EXIT_EXTEND_PCT`) is lengthened to
+  0.14 of a lap so the yellow exit line runs well down the commitment zone --
+  restoring the long reach of the earlier build without its swiggle or flicker.
+  Tune the one value up/down if it's slightly long or short on a given track.
+
+## 1.22.5 - 2026-06-29
+
+- **Pit exit lane now reaches the end of the commitment line.** The car
+  geometrically rejoins the racing line before iRacing's painted pit-exit line
+  actually ends, so the lane stopped short of where you really commit back to the
+  track. The exit is now traced a configurable lap fraction past the detected
+  merge (`PIT_EXIT_EXTEND_PCT`, default 6% of a lap) so the yellow line continues
+  to the true end of the exit, and the amount is speed-independent and easy to
+  tune.
+
 ## 1.22.4 - 2026-06-29
 
 - **Fix: pit exit merge detected too early on narrow ovals.** Distance from the
