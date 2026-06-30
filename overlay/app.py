@@ -1822,6 +1822,48 @@ class AdvancedSimHUD:
         d = (to_pct - from_pct) % 1.0
         return 0.0 if d > 0.5 else d
 
+    def _append_exit_extension(self, pit_out, surf_pct, limit):
+        """Extend the exit blend forward along the racing line past the surface
+        merge, tapering lateral offset to zero.
+
+        Avoids following the car through corners after rejoin -- on a road course
+        the driver often hits esses immediately while the painted commitment
+        line runs straight beside the track.
+        """
+        if limit <= 0.0 or not self._track_pts or surf_pct is None:
+            return pit_out
+        merge_tp = self._track_point_at_pct(surf_pct)
+        if merge_tp is None:
+            return pit_out
+        lane_w = 0.0
+        sgn = 1.0
+        if pit_out:
+            last = pit_out[-1]
+            lx, ly = (last[1], last[2]) if len(last) == 3 else last
+            near, nx, ny = self._nearest_on_track_at_pct(lx, ly, surf_pct)
+            if near is not None:
+                signed = (lx - near[0]) * nx + (ly - near[1]) * ny
+                lane_w = abs(signed)
+                sgn = 1.0 if signed >= 0 else -1.0
+        if lane_w <= 0.0:
+            lane_w = max(0.15 * self._pit_lane_offset,
+                         0.015 * self._track_diag)
+        if lane_w <= 0.0:
+            return pit_out
+        n = max(6, int(limit * 120))
+        ext = []
+        for k in range(1, n + 1):
+            t = k / n
+            pct = (surf_pct + limit * t) % 1.0
+            tp = self._track_point_at_pct(pct)
+            if tp is None:
+                continue
+            nx, ny = self._track_normal_at_pct(pct)
+            nx, ny = sgn * nx, sgn * ny
+            off = lane_w * (1.0 - t)
+            ext.append((pct, tp[0] + nx * off, tp[1] + ny * off))
+        return list(pit_out) + ext
+
     def _nearest_on_track_at_pct(self, x, y, pct, window: float = 0.08):
         """Closest point on the racing line near ``pct`` (lap-fraction window)."""
         pts = self._track_pts
@@ -2459,27 +2501,21 @@ class AdvancedSimHUD:
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
                 # iRacing's surface flip (ApproachingPits -> OnTrack) is the
-                # exact, drift-free exit blend line. Use it as the merge anchor
-                # and measure pit_exit_extend_pct forward from there so the
-                # slider stretches the commitment line past the blend. Distance
-                # rejoin fires too early (dist ~0 while still in ApproachingPits)
-                # and must not override the surface anchor.
-                reason = None
+                # exact, drift-free exit blend line. Finalize as soon as it is
+                # seen -- the post-merge commitment length is synthesized along
+                # the racing line in finalize, not traced from the car (which
+                # on a road course often dives through the next corner).
                 if self._pit_surf_exit_pct is not None:
-                    self._pit_merge_pct = self._pit_surf_exit_pct
-                    reason = "surface"
-                elif self._pit_merge_pct is None and rejoined:
-                    self._pit_merge_pct = valid_pct
-                    reason = "rejoined"
-                if self._pit_merge_pct is not None:
-                    # Merged -- optionally keep tracing a little past the blend
-                    # line (pit_exit_extend_pct) so the drawn lane can match a
-                    # painted commitment line that runs on past the merge.
+                    self._log_exit_profile("surface", rejoin)
+                    self._finalize_pit_pass(valid_pct, capped=False)
+                elif rejoined:
+                    if self._pit_merge_pct is None:
+                        self._pit_merge_pct = valid_pct
                     past = (valid_pct - self._pit_merge_pct) % 1.0
-                    if past > 0.5:      # tiny backwards jitter, not real progress
+                    if past > 0.5:
                         past = 0.0
                     if past >= self.pit_exit_extend_pct or capped:
-                        self._log_exit_profile(reason or "rejoined", rejoin)
+                        self._log_exit_profile("rejoined", rejoin)
                         self._finalize_pit_pass(valid_pct, capped=False)
                 elif capped:
                     # A capped pass never actually merged (the driver kept going,
@@ -2556,14 +2592,18 @@ class AdvancedSimHUD:
             else:
                 in_blend, in_pct = self._trace_entry_blend(
                     self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
-            # Trim exit blend: keep everything up to surface merge + extension.
+            # Exit blend: captured path up to the surface merge, then a synthetic
+            # extension along the racing line (not the car's line through esses).
             pit_out = list(self._pit_out_cur)
             if self._pit_surf_exit_pct is not None:
                 limit = self.pit_exit_extend_pct
+                tol = 0.003
                 if self._seg_has_pct(pit_out):
                     pit_out = [(p, x, y) for p, x, y in pit_out
                                if p is None or self._pct_past(
-                                   self._pit_surf_exit_pct, p) <= limit + 0.003]
+                                   self._pit_surf_exit_pct, p) <= tol]
+                pit_out = self._append_exit_extension(
+                    pit_out, self._pit_surf_exit_pct, limit)
                 out_pct = (self._pit_surf_exit_pct + limit) % 1.0
             self._record_pit_pass(
                 self._pit_enter_pct,
@@ -2744,10 +2784,10 @@ class AdvancedSimHUD:
 
         offs = sorted(p[8] for p in kept if p[8] and p[8] > 0)
         if len(offs) >= 2:
-            mid = offs[len(offs) // 2]
-            # Allow generous spread (2.5× median + 15 m floor) but reject the
-            # classic first-pass blowout (e.g. 120 m vs 12 m on a road course).
-            cap = max(mid * 2.5, mid + 15.0)
+            lo = offs[0]
+            # Reject passes whose lane offset blew up vs the best capture (e.g.
+            # 35 m vs 12 m on a road course after dead-reckoning drift).
+            cap = max(lo * 2.0, lo + 8.0)
             near = [p for p in kept if p[8] and p[8] <= cap]
             if near:
                 kept = near
