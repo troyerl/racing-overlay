@@ -166,7 +166,21 @@ LABEL_OVERRIDES = {
     "lap_compare.min_time_loss": "Min time delta to list a corner (s)",
     "lap_compare.show_live_delta": "Show live delta to best",
     "lap_compare.show_graph": "Show delta-over-distance trace",
+    "show_pit_blends": "Show pit entry/exit lines",
+    "show_pit_speed": "Show pit speed limit",
+    "pit_blend": "Pit entry line",
+    "pit_blend_out": "Pit exit line",
 }
+
+# Rows that only make sense when another toggle is on: maps a leaf's dotted path
+# to (controller dotted path, required value). The row is hidden in the editor
+# while the controller doesn't hold that value -- e.g. the pit speed/blend
+# options vanish when the pit lane itself is hidden.
+ROW_DEPENDENCIES = {
+    "map.show_pit_speed": ("map.show_pit", True),
+    "map.show_pit_blends": ("map.show_pit", True),
+}
+_DEP_CONTROLLERS = {ctrl for ctrl, _ in ROW_DEPENDENCIES.values()}
 
 
 def _label_for(path: list) -> str:
@@ -1170,6 +1184,7 @@ class ConfigEditor(QWidget):
         root.addLayout(controls)
 
         self._build_nav_and_pages()
+        self._filter(self.search.text())  # apply row dependencies on first show
         self._update_ctx_hint()
 
     # --- background ---------------------------------------------------------
@@ -1688,8 +1703,20 @@ class ConfigEditor(QWidget):
             # Searchable on both the friendly label and the raw key path.
             "text": (label_text + " " + " ".join(_pretty(p) for p in path)).lower(),
             "accordions": list(chain),
+            "dep": ROW_DEPENDENCIES.get(".".join(str(p) for p in path)),
         })
         return row
+
+    def _dep_ok(self, r) -> bool:
+        """Whether a row's controlling toggle (if any) currently allows it."""
+        dep = r.get("dep")
+        if not dep:
+            return True
+        ctrl, want = dep
+        try:
+            return _get_at(self.working, ctrl.split(".")) == want
+        except (KeyError, TypeError):
+            return True
 
     def _control(self, path: list, default_val, value, color: str) -> QWidget:
         options = _enum_options(path)
@@ -1734,7 +1761,8 @@ class ConfigEditor(QWidget):
     def _filter(self, text: str) -> None:
         t = text.lower().strip()
         for r in self._rows:
-            r["widget"].setVisible((t in r["text"]) if t else True)
+            ok = self._dep_ok(r) and ((t in r["text"]) if t else True)
+            r["widget"].setVisible(ok)
         for acc in self._accordions:
             rows = [r for r in self._rows if acc in r["accordions"]]
             has = (any(r["widget"].isVisible() for r in rows)
@@ -2204,6 +2232,9 @@ class ConfigEditor(QWidget):
 
     def _set(self, path: list, value) -> None:
         _set_at(self.working, path, value)
+        # Toggling a controller (e.g. map.show_pit) reveals/hides dependent rows.
+        if ".".join(str(p) for p in path) in _DEP_CONTROLLERS:
+            self._filter(self.search.text())
         if self.live_sw.isChecked():
             config.apply_edits(self._edit_ctx, self.working)
         if self.autosave_sw.isChecked():

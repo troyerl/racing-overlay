@@ -1807,7 +1807,13 @@ class AdvancedSimHUD:
         being off the racing line. Opponents have no GPS, so we latch them onto
         the route once seen on pit road and hold them (through the exit blend)
         until their lap pct leaves the route extent -- they rejoin the track.
+
+        When the pit blends are hidden there's no entry/exit lane to ride, so a
+        car simply shows in the pits while it's actually on pit road and snaps
+        back to the track the moment it leaves -- no latch, no blend hold.
         """
+        if not config.CFG["map"].get("show_pit_blends", True):
+            return on_pit
         if is_player:
             return on_pit or self._player_on_route
         latched = self._pit_route_latch.get(idx, False)
@@ -1966,12 +1972,10 @@ class AdvancedSimHUD:
 
         if on:
             self._learn_pit_speed(speed)
-            self.map_widget.set_pit_live(speed)
             if self._pit_span is not None:
                 self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
         else:
             self._pit_s0 = self._pit_t0 = None
-            self.map_widget.set_pit_live(None)
 
         valid_pct = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
 

@@ -635,6 +635,14 @@ DEFAULTS: dict = {
         # driving through the pits once) and show the pit speed limit + your live
         # pit-lane speed.
         "show_pit": True,
+        # Draw the pit entry/exit "blend" lines (the commit lanes joining the
+        # track to pit road and back). When off, the pit lane itself still shows
+        # and a car only appears in the pits while it's actually on pit road,
+        # snapping back to the track the moment it leaves.
+        "show_pit_blends": True,
+        # Show the static pit speed-limit badge on the map (independent of the
+        # blend lines). Only relevant when the pit lane is shown.
+        "show_pit_speed": True,
         # What each car dot shows: "number" (car number) or "position".
         "car_label": "number",
         # Opacity (0..1) of a car's dot while it's on pit road.
@@ -657,9 +665,11 @@ DEFAULTS: dict = {
             "pit": "#ff4d4d",
             "pit_text": "#ffffff",
             "pit_over": "#ffd23a",
-            # Pit entry/exit blend lines (the yellow "commit" lanes that join the
-            # pit road to the track), drawn as dashed yellow slashes.
+            # Pit entry/exit blend lines (the "commit" lanes that join the pit
+            # road to the track), drawn as dashed slashes. Entry is yellow, exit
+            # is blue so the two ends read apart at a glance.
             "pit_blend": "#ffd23a",
+            "pit_blend_out": "#3aa0ff",
             # Fill for a car's dot while it's on pit road (grayed out).
             "pit_car": "#6e747d",
             # Wind compass arrow + label.

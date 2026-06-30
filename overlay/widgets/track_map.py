@@ -533,11 +533,10 @@ class TrackMapWidget(QWidget):
         # carries no corner data (e.g. learned tracks).
         self._auto_corners: list[tuple[float, str]] = []
         self._centroid = (0.0, 0.0)
-        # Pit lane: the (entry_pct, exit_pct) stretch the pit road runs alongside,
-        # the learned speed limit (m/s), and the player's live pit-lane speed.
+        # Pit lane: the (entry_pct, exit_pct) stretch the pit road runs alongside
+        # and the learned speed limit (m/s), shown as a static badge.
         self.pit_span: tuple[float, float] | None = None
         self.pit_speed_ms: float = 0.0
-        self.pit_live_ms: float | None = None
         # The real pit-lane geometry (model-space points, same frame as path),
         # from where you leave the track to where you rejoin. When present it's
         # drawn instead of the inward-offset approximation of pit_span.
@@ -558,6 +557,7 @@ class TrackMapWidget(QWidget):
         # arc lengths, rebuilt whenever any pit geometry changes.
         self._route_pts: list[tuple[float, float]] | None = None
         self._route_cum: list[float] = []
+        self._route_blends: bool = True  # whether the cached route includes blends
         # Wind: bearing the wind blows FROM (radians, clockwise from North) and
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
@@ -625,7 +625,6 @@ class TrackMapWidget(QWidget):
             self._auto_corners = []
             self.pit_span = None
             self.pit_speed_ms = 0.0
-            self.pit_live_ms = None
             self.pit_path = None
             self.pit_in = None
             self.pit_out = None
@@ -681,7 +680,6 @@ class TrackMapWidget(QWidget):
         """Forget the learned pit lane (used when rescanning the pits)."""
         self.pit_span = None
         self.pit_speed_ms = 0.0
-        self.pit_live_ms = None
         self.pit_path = None
         self.pit_in = None
         self.pit_out = None
@@ -696,12 +694,18 @@ class TrackMapWidget(QWidget):
         self._route_cum = []
 
     def _ensure_route(self) -> None:
-        """(Re)build the concatenated pit route (in + lane + out) and the
-        cumulative arc length at each point, used to place cars along it."""
-        if self._route_pts is not None:
+        """(Re)build the concatenated pit route and the cumulative arc length at
+        each point, used to place cars along it. With blends enabled the route is
+        entry blend + lane + exit blend; with them off it's just the pit lane, so
+        a car only rides it while actually on pit road."""
+        blends = _mcfg().get("show_pit_blends", True)
+        if self._route_pts is not None and self._route_blends == blends:
             return
+        self._route_blends = blends
+        segs = ((self.pit_in, self.pit_path, self.pit_out) if blends
+                else (None, self.pit_path, None))
         pts: list[tuple[float, float]] = []
-        for seg in (self.pit_in, self.pit_path, self.pit_out):
+        for seg in segs:
             if not seg:
                 continue
             # Avoid duplicating the shared joint point between segments.
@@ -739,10 +743,13 @@ class TrackMapWidget(QWidget):
         """Map a car's lap pct onto an arc-length fraction of the pit route.
 
         Uses the route's lap-% extent (pit_in_pct -> pit_out_pct), falling back
-        to pit_span when the blend extents aren't known (older tracks).
+        to pit_span when the blend extents aren't known (older tracks). With
+        blends off the route is just the lane, so map over pit_span instead.
         """
-        lo = self.pit_in_pct
-        hi = self.pit_out_pct
+        if _mcfg().get("show_pit_blends", True):
+            lo, hi = self.pit_in_pct, self.pit_out_pct
+        else:
+            lo = hi = None
         if lo is None or hi is None:
             if self.pit_span is None:
                 return None
@@ -751,14 +758,6 @@ class TrackMapWidget(QWidget):
         if span <= 1e-6:
             return None
         return ((pct - lo) % 1.0) / span
-
-    def set_pit_live(self, speed_ms) -> None:
-        """Update the player's live pit-lane speed (None when not in the pits)."""
-        new = float(speed_ms) if isinstance(speed_ms, (int, float)) else None
-        if new == self.pit_live_ms:
-            return
-        self.pit_live_ms = new
-        self.update()
 
     def set_wind(self, wind_dir, speed_ms) -> None:
         """Set wind bearing (radians, the direction it blows FROM, CW from N)
@@ -927,11 +926,15 @@ class TrackMapWidget(QWidget):
         # Prefer the real recorded pit-lane geometry; fall back to the inward
         # offset approximation of pit_span when no geometry is available.
         if self.pit_path and len(self.pit_path) >= 2:
-            # Yellow blend lines first, so the lane reads on top where they join.
-            if self.pit_in and len(self.pit_in) >= 2:
-                self._draw_pit_blend(p, tx, self.pit_in)
-            if self.pit_out and len(self.pit_out) >= 2:
-                self._draw_pit_blend(p, tx, self.pit_out)
+            # Blend lines first, so the lane reads on top where they join. Entry
+            # is yellow, exit is blue; both hidden when show_pit_blends is off.
+            if _mcfg().get("show_pit_blends", True):
+                if self.pit_in and len(self.pit_in) >= 2:
+                    self._draw_pit_blend(p, tx, self.pit_in, "pit_blend",
+                                         "#ffd23a")
+                if self.pit_out and len(self.pit_out) >= 2:
+                    self._draw_pit_blend(p, tx, self.pit_out, "pit_blend_out",
+                                         "#3aa0ff")
             self._draw_pit_path(p, tx)
             return
         if self.pit_span is None:
@@ -1005,15 +1008,16 @@ class TrackMapWidget(QWidget):
         p.drawPath(lane)
         self._draw_pit_label(p, pts[0])
 
-    def _draw_pit_blend(self, p: QPainter, tx, seg) -> None:
-        """Draw a pit entry/exit blend line as dashed yellow 'slash' marks --
-        the commit lane that joins the track to pit road (and back)."""
+    def _draw_pit_blend(self, p: QPainter, tx, seg, color_key="pit_blend",
+                        default="#ffd23a") -> None:
+        """Draw a pit entry/exit blend line as dashed 'slash' marks -- the
+        commit lane that joins the track to pit road (and back)."""
         pts = [tx(q) for q in seg]
         path = QPainterPath()
         path.moveTo(pts[0])
         for q in pts[1:]:
             path.lineTo(q)
-        pen = QPen(_mcol_def("pit_blend", "#ffd23a"), 2.4)
+        pen = QPen(_mcol_def(color_key, default), 2.4)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -1023,34 +1027,29 @@ class TrackMapWidget(QWidget):
         p.drawPath(path)
 
     def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
-        live = self.pit_live_ms
+        # Static badge: just the learned pit speed limit -- no live comparison.
+        if not _mcfg().get("show_pit_speed", True):
+            return
         limit = self.pit_speed_ms
-        parts = ["PIT"]
-        if limit:
-            parts.append(f"{round(config.conv_speed(limit))}")
-        # While in the pits, append the live speed; red when over the limit.
-        over = (live is not None and limit and live > limit + 0.6)
-        if live is not None:
-            parts.append(f"\u2192 {round(config.conv_speed(live))} {config.speed_unit()}")
-        elif limit:
-            parts.append(config.speed_unit())
-        text = "  ".join(parts)
+        if not limit:
+            return
+        text = f"PIT {round(config.conv_speed(limit))} {config.speed_unit()}"
 
         fam = config.CFG.get("font_family", "Arial")
-        sz = max(6, round(8 * config.text_scale_for("map")))
+        sz = max(5, round(6 * config.text_scale_for("map")))
         p.setFont(QFont(fam, sz, QFont.Weight.Bold))
         fm = p.fontMetrics()
-        w = fm.horizontalAdvance(text) + 12
-        h = fm.height() + 4
+        w = fm.horizontalAdvance(text) + 10
+        h = fm.height() + 3
         # Centered on the pit-lane entry, nudged into the infield; clamped so it
         # never spills outside the widget.
         x = min(max(2.0, anchor.x() - w / 2), self.width() - w - 2.0)
         y = min(max(2.0, anchor.y() - h / 2), self.height() - h - 2.0)
         rect = QRectF(x, y, w, h)
-        p.setBrush(_mcol("pit_over") if over else _mcol("pit"))
+        p.setBrush(_mcol("pit"))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 4, 4)
-        p.setPen(QColor(20, 20, 20) if over else _mcol("pit_text"))
+        p.setPen(_mcol("pit_text"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def _draw_wind(self, p: QPainter, rect: QRectF) -> None:

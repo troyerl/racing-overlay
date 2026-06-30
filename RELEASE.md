@@ -5,6 +5,25 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.23.1 - 2026-06-30
+
+- **Static pit speed badge.** The pit label now shows only the learned pit speed
+  limit (e.g. "PIT 45 MPH") -- no live comparison to your speed and no over-limit
+  color flip. Its font is a touch smaller, too.
+- **New map setting: "Show pit speed limit."** Toggle the badge independently of
+  the entry/exit lines. The pit sub-options (speed badge, entry/exit lines) are
+  hidden in settings while the pit lane itself is turned off.
+
+## 1.23.0 - 2026-06-30
+
+- **Map setting: "Show pit entry/exit lines."** New toggle in the map settings.
+  When off, the entry/exit blend lines are hidden and a car simply appears in the
+  pit lane while it's actually on pit road, snapping back onto the track the
+  moment it leaves -- no blend lane to ride.
+- **Pit exit line is now blue.** The entry blend stays yellow and the exit blend
+  is drawn in blue so the two ends of the pit lane read apart at a glance
+  (configurable via the new "Pit exit line" map color).
+
 ## 1.22.9 - 2026-06-30
 
 - **Fix: car dragged into the pits past the pit entry on a normal lap.** The dot
