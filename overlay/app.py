@@ -238,6 +238,12 @@ class AdvancedSimHUD:
         self._dr_y = 0.0
         self._dr_t = None
         self._dr_last_pct = None
+        # The player's position in the map's model frame for the current tick,
+        # computed once (GPS if available, else dead reckoning) and shared by the
+        # track learner and the pit-route capture so their frames always match.
+        self._player_pos: tuple[float, float] | None = None
+        self._player_pos_wrapped = False  # crossed start/finish this tick (DR)
+        self._player_pos_gps = False      # came from real GPS (not dead reckoning)
         self.tracks_dir = paths.tracks_dir()
         # Shared (cloud) track maps: download missing tracks on demand, and
         # (author only) upload ones learned locally. All DB I/O is off-thread.
@@ -1268,17 +1274,13 @@ class AdvancedSimHUD:
         # expose GPS (Lat/Lon), fall back to dead reckoning from speed + heading.
         b = self._path_builder
         pct = lap_pct[player] if lap_pct and player is not None else None
-        lat, lon = self.ir["Lat"], self.ir["Lon"]
-        if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
-            b.add(pct, lat, lon)
-        else:
-            xy, wrapped = self._dead_reckon(pct)
-            # Dead-reckoned coordinates are only consistent within one lap, so
-            # start fresh at each start/finish crossing to avoid a kinked path.
-            if wrapped:
-                b.reset()
-            if xy is not None:
-                b.add_xy(pct, xy[0], xy[1])
+        # The position was resolved once this tick (GPS or dead reckoning) in
+        # _update_map; dead-reckoned coordinates are only consistent within one
+        # lap, so start fresh at each start/finish crossing to avoid a kink.
+        if self._player_pos_wrapped:
+            b.reset()
+        if self._player_pos is not None and pct is not None:
+            b.add_xy(pct, self._player_pos[0], self._player_pos[1])
 
         # Count only *complete* laps: ignore the partial lap in progress when the
         # scan began by anchoring at the first start/finish crossing, then count
@@ -1545,6 +1547,9 @@ class AdvancedSimHUD:
         if player is None or not lap_pct or not surface:
             return
 
+        # Resolve the player's model-space position once (GPS or dead reckoning)
+        # so the learner and the pit capture share a single, consistent frame.
+        self._update_player_pos(lap_pct[player])
         self._ensure_track(player, lap_pct)
         if config.CFG["map"].get("show_pit", True):
             self._learn_pit(player, lap_pct)
@@ -1650,14 +1655,27 @@ class AdvancedSimHUD:
         if (limiter or steady) and speed > self._pit_speed_ms:
             self._pit_speed_ms = speed
 
-    def _player_xy(self):
-        """The player's position projected into the map's model frame, or None
-        when GPS (Lat/Lon) is unavailable."""
+    def _update_player_pos(self, pct) -> None:
+        """Compute the player's model-space position for this tick.
+
+        Prefers real GPS (Lat/Lon, equirectangular-projected); when the sim
+        doesn't expose it, falls back to dead reckoning -- exactly the same
+        source the track learner uses, so the learned map and the pit-route
+        geometry always live in the same coordinate frame. Called once per tick
+        (before the learner) so dead reckoning integrates continuously even
+        after the track scan is finished and pit scanning begins.
+        """
         lat, lon = self.ir["Lat"], self.ir["Lon"]
-        if lat is None or lon is None or (lat == 0.0 and lon == 0.0):
-            return None
-        return (math.radians(lon) * math.cos(math.radians(lat)),
-                -math.radians(lat))
+        if lat is not None and lon is not None and (lat != 0.0 or lon != 0.0):
+            self._player_pos = (math.radians(lon) * math.cos(math.radians(lat)),
+                                -math.radians(lat))
+            self._player_pos_wrapped = False
+            self._player_pos_gps = True
+        else:
+            xy, wrapped = self._dead_reckon(pct)
+            self._player_pos = xy
+            self._player_pos_wrapped = wrapped
+            self._player_pos_gps = False
 
     def _pit_thresholds(self):
         """(diverge, rejoin) distance thresholds for the pit-route blends.
@@ -1709,7 +1727,7 @@ class AdvancedSimHUD:
         on = bool(on)
         pct = lap_pct[player]
         speed = self.ir["Speed"]
-        xy = self._player_xy()
+        xy = self._player_pos  # GPS or dead reckoning (resolved this tick)
         dist = self._dist_to_track(xy[0], xy[1]) if xy is not None else None
         diverge, rejoin = self._pit_thresholds()
 
@@ -1845,9 +1863,10 @@ class AdvancedSimHUD:
         # Diagnostics: surfaces whether the entry/exit blends were captured (they
         # need track geometry to measure divergence from the racing line).
         log.warning("pit pass %d/%d: entry_blend=%d lane=%d exit_blend=%d "
-                    "lane_offset=%.3e track_geom=%s",
+                    "lane_offset=%.3e track_geom=%s pos=%s",
                     n, PIT_PASSES, n_in, len(lane) if lane else 0, n_out,
-                    self._pit_lane_offset, bool(self._track_pts))
+                    self._pit_lane_offset, bool(self._track_pts),
+                    "gps" if self._player_pos_gps else "dead-reckon")
         # Preview the latest pass (span + geometry) while gathering more.
         self.map_widget.set_pit((entry_pct, exit_pct), self._pit_speed_ms)
         if lane and len(lane) >= 2:
