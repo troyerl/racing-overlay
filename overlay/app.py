@@ -1542,49 +1542,71 @@ class AdvancedSimHUD:
         x1, y1 = pts[(i + 1) % n]
         return (x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac)
 
-    def _nearest_track_point(self, x, y):
-        """The racing-line vertex closest to (x, y), or None without geometry."""
+    def _nearest_on_track(self, x, y, cx, cy):
+        """Closest point on the racing-line polyline to (x, y) plus the unit
+        normal there pointing toward the infield (centroid cx, cy). Measured to
+        the nearest *segment* so the normal is stable. (None, 0, 0) if no geom.
+        """
         pts = self._track_pts
-        if not pts:
-            return None
+        if not pts or len(pts) < 2:
+            return None, 0.0, 0.0
+        n = len(pts)
         best = None
         bd = float("inf")
-        for px, py in pts:
+        bnx = bny = 0.0
+        for i in range(n):
+            ax, ay = pts[i]
+            bx, by = pts[(i + 1) % n]
+            dx, dy = bx - ax, by - ay
+            seg2 = dx * dx + dy * dy
+            t = 0.0 if seg2 <= 0.0 else ((x - ax) * dx + (y - ay) * dy) / seg2
+            t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+            px, py = ax + dx * t, ay + dy * t
             d = (x - px) * (x - px) + (y - py) * (y - py)
             if d < bd:
                 bd = d
                 best = (px, py)
-        return best
+                ln = math.hypot(dx, dy) or 1.0
+                nx, ny = -dy / ln, dx / ln  # perpendicular to the tangent
+                if (cx - px) * nx + (cy - py) * ny < 0:  # face the infield
+                    nx, ny = -nx, -ny
+                bnx, bny = nx, ny
+        return best, bnx, bny
 
-    def _trim_blend(self, seg, anchor):
-        """Trim the stretch of an entry/exit blend that hugs the racing-line
-        corridor so the yellow line departs the track cleanly instead of being
-        drawn on top of it, then snap its track end onto the nearest racing-line
-        point so it still visibly connects.
+    def _offset_blend_parallel(self, seg):
+        """Nudge the stretch of a blend that hugs the racing line sideways into
+        the infield so it reads as a pit lane running *parallel* to the track
+        rather than drawn on top of it.
 
-        `anchor` is "head" for the entry blend (its track end is the first point)
-        or "tail" for the exit blend (its track end is the last point). A no-op
-        without track geometry, and never trims a blend down below 2 points.
+        For each point within a lane-width of the racing line, the inward
+        (perpendicular) distance is clamped up to that lane-width while its
+        along-track position is preserved, so the result stays continuous and
+        points already out toward the pit are left untouched. No-op without
+        track geometry.
         """
-        if not seg or len(seg) < 2 or not self._track_pts:
+        pts = self._track_pts
+        if not seg or len(seg) < 2 or not pts or len(pts) < 2:
             return seg
-        corridor = max(0.18 * self._pit_lane_offset, 0.012 * self._track_diag)
-        if corridor <= 0.0:
+        lane_w = max(0.15 * self._pit_lane_offset, 0.015 * self._track_diag)
+        if lane_w <= 0.0:
             return seg
-        pts = list(seg) if anchor == "head" else list(reversed(seg))
-        i = 0
-        while i < len(pts) - 1:
-            d = self._dist_to_track(pts[i][0], pts[i][1])
-            if d is None or d >= corridor:
-                break
-            i += 1
-        pts = pts[i:]
-        near = self._nearest_track_point(pts[0][0], pts[0][1])
-        if near is not None and near != pts[0]:
-            pts = [near] + pts
-        if len(pts) < 2:
-            return seg
-        return pts if anchor == "head" else list(reversed(pts))
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        out = []
+        for x, y in seg:
+            near, nx, ny = self._nearest_on_track(x, y, cx, cy)
+            if near is None:
+                out.append((x, y))
+                continue
+            vx, vy = x - near[0], y - near[1]
+            along = vx * nx + vy * ny           # inward (perpendicular) distance
+            tx, ty = vx - nx * along, vy - ny * along   # tangential remainder
+            if along < lane_w:
+                out.append((near[0] + nx * lane_w + tx,
+                            near[1] + ny * lane_w + ty))
+            else:
+                out.append((x, y))
+        return out
 
     def _align_pit_to_track(self, pit_in, lane, pit_out,
                             in_pct, out_pct, entry_pct, exit_pct):
@@ -2005,18 +2027,17 @@ class AdvancedSimHUD:
         log.warning("pit finalize: kept %d/%d passes, offsets=%s",
                     m, len(self._pit_passes),
                     [round(p[8], 1) for p in passes])
-        # Base the blend trim corridor on the kept passes' (median) lane offset,
-        # not whatever the last raw pass happened to measure.
-        kept_offs = sorted(p[8] for p in passes if p[8])
-        if kept_offs:
-            self._pit_lane_offset = kept_offs[len(kept_offs) // 2]
+        # Keep the full entry/exit blends -- the pit approach/exit genuinely hug
+        # the track (through the turn and along the straight) -- but nudge the
+        # parts that hug the racing line into the infield so they read as a lane
+        # running parallel to the track rather than drawn on top of it.
         span = self._avg_pit_span(passes)
         speed = sum(p[2] for p in passes) / m
         self._pit_path = self._avg_pit_path([p[3] for p in passes])
-        self._pit_in = self._trim_blend(
-            self._avg_pit_path([p[4] for p in passes]), "head")
-        self._pit_out = self._trim_blend(
-            self._avg_pit_path([p[5] for p in passes]), "tail")
+        self._pit_in = self._offset_blend_parallel(
+            self._avg_pit_path([p[4] for p in passes]))
+        self._pit_out = self._offset_blend_parallel(
+            self._avg_pit_path([p[5] for p in passes]))
         self._pit_in_pct = self._circ_mean([p[6] for p in passes])
         self._pit_out_pct = self._circ_mean([p[7] for p in passes])
         self._pit_span = span
