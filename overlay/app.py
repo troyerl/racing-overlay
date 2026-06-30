@@ -1542,6 +1542,50 @@ class AdvancedSimHUD:
         x1, y1 = pts[(i + 1) % n]
         return (x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac)
 
+    def _nearest_track_point(self, x, y):
+        """The racing-line vertex closest to (x, y), or None without geometry."""
+        pts = self._track_pts
+        if not pts:
+            return None
+        best = None
+        bd = float("inf")
+        for px, py in pts:
+            d = (x - px) * (x - px) + (y - py) * (y - py)
+            if d < bd:
+                bd = d
+                best = (px, py)
+        return best
+
+    def _trim_blend(self, seg, anchor):
+        """Trim the stretch of an entry/exit blend that hugs the racing-line
+        corridor so the yellow line departs the track cleanly instead of being
+        drawn on top of it, then snap its track end onto the nearest racing-line
+        point so it still visibly connects.
+
+        `anchor` is "head" for the entry blend (its track end is the first point)
+        or "tail" for the exit blend (its track end is the last point). A no-op
+        without track geometry, and never trims a blend down below 2 points.
+        """
+        if not seg or len(seg) < 2 or not self._track_pts:
+            return seg
+        corridor = max(0.18 * self._pit_lane_offset, 0.012 * self._track_diag)
+        if corridor <= 0.0:
+            return seg
+        pts = list(seg) if anchor == "head" else list(reversed(seg))
+        i = 0
+        while i < len(pts) - 1:
+            d = self._dist_to_track(pts[i][0], pts[i][1])
+            if d is None or d >= corridor:
+                break
+            i += 1
+        pts = pts[i:]
+        near = self._nearest_track_point(pts[0][0], pts[0][1])
+        if near is not None and near != pts[0]:
+            pts = [near] + pts
+        if len(pts) < 2:
+            return seg
+        return pts if anchor == "head" else list(reversed(pts))
+
     def _align_pit_to_track(self, pit_in, lane, pit_out,
                             in_pct, out_pct, entry_pct, exit_pct):
         """Snap a captured pit route onto the track at its known entry/exit lap
@@ -1795,11 +1839,12 @@ class AdvancedSimHUD:
         dist = self._dist_to_track(xy[0], xy[1]) if xy is not None else None
         diverge, rejoin = self._pit_thresholds()
 
-        # Live player position on the map (true GPS); the widget draws the player
-        # on the pit route when on pit road or off the racing line (a blend).
-        # Once the route extent is known, only count "off the line" near the pit
-        # area so a wide line elsewhere can't be mistaken for pitting.
-        self.map_widget.set_player_xy(xy)
+        # Live player position on the map. Only feed the widget a true (x, y)
+        # when it comes from real GPS -- that shares the racing line's frame, so
+        # the dot lands exactly on it. Dead-reckoned coordinates drift relative
+        # to the drift-corrected pit geometry, so we pass None and let the widget
+        # place the player onto the route by lap % instead (like other cars).
+        self.map_widget.set_player_xy(xy if self._player_pos_gps else None)
         off_line = (dist is not None and diverge is not None and dist > diverge)
         route = self._route_interval()
         if (off_line and route is not None
@@ -1956,8 +2001,10 @@ class AdvancedSimHUD:
         span = self._avg_pit_span(passes)
         speed = sum(p[2] for p in passes) / n
         self._pit_path = self._avg_pit_path([p[3] for p in passes])
-        self._pit_in = self._avg_pit_path([p[4] for p in passes])
-        self._pit_out = self._avg_pit_path([p[5] for p in passes])
+        self._pit_in = self._trim_blend(
+            self._avg_pit_path([p[4] for p in passes]), "head")
+        self._pit_out = self._trim_blend(
+            self._avg_pit_path([p[5] for p in passes]), "tail")
         self._pit_in_pct = self._circ_mean([p[6] for p in passes])
         self._pit_out_pct = self._circ_mean([p[7] for p in passes])
         self._pit_span = span
