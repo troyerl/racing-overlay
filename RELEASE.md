@@ -5,6 +5,19 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.2 - 2026-06-29
+
+- **Fix: pit exit lane running too far / onto the track.** If a pit pass never
+  actually merged back onto the racing line (e.g. you looped around to re-pit),
+  its exit trace ran most of a lap and was wrongly used as the "longest" exit,
+  dragging the yellow line far past the real merge and adding a squiggle across
+  the track. The exit lane is now built only from passes that genuinely
+  rejoined the racing line.
+- **Fix: player dot flickering between track and pit exit lane.** Rounding a
+  corner on the way out of the pits could pop the car icon back and forth as its
+  distance to the racing line briefly dipped. The on-route state is now debounced
+  (the car must hold near the line for ~0.5s) so the dot stays put.
+
 ## 1.22.1 - 2026-06-29
 
 - **Fix: pit entry/exit blends not appearing.** The blend detection compared the

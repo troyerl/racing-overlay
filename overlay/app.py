@@ -187,6 +187,9 @@ class AdvancedSimHUD:
         # Whether the player is currently on the pit route (pit road or a blend),
         # computed in _learn_pit and read when placing the player dot.
         self._player_on_route = False
+        # Consecutive ticks the player has held near the racing line; debounces
+        # the on-route state so the dot doesn't flicker on/off mid-corner.
+        self._player_merge_ticks = 0
         # Rolling (pct, x, y, dist_to_track) buffer for back-tracing the entry
         # blend, and a cache of the racing-line geometry to measure divergence.
         self._pit_recent: collections.deque = collections.deque(
@@ -1440,6 +1443,7 @@ class AdvancedSimHUD:
         self._pit_lane_offset = 0.0
         self._pit_entry_buf = []
         self._player_on_route = False
+        self._player_merge_ticks = 0
         self._pit_recent.clear()
         self._pit_route_latch.clear()
         self._pit_passes = []
@@ -1899,8 +1903,15 @@ class AdvancedSimHUD:
         route = self._route_interval()
         in_route = (route is not None and pct is not None and 0.0 <= pct <= 1.0
                     and self._pct_in_interval(pct, route[0], route[1]))
+        # Debounce the merge: only count as rejoined once the car has held near
+        # the racing line for PIT_REJOIN_HOLD ticks, so a brief dip toward it
+        # mid-corner doesn't pop the dot back and forth between track and lane.
+        if dist is not None and rejoin is not None and dist <= rejoin:
+            self._player_merge_ticks += 1
+        else:
+            self._player_merge_ticks = 0
         if self._player_on_route:
-            merged = (dist is not None and rejoin is not None and dist <= rejoin)
+            merged = self._player_merge_ticks >= PIT_REJOIN_HOLD
             self._player_on_route = on or (not merged and in_route)
         else:
             off_line = (dist is not None and diverge is not None
@@ -1984,7 +1995,10 @@ class AdvancedSimHUD:
                 if rejoined or capped:
                     self._log_exit_profile(
                         "rejoined" if rejoined else "capped", rejoin)
-                    self._finalize_pit_pass(valid_pct)
+                    # A capped pass never actually merged (the driver kept going,
+                    # e.g. looping back to re-pit), so its exit blend is garbage;
+                    # flag it so finalize ignores it when building the exit lane.
+                    self._finalize_pit_pass(valid_pct, capped=capped)
         self._pit_was_on = on
 
     def _log_exit_profile(self, reason, rejoin) -> None:
@@ -2013,12 +2027,13 @@ class AdvancedSimHUD:
             (dbg[-1][0] if dbg[-1][0] is not None else -1.0),
             " ".join(prof))
 
-    def _finalize_pit_pass(self, out_pct) -> None:
+    def _finalize_pit_pass(self, out_pct, capped=False) -> None:
         """End the in-progress pit pass and hand its three segments to the
         accumulator, then reset the capture state machine.
 
         The entry blend is back-traced here (not at pit entry) so it can use the
         threshold scaled to the lane offset measured over this whole pass.
+        ``capped`` marks a pass whose exit ran to the tick cap without merging.
         """
         if self._pit_enter_pct is not None:
             diverge, _ = self._pit_thresholds()
@@ -2033,6 +2048,7 @@ class AdvancedSimHUD:
                 list(self._pit_out_cur),
                 in_pct,
                 out_pct,
+                capped,
             )
         self._pit_phase = None
         self._pit_enter_pct = None
@@ -2042,7 +2058,7 @@ class AdvancedSimHUD:
         self._pit_entry_buf = []
 
     def _record_pit_pass(self, entry_pct, exit_pct, lane, pit_in, pit_out,
-                         in_pct, out_pct) -> None:
+                         in_pct, out_pct, capped=False) -> None:
         """Accumulate a completed pit pass; finalize after PIT_PASSES of them.
 
         Locked until the track scan (SCAN_LAPS laps) is done -- a pass driven
@@ -2063,7 +2079,7 @@ class AdvancedSimHUD:
             pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct,
-                                 self._pit_lane_offset))
+                                 self._pit_lane_offset, capped))
         n = len(self._pit_passes)
         n_in = len(pit_in) if pit_in else 0
         n_out = len(pit_out) if pit_out else 0
@@ -2106,17 +2122,15 @@ class AdvancedSimHUD:
         self._pit_path = self._avg_pit_path([p[3] for p in passes])
         self._pit_in = self._offset_blend_parallel(
             self._avg_pit_path([p[4] for p in passes]))
-        # Use the furthest-reaching exit pass (not the average) so the lane
-        # extends to the real merge point instead of being pulled short by a
-        # shorter pass; take that pass's merge lap-% too so the route extent and
-        # geometry agree.
-        exit_pass = max(passes, key=lambda p: self._blend_arclen(p[5]))
-        self._pit_out = (
-            self._offset_blend_parallel(track_map._resample_open(exit_pass[5], 120))
-            if self._blend_arclen(exit_pass[5]) > 0 else None)
+        # The exit blend must come only from passes that genuinely merged back
+        # onto the racing line (p[9] is the "capped" flag). A capped pass kept
+        # driving past the merge -- often a whole extra lap to re-pit -- so its
+        # exit blend runs far too long and would drag the lane onto the track.
+        merged = [p for p in passes if not p[9]] or passes
+        self._pit_out = self._offset_blend_parallel(
+            self._avg_pit_path([p[5] for p in merged]))
         self._pit_in_pct = self._circ_mean([p[6] for p in passes])
-        self._pit_out_pct = (exit_pass[7] if exit_pass[7] is not None
-                             else self._circ_mean([p[7] for p in passes]))
+        self._pit_out_pct = self._circ_mean([p[7] for p in merged])
         self._pit_span = span
         self._pit_speed_ms = speed
         self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
@@ -2157,14 +2171,6 @@ class AdvancedSimHUD:
         if sx == 0.0 and sy == 0.0:
             return vals[0]
         return (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
-
-    @staticmethod
-    def _blend_arclen(g) -> float:
-        """Arc length of a blend polyline, or -1 if it has no usable geometry."""
-        if not g or len(g) < 2:
-            return -1.0
-        return sum(math.hypot(g[i + 1][0] - g[i][0], g[i + 1][1] - g[i][1])
-                   for i in range(len(g) - 1))
 
     @staticmethod
     def _select_pit_passes(passes):
