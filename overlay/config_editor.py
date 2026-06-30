@@ -1660,8 +1660,8 @@ class ConfigEditor(QWidget):
         rescan_pits.setCursor(Qt.CursorShape.PointingHandCursor)
         rescan_pits.clicked.connect(self._rescan_pits)
         v.addWidget(rescan_pits)
-        hint2 = QLabel("Forgets just the pit lane; drive through the pits "
-                       "once to re-learn it.")
+        hint2 = QLabel("Forgets just the pit lane; complete three pit passes "
+                       "(the map shows PIT 1/3, 2/3, 3/3).")
         hint2.setObjectName("enableHint")
         hint2.setWordWrap(True)
         v.addWidget(hint2)
@@ -1962,7 +1962,7 @@ class ConfigEditor(QWidget):
 
     def _rescan_pits(self) -> None:
         if config.request_rescan_pits():
-            self._flash("Rescanning pit lane\u2026 drive through the pits")
+            self._flash("Rescanning pits\u2026 complete 3 passes (PIT 1/3 on map)")
         else:
             self._flash("Start the overlay first to rescan")
 

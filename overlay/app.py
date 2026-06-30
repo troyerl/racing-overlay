@@ -497,6 +497,25 @@ class AdvancedSimHUD:
         if exit_extend is not None:
             self.pit_exit_extend_pct = float(exit_extend)
 
+    def _pit_scan_active(self) -> bool:
+        """True while the track is scanned but pit data still needs gathering."""
+        return (self._scan_done and not self.demo
+                and len(self._pit_passes) < PIT_PASSES
+                and self._pit_span is None)
+
+    def _update_scan_status(self) -> None:
+        """Refresh the persistent map badge: 'LAP n/3' or 'PIT n/3'."""
+        if self.demo:
+            return
+        if not self._scan_done:
+            self.map_widget.set_scan_status(
+                f"LAP {min(self._scan_laps + 1, SCAN_LAPS)}/{SCAN_LAPS}")
+        elif self._pit_scan_active():
+            self.map_widget.set_scan_status(
+                f"PIT {len(self._pit_passes) + 1}/{PIT_PASSES}")
+        else:
+            self.map_widget.set_scan_status("")
+
     def _session_league_id(self) -> int:
         """Current LeagueID (0 if none), re-read from WeekendInfo at most ~1/sec."""
         if self._league_id_cache is not None and self._session_info_counter % 60:
@@ -1429,8 +1448,7 @@ class AdvancedSimHUD:
                 if laps_done != self._scan_laps:
                     self._scan_laps = laps_done
                     b.rebuild()
-        self.map_widget.set_scan_status(
-            f"LAP {min(self._scan_laps + 1, SCAN_LAPS)}/{SCAN_LAPS}")
+        self._update_scan_status()
 
         if b.version != self._map_version:
             self._map_version = b.version
@@ -1446,7 +1464,7 @@ class AdvancedSimHUD:
             self._track_saved = True
             # Cache the finished loop so pit-route divergence can be measured.
             self._set_track_geom(b.path)
-            self.map_widget.set_scan_status("")
+            self._update_scan_status()
             self.map_widget.flash_hint("Track saved \u00b7 scan the pits")
             try:
                 track_map.save_learned_track(
@@ -1530,7 +1548,7 @@ class AdvancedSimHUD:
         self._scan_laps = 0
         self._scan_done = False
         self._pit_passes = []
-        self.map_widget.set_scan_status("")
+        self._update_scan_status()
         # Reset dead-reckoning so the new scan starts from a clean origin.
         self._dr_x = self._dr_y = 0.0
         self._dr_t = None
@@ -1586,6 +1604,7 @@ class AdvancedSimHUD:
         if self.demo:
             return
         self._reset_pit_state()  # re-learn the pit over PIT_PASSES fresh passes
+        self._update_scan_status()
         self.map_widget.clear_pit()
         if self._track_id is not None:
             try:
@@ -2300,6 +2319,7 @@ class AdvancedSimHUD:
         if self._pit_phase is None:
             if on and not self._pit_was_on:  # entering pit road
                 self._pit_phase = "lane"
+                self._update_scan_status()
                 self._pit_enter_pct = valid_pct
                 self._pit_exit_pct = None
                 # Snapshot the approach so the entry blend can be back-traced at
@@ -2539,14 +2559,14 @@ class AdvancedSimHUD:
             self.map_widget.set_pit_path(lane)
         self.map_widget.set_pit_blends(pit_in, pit_out)
         self.map_widget.set_pit_route_pct(in_pct, out_pct)
+        self._update_scan_status()
         if n < PIT_PASSES:
             if not self._track_pts:
-                hint = f"Pit pass {n}/{PIT_PASSES} \u00b7 no track geometry"
+                self.map_widget.flash_hint(
+                    f"Pit pass {n}/{PIT_PASSES} \u00b7 no track geometry")
             elif n_in < 2 or n_out < 2:
-                hint = f"Pit pass {n}/{PIT_PASSES} \u00b7 blend not captured"
-            else:
-                hint = f"Pit pass {n}/{PIT_PASSES}"
-            self.map_widget.flash_hint(hint)
+                self.map_widget.flash_hint(
+                    f"Pit pass {n}/{PIT_PASSES} \u00b7 blend not captured")
             return
 
         # Discard outlier passes (e.g. the first lap after the track scan, before
@@ -2585,6 +2605,7 @@ class AdvancedSimHUD:
         self.map_widget.set_pit_path(self._pit_path)
         self.map_widget.set_pit_blends(self._pit_in, self._pit_out)
         self.map_widget.set_pit_route_pct(self._pit_in_pct, self._pit_out_pct)
+        self._update_scan_status()
         self.map_widget.flash_hint("Pit lane saved")
         if self._track_id is not None:
             fields = dict(pit_span=[round(span[0], 5), round(span[1], 5)],

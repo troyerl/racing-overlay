@@ -655,8 +655,8 @@ class TrackMapWidget(QWidget):
         self.cars: list[tuple[float, str, str, bool, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
         self._progress_pct = -1
-        # Multi-lap scan UI: a persistent "LAP n/3" badge while scanning, plus a
-        # transient hint (e.g. "Finish track scan first") that auto-clears.
+        # Multi-lap scan UI: a persistent badge while scanning ('LAP n/3' or
+        # 'PIT n/3'), plus a transient hint banner that auto-clears.
         self._scan_text = ""
         self._hint_text = ""
         self._hint_timer = QTimer(self)
@@ -679,7 +679,7 @@ class TrackMapWidget(QWidget):
             self.update()
 
     def set_scan_status(self, text: str) -> None:
-        """Show (or clear) a small scan badge like 'LAP 2/3' over the map."""
+        """Show (or clear) a small scan badge like 'LAP 2/3' or 'PIT 2/3'."""
         text = text or ""
         if text == self._scan_text:
             return
