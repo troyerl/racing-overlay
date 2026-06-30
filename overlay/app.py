@@ -2528,16 +2528,17 @@ class AdvancedSimHUD:
             return
         if len(self._pit_passes) >= PIT_PASSES:
             return  # already finalized; use "Rescan pits" to redo
-        # Correct dead-reckoning drift, then snap each segment longitudinally to
-        # its drift-free lap % so the lane sits beside the track, not on it.
+        # Correct dead-reckoning drift. Entry/exit blends are short and hug the
+        # track, so re-anchor them by lap % (exact). The main pit lane is left
+        # in the LSQ-aligned frame only -- on a road course the lane can span
+        # most of a lap in CarIdxLapDistPct while physically running just the
+        # pit straight; re-anchoring that by % would wrap the lane around the
+        # whole circuit.
         pit_in, lane, pit_out = self._align_pit_to_track(
             pit_in, lane, pit_out, in_pct, out_pct, entry_pct, exit_pct)
-        pit_in = self._reanchor_by_lap_pct(pit_in)
-        lane = self._reanchor_by_lap_pct(lane)
-        pit_out = self._reanchor_by_lap_pct(pit_out)
-        pit_in = self._seg_to_xy(pit_in)
+        pit_in = self._seg_to_xy(self._reanchor_by_lap_pct(pit_in))
         lane = self._seg_to_xy(lane)
-        pit_out = self._seg_to_xy(pit_out)
+        pit_out = self._seg_to_xy(self._reanchor_by_lap_pct(pit_out))
         self._pit_passes.append((entry_pct, exit_pct, self._pit_speed_ms,
                                  lane, pit_in, pit_out, in_pct, out_pct,
                                  self._pit_lane_offset, capped))
@@ -2576,18 +2577,21 @@ class AdvancedSimHUD:
         log.warning("pit finalize: kept %d/%d passes, offsets=%s",
                     m, len(self._pit_passes),
                     [round(p[8], 1) for p in passes])
+        # Use the median lane offset from the kept passes for blend parallel width.
+        offs = sorted(p[8] for p in passes if p[8] and p[8] > 0)
+        if offs:
+            self._pit_lane_offset = offs[len(offs) // 2]
         # Keep the full entry/exit blends -- the pit approach/exit genuinely hug
         # the track (through the turn and along the straight) -- but nudge the
         # parts that hug the racing line into the infield so they read as a lane
         # running parallel to the track rather than drawn on top of it.
         span = self._avg_pit_span(passes)
         speed = sum(p[2] for p in passes) / m
-        # Smooth each finished polyline so the lane and blends read as clean
-        # continuous lines -- the parallel-lane nudge and per-pass averaging can
-        # otherwise leave little offset 'steps'. Endpoints stay anchored; two
-        # passes iron the steps out without dragging the ends off the track.
-        self._pit_path = track_map._smooth_open(self._offset_blend_parallel(
-            self._avg_pit_path([p[3] for p in passes])), passes=2)
+        # Smooth each finished polyline. Blends get the parallel-lane nudge;
+        # the main lane keeps the LSQ-aligned capture shape (re-anchoring it by
+        # lap % would wrap a road-course pit around the whole circuit).
+        self._pit_path = track_map._smooth_open(
+            self._avg_pit_path([p[3] for p in passes]), passes=2)
         self._pit_in = track_map._smooth_open(self._offset_blend_parallel(
             self._avg_pit_path([p[4] for p in passes])), passes=2)
         # The exit blend must come only from passes that genuinely merged back
@@ -2645,29 +2649,36 @@ class AdvancedSimHUD:
     def _select_pit_passes(passes):
         """Pick the pit passes worth averaging together.
 
-        Geometry quality is judged by what was actually captured rather than the
-        raw lane offset: that offset is a dead-reckoned distance to the racing
-        line in the (drifted) capture frame, so it varies wildly pass-to-pass and
-        used to throw away perfectly good passes. The least-squares alignment now
-        pulls every pass onto the same racing-line frame, so we instead keep the
-        passes that captured a real route -- both blend lines and a lane, and not
-        a capped (never-merged) exit -- and average those. Falls back gracefully
-        if filtering would leave nothing.
+        Keeps passes that captured both blend lines and a genuine exit merge.
+        Also drops capture-time outliers (usually pass 1 right after the track
+        scan): dead reckoning can still be ~100 m off in the lane even after
+        LSQ alignment, which warps the averaged pit path while the blends (re-
+        anchored by lap % and surface zones) still look fine.
         """
         if len(passes) <= 1:
             return list(passes)
 
-        def has_both(p):  # captured both an entry and an exit blend
+        def has_both(p):
             return p[4] and len(p[4]) >= 2 and p[5] and len(p[5]) >= 2
 
-        merged = [p for p in passes if not p[9]]          # exits that merged
-        both_merged = [p for p in merged if has_both(p)]
-        if both_merged:
-            return both_merged
-        both = [p for p in passes if has_both(p)]
-        if both:
-            return both
-        return merged or list(passes)
+        merged = [p for p in passes if not p[9]]
+        kept = [p for p in merged if has_both(p)] or [p for p in passes
+                                                       if has_both(p)]
+        if not kept:
+            return merged or list(passes)
+        if len(kept) <= 1:
+            return kept
+
+        offs = sorted(p[8] for p in kept if p[8] and p[8] > 0)
+        if len(offs) >= 2:
+            mid = offs[len(offs) // 2]
+            # Allow generous spread (2.5× median + 15 m floor) but reject the
+            # classic first-pass blowout (e.g. 120 m vs 12 m on a road course).
+            cap = max(mid * 2.5, mid + 15.0)
+            near = [p for p in kept if p[8] and p[8] <= cap]
+            if near:
+                kept = near
+        return kept
 
     @classmethod
     def _avg_pit_span(cls, passes) -> tuple:
