@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.8 - 2026-06-30
+
+- **Fix: dot stuck in the pits when passing the pit entry on a normal lap.**
+  After a pit stop, driving past the pit entry again while staying out could pin
+  the car icon in the pit lane until the start/finish line. The dot now only
+  moves onto the pit route after a sustained commitment (actually on pit road or
+  clearly off the racing line), so a brief blip while staying out is ignored.
+
 ## 1.22.7 - 2026-06-30
 
 - **Fix: car dot blinking between track and pit-exit lane.** Rounding a corner on
