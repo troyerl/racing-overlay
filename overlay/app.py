@@ -95,12 +95,17 @@ PIT_BLEND_MAX_PTS = 1200
 # iRacing's painted pit-exit commitment line actually ends down the track. Once
 # merged, keep tracing the exit until the car has travelled this much further
 # around the lap so the drawn lane reaches the real end of the commitment zone.
-# Expressed as a lap fraction (0.14 = 14% of a lap) so it's consistent regardless
+# Expressed as a lap fraction (0.16 = 16% of a lap) so it's consistent regardless
 # of speed; it is the single dial for how far down the track the yellow exit lane
 # reaches. With the merge at ~0.27 on the reference oval this lands the end near
-# ~0.41 -- well past the old too-short result and pulled back from the ~0.5 that
+# ~0.43 -- well past the old too-short result and pulled back from the ~0.5 that
 # read as too far. Raise it toward ~0.18 if still short, lower toward ~0.10 if long.
-PIT_EXIT_EXTEND_PCT = 0.14
+PIT_EXIT_EXTEND_PCT = 0.16
+# The entry blend can otherwise reach a long way back up the track (to wherever
+# the car first eased off the racing line). Cap it to the last this-much of a lap
+# before pit road so the yellow entry line stays short. Companion dial to
+# PIT_EXIT_EXTEND_PCT; raise for a longer entry line, lower for a shorter one.
+PIT_ENTRY_MAX_PCT = 0.08
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
 # where the car peeled off the racing line up to the pit-road edge.
 PIT_RECENT_MAX = 900
@@ -198,9 +203,6 @@ class AdvancedSimHUD:
         # Whether the player is currently on the pit route (pit road or a blend),
         # computed in _learn_pit and read when placing the player dot.
         self._player_on_route = False
-        # Consecutive ticks the player has held near the racing line; debounces
-        # the on-route state so the dot doesn't flicker on/off mid-corner.
-        self._player_merge_ticks = 0
         # Rolling (pct, x, y, dist_to_track) buffer for back-tracing the entry
         # blend, and a cache of the racing-line geometry to measure divergence.
         self._pit_recent: collections.deque = collections.deque(
@@ -1455,7 +1457,6 @@ class AdvancedSimHUD:
         self._pit_lane_offset = 0.0
         self._pit_entry_buf = []
         self._player_on_route = False
-        self._player_merge_ticks = 0
         self._pit_recent.clear()
         self._pit_route_latch.clear()
         self._pit_passes = []
@@ -1879,15 +1880,26 @@ class AdvancedSimHUD:
         return diag * PIT_DIVERGE_FRAC, diag * PIT_REJOIN_FRAC
 
     @staticmethod
-    def _trace_entry_blend(buf, diverge):
+    def _trace_entry_blend(buf, diverge, max_pct=None):
         """Back-trace a GPS buffer to reconstruct the pit-entry blend: the
         stretch from where the car peeled off the racing line up to the pit-road
-        edge. Returns (points, divergence_lap_pct)."""
+        edge. Returns (points, divergence_lap_pct).
+
+        ``max_pct`` caps how far back (in lap fraction from the pit-road edge)
+        the blend is allowed to reach, so the entry line doesn't run the whole
+        way back to where the car first drifted off the racing line."""
         if diverge is None or not buf:
             return [], None
+        edge_pct = buf[-1][0]
         blend = []
         in_pct = None
         for pct_i, x, y, d in reversed(buf):
+            # Stop once we've reached back the allowed lap-% from the pit edge.
+            if (max_pct is not None and pct_i is not None
+                    and edge_pct is not None
+                    and ((edge_pct - pct_i) % 1.0) > max_pct):
+                in_pct = pct_i
+                break
             blend.append((x, y))
             if d is not None and d <= diverge:
                 in_pct = pct_i
@@ -1932,16 +1944,13 @@ class AdvancedSimHUD:
         route = self._route_interval()
         in_route = (route is not None and pct is not None and 0.0 <= pct <= 1.0
                     and self._pct_in_interval(pct, route[0], route[1]))
-        # Debounce the merge: only count as rejoined once the car has held near
-        # the racing line for PIT_REJOIN_HOLD ticks, so a brief dip toward it
-        # mid-corner doesn't pop the dot back and forth between track and lane.
-        if dist is not None and rejoin is not None and dist <= rejoin:
-            self._player_merge_ticks += 1
-        else:
-            self._player_merge_ticks = 0
         if self._player_on_route:
-            merged = self._player_merge_ticks >= PIT_REJOIN_HOLD
-            self._player_on_route = on or (not merged and in_route)
+            # Stay on the route for its whole lap-% extent and only hand back to
+            # the track once the car passes the route's end. Leaving on a
+            # momentary distance dip (e.g. the apron skimming the racing line
+            # through a corner) blinked the dot onto the track and back; lap
+            # position only moves forward, so this can't flicker mid-route.
+            self._player_on_route = on or in_route
         else:
             off_line = (dist is not None and diverge is not None
                         and dist > diverge and in_route)
@@ -2080,7 +2089,7 @@ class AdvancedSimHUD:
         if self._pit_enter_pct is not None:
             diverge, _ = self._pit_thresholds()
             in_blend, in_pct = self._trace_entry_blend(
-                self._pit_entry_buf, diverge)
+                self._pit_entry_buf, diverge, max_pct=PIT_ENTRY_MAX_PCT)
             self._record_pit_pass(
                 self._pit_enter_pct,
                 self._pit_exit_pct if self._pit_exit_pct is not None

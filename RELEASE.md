@@ -5,6 +5,19 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.7 - 2026-06-30
+
+- **Fix: car dot blinking between track and pit-exit lane.** Rounding a corner on
+  the way out of the pits, the dot could flick onto the track and back as the
+  apron skimmed the racing line. The dot now stays on the pit route for the
+  route's full extent and only returns to the track once you pass the route's
+  end, so it can't flicker mid-corner.
+- **Shorter pit entry line.** The yellow entry blend no longer reaches all the
+  way back to where you first eased off the racing line; it's capped to the last
+  stretch before pit road (`PIT_ENTRY_MAX_PCT`, default 8% of a lap, tunable).
+- Pit-exit lane reach default raised to 0.16 of a lap (the value that landed it
+  right on the reference oval).
+
 ## 1.22.6 - 2026-06-30
 
 - **Pit exit lane reaches further down the track.** With the merge now detected
