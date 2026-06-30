@@ -86,6 +86,9 @@ PIT_DIVERGE_FRAC = 0.012      # fallback: fraction of diagonal (offset unknown)
 PIT_REJOIN_FRAC = 0.008
 PIT_OFFSET_DIVERGE = 0.55     # diverge at >55% of the measured lane offset
 PIT_OFFSET_REJOIN = 0.18      # rejoin only once nearly back on the racing line
+PIT_REJOIN_HOLD = 30          # ticks (~0.5s @ 60Hz) the car must hold near the
+                              # line before the exit is final -- a brief dip
+                              # toward it mid-exit no longer ends the lane early
 PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
@@ -174,6 +177,7 @@ class AdvancedSimHUD:
         self._pit_in_pct_cur = None
         self._pit_exit_pct = None    # lap pct at the OnPitRoad falling edge
         self._pit_exit_ticks = 0     # ticks spent tracing the current exit blend
+        self._pit_rejoin_ticks = 0   # consecutive ticks held near the racing line
         # Max distance of the current pass's lane from the racing line, used to
         # scale the divergence thresholds, and a snapshot of the rolling buffer
         # at pit entry from which the entry blend is back-traced at finalize.
@@ -1431,6 +1435,7 @@ class AdvancedSimHUD:
         self._pit_in_pct_cur = None
         self._pit_phase = None
         self._pit_exit_ticks = 0
+        self._pit_rejoin_ticks = 0
         self._pit_lane_offset = 0.0
         self._pit_entry_buf = []
         self._player_on_route = False
@@ -1932,6 +1937,7 @@ class AdvancedSimHUD:
                 else:
                     self._pit_phase = "exit"
                     self._pit_exit_ticks = 0
+                    self._pit_rejoin_ticks = 0
                     self._pit_out_cur = []
                     if self._pit_geo_cur:
                         self._pit_out_cur.append(self._pit_geo_cur[-1])
@@ -1946,8 +1952,14 @@ class AdvancedSimHUD:
                 self._pit_exit_ticks += 1
                 if xy is not None:
                     self._pit_out_cur.append(xy)
-                rejoined = (rejoin is not None and dist is not None
-                            and dist <= rejoin)
+                # Require the car to *hold* near the racing line for a moment, so
+                # a brief dip toward it (noise, or the apron passing close) won't
+                # finalize the exit before the real merge point.
+                if rejoin is not None and dist is not None and dist <= rejoin:
+                    self._pit_rejoin_ticks += 1
+                else:
+                    self._pit_rejoin_ticks = 0
+                rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
                 if rejoined or capped:
                     self._finalize_pit_pass(valid_pct)
