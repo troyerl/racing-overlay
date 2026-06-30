@@ -167,6 +167,7 @@ class AdvancedSimHUD:
         self._map_version = 0             # last learned-path version pushed
         self._track_id = None             # current track's iRacing TrackID
         self._track_turns = None          # WeekendInfo TrackNumTurns (corner count)
+        self._track_is_oval = False       # oval vs road (pit exit capture differs)
         self._learn_name = ""             # display name to stamp on a saved scan
         self._track_saved = False         # we've persisted this learned scan
         self._force_learn = False         # rescan: re-learn even if a file exists
@@ -1457,6 +1458,7 @@ class AdvancedSimHUD:
                     constants.pit_blend_defaults(weekend))
                 self._pit_blend_defaults = (self.pit_entry_max_pct,
                                             self.pit_exit_extend_pct)
+                self._track_is_oval = constants.is_oval_track(weekend)
                 # On a rescan we skip the saved/bundled file and re-learn; the
                 # new scan then overwrites tracks/<id>.json when complete.
                 if not self._force_learn:
@@ -2501,11 +2503,31 @@ class AdvancedSimHUD:
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
                 # iRacing's surface flip (ApproachingPits -> OnTrack) is the
-                # exact, drift-free exit blend line. Finalize as soon as it is
-                # seen -- the post-merge commitment length is synthesized along
-                # the racing line in finalize, not traced from the car (which
-                # on a road course often dives through the next corner).
+                # exact, drift-free exit blend line. Road courses finalize as
+                # soon as it is seen and synthesize the commitment extension
+                # along the racing line (the car often dives into the next
+                # corner). Ovals keep tracing the car for pit_exit_extend_pct
+                # past that line -- the apron runs parallel to the straight and
+                # a racing-line arc would wrap around the outside of the track.
+                reason = None
                 if self._pit_surf_exit_pct is not None:
+                    self._pit_merge_pct = self._pit_surf_exit_pct
+                    reason = "surface"
+                elif self._pit_merge_pct is None and rejoined:
+                    self._pit_merge_pct = valid_pct
+                    reason = "rejoined"
+                if self._track_is_oval:
+                    if self._pit_merge_pct is not None:
+                        past = (valid_pct - self._pit_merge_pct) % 1.0
+                        if past > 0.5:
+                            past = 0.0
+                        if past >= self.pit_exit_extend_pct or capped:
+                            self._log_exit_profile(reason or "rejoined", rejoin)
+                            self._finalize_pit_pass(valid_pct, capped=False)
+                    elif capped:
+                        self._log_exit_profile("capped", rejoin)
+                        self._finalize_pit_pass(valid_pct, capped=True)
+                elif self._pit_surf_exit_pct is not None:
                     self._log_exit_profile("surface", rejoin)
                     self._finalize_pit_pass(valid_pct, capped=False)
                 elif rejoined:
@@ -2518,9 +2540,6 @@ class AdvancedSimHUD:
                         self._log_exit_profile("rejoined", rejoin)
                         self._finalize_pit_pass(valid_pct, capped=False)
                 elif capped:
-                    # A capped pass never actually merged (the driver kept going,
-                    # e.g. looping back to re-pit), so its exit blend is garbage;
-                    # flag it so finalize ignores it when building the exit lane.
                     self._log_exit_profile("capped", rejoin)
                     self._finalize_pit_pass(valid_pct, capped=True)
         self._pit_was_on = on
@@ -2592,18 +2611,24 @@ class AdvancedSimHUD:
             else:
                 in_blend, in_pct = self._trace_entry_blend(
                     self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
-            # Exit blend: captured path up to the surface merge, then a synthetic
-            # extension along the racing line (not the car's line through esses).
+            # Exit blend: road courses synthesize the post-merge extension along
+            # the racing line; ovals keep the car-traced path up to the limit.
             pit_out = list(self._pit_out_cur)
             if self._pit_surf_exit_pct is not None:
                 limit = self.pit_exit_extend_pct
                 tol = 0.003
-                if self._seg_has_pct(pit_out):
-                    pit_out = [(p, x, y) for p, x, y in pit_out
-                               if p is None or self._pct_past(
-                                   self._pit_surf_exit_pct, p) <= tol]
-                pit_out = self._append_exit_extension(
-                    pit_out, self._pit_surf_exit_pct, limit)
+                if self._track_is_oval:
+                    if self._seg_has_pct(pit_out):
+                        pit_out = [(p, x, y) for p, x, y in pit_out
+                                   if p is None or self._pct_past(
+                                       self._pit_surf_exit_pct, p) <= limit + tol]
+                else:
+                    if self._seg_has_pct(pit_out):
+                        pit_out = [(p, x, y) for p, x, y in pit_out
+                                   if p is None or self._pct_past(
+                                       self._pit_surf_exit_pct, p) <= tol]
+                    pit_out = self._append_exit_extension(
+                        pit_out, self._pit_surf_exit_pct, limit)
                 out_pct = (self._pit_surf_exit_pct + limit) % 1.0
             self._record_pit_pass(
                 self._pit_enter_pct,

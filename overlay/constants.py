@@ -24,18 +24,22 @@ PIT_EXIT_EXTEND_PCT_OVAL = 0.16
 PIT_ENTRY_MAX_PCT_OVAL = 0.08
 
 
+def is_oval_track(weekend: dict | None) -> bool:
+    """True when the current layout is an oval (not road / dirt road)."""
+    wk = weekend or {}
+    tt = str(wk.get("TrackType") or "")
+    cat = str(wk.get("Category") or "")
+    cfg = str(wk.get("TrackConfigName") or "")
+    blob = f"{tt} {cat} {cfg}".lower()
+    return "oval" in blob and "road" not in blob
+
+
 def pit_blend_defaults(weekend: dict | None) -> tuple[float, float]:
     """Return (entry_max_pct, exit_extend_pct) from WeekendInfo track type.
 
     Uses ``TrackType`` and ``Category`` (case-insensitive). Dirt road counts
     as road; dirt oval counts as oval.
     """
-    wk = weekend or {}
-    tt = str(wk.get("TrackType") or "")
-    cat = str(wk.get("Category") or "")
-    cfg = str(wk.get("TrackConfigName") or "")
-    blob = f"{tt} {cat} {cfg}".lower()
-    is_oval = "oval" in blob and "road" not in blob
-    if is_oval:
+    if is_oval_track(weekend):
         return PIT_ENTRY_MAX_PCT_OVAL, PIT_EXIT_EXTEND_PCT_OVAL
     return PIT_ENTRY_MAX_PCT_ROAD, PIT_EXIT_EXTEND_PCT_ROAD
