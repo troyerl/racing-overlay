@@ -5,6 +5,27 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.25.0 - 2026-06-30
+
+- **Smarter pit scanning on road courses and ovals.** Pit entry/exit blend lengths
+  now default from iRacing track type (road vs oval). Entry and exit commitment
+  zones are drawn along the racing line from the sim's surface boundaries; the
+  main pit lane stays traced from your actual drive (with drift correction), not
+  re-wrapped around the loop. Road exits taper onto the track; oval exits hold
+  a parallel apron offset until the merge point.
+- **More reliable pit scan quality.** Multi-pass pit learning uses least-squares
+  alignment on approach and exit anchors, drops outlier passes (e.g. a blown-out
+  first lap after a track scan), and shows **PIT n/3** progress on the map while
+  gathering passes.
+- **Track metadata authoring on the Track Scan tab.** Authors can set pit speed
+  limit, official corner count, and drag corner labels on the map; changes save
+  to the local track file and upload to the shared library. Fixes ensure a local
+  track file is created when needed and cloud tracks match whether TrackID is
+  stored as a number or string.
+- **Dash primary readouts layout.** Lap count and speed in the lower-left panel
+  are right-aligned toward the center ring, with each metric shown as
+  icon + label + value (e.g. flag, "LAP", `3/10`).
+
 ## 1.24.0 - 2026-06-30
 
 - **New "Track Scan" settings tab (write access only).** The "Rescan track" and

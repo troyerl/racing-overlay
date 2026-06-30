@@ -649,7 +649,7 @@ class DashWidget(QWidget):
         p.setPen(self._col("value"))
         p.drawText(QRectF(x, rect.top(), vw + 6, h), _VC_LEFT, val)
 
-    # -- primary (lower-left): a small readout + a big readout on one row ---
+    # -- primary (lower-left): a small readout + a big readout, right-aligned --
     def _draw_primary(self, p, rect, c, d):
         h = rect.height()
         left_key = c.get("primary_left", "lap_count")
@@ -657,10 +657,11 @@ class DashWidget(QWidget):
         show_l = left_key not in (None, "none")
         show_r = right_key not in (None, "none")
 
-        # left = small group (icon + label + value); right = big value + icon.
+        # left = small group (icon + label + value); right = icon + label + value.
         l_lbl = _m_label(left_key) if show_l else ""
         l_val = _m_str(left_key, d) if show_l else ""
         l_glyph = icons.glyph(left_key) if show_l else ""
+        r_lbl = _m_label(right_key) if show_r else ""
         r_val = _m_str(right_key, d) if show_r else ""
         r_glyph = icons.glyph(right_key) if show_r else ""
 
@@ -686,16 +687,20 @@ class DashWidget(QWidget):
                 if show_r:
                     tot += z["g_grp"]
             if show_r:
-                tot += QFontMetricsF(self._font(z["spd"])).horizontalAdvance(r_val)
                 if r_glyph:
-                    tot += (z["g_spd"] + QFontMetricsF(icons.icon_font(z["gauge"]))
-                            .horizontalAdvance(r_glyph))
+                    tot += (QFontMetricsF(icons.icon_font(z["gauge"]))
+                            .horizontalAdvance(r_glyph) + z["g_spd"])
+                if r_lbl:
+                    tot += (z["g_lbl"] + QFontMetricsF(self._font(z["lbl"]))
+                            .horizontalAdvance(r_lbl))
+                tot += QFontMetricsF(self._font(z["spd"])).horizontalAdvance(r_val)
             return tot
 
         need = measure(1.0)
         s = rect.width() / need if need > rect.width() and need > 0 else 1.0
         z = sizes(s)
-        x = rect.left()
+        total_w = measure(s)
+        x = rect.right() - total_w
 
         def draw(font, text, color):
             nonlocal x
@@ -715,10 +720,12 @@ class DashWidget(QWidget):
             if show_r:
                 x += z["g_grp"]
         if show_r:
-            x += draw(self._font(z["spd"]), r_val, self._col("value"))
             if r_glyph:
-                x += z["g_spd"]
-                draw(icons.icon_font(z["gauge"]), r_glyph, self._col("label"))
+                x += draw(icons.icon_font(z["gauge"]), r_glyph,
+                          self._col("label")) + z["g_spd"]
+            if r_lbl:
+                x += draw(self._font(z["lbl"]), r_lbl, self._col("label")) + z["g_lbl"]
+            x += draw(self._font(z["spd"]), r_val, self._col("value"))
 
     # -- stats (two configurable stacked cells) ----------------------------
     def _draw_stats(self, p, rect, c, d):
