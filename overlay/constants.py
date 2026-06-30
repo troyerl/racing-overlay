@@ -1,28 +1,28 @@
 """Hand-tunable constants for the track / pit scanner.
 
 This is the one place to change the per-track scan "dials" without digging
-through the scanning logic in ``app.py``. The values below control how long the
-drawn pit entry / exit blend lines reach; the rest of the pit thresholds adapt
-themselves to the measured lane offset, so these are the ones you'd most likely
-want to tweak when a different track's pit lane doesn't look right.
+through the scanning logic in ``app.py``. They control how far the drawn pit
+entry / exit blend lines reach *beyond* the real blend lines.
+
+The blend lines themselves now come straight from iRacing's own track-surface
+zones (OnTrack <-> ApproachingPits), which are exact and drift-free, so the
+defaults below are 0: by default the lane ends exactly where iRacing says the
+car leaves / regains the track, which is correct for both ovals and road
+courses with no per-track tuning. They survive only as optional fallbacks /
+overrides for the rare case the surface zone isn't reported, or to deliberately
+stretch the drawn lane out to a painted commitment line that runs past the
+blend (e.g. a superspeedway exit) -- raise PIT_EXIT_EXTEND_PCT for that.
 
 Both are expressed as a lap fraction (e.g. 0.16 = 16% of a lap), so they read
-the same regardless of car speed. Note that, being lap fractions, the same value
-covers far more ground on a long road course than on a short oval -- if a road
-course's exit lane draws far too long, lower ``PIT_EXIT_EXTEND_PCT``.
+the same regardless of car speed.
 """
 
-# The car geometrically regains the racing line (distance -> 0) well before
-# iRacing's painted pit-exit commitment line actually ends down the track. Once
-# merged, keep tracing the exit until the car has travelled this much further
-# around the lap so the drawn lane reaches the real end of the commitment zone.
-# With the merge at ~0.27 on the reference oval this lands the end near ~0.43 --
-# well past the old too-short result and pulled back from the ~0.5 that read as
-# too far. Raise it toward ~0.18 if still short, lower toward ~0.10 if long.
-PIT_EXIT_EXTEND_PCT = 0.16
+# Extra distance (lap fraction) to keep tracing the exit lane *past* iRacing's
+# exit blend line. 0 = end exactly at the blend line (most accurate). Raise it
+# only to stretch the drawn lane out to a longer painted commitment line.
+PIT_EXIT_EXTEND_PCT = 0.0
 
-# The entry blend can otherwise reach a long way back up the track (to wherever
-# the car first eased off the racing line). Cap it to the last this-much of a lap
-# before pit road so the yellow entry line stays short. Companion dial to
-# PIT_EXIT_EXTEND_PCT; raise for a longer entry line, lower for a shorter one.
+# Fallback cap for how far back up the track the entry blend may reach when the
+# surface zone's entry blend line isn't available; the back-trace otherwise
+# stops at that drift-free line. Lap fraction before pit road.
 PIT_ENTRY_MAX_PCT = 0.08

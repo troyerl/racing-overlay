@@ -206,6 +206,12 @@ class AdvancedSimHUD:
         self._pit_merge_pct = None   # lap % where the exit merged (None until then)
         self._pit_exit_dbg: list = []  # (pct, dist, surf) over the exit, for logs
         self._pit_surf_prev = None     # player's last CarIdxTrackSurface, for logs
+        # Drift-free blend-line lap %s straight from iRacing's own track-surface
+        # zones: where it flips OnTrack -> ApproachingPits (the entry blend line)
+        # and back ApproachingPits -> OnTrack (the exit blend line). These are
+        # exact and rock-steady, so they drive the blend extents when available.
+        self._pit_surf_entry_pct = None
+        self._pit_surf_exit_pct = None
         # On-track (dead-reckon xy, drift-free lap %) correspondences gathered
         # over the exit while the car is back on the racing line. Together with
         # the approach buffer they bracket the pit on both sides and drive the
@@ -1562,6 +1568,9 @@ class AdvancedSimHUD:
         self._pit_lane_offset = 0.0
         self._pit_entry_buf = []
         self._pit_exit_corr = []
+        self._pit_surf_prev = None
+        self._pit_surf_entry_pct = None
+        self._pit_surf_exit_pct = None
         self._player_on_route = False
         self._player_route_ticks = 0
         self._pit_recent.clear()
@@ -2081,15 +2090,18 @@ class AdvancedSimHUD:
         return diag * PIT_DIVERGE_FRAC, diag * PIT_REJOIN_FRAC
 
     @staticmethod
-    def _trace_entry_blend(buf, diverge, max_pct=None):
+    def _trace_entry_blend(buf, diverge, max_pct=None, stop_on_diverge=True):
         """Back-trace a GPS buffer to reconstruct the pit-entry blend: the
         stretch from where the car peeled off the racing line up to the pit-road
         edge. Returns (points, divergence_lap_pct).
 
         ``max_pct`` caps how far back (in lap fraction from the pit-road edge)
         the blend is allowed to reach, so the entry line doesn't run the whole
-        way back to where the car first drifted off the racing line."""
-        if diverge is None or not buf:
+        way back to where the car first drifted off the racing line. When
+        ``stop_on_diverge`` is False the trace runs purely to ``max_pct`` and
+        ignores the (drift-prone) distance test -- used when ``max_pct`` is the
+        exact, drift-free entry blend line from iRacing's surface zone."""
+        if (diverge is None and stop_on_diverge) or not buf:
             return [], None
         edge_pct = buf[-1][0]
         blend = []
@@ -2102,7 +2114,7 @@ class AdvancedSimHUD:
                 in_pct = pct_i
                 break
             blend.append((x, y))
-            if d is not None and d <= diverge:
+            if stop_on_diverge and d is not None and d <= diverge:
                 in_pct = pct_i
                 break
         blend.reverse()
@@ -2131,15 +2143,24 @@ class AdvancedSimHUD:
         surf_arr = self.ir["CarIdxTrackSurface"]
         surf = (surf_arr[player] if surf_arr and player < len(surf_arr)
                 else None)
-        if surf != self._pit_surf_prev and (
+        pit_zone = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
+        prev_surf = self._pit_surf_prev
+        if surf != prev_surf and (
                 on or self._pit_phase is not None
-                or surf in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
-                or self._pit_surf_prev in (oc.TRK_IN_PIT_STALL,
-                                           oc.TRK_APPROACHING_PITS)):
+                or surf in pit_zone or prev_surf in pit_zone):
             log.warning("pit surface: %s -> %s @ pct=%.4f on_pit=%s phase=%s",
-                        self._surf_name(self._pit_surf_prev),
-                        self._surf_name(surf),
+                        self._surf_name(prev_surf), self._surf_name(surf),
                         pct if pct is not None else -1.0, on, self._pit_phase)
+            vp = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
+            if vp is not None:
+                # Leaving the track for the pit approach: the entry blend line.
+                if prev_surf == oc.TRK_ON_TRACK and surf in pit_zone \
+                        and self._pit_phase != "exit":
+                    self._pit_surf_entry_pct = vp
+                # Rejoining the track off the pit exit: the exit blend line.
+                elif surf == oc.TRK_ON_TRACK and prev_surf in pit_zone \
+                        and self._pit_phase == "exit":
+                    self._pit_surf_exit_pct = vp
         self._pit_surf_prev = surf
         # Measure distance only against the racing line near the car's own lap
         # position so the opposite straight can't fake a merge on a narrow oval.
@@ -2192,6 +2213,7 @@ class AdvancedSimHUD:
                 # finalize once the lane offset (and thus the threshold) is known.
                 self._pit_entry_buf = list(self._pit_recent)
                 self._pit_exit_corr = []
+                self._pit_surf_exit_pct = None
                 self._pit_lane_offset = 0.0
                 self._pit_in_cur = []
                 self._pit_in_pct_cur = None
@@ -2250,16 +2272,27 @@ class AdvancedSimHUD:
                     self._pit_rejoin_ticks = 0
                 rejoined = self._pit_rejoin_ticks >= PIT_REJOIN_HOLD
                 capped = self._pit_exit_ticks > PIT_BLEND_MAX_PTS
+                # Prefer iRacing's own blend line (surface flip to OnTrack): it's
+                # exact and drift-free, so the exit ends where the car truly
+                # rejoins regardless of track type. Fall back to the distance
+                # rejoin only when the surface zone never reported it.
+                reason = None
+                if self._pit_merge_pct is None and self._pit_surf_exit_pct \
+                        is not None:
+                    self._pit_merge_pct = self._pit_surf_exit_pct
+                    reason = "surface"
+                elif self._pit_merge_pct is None and rejoined:
+                    self._pit_merge_pct = valid_pct  # distance fallback
+                    reason = "rejoined"
                 if self._pit_merge_pct is not None:
-                    # Already merged -- keep tracing until the car is PIT_EXIT_-
-                    # EXTEND_PCT of a lap past the merge so the drawn lane reaches
-                    # the end of iRacing's painted commitment line, which runs on
-                    # past where the car first regains the racing line.
+                    # Merged -- optionally keep tracing a little past the blend
+                    # line (pit_exit_extend_pct) so the drawn lane can match a
+                    # painted commitment line that runs on past the merge.
                     past = (valid_pct - self._pit_merge_pct) % 1.0
                     if past > 0.5:      # tiny backwards jitter, not real progress
                         past = 0.0
                     if past >= self.pit_exit_extend_pct or capped:
-                        self._log_exit_profile("rejoined", rejoin)
+                        self._log_exit_profile(reason or "rejoined", rejoin)
                         self._finalize_pit_pass(valid_pct, capped=False)
                 elif capped:
                     # A capped pass never actually merged (the driver kept going,
@@ -2267,8 +2300,6 @@ class AdvancedSimHUD:
                     # flag it so finalize ignores it when building the exit lane.
                     self._log_exit_profile("capped", rejoin)
                     self._finalize_pit_pass(valid_pct, capped=True)
-                elif rejoined:
-                    self._pit_merge_pct = valid_pct  # start tracing past the merge
         self._pit_was_on = on
 
     @staticmethod
@@ -2321,8 +2352,20 @@ class AdvancedSimHUD:
         """
         if self._pit_enter_pct is not None:
             diverge, _ = self._pit_thresholds()
-            in_blend, in_pct = self._trace_entry_blend(
-                self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
+            # Prefer iRacing's exact entry blend line: back-trace to it directly.
+            # Otherwise fall back to the distance/lap-% heuristic.
+            entry_line = self._pit_surf_entry_pct
+            if entry_line is not None:
+                span = (self._pit_enter_pct - entry_line) % 1.0
+                if span > 0.5:        # nonsense span (stale boundary) -> fallback
+                    entry_line = None
+            if entry_line is not None:
+                in_blend, in_pct = self._trace_entry_blend(
+                    self._pit_entry_buf, diverge, max_pct=span,
+                    stop_on_diverge=False)
+            else:
+                in_blend, in_pct = self._trace_entry_blend(
+                    self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
             self._record_pit_pass(
                 self._pit_enter_pct,
                 self._pit_exit_pct if self._pit_exit_pct is not None
@@ -2341,6 +2384,8 @@ class AdvancedSimHUD:
         self._pit_exit_ticks = 0
         self._pit_merge_pct = None
         self._pit_entry_buf = []
+        self._pit_surf_entry_pct = None
+        self._pit_surf_exit_pct = None
 
     def _record_pit_pass(self, entry_pct, exit_pct, lane, pit_in, pit_out,
                          in_pct, out_pct, capped=False) -> None:
@@ -2466,28 +2511,31 @@ class AdvancedSimHUD:
 
     @staticmethod
     def _select_pit_passes(passes):
-        """Drop outlier pit passes before averaging.
+        """Pick the pit passes worth averaging together.
 
-        Dead reckoning can be wildly off on the first lap after the track scan
-        (before it re-zeros at the start/finish line), so a pass whose measured
-        lane offset is far from the median is discarded, as are passes that
-        failed to capture both blend lines when other passes managed to. Falls
-        back to all passes if filtering would leave nothing.
+        Geometry quality is judged by what was actually captured rather than the
+        raw lane offset: that offset is a dead-reckoned distance to the racing
+        line in the (drifted) capture frame, so it varies wildly pass-to-pass and
+        used to throw away perfectly good passes. The least-squares alignment now
+        pulls every pass onto the same racing-line frame, so we instead keep the
+        passes that captured a real route -- both blend lines and a lane, and not
+        a capped (never-merged) exit -- and average those. Falls back gracefully
+        if filtering would leave nothing.
         """
         if len(passes) <= 1:
             return list(passes)
-        offs = sorted(p[8] for p in passes if p[8])
-        kept = list(passes)
-        if offs:
-            mid = offs[len(offs) // 2]
-            near = [p for p in passes if p[8] and 0.6 * mid <= p[8] <= 1.6 * mid]
-            if near:
-                kept = near
-        both = [p for p in kept
-                if p[4] and len(p[4]) >= 2 and p[5] and len(p[5]) >= 2]
+
+        def has_both(p):  # captured both an entry and an exit blend
+            return p[4] and len(p[4]) >= 2 and p[5] and len(p[5]) >= 2
+
+        merged = [p for p in passes if not p[9]]          # exits that merged
+        both_merged = [p for p in merged if has_both(p)]
+        if both_merged:
+            return both_merged
+        both = [p for p in passes if has_both(p)]
         if both:
-            kept = both
-        return kept or list(passes)
+            return both
+        return merged or list(passes)
 
     @classmethod
     def _avg_pit_span(cls, passes) -> tuple:
