@@ -85,7 +85,7 @@ PIT_PASSES = 3
 PIT_DIVERGE_FRAC = 0.012      # fallback: fraction of diagonal (offset unknown)
 PIT_REJOIN_FRAC = 0.008
 PIT_OFFSET_DIVERGE = 0.55     # diverge at >55% of the measured lane offset
-PIT_OFFSET_REJOIN = 0.40      # rejoin at <40% of it
+PIT_OFFSET_REJOIN = 0.18      # rejoin only once nearly back on the racing line
 PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
@@ -1867,12 +1867,22 @@ class AdvancedSimHUD:
         # to the drift-corrected pit geometry, so we pass None and let the widget
         # place the player onto the route by lap % instead (like other cars).
         self.map_widget.set_player_xy(xy if self._player_pos_gps else None)
-        off_line = (dist is not None and diverge is not None and dist > diverge)
+        # Decide whether to draw the player on the pit route, with hysteresis so
+        # the exit lane isn't abandoned early: you join the route on pit road or
+        # once clearly off the racing line (> diverge) within the route's extent,
+        # and you stay on it until you've actually merged back (< rejoin, the
+        # small threshold) -- not the larger diverge distance, which popped the
+        # car onto the track well before the real merge point.
         route = self._route_interval()
-        if (off_line and route is not None
-                and pct is not None and 0.0 <= pct <= 1.0):
-            off_line = self._pct_in_interval(pct, route[0], route[1])
-        self._player_on_route = on or off_line
+        in_route = (route is not None and pct is not None and 0.0 <= pct <= 1.0
+                    and self._pct_in_interval(pct, route[0], route[1]))
+        if self._player_on_route:
+            merged = (dist is not None and rejoin is not None and dist <= rejoin)
+            self._player_on_route = on or (not merged and in_route)
+        else:
+            off_line = (dist is not None and diverge is not None
+                        and dist > diverge and in_route)
+            self._player_on_route = on or off_line
 
         # Rolling buffer for back-tracing the entry blend.
         if xy is not None and pct is not None and 0.0 <= pct <= 1.0:
