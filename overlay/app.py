@@ -2058,10 +2058,17 @@ class AdvancedSimHUD:
         self._pit_path = self._avg_pit_path([p[3] for p in passes])
         self._pit_in = self._offset_blend_parallel(
             self._avg_pit_path([p[4] for p in passes]))
-        self._pit_out = self._offset_blend_parallel(
-            self._avg_pit_path([p[5] for p in passes]))
+        # Use the furthest-reaching exit pass (not the average) so the lane
+        # extends to the real merge point instead of being pulled short by a
+        # shorter pass; take that pass's merge lap-% too so the route extent and
+        # geometry agree.
+        exit_pass = max(passes, key=lambda p: self._blend_arclen(p[5]))
+        self._pit_out = (
+            self._offset_blend_parallel(track_map._resample_open(exit_pass[5], 120))
+            if self._blend_arclen(exit_pass[5]) > 0 else None)
         self._pit_in_pct = self._circ_mean([p[6] for p in passes])
-        self._pit_out_pct = self._circ_mean([p[7] for p in passes])
+        self._pit_out_pct = (exit_pass[7] if exit_pass[7] is not None
+                             else self._circ_mean([p[7] for p in passes]))
         self._pit_span = span
         self._pit_speed_ms = speed
         self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
@@ -2102,6 +2109,14 @@ class AdvancedSimHUD:
         if sx == 0.0 and sy == 0.0:
             return vals[0]
         return (math.atan2(sy, sx) / (2 * math.pi)) % 1.0
+
+    @staticmethod
+    def _blend_arclen(g) -> float:
+        """Arc length of a blend polyline, or -1 if it has no usable geometry."""
+        if not g or len(g) < 2:
+            return -1.0
+        return sum(math.hypot(g[i + 1][0] - g[i][0], g[i + 1][1] - g[i][1])
+                   for i in range(len(g) - 1))
 
     @staticmethod
     def _select_pit_passes(passes):
