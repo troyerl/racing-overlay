@@ -156,6 +156,51 @@ def _resample_open(points: list[tuple[float, float]], n: int):
     return out
 
 
+def _smooth_closed(points, window: int = 2, passes: int = 1):
+    """Light circular moving-average smoothing for a closed loop. Rounds out
+    discretization kinks (the 'squarish' bits left by sparse/interpolated bins)
+    without collapsing the overall shape. Small window keeps real corners."""
+    pts = list(points)
+    n = len(pts)
+    if n < 5 or window < 1:
+        return pts
+    for _ in range(max(1, passes)):
+        out = []
+        for i in range(n):
+            sx = sy = 0.0
+            for k in range(-window, window + 1):
+                x, y = pts[(i + k) % n]
+                sx += x
+                sy += y
+            cnt = 2 * window + 1
+            out.append((sx / cnt, sy / cnt))
+        pts = out
+    return pts
+
+
+def _smooth_open(points, window: int = 2, passes: int = 1):
+    """Light moving-average smoothing for an OPEN polyline, holding the two
+    endpoints fixed so a pit lane/blend still meets the track where it should.
+    Removes the little offset 'steps' the parallel-lane nudge can leave."""
+    if not points:
+        return points
+    pts = list(points)
+    n = len(pts)
+    if n < 5 or window < 1:
+        return pts
+    for _ in range(max(1, passes)):
+        out = [pts[0]]
+        for i in range(1, n - 1):
+            lo = max(0, i - window)
+            hi = min(n - 1, i + window)
+            seg = pts[lo:hi + 1]
+            out.append((sum(p[0] for p in seg) / len(seg),
+                        sum(p[1] for p in seg) / len(seg)))
+        out.append(pts[-1])
+        pts = out
+    return pts
+
+
 def build_demo_path(n: int = 720):
     return _resample_by_length(_catmull_rom_loop(_DEMO_CONTROL), n)
 
@@ -472,7 +517,8 @@ class TrackPathBuilder:
             span = (fwd - back) % n or 1
             t = ((i - back) % n) / span
             path.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
-        self.path = path
+        # Round out discretization kinks / squarish patches from sparse bins.
+        self.path = _smooth_closed(path, window=2, passes=1)
 
 
 class TrackMapWidget(QWidget):

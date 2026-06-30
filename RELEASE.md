@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.9 - 2026-06-30
+
+- **Fix: car dragged into the pits past the pit entry on a normal lap.** The dot
+  now only rides the pit route after a sustained stint actually on pit road, not
+  from merely reading as off the racing line near the entry (which a slightly
+  wide line or a rough patch in the learned track could trigger). It holds
+  through the exit blend and hands back to the track once you pass the route end.
+- **Smoother learned geometry.** The scanned track loop is lightly smoothed so
+  sparse/interpolated bins no longer leave squarish corners, and the pit lane and
+  entry/exit blends are smoothed (endpoints anchored) to remove the little offset
+  'steps' the parallel-lane nudge could leave. Re-scan to apply to pit lines.
+
 ## 1.22.8 - 2026-06-30
 
 - **Fix: dot stuck in the pits when passing the pit entry on a normal lap.**

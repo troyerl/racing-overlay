@@ -89,10 +89,10 @@ PIT_OFFSET_REJOIN = 0.10      # rejoin only once nearly back on the racing line
 PIT_REJOIN_HOLD = 30          # ticks (~0.5s @ 60Hz) the car must hold near the
                               # line before the exit is final -- a brief dip
                               # toward it mid-exit no longer ends the lane early
-PIT_COMMIT_HOLD = 15          # ticks the player must be on pit road / off the
-                              # racing line before the dot is drawn on the pit
-                              # route -- stops a one-tick OnPitRoad blip while
-                              # staying out from sticking the dot in the pits
+PIT_COMMIT_HOLD = 15          # ticks the player must be continuously on pit road
+                              # before the dot is drawn on the pit route -- stops
+                              # a brief OnPitRoad blip while staying out past the
+                              # pit entry from sticking the dot in the pits
 PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
 # The car geometrically regains the racing line (distance -> 0) well before
@@ -1944,33 +1944,21 @@ class AdvancedSimHUD:
         # to the drift-corrected pit geometry, so we pass None and let the widget
         # place the player onto the route by lap % instead (like other cars).
         self.map_widget.set_player_xy(xy if self._player_pos_gps else None)
-        # Decide whether to draw the player on the pit route, with hysteresis so
-        # the exit lane isn't abandoned early: you join the route on pit road or
-        # once clearly off the racing line (> diverge) within the route's extent,
-        # and you stay on it until you've actually merged back (< rejoin, the
-        # small threshold) -- not the larger diverge distance, which popped the
-        # car onto the track well before the real merge point.
+        # Decide whether to draw the player on the pit route. We ride it only
+        # after a *sustained* stint on pit road -- not from merely being off the
+        # racing line, because near the pit entry a slightly wide line (or a
+        # rough patch in the learned line) reads as "off line" and used to drag
+        # the dot into the pits on a normal lap. Once on, hold through the exit
+        # blend until lap pct leaves the route extent; lap position only moves
+        # forward, so this can't flicker mid-corner.
         route = self._route_interval()
         in_route = (route is not None and pct is not None and 0.0 <= pct <= 1.0
                     and self._pct_in_interval(pct, route[0], route[1]))
-        # A real pit visit means being on pit road, or clearly off the racing
-        # line within the route's extent, for a sustained moment -- not a
-        # one-tick OnPitRoad blip while staying out as you pass the pit entry.
-        committed = on or (dist is not None and diverge is not None
-                           and dist > diverge and in_route)
-        self._player_route_ticks = (
-            self._player_route_ticks + 1 if committed else 0)
-        if self._player_on_route:
-            # Stay on the route for its whole lap-% extent and only hand back to
-            # the track once the car passes the route's end. Leaving on a
-            # momentary distance dip (e.g. the apron skimming the racing line
-            # through a corner) blinked the dot onto the track and back; lap
-            # position only moves forward, so this can't flicker mid-route.
-            self._player_on_route = on or in_route
-        else:
-            # Enter only on a sustained commitment, so a brief blip while staying
-            # out on a normal lap doesn't stick the dot in the pits.
-            self._player_on_route = self._player_route_ticks >= PIT_COMMIT_HOLD
+        self._player_route_ticks = self._player_route_ticks + 1 if on else 0
+        if self._player_route_ticks >= PIT_COMMIT_HOLD:
+            self._player_on_route = True          # firmly on pit road
+        elif self._player_on_route and not in_route:
+            self._player_on_route = False         # passed the route's end
 
         # Rolling buffer for back-tracing the entry blend.
         if xy is not None and pct is not None and 0.0 <= pct <= 1.0:
@@ -2187,16 +2175,20 @@ class AdvancedSimHUD:
         # running parallel to the track rather than drawn on top of it.
         span = self._avg_pit_span(passes)
         speed = sum(p[2] for p in passes) / m
-        self._pit_path = self._avg_pit_path([p[3] for p in passes])
-        self._pit_in = self._offset_blend_parallel(
-            self._avg_pit_path([p[4] for p in passes]))
+        # Smooth each finished polyline so the lane and blends read as clean
+        # continuous lines -- the parallel-lane nudge and per-pass averaging can
+        # otherwise leave little offset 'steps'. Endpoints stay anchored.
+        self._pit_path = track_map._smooth_open(
+            self._avg_pit_path([p[3] for p in passes]))
+        self._pit_in = track_map._smooth_open(self._offset_blend_parallel(
+            self._avg_pit_path([p[4] for p in passes])))
         # The exit blend must come only from passes that genuinely merged back
         # onto the racing line (p[9] is the "capped" flag). A capped pass kept
         # driving past the merge -- often a whole extra lap to re-pit -- so its
         # exit blend runs far too long and would drag the lane onto the track.
         merged = [p for p in passes if not p[9]] or passes
-        self._pit_out = self._offset_blend_parallel(
-            self._avg_pit_path([p[5] for p in merged]))
+        self._pit_out = track_map._smooth_open(self._offset_blend_parallel(
+            self._avg_pit_path([p[5] for p in merged])))
         self._pit_in_pct = self._circ_mean([p[6] for p in passes])
         self._pit_out_pct = self._circ_mean([p[7] for p in merged])
         self._pit_span = span
