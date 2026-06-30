@@ -85,7 +85,7 @@ PIT_PASSES = 3
 PIT_DIVERGE_FRAC = 0.012      # fallback: fraction of diagonal (offset unknown)
 PIT_REJOIN_FRAC = 0.008
 PIT_OFFSET_DIVERGE = 0.55     # diverge at >55% of the measured lane offset
-PIT_OFFSET_REJOIN = 0.18      # rejoin only once nearly back on the racing line
+PIT_OFFSET_REJOIN = 0.10      # rejoin only once nearly back on the racing line
 PIT_REJOIN_HOLD = 30          # ticks (~0.5s @ 60Hz) the car must hold near the
                               # line before the exit is final -- a brief dip
                               # toward it mid-exit no longer ends the lane early
