@@ -1582,10 +1582,14 @@ class AdvancedSimHUD:
     def _offset_blend_parallel(self, seg):
         """Nudge the stretch of a blend that hugs the racing line sideways into
         the infield so it reads as a pit lane running *parallel* to the track
-        rather than drawn on top of it.
+        rather than drawn on top of it -- while still letting it touch the track
+        where it actually joins it.
 
-        For each point within a lane-width of the racing line, the inward
-        (perpendicular) distance is clamped up to that lane-width while its
+        The end of the blend nearer the racing line is its junction (the merge
+        for the exit, the departure for the entry); there the offset tapers to
+        zero so the lane visibly meets the track, then ramps up to a full
+        lane-width away from the junction. For each point, the inward
+        (perpendicular) distance is clamped up to that tapered target while the
         along-track position is preserved, so the result stays continuous and
         points already out toward the pit are left untouched. No-op without
         track geometry.
@@ -1598,8 +1602,21 @@ class AdvancedSimHUD:
             return seg
         cx = sum(p[0] for p in pts) / len(pts)
         cy = sum(p[1] for p in pts) / len(pts)
+        # Whichever end sits nearer the racing line is the track junction; taper
+        # the offset to zero there over ~2.5 lane-widths of arc length.
+        d0 = self._dist_to_track(seg[0][0], seg[0][1]) or 0.0
+        d1 = self._dist_to_track(seg[-1][0], seg[-1][1]) or 0.0
+        junction_start = d0 <= d1
+        taper_len = lane_w * 2.5
+        cum = [0.0]
+        for i in range(1, len(seg)):
+            cum.append(cum[-1] + math.hypot(seg[i][0] - seg[i - 1][0],
+                                            seg[i][1] - seg[i - 1][1]))
+        total = cum[-1]
         out = []
-        for x, y in seg:
+        for i, (x, y) in enumerate(seg):
+            s = cum[i] if junction_start else (total - cum[i])  # arc from junction
+            target = lane_w * min(1.0, s / taper_len) if taper_len > 0 else lane_w
             near, nx, ny = self._nearest_on_track(x, y, cx, cy)
             if near is None:
                 out.append((x, y))
@@ -1607,9 +1624,9 @@ class AdvancedSimHUD:
             vx, vy = x - near[0], y - near[1]
             along = vx * nx + vy * ny           # inward (perpendicular) distance
             tx, ty = vx - nx * along, vy - ny * along   # tangential remainder
-            if along < lane_w:
-                out.append((near[0] + nx * lane_w + tx,
-                            near[1] + ny * lane_w + ty))
+            if along < target:
+                out.append((near[0] + nx * target + tx,
+                            near[1] + ny * target + ty))
             else:
                 out.append((x, y))
         return out
