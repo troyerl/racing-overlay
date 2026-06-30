@@ -204,7 +204,15 @@ class AdvancedSimHUD:
         self._pit_exit_ticks = 0     # ticks spent tracing the current exit blend
         self._pit_rejoin_ticks = 0   # consecutive ticks held near the racing line
         self._pit_merge_pct = None   # lap % where the exit merged (None until then)
-        self._pit_exit_dbg: list = []  # (pct, dist) samples over the exit, for logs
+        self._pit_exit_dbg: list = []  # (pct, dist, surf) over the exit, for logs
+        self._pit_surf_prev = None     # player's last CarIdxTrackSurface, for logs
+        # On-track (dead-reckon xy, drift-free lap %) correspondences gathered
+        # over the exit while the car is back on the racing line. Together with
+        # the approach buffer they bracket the pit on both sides and drive the
+        # least-squares similarity that un-drifts the captured pit geometry.
+        self._pit_exit_corr: list = []
+        self._pit_align_n = 0       # anchors used by the last alignment fit
+        self._pit_align_ls = False  # whether that fit was the least-squares one
         # Max distance of the current pass's lane from the racing line, used to
         # scale the divergence thresholds, and a snapshot of the rolling buffer
         # at pit entry from which the entry blend is back-traced at finalize.
@@ -1553,6 +1561,7 @@ class AdvancedSimHUD:
         self._pit_merge_pct = None
         self._pit_lane_offset = 0.0
         self._pit_entry_buf = []
+        self._pit_exit_corr = []
         self._player_on_route = False
         self._player_route_ticks = 0
         self._pit_recent.clear()
@@ -1774,30 +1783,107 @@ class AdvancedSimHUD:
                 out.append((x, y))
         return out
 
+    @staticmethod
+    def _fit_similarity(src, dst):
+        """Least-squares 2D similarity (rotate + uniform scale + translate) that
+        best maps the ``src`` points onto ``dst`` (Umeyama / Procrustes, solved
+        in closed form via complex numbers). Returns (ax, ay, bx, by, ca, sa)
+        such that a point (x, y) maps to
+            (bx + ca*(x-ax) - sa*(y-ay),  by + sa*(x-ax) + ca*(y-ay))
+        where (ca, sa) already fold in the scale. None if the fit is degenerate
+        (fewer than two pairs, or all source points coincide)."""
+        n = len(src)
+        if n < 2 or n != len(dst):
+            return None
+        ax = sum(p[0] for p in src) / n
+        ay = sum(p[1] for p in src) / n
+        bx = sum(p[0] for p in dst) / n
+        by = sum(p[1] for p in dst) / n
+        sxx = sxy = denom = 0.0
+        for (sx, sy), (tx_, ty_) in zip(src, dst):
+            dax, day = sx - ax, sy - ay
+            dbx, dby = tx_ - bx, ty_ - by
+            sxx += dax * dbx + day * dby
+            sxy += dax * dby - day * dbx
+            denom += dax * dax + day * day
+        if denom < 1e-12:
+            return None
+        ca, sa = sxx / denom, sxy / denom
+        if abs(ca) < 1e-12 and abs(sa) < 1e-12:
+            return None
+        return (ax, ay, bx, by, ca, sa)
+
+    def _alignment_anchors(self):
+        """Build the on-track (dead-reckon xy -> true racing-line xy) anchor
+        pairs that bracket the pit on both sides: the approach buffer up to the
+        point the car left the line, and the exit samples once it was back on
+        it. Lap % is drift-free, so each pairs a captured position with where it
+        truly was. Returns (src_pts, dst_pts)."""
+        diverge, _ = self._pit_thresholds()
+        src, dst = [], []
+        for pct_i, x, y, d in self._pit_entry_buf:
+            if pct_i is None or d is None:
+                continue
+            if diverge is None or d <= diverge:
+                tp = self._track_point_at_pct(pct_i)
+                if tp is not None:
+                    src.append((x, y))
+                    dst.append(tp)
+        for x, y, pct_i in self._pit_exit_corr:
+            tp = self._track_point_at_pct(pct_i)
+            if tp is not None:
+                src.append((x, y))
+                dst.append(tp)
+        return src, dst
+
     def _align_pit_to_track(self, pit_in, lane, pit_out,
                             in_pct, out_pct, entry_pct, exit_pct):
-        """Snap a captured pit route onto the track at its known entry/exit lap
-        percentages.
+        """Snap a captured pit route onto the track to undo dead-reckoning drift.
 
-        Dead reckoning drifts over a lap, so by the time the pit is reached the
+        Dead reckoning (the only positioning iRacing exposes -- it broadcasts no
+        live GPS) drifts over a lap, so by the time the pit is reached the
         captured geometry has rotated/scaled away from the multi-lap-averaged
-        racing line. We know two true anchor points -- where the route leaves the
-        track (entry) and where it rejoins (exit) -- from lap %, which is not
-        subject to drift. Fitting a similarity transform (translate + rotate +
-        uniform scale) through those two correspondences pulls the whole route
-        back onto the track. A no-op when there's no track geometry.
+        racing line. Lap % is *not* subject to drift, so every tick the car is
+        demonstrably on the racing line gives a true correspondence between a
+        dead-reckoned position and where it actually was. We gather all of those
+        on both sides of the pit (the approach and the exit) and fit a single
+        similarity transform through them by least squares -- far steadier in
+        rotation and scale than pinning just the entry/exit endpoints, which is
+        what used to leave the middle of the lane warped onto the wrong part of
+        the track. Falls back to the two-endpoint fit when too few anchors were
+        captured, and is a no-op without track geometry.
         """
         if not self._track_pts:
             return pit_in, lane, pit_out
+
+        def apply(ax, ay, bx, by, ca, sa):
+            def xf(seg):
+                out = []
+                for x, y in seg:
+                    dx, dy = x - ax, y - ay
+                    out.append((bx + ca * dx - sa * dy,
+                                by + sa * dx + ca * dy))
+                return out
+            return (xf(pit_in) if pit_in else pit_in,
+                    xf(lane) if lane else lane,
+                    xf(pit_out) if pit_out else pit_out)
+
+        src, dst = self._alignment_anchors()
+        self._pit_align_n = len(src)
+        fit = self._fit_similarity(src, dst) if len(src) >= 3 else None
+        self._pit_align_ls = fit is not None
+        if fit is not None:
+            return apply(*fit)
+
+        # Fallback: pin the two endpoints (entry start / exit end) we know by
+        # lap %, the original behaviour when too few line anchors were seen.
         head = pit_in if pit_in else lane
         tail = pit_out if pit_out else lane
         if not head or not tail:
             return pit_in, lane, pit_out
         s0, s1 = head[0], tail[-1]
-        p0 = in_pct if pit_in else entry_pct
-        p1 = out_pct if pit_out else exit_pct
-        t0 = self._track_point_at_pct(p0)
-        t1 = self._track_point_at_pct(p1)
+        t0 = self._track_point_at_pct(in_pct if pit_in else entry_pct)
+        t1 = self._track_point_at_pct(out_pct if pit_out else exit_pct)
         if t0 is None or t1 is None:
             return pit_in, lane, pit_out
         sx, sy = s1[0] - s0[0], s1[1] - s0[1]
@@ -1808,19 +1894,8 @@ class AdvancedSimHUD:
             return pit_in, lane, pit_out
         scale = tgt_len / src_len
         ang = math.atan2(ty_, tx_) - math.atan2(sy, sx)
-        ca, sa = math.cos(ang) * scale, math.sin(ang) * scale
-
-        def xf(seg):
-            out = []
-            for x, y in seg:
-                dx, dy = x - s0[0], y - s0[1]
-                out.append((t0[0] + ca * dx - sa * dy,
-                            t0[1] + sa * dx + ca * dy))
-            return out
-
-        return (xf(pit_in) if pit_in else pit_in,
-                xf(lane) if lane else lane,
-                xf(pit_out) if pit_out else pit_out)
+        return apply(s0[0], s0[1], t0[0], t0[1],
+                     math.cos(ang) * scale, math.sin(ang) * scale)
 
     def _apply_pit_meta(self, meta) -> None:
         """Push loaded pit geometry (span / speed / lane / blend lines / route
@@ -2049,6 +2124,23 @@ class AdvancedSimHUD:
         pct = lap_pct[player]
         speed = self.ir["Speed"]
         xy = self._player_pos  # GPS or dead reckoning (resolved this tick)
+        # Player's track-surface zone, logged on every change through the pit
+        # sequence so we can compare iRacing's own zone boundaries (OnTrack <->
+        # ApproachingPits <-> InPitStall) against the OnPitRoad edge and our
+        # distance-based merge -- to see if the zone gives a cleaner blend line.
+        surf_arr = self.ir["CarIdxTrackSurface"]
+        surf = (surf_arr[player] if surf_arr and player < len(surf_arr)
+                else None)
+        if surf != self._pit_surf_prev and (
+                on or self._pit_phase is not None
+                or surf in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
+                or self._pit_surf_prev in (oc.TRK_IN_PIT_STALL,
+                                           oc.TRK_APPROACHING_PITS)):
+            log.warning("pit surface: %s -> %s @ pct=%.4f on_pit=%s phase=%s",
+                        self._surf_name(self._pit_surf_prev),
+                        self._surf_name(surf),
+                        pct if pct is not None else -1.0, on, self._pit_phase)
+        self._pit_surf_prev = surf
         # Measure distance only against the racing line near the car's own lap
         # position so the opposite straight can't fake a merge on a narrow oval.
         dist = (self._dist_to_track(xy[0], xy[1], near_pct=pct)
@@ -2099,6 +2191,7 @@ class AdvancedSimHUD:
                 # Snapshot the approach so the entry blend can be back-traced at
                 # finalize once the lane offset (and thus the threshold) is known.
                 self._pit_entry_buf = list(self._pit_recent)
+                self._pit_exit_corr = []
                 self._pit_lane_offset = 0.0
                 self._pit_in_cur = []
                 self._pit_in_pct_cur = None
@@ -2125,7 +2218,7 @@ class AdvancedSimHUD:
                     self._pit_exit_ticks = 0
                     self._pit_rejoin_ticks = 0
                     self._pit_merge_pct = None
-                    self._pit_exit_dbg = [(valid_pct, dist)]
+                    self._pit_exit_dbg = [(valid_pct, dist, surf)]
                     self._pit_out_cur = []
                     if self._pit_geo_cur:
                         self._pit_out_cur.append(self._pit_geo_cur[-1])
@@ -2140,7 +2233,14 @@ class AdvancedSimHUD:
                 self._pit_exit_ticks += 1
                 if xy is not None:
                     self._pit_out_cur.append(xy)
-                self._pit_exit_dbg.append((valid_pct, dist))
+                self._pit_exit_dbg.append((valid_pct, dist, surf))
+                # Once the car is back on the racing line, record it as a
+                # drift-free anchor (true lap % <-> dead-reckon position) for the
+                # exit side of the alignment fit.
+                if (xy is not None and valid_pct is not None
+                        and rejoin is not None and dist is not None
+                        and dist <= rejoin):
+                    self._pit_exit_corr.append((xy[0], xy[1], valid_pct))
                 # Require the car to *hold* near the racing line for a moment, so
                 # a brief dip toward it (noise, or the apron passing close) won't
                 # finalize the exit before the real merge point.
@@ -2171,13 +2271,22 @@ class AdvancedSimHUD:
                     self._pit_merge_pct = valid_pct  # start tracing past the merge
         self._pit_was_on = on
 
+    @staticmethod
+    def _surf_name(surf):
+        """Short name for a CarIdxTrackSurface enum value, for readable logs."""
+        return {oc.TRK_NOT_IN_WORLD: "void", oc.TRK_OFF_TRACK: "off",
+                oc.TRK_IN_PIT_STALL: "stall", oc.TRK_APPROACHING_PITS: "appr",
+                oc.TRK_ON_TRACK: "track"}.get(surf, str(surf))
+
     def _log_exit_profile(self, reason, rejoin) -> None:
         """Log how the car's distance-to-racing-line evolved over the pit exit,
         so we can see where (lap %) and why it decided the car had merged.
 
-        Each entry is `pct@dist`; the threshold the car must drop under to count
-        as rejoined is printed too. If dist drops under the threshold well before
-        the real merge, the racing line is too close to the apron there.
+        Each entry is `pct@dist:surf`; the threshold the car must drop under to
+        count as rejoined is printed too. If dist drops under the threshold well
+        before the real merge, the racing line is too close to the apron there.
+        ``surf_track_pct`` is the lap % where iRacing's own zone first flips back
+        to OnTrack -- a candidate blend-line boundary to compare our merge to.
         """
         dbg = self._pit_exit_dbg
         if not dbg:
@@ -2185,16 +2294,21 @@ class AdvancedSimHUD:
         step = max(1, len(dbg) // 24)  # ~24 evenly spaced samples
         prof = []
         for i in range(0, len(dbg), step):
-            pct, dist = dbg[i]
+            pct, dist, surf = dbg[i]
             prof.append(f"{(pct if pct is not None else -1):.3f}@"
-                        f"{(dist if dist is not None else -1):.0f}")
-        dists = [d for _, d in dbg if d is not None]
+                        f"{(dist if dist is not None else -1):.0f}:"
+                        f"{self._surf_name(surf)}")
+        dists = [d for _, d, _ in dbg if d is not None]
+        surf_track_pct = next(
+            (p for p, _, s in dbg if s == oc.TRK_ON_TRACK and p is not None),
+            None)
         log.warning(
             "pit exit: reason=%s rejoin_thr=%.1f ticks=%d min_dist=%.1f "
-            "end_pct=%.3f profile=[%s]",
+            "end_pct=%.3f surf_track_pct=%.3f profile=[%s]",
             reason, rejoin if rejoin is not None else -1.0, len(dbg),
             min(dists) if dists else -1.0,
             (dbg[-1][0] if dbg[-1][0] is not None else -1.0),
+            surf_track_pct if surf_track_pct is not None else -1.0,
             " ".join(prof))
 
     def _finalize_pit_pass(self, out_pct, capped=False) -> None:
@@ -2257,10 +2371,12 @@ class AdvancedSimHUD:
         # Diagnostics: surfaces whether the entry/exit blends were captured (they
         # need track geometry to measure divergence from the racing line).
         log.warning("pit pass %d/%d: entry_blend=%d lane=%d exit_blend=%d "
-                    "lane_offset=%.3e track_geom=%s pos=%s",
+                    "lane_offset=%.3e track_geom=%s pos=%s align=%s(%d)",
                     n, PIT_PASSES, n_in, len(lane) if lane else 0, n_out,
                     self._pit_lane_offset, bool(self._track_pts),
-                    "gps" if self._player_pos_gps else "dead-reckon")
+                    "gps" if self._player_pos_gps else "dead-reckon",
+                    "lsq" if getattr(self, "_pit_align_ls", False) else "2pt",
+                    getattr(self, "_pit_align_n", 0))
         # Preview the latest pass (span + geometry) while gathering more.
         self.map_widget.set_pit((entry_pct, exit_pct), self._pit_speed_ms)
         if lane and len(lane) >= 2:
