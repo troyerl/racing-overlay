@@ -5,6 +5,26 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.23.3 - 2026-06-30
+
+- **Demo mode now shows the full pit lane.** The map demo synthesizes a pit lane
+  from the demo track -- the dashed lane, the yellow entry / blue exit blends,
+  and the static pit speed badge -- so every recent map feature (plus the new
+  "Show pit entry/exit lines" / "Show pit speed limit" toggles and cars riding
+  the pit route) is visible without a live iRacing scan.
+- Loading a track with no pit data now fully clears any previous pit lane,
+  instead of leaving a stale one on the map.
+
+## 1.23.2 - 2026-06-30
+
+- **Better auto corner numbering.** A long sustained bend is now split into
+  ~80-degree chunks, so each end of an oval (~180 degrees of turning) reads as
+  two numbered turns the way iRacing counts them, instead of collapsing into
+  one. Still a geometry heuristic, so it won't always match every road course.
+- **More track / pit smoothing.** The learned track loop and the pit lane +
+  entry/exit blends now get a second light smoothing pass, ironing out the
+  remaining squarish patches and offset steps. Re-scan to apply to pit lines.
+
 ## 1.23.1 - 2026-06-30
 
 - **Static pit speed badge.** The pit label now shows only the learned pit speed

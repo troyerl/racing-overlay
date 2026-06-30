@@ -1244,15 +1244,66 @@ class AdvancedSimHUD:
         return f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}"
 
     def _load_demo_track(self) -> None:
+        pts = None
         path = track_map.find_track_file("_demo", self.tracks_dir)
         if path:
             try:
                 pts, sf, corners, _, _ = track_map.load_track(path)
                 self.map_widget.set_track(pts, sf, corners)
-                return
             except Exception:
-                pass
-        self.map_widget.set_path(track_map.build_demo_path())
+                pts = None
+        if pts is None:
+            pts = track_map.build_demo_path()
+            self.map_widget.set_path(pts)
+        # Synthesize a pit lane so all the map's pit features -- the lane, the
+        # yellow entry / blue exit blends, the static speed badge, and on-pit
+        # car placement -- are visible in demo mode without a live scan.
+        meta = self._demo_pit_geometry(pts)
+        if meta:
+            self._apply_pit_meta(meta)
+
+    def _demo_pit_geometry(self, pts):
+        """Build a believable pit lane (lane + entry/exit blends + lap-% extents
+        + speed) offset inward from the demo track, aligned with the lap stretch
+        where the demo cars duck onto pit road (just after start/finish)."""
+        n = len(pts) if pts else 0
+        if n < 24:
+            return None
+        cx = sum(p[0] for p in pts) / n
+        cy = sum(p[1] for p in pts) / n
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        diag = math.hypot(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+        off = 0.045 * diag
+
+        def at(pct):
+            return pts[int((pct % 1.0) * n) % n]
+
+        def inward(p, frac):
+            dx, dy = cx - p[0], cy - p[1]
+            ln = math.hypot(dx, dy) or 1.0
+            return (p[0] + dx / ln * off * frac, p[1] + dy / ln * off * frac)
+
+        def span_pts(a, b, steps, f0, f1):
+            s = (b - a) % 1.0
+            out = []
+            for k in range(steps + 1):
+                t = k / steps
+                out.append(inward(at(a + s * t), f0 + (f1 - f0) * t))
+            return out
+
+        # Entry blend (on track -> lane), the lane itself (wraps start/finish),
+        # then the exit blend (lane -> back on track).
+        in_pct, lane_lo, lane_hi, out_pct = 0.90, 0.95, 0.06, 0.12
+        return {
+            "pit_span": (lane_lo, lane_hi),
+            "pit_speed": 22.0,  # ~50 mph / 80 km/h, shown as a static badge
+            "pit_in": span_pts(in_pct, lane_lo, 14, 0.0, 1.0),
+            "pit_path": span_pts(lane_lo, lane_hi, 44, 1.0, 1.0),
+            "pit_out": span_pts(lane_hi, out_pct, 14, 1.0, 0.0),
+            "pit_in_pct": in_pct,
+            "pit_out_pct": out_pct,
+        }
 
     def _ensure_track(self, player, lap_pct) -> None:
         """Prefer a bundled per-track file (by TrackID); else learn from GPS."""
@@ -1721,14 +1772,20 @@ class AdvancedSimHUD:
 
     def _apply_pit_meta(self, meta) -> None:
         """Push loaded pit geometry (span / speed / lane / blend lines / route
-        extent) from a track file into both our state and the map widget."""
-        if meta.get("pit_span"):
-            self._pit_span = meta["pit_span"]
-            self._pit_speed_ms = meta.get("pit_speed", 0.0)
-            self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
-        if meta.get("pit_path"):
-            self._pit_path = meta["pit_path"]
-            self.map_widget.set_pit_path(self._pit_path)
+        extent) from a track file into both our state and the map widget. A meta
+        with no pit data fully clears any previous pit lane (e.g. when leaving
+        the demo or switching to a track that hasn't been scanned)."""
+        if not meta.get("pit_span"):
+            self._pit_span = None
+            self._pit_path = self._pit_in = self._pit_out = None
+            self._pit_in_pct = self._pit_out_pct = None
+            self.map_widget.clear_pit()
+            return
+        self._pit_span = meta["pit_span"]
+        self._pit_speed_ms = meta.get("pit_speed", 0.0)
+        self.map_widget.set_pit(self._pit_span, self._pit_speed_ms)
+        self._pit_path = meta.get("pit_path")
+        self.map_widget.set_pit_path(self._pit_path or [])
         self._pit_in = meta.get("pit_in")
         self._pit_out = meta.get("pit_out")
         self.map_widget.set_pit_blends(self._pit_in, self._pit_out)
@@ -1744,7 +1801,9 @@ class AdvancedSimHUD:
         # so the learner and the pit capture share a single, consistent frame.
         self._update_player_pos(lap_pct[player])
         self._ensure_track(player, lap_pct)
-        if config.CFG["map"].get("show_pit", True):
+        # In demo mode the pit lane is synthesized once (see _load_demo_track);
+        # skip live learning so it isn't overwritten by the demo's fake pit dips.
+        if config.CFG["map"].get("show_pit", True) and not self.demo:
             self._learn_pit(player, lap_pct)
         if config.CFG["map"].get("show_wind", True):
             self.map_widget.set_wind(self.ir["WindDir"], self.ir["WindVel"])
@@ -2181,18 +2240,19 @@ class AdvancedSimHUD:
         speed = sum(p[2] for p in passes) / m
         # Smooth each finished polyline so the lane and blends read as clean
         # continuous lines -- the parallel-lane nudge and per-pass averaging can
-        # otherwise leave little offset 'steps'. Endpoints stay anchored.
+        # otherwise leave little offset 'steps'. Endpoints stay anchored; two
+        # passes iron the steps out without dragging the ends off the track.
         self._pit_path = track_map._smooth_open(
-            self._avg_pit_path([p[3] for p in passes]))
+            self._avg_pit_path([p[3] for p in passes]), passes=2)
         self._pit_in = track_map._smooth_open(self._offset_blend_parallel(
-            self._avg_pit_path([p[4] for p in passes])))
+            self._avg_pit_path([p[4] for p in passes])), passes=2)
         # The exit blend must come only from passes that genuinely merged back
         # onto the racing line (p[9] is the "capped" flag). A capped pass kept
         # driving past the merge -- often a whole extra lap to re-pit -- so its
         # exit blend runs far too long and would drag the lane onto the track.
         merged = [p for p in passes if not p[9]] or passes
         self._pit_out = track_map._smooth_open(self._offset_blend_parallel(
-            self._avg_pit_path([p[5] for p in merged])))
+            self._avg_pit_path([p[5] for p in merged])), passes=2)
         self._pit_in_pct = self._circ_mean([p[6] for p in passes])
         self._pit_out_pct = self._circ_mean([p[7] for p in merged])
         self._pit_span = span

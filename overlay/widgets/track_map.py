@@ -206,12 +206,19 @@ def build_demo_path(n: int = 720):
 
 
 def detect_corners(path, start_finish: float = 0.0,
-                   min_turn_deg: float = 38.0, max_corners: int = 30):
+                   min_turn_deg: float = 38.0, max_corners: int = 30,
+                   corner_turn_deg: float = 80.0):
     """Find corners from a track loop's geometry and number them.
 
     Walks the (arc-length resampled) loop, measures how fast the heading turns,
     and groups sustained turning into corners. Each corner's apex (sharpest
     point) becomes a lap-pct, numbered 1..N in driving order from path[0].
+
+    A single sustained turning run can hold more than one numbered corner: a
+    long bend is split into ~``corner_turn_deg`` chunks, so e.g. each end of an
+    oval (roughly 180 degrees of turning) reads as two turns the way iRacing
+    numbers them, rather than collapsing into one.
+
     Returns a list of (pct, label) like the track-file "corners" array, so it
     can be drawn by the same code. Heuristic, but good enough for labels.
     """
@@ -258,15 +265,35 @@ def detect_corners(path, start_finish: float = 0.0,
         runs.append(cur)
 
     min_turn = math.radians(min_turn_deg)
+    budget = math.radians(corner_turn_deg)
     found = []
     for run in runs:
         total = sum(turn[i] for i in run)
         if abs(total) < min_turn:  # gentle kink, not a real corner
             continue
-        apex = max(run, key=lambda i: abs(turn[i]))
-        found.append(apex)
+        # How many numbered turns this bend holds: a ~180-degree oval end -> 2.
+        count = max(1, round(abs(total) / budget))
+        if count == 1:
+            found.append(max(run, key=lambda i: abs(turn[i])))
+            continue
+        # Split the run into `count` equal slices by accumulated turn angle and
+        # take the sharpest point in each slice as that corner's apex.
+        per = abs(total) / count
+        acc = 0.0
+        slot = 0
+        best_i, best_v = run[0], 0.0
+        for i in run:
+            v = abs(turn[i])
+            if v > best_v:
+                best_i, best_v = i, v
+            acc += v
+            if acc >= per * (slot + 1) and slot < count - 1:
+                found.append(best_i)
+                slot += 1
+                best_i, best_v = i, 0.0
+        found.append(best_i)
 
-    found.sort()  # driving order (increasing index from path[0])
+    found = sorted(set(found))  # driving order, de-duplicated
     corners = []
     for label, apex in enumerate(found[:max_corners], 1):
         pct = ((apex / n) + start_finish) % 1.0
@@ -518,7 +545,9 @@ class TrackPathBuilder:
             t = ((i - back) % n) / span
             path.append((a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t))
         # Round out discretization kinks / squarish patches from sparse bins.
-        self.path = _smooth_closed(path, window=2, passes=1)
+        # Two light passes round the shape noticeably more without flattening
+        # real corners (the window stays small).
+        self.path = _smooth_closed(path, window=2, passes=2)
 
 
 class TrackMapWidget(QWidget):
