@@ -5,6 +5,28 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.24.0 - 2026-06-30
+
+- **New "Track Scan" settings tab (write access only).** The "Rescan track" and
+  "Rescan pits only" actions moved off the Map page into their own vertical tab
+  under Settings, which only appears for users with write access (a
+  `GRIDGLANCE_MONGODB_URI` author credential). Read-only users no longer see any
+  scan controls.
+- **Live pit blend tuning sliders (session only).** The new tab adds two sliders
+  for the pit exit and entry lane lengths so an author can dial in a track on the
+  fly. Changes apply instantly to the running overlay but are **not** saved --
+  they reset to the `constants.py` defaults on the next launch. Each slider has a
+  one-click reset back to its default.
+- **Demo mode now shows cars pitting every lap.** Three demo cars make a full
+  pit stop each lap, riding the synthesized pit route (entry / exit blends and
+  lane), so opponent pit-route placement is visible without a live scan.
+- **New "Pit lane opacity" map setting.** Fade the drawn pit lane and its
+  entry / exit blend lines back behind the track (0 = hidden, 1 = solid). Shown
+  on the Map tab only when the pit lane is enabled.
+- **"Car dot size" map setting now works.** The map's `dot_radius_frac` control
+  previously had no effect; it now scales every car dot (and the player's glow
+  ring) and has a sensible slider range (0.05 = the default size).
+
 ## 1.23.4 - 2026-06-30
 
 - Internal cleanup and micro-optimization of the map's per-frame paint and

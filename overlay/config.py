@@ -618,6 +618,8 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         "asphalt_width": 11,
         "outline_width": 2,
+        # Car dot size. 0.05 is the default size; raise/lower to scale every car
+        # dot (and the player's glow ring) up or down proportionally.
         "dot_radius_frac": 0.05,
         "show_infield": True,
         "show_corners": True,
@@ -643,6 +645,9 @@ DEFAULTS: dict = {
         # Show the static pit speed-limit badge on the map (independent of the
         # blend lines). Only relevant when the pit lane is shown.
         "show_pit_speed": True,
+        # Opacity (0..1) of the drawn pit lane and its entry/exit blend lines.
+        # Lower it to make the whole pit route fade back behind the track.
+        "pit_lane_opacity": 1.0,
         # What each car dot shows: "number" (car number) or "position".
         "car_label": "number",
         # Opacity (0..1) of a car's dot while it's on pit road.

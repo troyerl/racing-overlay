@@ -33,6 +33,8 @@ from PyQt6.QtWidgets import QApplication
 
 from . import common as oc
 from . import config
+from . import constants
+from . import demo_data
 from . import paths
 from . import sysstats
 from . import track_store
@@ -95,21 +97,11 @@ PIT_COMMIT_HOLD = 15          # ticks the player must be continuously on pit roa
                               # pit entry from sticking the dot in the pits
 PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
-# The car geometrically regains the racing line (distance -> 0) well before
-# iRacing's painted pit-exit commitment line actually ends down the track. Once
-# merged, keep tracing the exit until the car has travelled this much further
-# around the lap so the drawn lane reaches the real end of the commitment zone.
-# Expressed as a lap fraction (0.16 = 16% of a lap) so it's consistent regardless
-# of speed; it is the single dial for how far down the track the yellow exit lane
-# reaches. With the merge at ~0.27 on the reference oval this lands the end near
-# ~0.43 -- well past the old too-short result and pulled back from the ~0.5 that
-# read as too far. Raise it toward ~0.18 if still short, lower toward ~0.10 if long.
-PIT_EXIT_EXTEND_PCT = 0.16
-# The entry blend can otherwise reach a long way back up the track (to wherever
-# the car first eased off the racing line). Cap it to the last this-much of a lap
-# before pit road so the yellow entry line stays short. Companion dial to
-# PIT_EXIT_EXTEND_PCT; raise for a longer entry line, lower for a shorter one.
-PIT_ENTRY_MAX_PCT = 0.08
+# How far the drawn pit entry / exit blend lines reach is a per-track scan "dial"
+# whose defaults live in constants.py (so they're easy to find and tweak). They
+# are seeded onto each overlay instance (self.pit_entry_max_pct /
+# self.pit_exit_extend_pct) so the settings "Track Scan" tab can nudge them live
+# for the running session without persisting the change.
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
 # where the car peeled off the racing line up to the pit-road edge.
 PIT_RECENT_MAX = 900
@@ -175,6 +167,11 @@ class AdvancedSimHUD:
         self._pit_enter_pct = None
         self._pit_span = None
         self._pit_speed_ms = 0.0
+        # Session-only overrides of the pit blend-length dials (constants.py).
+        # The settings "Track Scan" tab tunes these live for the running session;
+        # they're never persisted, so they reset to the defaults on relaunch.
+        self.pit_entry_max_pct = constants.PIT_ENTRY_MAX_PCT
+        self.pit_exit_extend_pct = constants.PIT_EXIT_EXTEND_PCT
         self._pit_s0 = None  # speed/time samples for steady-cruise detection
         self._pit_t0 = None
         # Real pit-lane geometry: the player's GPS trace from leaving the track
@@ -458,6 +455,24 @@ class AdvancedSimHUD:
             except (TypeError, ValueError):
                 lid = 0
         return (lid, f"League {lid}") if lid > 0 else (0, "")
+
+    def pit_tuning(self) -> tuple[float, float]:
+        """The (entry_max_pct, exit_extend_pct) blend dials in effect this run.
+
+        Read by the settings "Track Scan" tab to position its sliders.
+        """
+        return (self.pit_entry_max_pct, self.pit_exit_extend_pct)
+
+    def set_pit_tuning(self, entry_max: float | None = None,
+                       exit_extend: float | None = None) -> None:
+        """Override the pit blend-length dials for the running session only.
+
+        Not persisted: the next launch reverts to the constants.py defaults.
+        """
+        if entry_max is not None:
+            self.pit_entry_max_pct = float(entry_max)
+        if exit_extend is not None:
+            self.pit_exit_extend_pct = float(exit_extend)
 
     def _session_league_id(self) -> int:
         """Current LeagueID (0 if none), re-read from WeekendInfo at most ~1/sec."""
@@ -1293,8 +1308,12 @@ class AdvancedSimHUD:
             return out
 
         # Entry blend (on track -> lane), the lane itself (wraps start/finish),
-        # then the exit blend (lane -> back on track).
-        in_pct, lane_lo, lane_hi, out_pct = 0.90, 0.95, 0.06, 0.12
+        # then the exit blend (lane -> back on track). The entry/exit extents are
+        # shared with demo_data so the demo's "always pit" cars ride this exact
+        # span; the lane sub-span (lane_lo..lane_hi) sits inside it.
+        in_pct = demo_data.DEMO_PIT_IN_PCT
+        out_pct = demo_data.DEMO_PIT_OUT_PCT
+        lane_lo, lane_hi = 0.95, 0.06
         return {
             "pit_span": (lane_lo, lane_hi),
             "pit_speed": 22.0,  # ~50 mph / 80 km/h, shown as a static badge
@@ -2106,7 +2125,7 @@ class AdvancedSimHUD:
                     past = (valid_pct - self._pit_merge_pct) % 1.0
                     if past > 0.5:      # tiny backwards jitter, not real progress
                         past = 0.0
-                    if past >= PIT_EXIT_EXTEND_PCT or capped:
+                    if past >= self.pit_exit_extend_pct or capped:
                         self._log_exit_profile("rejoined", rejoin)
                         self._finalize_pit_pass(valid_pct, capped=False)
                 elif capped:
@@ -2156,7 +2175,7 @@ class AdvancedSimHUD:
         if self._pit_enter_pct is not None:
             diverge, _ = self._pit_thresholds()
             in_blend, in_pct = self._trace_entry_blend(
-                self._pit_entry_buf, diverge, max_pct=PIT_ENTRY_MAX_PCT)
+                self._pit_entry_buf, diverge, max_pct=self.pit_entry_max_pct)
             self._record_pit_pass(
                 self._pit_enter_pct,
                 self._pit_exit_pct if self._pit_exit_pct is not None

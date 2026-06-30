@@ -57,7 +57,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from . import config, paths, track_store, version
+from . import config, constants, paths, track_store, version
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
@@ -168,6 +168,9 @@ LABEL_OVERRIDES = {
     "lap_compare.show_graph": "Show delta-over-distance trace",
     "show_pit_blends": "Show pit entry/exit lines",
     "show_pit_speed": "Show pit speed limit",
+    "pit_lane_opacity": "Pit lane opacity",
+    "pit_dot_opacity": "Pit car dot opacity",
+    "dot_radius_frac": "Car dot size",
     "pit_blend": "Pit entry line",
     "pit_blend_out": "Pit exit line",
 }
@@ -179,6 +182,7 @@ LABEL_OVERRIDES = {
 ROW_DEPENDENCIES = {
     "map.show_pit_speed": ("map.show_pit", True),
     "map.show_pit_blends": ("map.show_pit", True),
+    "map.pit_lane_opacity": ("map.show_pit", True),
 }
 _DEP_CONTROLLERS = {ctrl for ctrl, _ in ROW_DEPENDENCIES.values()}
 
@@ -257,8 +261,10 @@ TAB_COLORS = {
 
 # Section keys shown under the "Settings" top tab (global, non-widget config).
 # Everything else is a widget and lives under the "Widgets" top tab. "__app__"
-# holds preset-independent settings (updates, preset auto-switching).
-SETTINGS_SECTION_KEYS = {"__general__", "__app__"}
+# holds preset-independent settings (updates, preset auto-switching). "__scan__"
+# is the write-access-only track/pit authoring tab (added at build time only when
+# the user can write, so it stays absent for read-only users).
+SETTINGS_SECTION_KEYS = {"__general__", "__app__", "__scan__"}
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
@@ -591,7 +597,10 @@ def _num_range(path: list, default):
     """Guess a friendly (lo, hi, step) slider range from a key name + value."""
     key = str(path[-1]).lower()
     is_float = isinstance(default, float)
-    if any(s in key for s in ("frac", "opacity")) or key.endswith("_pct") or "tau" in key:
+    if key == "dot_radius_frac":
+        # A fine, small-valued range (0.05 == default size) rather than 0..1.
+        lo, hi, step = 0.01, 0.15, 0.005
+    elif any(s in key for s in ("frac", "opacity")) or key.endswith("_pct") or "tau" in key:
         lo, hi, step = 0.0, 1.0, 0.01
     elif "scale" in key:
         lo, hi, step = 0.2, 3.0, 0.05
@@ -1437,9 +1446,13 @@ class ConfigEditor(QWidget):
         self._accordions.clear()
         self._nav_items.clear()
 
-        # General + App first (Settings tab), then the rest alphabetically by
+        # General + App first (Settings tab), then -- only for users with write
+        # access -- the Track Scan authoring tab, then the rest alphabetically by
         # title so the widget vertical tabs read A-Z (Dash, Fuel Calc, ...).
-        self._sections = [("__general__", "General"), ("__app__", "App")] + sorted(
+        head = [("__general__", "General"), ("__app__", "App")]
+        if track_store.can_write():
+            head.append(("__scan__", "Track Scan"))
+        self._sections = head + sorted(
             ((k, _pretty(k)) for k, val in config.DEFAULTS.items()
              if isinstance(val, dict)),
             key=lambda kt: kt[1].lower())
@@ -1519,7 +1532,7 @@ class ConfigEditor(QWidget):
         head.setObjectName("pageTitle")
         head_row.addWidget(head)
         head_row.addStretch(1)
-        if key not in ("__general__", "__app__"):
+        if key not in ("__general__", "__app__", "__scan__"):
             reset_btn = QPushButton("Reset to defaults")
             reset_btn.setObjectName("sectionReset")
             reset_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1551,6 +1564,19 @@ class ConfigEditor(QWidget):
             v.addStretch(1)
             return page
 
+        if key == "__scan__":
+            note = QLabel("Authoring tools \u2014 you see these because you have "
+                          "write access. Re-scan the current track or just its "
+                          "pit lane, and fine-tune the pit blend lengths for this "
+                          "session.")
+            note.setObjectName("subtitle")
+            note.setWordWrap(True)
+            v.addWidget(note)
+            v.addWidget(self._scan_actions_card())
+            v.addWidget(self._pit_tuning_card())
+            v.addStretch(1)
+            return page
+
         schema = config.DEFAULTS[key]
         target = v
         skip: set = set()
@@ -1560,9 +1586,6 @@ class ConfigEditor(QWidget):
             v.addWidget(body)
             target = body.layout()
             skip = {"show"}
-
-        if key == "map":
-            self._add_map_actions(target)
 
         self._populate(target, schema, [key], color, [], skip=skip)
         v.addStretch(1)
@@ -1606,32 +1629,144 @@ class ConfigEditor(QWidget):
         toggle.toggled.connect(on_toggle)
         return card, body
 
-    def _add_map_actions(self, lay) -> None:
-        # Re-scanning re-learns / overwrites a track's saved shape, which is an
-        # authoring action -- only expose it to users with write access.
-        if not track_store.can_write():
-            return
+    def _scan_actions_card(self) -> QFrame:
+        """Track Scan tab card: re-learn the current track or just its pits.
+
+        Re-scanning overwrites a track's saved shape, so it's an authoring action
+        gated to write-access users (the whole tab only exists for them).
+        """
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Re-scan track")
+        t.setObjectName("enableTitle")
+        v.addWidget(t)
+
         rescan = QPushButton("\u21BB  Rescan track now")
         rescan.setObjectName("warn")
         rescan.setCursor(Qt.CursorShape.PointingHandCursor)
         rescan.clicked.connect(self._rescan_track)
-        lay.addWidget(rescan)
+        v.addWidget(rescan)
         hint = QLabel("Re-learns the current track from your driving and "
                       "overwrites its saved scan (also clears the pit lane).")
+        hint.setObjectName("enableHint")
         hint.setWordWrap(True)
-        hint.setStyleSheet("color: #9aa3ad; font-size: 11px;")
-        lay.addWidget(hint)
+        v.addWidget(hint)
 
         rescan_pits = QPushButton("\u21BB  Rescan pits only")
         rescan_pits.setObjectName("warn")
         rescan_pits.setCursor(Qt.CursorShape.PointingHandCursor)
         rescan_pits.clicked.connect(self._rescan_pits)
-        lay.addWidget(rescan_pits)
+        v.addWidget(rescan_pits)
         hint2 = QLabel("Forgets just the pit lane; drive through the pits "
                        "once to re-learn it.")
+        hint2.setObjectName("enableHint")
         hint2.setWordWrap(True)
-        hint2.setStyleSheet("color: #9aa3ad; font-size: 11px;")
-        lay.addWidget(hint2)
+        v.addWidget(hint2)
+        return card
+
+    # Pit blend-length sliders: (overlay attr, constants default, label, hint,
+    # min%, max%). Values are lap fractions shown/edited as whole percents.
+    _PIT_TUNERS = (
+        ("exit_extend", "PIT_EXIT_EXTEND_PCT", "Pit exit lane length",
+         "How far past the real merge the exit lane is drawn. Raise if the exit "
+         "ends short of iRacing's commitment line; lower if it runs too far.",
+         4, 30),
+        ("entry_max", "PIT_ENTRY_MAX_PCT", "Pit entry lane length",
+         "Cap on how far back up the track the entry lane reaches. Raise for a "
+         "longer entry line, lower for a shorter one.",
+         2, 20),
+    )
+
+    def _pit_tuning_card(self) -> QFrame:
+        """Track Scan tab card: live, session-only pit blend-length sliders.
+
+        Changes are pushed straight to the running overlay and are NOT saved --
+        they reset to the constants.py defaults on the next launch.
+        """
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Pit blend tuning (session only)")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Nudge the drawn pit entry / exit lane lengths for the "
+                      "current session to dial in a track. Not saved \u2014 these "
+                      "reset to the defaults when you relaunch.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+
+        cur = self._overlay.pit_tuning() if (
+            self._overlay is not None and hasattr(self._overlay, "pit_tuning")
+        ) else None
+        for kind, const_name, label, row_hint, lo, hi in self._PIT_TUNERS:
+            default = float(getattr(constants, const_name))
+            if cur is not None:
+                live = cur[1] if kind == "exit_extend" else cur[0]
+            else:
+                live = default
+            v.addLayout(self._pit_slider_row(kind, label, row_hint, lo, hi,
+                                             default, live))
+        return card
+
+    def _pit_slider_row(self, kind: str, label: str, hint: str, lo: int, hi: int,
+                        default: float, live: float):
+        """One labeled slider that pushes its value live to the overlay."""
+        box = QVBoxLayout()
+        box.setSpacing(3)
+        top = QHBoxLayout()
+        name = QLabel(label)
+        name.setObjectName("rowLabel")
+        val = QLabel(f"{live:.2f}")
+        val.setObjectName("enableHint")
+        val.setMinimumWidth(34)
+        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        reset = QPushButton(f"Reset ({default:.2f})")
+        reset.setObjectName("sectionReset")
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        top.addWidget(name)
+        top.addStretch(1)
+        top.addWidget(val)
+        top.addWidget(reset)
+        box.addLayout(top)
+
+        slider = QSlider(Qt.Orientation.Horizontal)
+        slider.setMinimum(lo)
+        slider.setMaximum(hi)
+        slider.setSingleStep(1)
+        slider.setValue(int(round(live * 100)))
+        slider.setCursor(Qt.CursorShape.PointingHandCursor)
+        box.addWidget(slider)
+
+        sub = QLabel(hint)
+        sub.setObjectName("enableHint")
+        sub.setWordWrap(True)
+        box.addWidget(sub)
+
+        def on_change(raw, k=kind, lbl=val):
+            value = raw / 100.0
+            lbl.setText(f"{value:.2f}")
+            self._apply_pit_tuning(k, value)
+
+        slider.valueChanged.connect(on_change)
+        reset.clicked.connect(lambda _=False, s=slider, d=default:
+                              s.setValue(int(round(d * 100))))
+        return box
+
+    def _apply_pit_tuning(self, kind: str, value: float) -> None:
+        """Push a session-only pit blend length to the live overlay."""
+        if self._overlay is None or not hasattr(self._overlay, "set_pit_tuning"):
+            self._flash("Start the overlay to tune the pit lane")
+            return
+        if kind == "exit_extend":
+            self._overlay.set_pit_tuning(exit_extend=value)
+        else:
+            self._overlay.set_pit_tuning(entry_max=value)
 
     # Nested groups that are usually long/secondary start collapsed.
     _COLLAPSED = {"colors", "license_colors", "widths", "sizes", "columns"}

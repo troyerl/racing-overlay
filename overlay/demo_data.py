@@ -33,6 +33,21 @@ _DEMO_DRIVERS = [
     ("23", "Bubba Wallace", 1900, "A 3.50", "#d6c44a"),
 ]
 
+# Lap-% extent (entry -> exit, wrapping start/finish) of the demo pit route.
+# overlay/app.py:_demo_pit_geometry builds the matching geometry from these, and
+# the three "always pit" demo cars ride this span every lap so the pit route
+# (entry / exit blends + lane) is visible without a live scan. Keep in sync.
+DEMO_PIT_IN_PCT = 0.90
+DEMO_PIT_OUT_PCT = 0.12
+# Number of cars (never the player) that make a pit stop every lap in the demo.
+DEMO_PIT_CARS = 3
+
+
+def _in_demo_pit(frac: float) -> bool:
+    """Whether a lap fraction lies on the demo pit route (circular interval)."""
+    span = (DEMO_PIT_OUT_PCT - DEMO_PIT_IN_PCT) % 1.0
+    return ((frac - DEMO_PIT_IN_PCT) % 1.0) <= span
+
 
 class FakeIRSDK:
     def __init__(self, num_cars: int = len(_DEMO_DRIVERS), player_idx: int = 4):
@@ -60,6 +75,12 @@ class FakeIRSDK:
         # right -- a demo heuristic for which side they appear on when alongside.
         self._lane = ["left" if i < self.player_idx else "right"
                       for i in range(self.num_cars)]
+        # A few cars (never the player) make a full pit stop every lap so the
+        # demo always shows opponents riding the pit route (entry/exit blends +
+        # lane). They're spread around the lap, so they reach the pits at
+        # different times rather than nose-to-tail.
+        others = [i for i in range(self.num_cars) if i != self.player_idx]
+        self._pit_cars = frozenset(others[:DEMO_PIT_CARS])
 
         for i in range(self.num_cars):
             if abs(i - self.player_idx) <= 2:
@@ -102,13 +123,21 @@ class FakeIRSDK:
         return [d % 1.0 for d in self._total_laps()]
 
     def _on_pit_list(self) -> list[bool]:
-        """Cars periodically duck onto pit road (staggered, ~6% of a lap)."""
+        """Which cars are on pit road this tick.
+
+        The designated pit cars ride the full pit route every lap (on pit road
+        across the entry -> exit span); the rest only duck onto pit road
+        occasionally (staggered, ~6% of a lap) for variety.
+        """
         totals = self._total_laps()
         out = []
         for i, tot in enumerate(totals):
-            lap = int(tot) + 1
             frac = tot % 1.0
-            out.append(((lap + i * 3) % 8 == 0) and frac < 0.06)
+            if i in self._pit_cars:
+                out.append(_in_demo_pit(frac))
+            else:
+                lap = int(tot) + 1
+                out.append(((lap + i * 3) % 8 == 0) and frac < 0.06)
         return out
 
     def _lap_jitter(self) -> float:

@@ -41,6 +41,11 @@ def _mcol_def(key: str, default: str) -> QColor:
     return config.qcolor(_mcfg().get("colors", {}).get(key, default))
 
 
+def _pit_lane_opacity() -> float:
+    """Clamped opacity (0..1) for the pit lane + entry/exit blend lines."""
+    return max(0.0, min(1.0, _mcfg().get("pit_lane_opacity", 1.0)))
+
+
 def car_palette() -> list:
     return _mcfg()["palette"]
 
@@ -1001,7 +1006,9 @@ class TrackMapWidget(QWidget):
         pen.setDashPattern([4, 3])  # short "slashed" dashes
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(pen)
+        p.setOpacity(_pit_lane_opacity())
         p.drawPath(lane)
+        p.setOpacity(1.0)  # keep the speed badge fully opaque
 
         # Anchor the label just inside the track at the start of the pit lane.
         entry = pts[0]
@@ -1019,6 +1026,7 @@ class TrackMapWidget(QWidget):
         lane.moveTo(pts[0])
         for q in pts[1:]:
             lane.lineTo(q)
+        p.setOpacity(_pit_lane_opacity())
         # Asphalt underlay so it reads as a real road surface like the track.
         base = QPen(_mcol("asphalt"), max(3.0, mc.get("asphalt_width", 11) * 0.6))
         base.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -1034,6 +1042,7 @@ class TrackMapWidget(QWidget):
         pen.setDashPattern([4, 3])
         p.setPen(pen)
         p.drawPath(lane)
+        p.setOpacity(1.0)  # keep the speed badge fully opaque
         self._draw_pit_label(p, pts[0])
 
     def _draw_pit_blend(self, p: QPainter, tx, seg, color_key="pit_blend",
@@ -1052,7 +1061,9 @@ class TrackMapWidget(QWidget):
         pen.setDashPattern([3, 4])  # short, steep "slash" dashes
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(pen)
+        p.setOpacity(_pit_lane_opacity())
         p.drawPath(path)
+        p.setOpacity(1.0)
 
     def _draw_pit_label(self, p: QPainter, anchor: QPointF) -> None:
         # Static badge: just the learned pit speed limit -- no live comparison.
@@ -1180,6 +1191,13 @@ class TrackMapWidget(QWidget):
         # Pit-car styling is the same for every car -- resolve it once.
         pit_opacity = max(0.05, min(1.0, mc.get("pit_dot_opacity", 0.45)))
         pit_fill = _mcol("pit_car")
+        # Dot size scales off the configured radius (0.05 == the default size).
+        # Treat a non-positive value (e.g. a stale 0.0 from before this setting
+        # was honored) as the default rather than shrinking dots to nothing.
+        dot_frac = mc.get("dot_radius_frac", 0.05) or 0.05
+        if dot_frac <= 0:
+            dot_frac = 0.05
+        rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
         # Draw the player last so it sits on top of traffic.
         for pct, label, color, is_player, on_pit in sorted(
                 self.cars, key=lambda c: c[3]):
@@ -1203,7 +1221,7 @@ class TrackMapWidget(QWidget):
                     dx, dy = c.x() - cc.x(), c.y() - cc.y()
                     ln = math.hypot(dx, dy) or 1.0
                     c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
-            r = 12.5 if is_player else 9.0
+            r = (12.5 if is_player else 9.0) * rad_scale
             # Cars in the pits are grayed out and faded back.
             if on_pit:
                 p.setOpacity(pit_opacity)
