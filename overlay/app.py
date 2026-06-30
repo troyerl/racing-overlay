@@ -1815,6 +1815,9 @@ class AdvancedSimHUD:
         use_pos = config.CFG["map"].get("car_label", "number") == "position"
         positions = self.ir["CarIdxPosition"] if use_pos else None
         route = self._route_interval()  # (lo, hi) lap-% extent, or None
+        blends_on = config.CFG["map"].get("show_pit_blends", True)
+        palette = track_map.car_palette()
+        player_color = config.CFG["map"]["colors"]["player"]
         cars = []
         for idx, pct in enumerate(lap_pct):
             if pct is None or pct < 0.0 or pct > 1.0:
@@ -1825,18 +1828,14 @@ class AdvancedSimHUD:
             # Show cars that are on track or on pit road; skip garage/off-world.
             if surface[idx] != oc.TRK_ON_TRACK and not on_pit and not is_player:
                 continue
-            on_route = self._car_on_route(idx, pct, on_pit, is_player, route)
+            on_route = self._car_on_route(idx, pct, on_pit, is_player, route,
+                                          blends_on)
             d = drivers.get(idx)
             if use_pos and positions and idx < len(positions) and positions[idx]:
                 num = str(positions[idx])
             else:
                 num = str(d.get("CarNumber", "?")) if d else "?"
-            palette = track_map.car_palette()
-            color = (
-                config.CFG["map"]["colors"]["player"]
-                if is_player
-                else palette[idx % len(palette)]
-            )
+            color = player_color if is_player else palette[idx % len(palette)]
             cars.append((pct, num, color, is_player, on_route))
         self.map_widget.set_cars(cars)
 
@@ -1859,7 +1858,8 @@ class AdvancedSimHUD:
             return False
         return ((pct - lo) % 1.0) <= span
 
-    def _car_on_route(self, idx, pct, on_pit, is_player, route) -> bool:
+    def _car_on_route(self, idx, pct, on_pit, is_player, route,
+                      blends_on=True) -> bool:
         """Decide whether a car should be drawn on the pit route this tick.
 
         The player uses real GPS (set in _learn_pit), so we trust on-pit-road or
@@ -1867,11 +1867,11 @@ class AdvancedSimHUD:
         the route once seen on pit road and hold them (through the exit blend)
         until their lap pct leaves the route extent -- they rejoin the track.
 
-        When the pit blends are hidden there's no entry/exit lane to ride, so a
-        car simply shows in the pits while it's actually on pit road and snaps
-        back to the track the moment it leaves -- no latch, no blend hold.
+        When the pit blends are hidden (``blends_on`` False) there's no entry/exit
+        lane to ride, so a car simply shows in the pits while it's actually on
+        pit road and snaps back to the track the moment it leaves.
         """
-        if not config.CFG["map"].get("show_pit_blends", True):
+        if not blends_on:
             return on_pit
         if is_player:
             return on_pit or self._player_on_route

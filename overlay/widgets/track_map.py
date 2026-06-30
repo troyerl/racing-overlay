@@ -904,7 +904,6 @@ class TrackMapWidget(QWidget):
             qpath.lineTo(tx(pt))
         qpath.closeSubpath()
 
-        mc = _mcfg()
         # Background only fills the infield enclosed by the track loop.
         if mc.get("show_infield", True):
             p.setPen(Qt.PenStyle.NoPen)
@@ -1175,8 +1174,12 @@ class TrackMapWidget(QWidget):
         sz = max(5, round(8 * config.text_scale_for("map")))
         p.setFont(QFont(config.CFG.get("font_family", "Arial"), sz, QFont.Weight.Bold))
         cc = tx(self._centroid)
-        off = _mcfg().get("asphalt_width", 11) * 0.85 + 3.0
+        mc = _mcfg()
+        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
         has_route = bool(self.pit_path and len(self.pit_path) >= 2)
+        # Pit-car styling is the same for every car -- resolve it once.
+        pit_opacity = max(0.05, min(1.0, mc.get("pit_dot_opacity", 0.45)))
+        pit_fill = _mcol("pit_car")
         # Draw the player last so it sits on top of traffic.
         for pct, label, color, is_player, on_pit in sorted(
                 self.cars, key=lambda c: c[3]):
@@ -1203,8 +1206,8 @@ class TrackMapWidget(QWidget):
             r = 12.5 if is_player else 9.0
             # Cars in the pits are grayed out and faded back.
             if on_pit:
-                p.setOpacity(max(0.05, min(1.0, _mcfg().get("pit_dot_opacity", 0.45))))
-            fill = _mcol("pit_car") if on_pit else QColor(color)
+                p.setOpacity(pit_opacity)
+            fill = pit_fill if on_pit else QColor(color)
             # Make the player unmistakable: a soft glow halo plus a bright
             # double ring around a larger dot.
             if is_player and not on_pit:

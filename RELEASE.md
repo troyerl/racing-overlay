@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.23.4 - 2026-06-30
+
+- Internal cleanup and micro-optimization of the map's per-frame paint and
+  per-tick update paths (pit-car styling, palette and config reads are now
+  resolved once instead of per car). No user-facing behavior changes.
+
 ## 1.23.3 - 2026-06-30
 
 - **Demo mode now shows the full pit lane.** The map demo synthesizes a pit lane
