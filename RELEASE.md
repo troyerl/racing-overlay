@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.22.4 - 2026-06-29
+
+- **Fix: pit exit merge detected too early on narrow ovals.** Distance from the
+  car to the racing line was measured against the *whole* track, so on a tight
+  oval the nearest point could be the opposite straight a few metres across the
+  infield -- faking a merge while the car was still out on the pit-exit apron,
+  which cut the yellow exit line short. Distance is now measured only against the
+  racing line near the car's own lap position, so the exit lane is captured all
+  the way to where you genuinely rejoin the track. The post-merge extension is
+  reduced accordingly (now just a short nudge).
+
 ## 1.22.3 - 2026-06-29
 
 - **Pit exit lane now reaches the end of the commitment line.** The car regains

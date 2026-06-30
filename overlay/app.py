@@ -91,11 +91,12 @@ PIT_REJOIN_HOLD = 30          # ticks (~0.5s @ 60Hz) the car must hold near the
                               # toward it mid-exit no longer ends the lane early
 PIT_OFFSET_FLOOR_FRAC = 0.0015  # minimum threshold, as a fraction of diagonal
 PIT_BLEND_MAX_PTS = 1200
-# The car regains the racing line (distance -> 0) a little before iRacing's
-# painted pit-exit commitment line actually ends down the straight. Keep tracing
-# the exit for this many ticks (~2s @ 60Hz) past the detected merge so the drawn
-# lane reaches the real end of the commitment zone instead of stopping early.
-PIT_EXIT_EXTEND = 120
+# Small nudge: keep tracing the exit for this many ticks (~0.5s @ 60Hz) past the
+# detected merge so the drawn lane reaches the very end of the commitment line
+# rather than stopping the instant the car regains the racing line. The merge
+# itself is now found accurately (distance measured against the local racing
+# line), so this only needs to cover the last short stretch.
+PIT_EXIT_EXTEND = 30
 # Rolling GPS buffer length (ticks) used to back-trace the entry blend from
 # where the car peeled off the racing line up to the pit-road edge.
 PIT_RECENT_MAX = 900
@@ -1517,17 +1518,31 @@ class AdvancedSimHUD:
         else:
             self._track_diag = 0.0
 
-    def _dist_to_track(self, x: float, y: float) -> float | None:
+    def _dist_to_track(self, x: float, y: float, near_pct=None,
+                       window: float = 0.2) -> float | None:
         """Min distance from (x, y) to the racing line, measured to the nearest
         *segment* of the (closed) polyline -- not just the nearest vertex, which
         would add discretization noise on the order of the small pit offset we're
-        trying to detect. None if there's no geometry."""
+        trying to detect. None if there's no geometry.
+
+        When ``near_pct`` is given the search is limited to the stretch of line
+        within ``window`` lap-fraction of that position. This is essential on a
+        narrow oval: otherwise the globally nearest point can sit on the
+        *opposite* straight (a couple of metres across the infield), faking a
+        merge while the car is still out on the pit-exit apron.
+        """
         pts = self._track_pts
         if not pts or len(pts) < 2:
             return None
         n = len(pts)
+        if near_pct is None:
+            idxs = range(n)
+        else:
+            c = int((near_pct % 1.0) * n)
+            w = max(1, int(window * n))
+            idxs = ((c + k) % n for k in range(-w, w + 1))
         best = float("inf")
-        for i in range(n):
+        for i in idxs:
             ax, ay = pts[i]
             bx, by = pts[(i + 1) % n]  # wrap: the track is a closed loop
             dx, dy = bx - ax, by - ay
@@ -1541,7 +1556,7 @@ class AdvancedSimHUD:
             d = (x - px) * (x - px) + (y - py) * (y - py)
             if d < best:
                 best = d
-        return math.sqrt(best)
+        return math.sqrt(best) if best < float("inf") else None
 
     def _track_point_at_pct(self, pct):
         """Interpolate the racing-line point at a lap fraction. The cached track
@@ -1892,7 +1907,10 @@ class AdvancedSimHUD:
         pct = lap_pct[player]
         speed = self.ir["Speed"]
         xy = self._player_pos  # GPS or dead reckoning (resolved this tick)
-        dist = self._dist_to_track(xy[0], xy[1]) if xy is not None else None
+        # Measure distance only against the racing line near the car's own lap
+        # position so the opposite straight can't fake a merge on a narrow oval.
+        dist = (self._dist_to_track(xy[0], xy[1], near_pct=pct)
+                if xy is not None else None)
         diverge, rejoin = self._pit_thresholds()
 
         # Live player position on the map. Only feed the widget a true (x, y)
