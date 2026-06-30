@@ -107,6 +107,14 @@ PIT_BLEND_MAX_PTS = 1200
 PIT_RECENT_MAX = 900
 
 
+def _coerce_int(value):
+    """Best-effort int from a telemetry field (which may be str/float/None)."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class AdvancedSimHUD:
     """Owns the telemetry connection and drives the independent panel windows."""
 
@@ -158,6 +166,7 @@ class AdvancedSimHUD:
         self._track_file_checked = False  # we've looked for a file for this track
         self._map_version = 0             # last learned-path version pushed
         self._track_id = None             # current track's iRacing TrackID
+        self._track_turns = None          # WeekendInfo TrackNumTurns (corner count)
         self._learn_name = ""             # display name to stamp on a saved scan
         self._track_saved = False         # we've persisted this learned scan
         self._force_learn = False         # rescan: re-learn even if a file exists
@@ -1338,6 +1347,10 @@ class AdvancedSimHUD:
                 self._track_id = weekend.get("TrackID")
                 self._learn_name = (weekend.get("TrackDisplayName")
                                     or weekend.get("TrackName") or "")
+                # iRacing's official corner count -- used to number auto-detected
+                # corners exactly the way the sim does (ovals and road courses).
+                self._track_turns = _coerce_int(weekend.get("TrackNumTurns"))
+                self.map_widget.set_num_turns(self._track_turns)
                 # On a rescan we skip the saved/bundled file and re-learn; the
                 # new scan then overwrites tracks/<id>.json when complete.
                 if not self._force_learn:
@@ -1356,6 +1369,8 @@ class AdvancedSimHUD:
                             pts, sf, corners, _, meta = track_map.load_track(
                                 track_file)
                             self.map_widget.set_track(pts, sf, corners)
+                            self.map_widget.set_num_turns(
+                                self._track_turns or meta.get("num_turns"))
                             self._set_track_geom(pts)
                             self._apply_pit_meta(meta)
                             self._track_loaded = True
@@ -1422,7 +1437,8 @@ class AdvancedSimHUD:
             try:
                 track_map.save_learned_track(
                     self.tracks_dir, self._track_id, b.path, self._learn_name,
-                    pit_span=self._pit_span, pit_speed=self._pit_speed_ms)
+                    pit_span=self._pit_span, pit_speed=self._pit_speed_ms,
+                    num_turns=self._track_turns)
             except Exception:
                 pass
             # Share the freshly learned map (no-op unless we have write access).
@@ -1443,6 +1459,7 @@ class AdvancedSimHUD:
         except Exception:
             return
         self.map_widget.set_track(pts, sf, corners)
+        self.map_widget.set_num_turns(self._track_turns or meta.get("num_turns"))
         self._set_track_geom(pts)
         self._apply_pit_meta(meta)
         self._track_loaded = True
@@ -1465,6 +1482,8 @@ class AdvancedSimHUD:
                 return
             pts, sf, corners, _, meta = track_map.load_track(path)
             self.map_widget.set_track(pts, sf, corners)
+            self.map_widget.set_num_turns(
+                self._track_turns or meta.get("num_turns"))
             self._set_track_geom(pts)
             self._apply_pit_meta(meta)
             self._track_loaded = True
@@ -1658,10 +1677,11 @@ class AdvancedSimHUD:
         x1, y1 = pts[(i + 1) % n]
         return (x0 + (x1 - x0) * frac, y0 + (y1 - y0) * frac)
 
-    def _nearest_on_track(self, x, y, cx, cy):
+    def _nearest_on_track(self, x, y):
         """Closest point on the racing-line polyline to (x, y) plus the unit
-        normal there pointing toward the infield (centroid cx, cy). Measured to
-        the nearest *segment* so the normal is stable. (None, 0, 0) if no geom.
+        normal there, taken as the left of the driving tangent -- a *consistent*
+        side independent of the loop centroid. Measured to the nearest *segment*
+        so the normal is stable. (None, 0, 0) if no geometry.
         """
         pts = self._track_pts
         if not pts or len(pts) < 2:
@@ -1683,26 +1703,26 @@ class AdvancedSimHUD:
                 bd = d
                 best = (px, py)
                 ln = math.hypot(dx, dy) or 1.0
-                nx, ny = -dy / ln, dx / ln  # perpendicular to the tangent
-                if (cx - px) * nx + (cy - py) * ny < 0:  # face the infield
-                    nx, ny = -nx, -ny
-                bnx, bny = nx, ny
+                bnx, bny = -dy / ln, dx / ln  # left of the tangent (consistent)
         return best, bnx, bny
 
     def _offset_blend_parallel(self, seg):
-        """Nudge the stretch of a blend that hugs the racing line sideways into
-        the infield so it reads as a pit lane running *parallel* to the track
-        rather than drawn on top of it -- while still letting it touch the track
-        where it actually joins it.
+        """Nudge the stretch of a blend that hugs the racing line sideways so it
+        reads as a pit lane running *parallel* to the track rather than drawn on
+        top of it -- while still letting it touch the track where it joins it.
 
-        The end of the blend nearer the racing line is its junction (the merge
-        for the exit, the departure for the entry); there the offset tapers to
-        zero so the lane visibly meets the track, then ramps up to a full
-        lane-width away from the junction. For each point, the inward
-        (perpendicular) distance is clamped up to that tapered target while the
-        along-track position is preserved, so the result stays continuous and
-        points already out toward the pit are left untouched. No-op without
-        track geometry.
+        The side to offset toward is taken from the *recorded* geometry (the side
+        the captured blend actually sits on relative to the track), not the loop
+        centroid. On an oval the pit is on the infield so the two agree, but on a
+        road course the pit is often on the outside of the loop -- using the
+        centroid there would flip the lane across the track. The end of the blend
+        nearer the racing line is its junction (the merge for the exit, the
+        departure for the entry); there the offset tapers to zero so the lane
+        visibly meets the track, then ramps up to a full lane-width away from it.
+        For each point the perpendicular distance is clamped up to that tapered
+        target while the along-track position is preserved, so the result stays
+        continuous and points already out toward the pit are left untouched.
+        No-op without track geometry.
         """
         pts = self._track_pts
         if not seg or len(seg) < 2 or not pts or len(pts) < 2:
@@ -1710,8 +1730,20 @@ class AdvancedSimHUD:
         lane_w = max(0.15 * self._pit_lane_offset, 0.015 * self._track_diag)
         if lane_w <= 0.0:
             return seg
-        cx = sum(p[0] for p in pts) / len(pts)
-        cy = sum(p[1] for p in pts) / len(pts)
+        # Nearest track point + consistent (left-of-tangent) normal + signed
+        # offset for each blend point, then the dominant side the lane sits on.
+        near_list = []
+        signed = []
+        for x, y in seg:
+            near, nx, ny = self._nearest_on_track(x, y)
+            near_list.append((near, nx, ny))
+            signed.append(0.0 if near is None
+                          else (x - near[0]) * nx + (y - near[1]) * ny)
+        side_sum = sum(signed)
+        if abs(side_sum) < 1e-9:  # degenerate: use the most-offset point's side
+            k = max(range(len(signed)), key=lambda i: abs(signed[i]))
+            side_sum = signed[k]
+        sgn = 1.0 if side_sum >= 0 else -1.0
         # Whichever end sits nearer the racing line is the track junction; taper
         # the offset to zero there over ~2.5 lane-widths of arc length.
         d0 = self._dist_to_track(seg[0][0], seg[0][1]) or 0.0
@@ -1727,12 +1759,13 @@ class AdvancedSimHUD:
         for i, (x, y) in enumerate(seg):
             s = cum[i] if junction_start else (total - cum[i])  # arc from junction
             target = lane_w * min(1.0, s / taper_len) if taper_len > 0 else lane_w
-            near, nx, ny = self._nearest_on_track(x, y, cx, cy)
+            near, nx, ny = near_list[i]
             if near is None:
                 out.append((x, y))
                 continue
+            nx, ny = sgn * nx, sgn * ny          # toward the pit's actual side
             vx, vy = x - near[0], y - near[1]
-            along = vx * nx + vy * ny           # inward (perpendicular) distance
+            along = vx * nx + vy * ny            # perpendicular distance to track
             tx, ty = vx - nx * along, vy - ny * along   # tangential remainder
             if along < target:
                 out.append((near[0] + nx * target + tx,

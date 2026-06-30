@@ -240,7 +240,7 @@ def normalize(doc: dict) -> dict:
         "schema": 1,
     }
     for key in ("pit_span", "pit_speed", "source", "learned",
-                "pit_in_pct", "pit_out_pct"):
+                "pit_in_pct", "pit_out_pct", "num_turns"):
         if doc.get(key) is not None:
             out[key] = doc[key]
     # The pit-lane geometry plus its entry/exit blend lines (open polylines).

@@ -26,6 +26,18 @@ Release notes. To cut a release, add a new section to the top and push.
 - **"Car dot size" map setting now works.** The map's `dot_radius_frac` control
   previously had no effect; it now scales every car dot (and the player's glow
   ring) and has a sensible slider range (0.05 = the default size).
+- **Accurate corner numbering on road courses.** Auto-detected corners now use
+  iRacing's official corner count (`WeekendInfo.TrackNumTurns`) when available,
+  so the map matches the sim's numbering on both ovals and road courses instead
+  of over- or under-counting. The count is saved with learned tracks and shared
+  in the cloud library.
+- **Pit entry/exit lanes drawn on the correct side.** The pit blend lines now
+  offset toward the side the pit was actually recorded on, rather than always
+  toward the track's center. This keeps the lanes parallel to the track on road
+  courses where pit road sits on the outside of the loop (previously they could
+  flip across the track).
+- **Wind compass avoids the track.** The compass now drops into whichever map
+  corner the track covers least, so it no longer sits on top of the layout.
 
 ## 1.23.4 - 2026-06-30
 

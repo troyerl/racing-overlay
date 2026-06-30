@@ -210,19 +210,71 @@ def build_demo_path(n: int = 720):
     return _resample_by_length(_catmull_rom_loop(_DEMO_CONTROL), n)
 
 
+def _split_run(run, turn, count: int):
+    """Pick ``count`` apex indices within one sustained turning run.
+
+    A long bend can hold more than one numbered corner (e.g. each banked end of
+    an oval reads as two turns). The run is sliced into ``count`` equal shares of
+    accumulated turn angle and the sharpest point in each share is its apex.
+    """
+    if count <= 1:
+        return [max(run, key=lambda i: abs(turn[i]))]
+    per = sum(abs(turn[i]) for i in run) / count
+    acc = 0.0
+    slot = 0
+    out = []
+    best_i, best_v = run[0], 0.0
+    for i in run:
+        v = abs(turn[i])
+        if v > best_v:
+            best_i, best_v = i, v
+        acc += v
+        if acc >= per * (slot + 1) and slot < count - 1:
+            out.append(best_i)
+            slot += 1
+            best_i, best_v = i, 0.0
+    out.append(best_i)
+    return out
+
+
+def _apexes_to_target(sig, turn, target: int):
+    """Choose exactly ``target`` apexes across the significant turning runs.
+
+    ``sig`` is a list of ``(run, total_abs_turn)``. When there are at least as
+    many runs as turns we keep the ``target`` sharpest bends (dropping minor
+    kinks iRacing doesn't number). When there are fewer runs than turns we split
+    the longest bends -- the ones with the most turn angle per corner so far --
+    until the counts add up. This single rule covers ovals (2 long bends -> 4
+    turns) and road courses (N distinct bends -> N turns) without a type flag.
+    """
+    m = len(sig)
+    if target <= m:
+        keep = sorted(range(m), key=lambda j: sig[j][1], reverse=True)[:target]
+        return [max(sig[j][0], key=lambda i: abs(turn[i])) for j in keep]
+    counts = [1] * m
+    for _ in range(target - m):
+        j = max(range(m), key=lambda k: sig[k][1] / counts[k])
+        counts[j] += 1
+    found = []
+    for (run, _tot), c in zip(sig, counts):
+        found.extend(_split_run(run, turn, c))
+    return found
+
+
 def detect_corners(path, start_finish: float = 0.0,
                    min_turn_deg: float = 38.0, max_corners: int = 30,
-                   corner_turn_deg: float = 80.0):
+                   corner_turn_deg: float = 80.0, target: int | None = None):
     """Find corners from a track loop's geometry and number them.
 
     Walks the (arc-length resampled) loop, measures how fast the heading turns,
     and groups sustained turning into corners. Each corner's apex (sharpest
     point) becomes a lap-pct, numbered 1..N in driving order from path[0].
 
-    A single sustained turning run can hold more than one numbered corner: a
-    long bend is split into ~``corner_turn_deg`` chunks, so e.g. each end of an
-    oval (roughly 180 degrees of turning) reads as two turns the way iRacing
-    numbers them, rather than collapsing into one.
+    When ``target`` is given (iRacing's WeekendInfo TrackNumTurns) the result is
+    forced to exactly that many corners: the sharpest bends are kept and long
+    bends are split as needed to reach the count, so the numbering matches what
+    iRacing shows on both ovals and road courses. Without a target it falls back
+    to splitting each bend into ~``corner_turn_deg`` chunks.
 
     Returns a list of (pct, label) like the track-file "corners" array, so it
     can be drawn by the same code. Heuristic, but good enough for labels.
@@ -271,32 +323,24 @@ def detect_corners(path, start_finish: float = 0.0,
 
     min_turn = math.radians(min_turn_deg)
     budget = math.radians(corner_turn_deg)
-    found = []
+    # Significant bends only (drop gentle kinks below min_turn).
+    sig = []
     for run in runs:
-        total = sum(turn[i] for i in run)
-        if abs(total) < min_turn:  # gentle kink, not a real corner
-            continue
-        # How many numbered turns this bend holds: a ~180-degree oval end -> 2.
-        count = max(1, round(abs(total) / budget))
-        if count == 1:
-            found.append(max(run, key=lambda i: abs(turn[i])))
-            continue
-        # Split the run into `count` equal slices by accumulated turn angle and
-        # take the sharpest point in each slice as that corner's apex.
-        per = abs(total) / count
-        acc = 0.0
-        slot = 0
-        best_i, best_v = run[0], 0.0
-        for i in run:
-            v = abs(turn[i])
-            if v > best_v:
-                best_i, best_v = i, v
-            acc += v
-            if acc >= per * (slot + 1) and slot < count - 1:
-                found.append(best_i)
-                slot += 1
-                best_i, best_v = i, 0.0
-        found.append(best_i)
+        total = abs(sum(turn[i] for i in run))
+        if total >= min_turn:
+            sig.append((run, total))
+    if not sig:
+        return []
+
+    if target and target > 0:
+        # Authoritative count from iRacing: keep/split bends to hit it exactly.
+        found = _apexes_to_target(sig, turn, int(target))
+    else:
+        # No known count: split each bend into ~corner_turn_deg chunks (a
+        # ~180-degree oval end -> 2 turns), one apex per chunk.
+        found = []
+        for run, total in sig:
+            found.extend(_split_run(run, turn, max(1, round(total / budget))))
 
     found = sorted(set(found))  # driving order, de-duplicated
     corners = []
@@ -332,7 +376,8 @@ def find_track_file(track_id, tracks_dir: str = "tracks") -> str | None:
 
 
 def save_learned_track(tracks_dir: str, track_id, points, name: str = "",
-                       pit_span=None, pit_speed: float = 0.0) -> str | None:
+                       pit_span=None, pit_speed: float = 0.0,
+                       num_turns=None) -> str | None:
     """Persist a learned track loop to tracks/<track_id>.json.
 
     Written in the same schema load_track reads, so the next session at this
@@ -357,6 +402,8 @@ def save_learned_track(tracks_dir: str, track_id, points, name: str = "",
         data["pit_span"] = [round(float(pit_span[0]), 5), round(float(pit_span[1]), 5)]
     if pit_speed:
         data["pit_speed"] = round(float(pit_speed), 3)
+    if num_turns:
+        data["num_turns"] = int(num_turns)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
@@ -426,6 +473,8 @@ def load_track(path: str, n: int = 720):
     for key in ("pit_in_pct", "pit_out_pct"):
         if data.get(key) is not None:
             meta[key] = float(data[key])
+    if data.get("num_turns"):
+        meta["num_turns"] = int(data["num_turns"])
     return points, sf, corners, data.get("name", ""), meta
 
 
@@ -564,8 +613,11 @@ class TrackMapWidget(QWidget):
         self.start_finish = 0.0  # lap pct that path[0] corresponds to
         self.corners: list[tuple[float, str]] = []  # (lap_pct, label)
         # Corners auto-detected from the path shape, used when the track file
-        # carries no corner data (e.g. learned tracks).
+        # carries no corner data (e.g. learned tracks). num_turns is iRacing's
+        # official corner count (WeekendInfo TrackNumTurns) when known, used to
+        # force the auto-detector to that exact count.
         self._auto_corners: list[tuple[float, str]] = []
+        self.num_turns: int | None = None
         self._centroid = (0.0, 0.0)
         # Pit lane: the (entry_pct, exit_pct) stretch the pit road runs alongside
         # and the learned speed limit (m/s), shown as a static badge.
@@ -654,7 +706,8 @@ class TrackMapWidget(QWidget):
                 sum(pt[1] for pt in path) / len(path),
             )
             # Cache auto-detected corners (only used if the file has none).
-            self._auto_corners = detect_corners(path, start_finish)
+            self._auto_corners = detect_corners(path, start_finish,
+                                                target=self.num_turns)
         else:  # cleared (e.g. on rescan) -> forget the pit lane too
             self._auto_corners = []
             self.pit_span = None
@@ -667,6 +720,23 @@ class TrackMapWidget(QWidget):
             self.player_xy = None
             self._invalidate_route()
         self.update()
+
+    def set_num_turns(self, n) -> None:
+        """Set iRacing's official corner count (TrackNumTurns) and re-number the
+        auto-detected corners to match. None/0 clears it (heuristic count)."""
+        try:
+            val = int(n) if n is not None else None
+        except (TypeError, ValueError):
+            val = None
+        if val is not None and val <= 0:
+            val = None
+        if val == self.num_turns:
+            return
+        self.num_turns = val
+        if self.path:
+            self._auto_corners = detect_corners(self.path, self.start_finish,
+                                                target=self.num_turns)
+            self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
         """Set the pit-lane stretch (entry_pct, exit_pct) and learned limit."""
@@ -937,7 +1007,11 @@ class TrackMapWidget(QWidget):
             self._draw_start_finish(p, tx)
         self._draw_cars(p, tx)
         if mc.get("show_wind", True) and self.wind_dir is not None:
-            self._draw_wind(p, rect)
+            # Drop the compass in whichever corner the track intrudes on least,
+            # so it stops sitting on top of the layout (e.g. road-course ends).
+            step = max(1, len(self.path) // 180)
+            scr = [tx(pt) for pt in self.path[::step]]
+            self._draw_wind(p, rect, self._best_wind_corner(scr, rect))
         self._draw_scan_overlays(p, rect)
 
     def _draw_start_finish(self, p: QPainter, tx) -> None:
@@ -1091,14 +1165,39 @@ class TrackMapWidget(QWidget):
         p.setPen(_mcol("pit_text"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
-    def _draw_wind(self, p: QPainter, rect: QRectF) -> None:
-        """A small north-up compass in the top-right corner: a ring with an 'N'
-        tick and an arrow pointing the way the wind blows, plus the speed."""
+    @staticmethod
+    def _wind_footprint(rect: QRectF) -> tuple[float, float]:
+        """(width, height) the compass + its labels occupy in a corner."""
+        r = max(13.0, min(rect.width(), rect.height()) * 0.06)
+        return (2 * r + 40.0, 2 * r + 52.0)
+
+    def _best_wind_corner(self, screen_pts, rect: QRectF) -> str:
+        """Pick the widget corner the track covers least, so the compass doesn't
+        sit on the layout. Ties prefer the original top-right, then top-left."""
+        w, h = self._wind_footprint(rect)
+        boxes = {
+            "tr": QRectF(rect.right() - w, rect.top(), w, h),
+            "tl": QRectF(rect.left(), rect.top(), w, h),
+            "br": QRectF(rect.right() - w, rect.bottom() - h, w, h),
+            "bl": QRectF(rect.left(), rect.bottom() - h, w, h),
+        }
+        counts = {k: sum(1 for q in screen_pts if box.contains(q))
+                  for k, box in boxes.items()}
+        order = ["tr", "tl", "br", "bl"]  # tie-break preference
+        return min(order, key=lambda k: (counts[k], order.index(k)))
+
+    def _draw_wind(self, p: QPainter, rect: QRectF, corner: str = "tr") -> None:
+        """A small north-up compass in a corner: a ring with an 'N' tick and an
+        arrow pointing the way the wind blows, plus the speed. ``corner`` is one
+        of tr/tl/br/bl, chosen to avoid overlapping the track."""
         mc = _mcfg()
         r = max(13.0, min(rect.width(), rect.height()) * 0.06)
-        inset = r + 28.0
-        cx = rect.right() - inset
-        cy = rect.top() + inset
+        mx = r + 30.0          # horizontal margin from the chosen side
+        top_m = r + 28.0       # room for the dial + 'N' tick above center
+        bot_m = r + 40.0       # room for the dial + speed badge below center
+        cx = (rect.right() - mx) if corner in ("tr", "br") else (rect.left() + mx)
+        cy = (rect.top() + top_m) if corner in ("tr", "tl") \
+            else (rect.bottom() - bot_m)
         center = QPointF(cx, cy)
         col = _mcol("wind")
 
