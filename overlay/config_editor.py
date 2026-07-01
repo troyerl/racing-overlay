@@ -89,12 +89,14 @@ OPTION_LABELS = {
     "none": "None",
     # dash metrics
     "speed": "Speed", "speed_kph": "Speed (km/h)", "speed_mph": "Speed (mph)",
-    "rpm": "RPM", "gear": "Gear", "position": "Position", "lap": "Lap",
+    "rpm": "RPM", "gear": "Gear", "position": "Position", "car_number": "Car number",
+    "lap": "Lap",
     "lap_count": "Lap (x/total)", "fuel": "Fuel", "fuel_stack": "Fuel (+laps)",
     "fuel_laps": "Fuel laps left", "tires": "Tire wear (L/R)",
     "laps_left": "Laps remaining",
     "last_lap": "Last lap", "best_lap": "Best lap",
     "cur_lap": "Current lap", "delta": "Delta", "incidents": "Incidents",
+    "irating": "iRating",
     "track_temp": "Track temp", "air_temp": "Air temp",
     # table header / footer items
     "sof": "Strength of field", "class_sof": "Class strength of field",
@@ -131,6 +133,7 @@ LABEL_OVERRIDES = {
     "max_row_height_frac": "Max row height (panel fraction)",
     "irating_abbreviate": "Abbreviate iRating (1.4k vs 1432)",
     "show_irating_projection": "Show projected iRating change",
+    "dash.show_irating_projection": "Show projected iRating change next to iRating",
     "font_scale": "Row text size",
     "gap_font_scale": "Gap column text size",
     "header_font_scale": "Header text size (independent of rows)",
@@ -621,7 +624,7 @@ def _num_range(path: list, default):
     elif key in ("rows", "rows_ahead", "rows_behind", "history_laps"):
         lo, hi, step = 0, 30, 1
     elif key == "row_height_px":
-        lo, hi, step = 16, 72, 1
+        lo, hi, step = 0, 72, 1
     elif key.endswith("px"):
         lo, hi, step = 6, 48, 1
     elif is_float:
@@ -849,6 +852,10 @@ def _option_label(value) -> str:
     return OPTION_LABELS.get(value, _pretty(value))
 
 
+def _sort_combo_options(options: list, label_fn=_option_label) -> list:
+    return sorted(options, key=lambda v: label_fn(v).casefold())
+
+
 def _is_color(path: list, value) -> bool:
     if len(path) >= 2 and path[-2] in COLOR_PARENTS:
         return True
@@ -1015,7 +1022,10 @@ class OrderEditor(QWidget):
     def _refresh_controls(self) -> None:
         present = set(self._current_keys())
         self.add_combo.clear()
-        available = [k for k in self._all_keys if k not in present]
+        available = _sort_combo_options(
+            [k for k in self._all_keys if k not in present],
+            lambda k: self._labels.get(k, _pretty(k)),
+        )
         for k in available:
             self.add_combo.addItem(self._labels.get(k, _pretty(k)), k)
         self.add_combo.setEnabled(bool(available))
@@ -1093,7 +1103,9 @@ class ConfigEditor(QWidget):
                              "font-weight: 700;")
         self.ctx_combo = Combo()
         self.ctx_combo.setObjectName("ctxCombo")
-        for ctx in config.contexts():
+        for ctx in _sort_combo_options(
+                list(config.contexts()),
+                lambda c: config.CONTEXT_LABELS.get(c, c)):
             self.ctx_combo.addItem(config.CONTEXT_LABELS.get(ctx, ctx), ctx)
         i = self.ctx_combo.findData(self._edit_ctx)
         self.ctx_combo.setCurrentIndex(max(0, i))
@@ -2026,8 +2038,10 @@ class ConfigEditor(QWidget):
             # hand-edited config) so the dropdown never silently discards it.
             options = list(options)
             if value not in options:
-                options.insert(0, value)
+                options.append(value)
             is_font = bool(path) and path[-1] == "font_family"
+            label_fn = (lambda v: str(v)) if is_font else _option_label
+            options = _sort_combo_options(options, label_fn)
             combo = Combo()
             for opt in options:
                 # Font names display verbatim (not run through _pretty, which
@@ -2176,7 +2190,7 @@ class ConfigEditor(QWidget):
     def _refresh_preset_combo(self) -> None:
         self.preset_combo.blockSignals(True)
         self.preset_combo.clear()
-        for name in config.presets():
+        for name in sorted(config.presets(), key=str.casefold):
             self.preset_combo.addItem(name, name)
         i = self.preset_combo.findData(config.active_preset())
         self.preset_combo.setCurrentIndex(max(0, i))

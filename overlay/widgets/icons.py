@@ -33,6 +33,7 @@ _CODEPOINTS: dict[str, int] = {
     "rpm": 0xF624,            # gauge
     "gear": 0xF013,           # gear (cog)
     "position": 0xF292,       # hashtag
+    "car_number": 0xF1B9,     # car
     # lap / fuel / tire metrics
     "lap": 0xF11E,            # flag-checkered
     "lap_count": 0xF11E,      # flag-checkered
@@ -70,6 +71,7 @@ _CODEPOINTS: dict[str, int] = {
     "speaking": 0xF028,       # volume-high
     "irating_up": 0xF062,     # arrow-up
     "irating_down": 0xF063,   # arrow-down
+    "irating": 0xF201,        # chart-line
 }
 
 _family: str | None = None

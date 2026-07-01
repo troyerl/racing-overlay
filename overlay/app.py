@@ -955,6 +955,7 @@ class AdvancedSimHUD:
              and config.CFG.get("standings", {}).get("show_irating_projection"))
             or (en["relative"] and config.has_column("relative", "irating")
                 and config.CFG.get("relative", {}).get("show_irating_projection"))
+            or (en["dash"] and self._dash_needs_irating_projection())
         )
         self._irating_deltas = {}
         if need_irating_proj and drivers and (
@@ -1276,6 +1277,26 @@ class AdvancedSimHUD:
             return False
         return state in (4, 5)  # racing, checkered
 
+    @staticmethod
+    def _dash_needs_irating_projection() -> bool:
+        dc = config.CFG.get("dash", {})
+        if not dc.get("show_irating_projection"):
+            return False
+        slots = {dc.get(k) for k in (
+            "top_right", "primary_left", "primary_right",
+            "stat_left", "stat_right",
+            "strip_left", "strip_center", "strip_right")}
+        return "irating" in slots
+
+    @staticmethod
+    def _dash_uses_irating() -> bool:
+        dc = config.CFG.get("dash", {})
+        slots = {dc.get(k) for k in (
+            "top_right", "primary_left", "primary_right",
+            "stat_left", "stat_right",
+            "strip_left", "strip_center", "strip_right")}
+        return "irating" in slots
+
     def _row_irating_delta(self, idx, cols, section: str):
         if not cols.get("irating"):
             return None
@@ -1315,6 +1336,56 @@ class AdvancedSimHUD:
         h, rem = divmod(secs, 3600)
         m, s = divmod(rem, 60)
         return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+    # iRacing sends -1 for SessionTimeRemain pre-green; SessionTimeTotal can be
+    # 604800 (168 h) as an "unlimited" placeholder while gridding.
+    _MAX_SESSION_SEC = 48 * 3600
+
+    @classmethod
+    def _sane_session_seconds(cls, secs) -> float | None:
+        if not isinstance(secs, (int, float)):
+            return None
+        if secs < 0:
+            return None
+        if secs > cls._MAX_SESSION_SEC:
+            return None
+        return float(secs)
+
+    def _session_time_remain(self) -> float | None:
+        """Seconds left in session, or None when not meaningful (e.g. on grid)."""
+        try:
+            rem = self.ir["SessionTimeRemain"]
+        except (TypeError, ValueError, KeyError):
+            rem = None
+        sane = self._sane_session_seconds(rem)
+        if sane is not None:
+            return sane
+        try:
+            el = self.ir["SessionTime"]
+            tot = self.ir["SessionTimeTotal"]
+        except (TypeError, ValueError, KeyError):
+            return None
+        if not isinstance(el, (int, float)) or el <= 0:
+            return None
+        if not isinstance(tot, (int, float)):
+            return None
+        return self._sane_session_seconds(tot - el)
+
+    def _race_time_display(self) -> str:
+        try:
+            el = self.ir["SessionTime"]
+            tot = self.ir["SessionTimeTotal"]
+        except (TypeError, ValueError, KeyError):
+            return "\u2014"
+        el_s = self._sane_session_seconds(el) if isinstance(el, (int, float)) and el > 0 else None
+        tot_s = self._sane_session_seconds(tot)
+        if el_s is None and tot_s is None:
+            return "\u2014"
+        if el_s is not None and tot_s is not None:
+            return f"{self._fmt_clock(el_s)} / {self._fmt_clock(tot_s)}"
+        if el_s is not None:
+            return self._fmt_clock(el_s)
+        return f"/ {self._fmt_clock(tot_s)}"
 
     @staticmethod
     def _fmt_laptime(secs) -> str:
@@ -1533,18 +1604,14 @@ class AdvancedSimHUD:
         if key == "class_position":
             return self._class_position(drivers, positions, player)
         if key == "session_time":
-            rem = ir["SessionTimeRemain"]
-            if rem is None:
-                tot, el = ir["SessionTimeTotal"], ir["SessionTime"]
-                rem = (tot - el) if (tot is not None and el is not None) else None
+            rem = self._session_time_remain()
             return self._fmt_clock(rem) if rem is not None else "\u2014"
         if key == "race_time":
-            return (f"{self._fmt_clock(ir['SessionTime'])}"
-                    f" / {self._fmt_clock(ir['SessionTimeTotal'])}")
+            return self._race_time_display()
         if key == "lap":
             lap = ir["Lap"] or (car_lap[player]
                                 if car_lap and player is not None else None)
-            total = ir["SessionTimeTotal"]
+            total = self._sane_session_seconds(ir["SessionTimeTotal"])
             est = round(total / lap_est, 1) if (total and lap_est) else "-"
             return f"{lap if lap else '-'}/~{est}"
         if key == "incidents":
@@ -3362,11 +3429,8 @@ class AdvancedSimHUD:
             return "Track clear — racing resumes"
 
         if flag == "red":
-            try:
-                remain = self.ir["SessionTimeRemain"]
-            except Exception:
-                remain = None
-            if isinstance(remain, (int, float)) and remain > 0:
+            remain = self._session_time_remain()
+            if remain is not None and remain > 0:
                 return f"Session stopped — {self._fmt_clock(remain)} left"
             return "Session stopped — stand by"
 
@@ -3535,6 +3599,19 @@ class AdvancedSimHUD:
         flag = ctx = None
         if show_flags:
             flag, ctx = self._session_flag_bundle()
+        irating = irating_delta = None
+        car_number = ""
+        drv = self._drivers().get(player) if player is not None else None
+        if drv:
+            if self._dash_uses_irating() or self._dash_needs_irating_projection():
+                ir = drv.get("IRating")
+                if isinstance(ir, (int, float)) and ir > 0:
+                    irating = int(round(ir))
+            car_number = str(drv.get("CarNumber", "")).strip()
+        if (self._dash_needs_irating_projection()
+                and (self._demo_active or self._session_allows_irating_projection())
+                and player is not None):
+            irating_delta = self._irating_deltas.get(player)
         self.dash_widget.set_data({
             "gear": self.ir["Gear"],
             "rpm": self.ir["RPM"],
@@ -3551,6 +3628,7 @@ class AdvancedSimHUD:
             "speed_ms": self.ir["Speed"],
             "position": (positions[player] if positions and player is not None
                          else None),
+            "car_number": car_number,
             "lap": self.ir["Lap"] or (car_lap[player]
                                       if car_lap and player is not None else None),
             "laps_total": total,
@@ -3565,6 +3643,8 @@ class AdvancedSimHUD:
             "best_lap": self.ir["LapBestLapTime"],
             "cur_lap": self.ir["LapCurrentLapTime"],
             "delta": self.ir["LapDeltaToSessionBest"],
+            "irating": irating,
+            "irating_delta": irating_delta,
             "flag": flag,
             "flag_context": ctx,
         })
@@ -3762,8 +3842,7 @@ class AdvancedSimHUD:
         if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
             laps = None
         t = self.ir["SessionTimeRemain"]
-        if not isinstance(t, (int, float)) or t < 0 or t > 604000:
-            t = None
+        t = self._sane_session_seconds(t)
         if laps is None and t is not None and lap_avg:
             laps = t / lap_avg
         if t is None and laps is not None and lap_avg:

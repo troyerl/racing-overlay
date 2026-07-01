@@ -26,6 +26,7 @@ Expected data dict (all optional; missing values render as "--"):
     gear                              gear number ("R"/"N"/1..)
     speed_ms                          speed in m/s (converted to mph/kph)
     position                          race position (int)
+    car_number                        player car number (str)
     lap, laps_total                   current lap / total laps
     incidents                         incident count
     tire_l, tire_r                    front tire wear as 0..1 fractions
@@ -33,6 +34,9 @@ Expected data dict (all optional; missing values render as "--"):
     air_temp, track_temp              temperatures in Celsius
     last_lap, best_lap, cur_lap       lap times in seconds
     delta                             delta to session best
+    irating                           player iRating (int)
+    irating_delta                     projected iRating change (int, race only;
+                                      shown inline when dash.show_irating_projection)
 """
 
 from __future__ import annotations
@@ -48,6 +52,7 @@ from .. import config
 from . import icons
 
 _VC_LEFT = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+_VC_CENTER = Qt.AlignmentFlag.AlignCenter
 
 
 def _ease(cur: float, tgt: float, dt: float, tau: float) -> float:
@@ -93,6 +98,11 @@ def _f_rpm(d):
 def _f_pos(d):
     v = d.get("position")
     return f"P{int(v)}" if isinstance(v, (int, float)) and v else "--"
+
+
+def _f_car_number(d):
+    num = str(d.get("car_number", "")).strip()
+    return num if num else "--"
 
 
 def _f_lap_count(d):
@@ -157,6 +167,29 @@ def _f_clock(key):
     return lambda d: _clock(_num(d, key))
 
 
+def _fmt_irating_val(v) -> str:
+    if v is None:
+        return "--"
+    ir = int(round(v))
+    dc = config.CFG.get("dash", {})
+    if dc.get("irating_abbreviate", True) and ir >= 1000:
+        return f"{ir / 1000:.1f}k"
+    return str(ir)
+
+
+def _f_irating(d):
+    return _fmt_irating_val(_num(d, "irating"))
+
+
+def _dash_show_irating_delta(d: dict) -> bool:
+    dc = config.CFG.get("dash", {})
+    if not dc.get("show_irating_projection"):
+        return False
+    if d.get("irating_delta") is None:
+        return False
+    return _num(d, "irating") is not None
+
+
 def _f_temp(key):
     def fmt(d):
         v = config.conv_temp(_num(d, key))
@@ -172,6 +205,7 @@ METRICS: dict = {
     "rpm": ("RPM", _f_rpm),
     "gear": ("GEAR", _f_gear),
     "position": ("POS", _f_pos),
+    "car_number": ("#", _f_car_number),
     "lap_count": ("LAP", _f_lap_count),
     "laps_left": ("LEFT", _f_laps_left),
     "lap": ("LAP", _f_lap),
@@ -184,6 +218,7 @@ METRICS: dict = {
     "best_lap": ("BEST", _f_clock("best_lap")),
     "cur_lap": ("TIME", _f_clock("cur_lap")),
     "delta": ("DELTA", _f_delta),
+    "irating": ("iR", _f_irating),
     "air_temp": ("A", _f_temp("air_temp")),
     "track_temp": ("T", _f_temp("track_temp")),
 }
@@ -396,7 +431,7 @@ class DashWidget(QWidget):
         flag_bar_h = 0.0
         if c.get("show_flags", True):
             ctx = d.get("flag_context") if d.get("flag") else None
-            flag_bar_h = max(8.0 if ctx else 6.0, h * (0.145 if ctx else 0.105))
+            flag_bar_h = max(8.0 if ctx else 6.0, h * (0.165 if ctx else 0.105))
             flag_top = panels_top
             panels_top += flag_bar_h + h * 0.03   # small gap below the bar
 
@@ -578,8 +613,8 @@ class DashWidget(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(gap, gap.height() * 0.5, gap.height() * 0.5)
-            title_y = rect.center().y() - rect.height() * 0.14
-            sub_y = rect.center().y() + rect.height() * 0.16
+            title_y = rect.center().y() - rect.height() * 0.20
+            sub_y = rect.center().y() + rect.height() * 0.22
             self._text_centered(p, QPointF(cx, title_y), title_font, label, fg)
             sub_fg = QColor(fg)
             sub_fg.setAlpha(min(255, int(fg.alpha() * 0.88)))
@@ -641,6 +676,14 @@ class DashWidget(QWidget):
 
     # -- status readout (icon + big value, e.g. incidents) -----------------
     def _draw_status(self, p, rect, key, d):
+        if key == "irating":
+            h = rect.height()
+            val_px = h * 0.34
+            pair_w = self._irating_pair_width(d, val_px, h)
+            if pair_w > rect.width() and pair_w > 0:
+                val_px *= rect.width() / pair_w
+            self._draw_irating_pair(p, rect, d, val_px)
+            return
         val = _m_str(key, d)
         h = rect.height()
         glyph = icons.glyph(key)
@@ -680,10 +723,10 @@ class DashWidget(QWidget):
 
         # left = small group (icon + label + value); right = icon + label + value.
         l_lbl = _m_label(left_key) if show_l else ""
-        l_val = _m_str(left_key, d) if show_l else ""
+        l_val = _m_str(left_key, d) if show_l and left_key != "irating" else ""
         l_glyph = icons.glyph(left_key) if show_l else ""
         r_lbl = _m_label(right_key) if show_r else ""
-        r_val = _m_str(right_key, d) if show_r else ""
+        r_val = _m_str(right_key, d) if show_r and right_key != "irating" else ""
         r_glyph = icons.glyph(right_key) if show_r else ""
 
         def sizes(s):
@@ -705,6 +748,9 @@ class DashWidget(QWidget):
                     tot += (QFontMetricsF(self._font(z["lbl"]))
                             .horizontalAdvance(l_lbl) + z["g_lbl"])
                 tot += QFontMetricsF(self._font(z["lapv"])).horizontalAdvance(l_val)
+                if left_key == "irating":
+                    tot = tot - QFontMetricsF(self._font(z["lapv"])).horizontalAdvance(l_val)
+                    tot += self._irating_pair_width(d, z["lapv"], h)
                 if show_r:
                     tot += z["g_grp"]
             if show_r:
@@ -715,6 +761,9 @@ class DashWidget(QWidget):
                     tot += (z["g_lbl"] + QFontMetricsF(self._font(z["lbl"]))
                             .horizontalAdvance(r_lbl))
                 tot += QFontMetricsF(self._font(z["spd"])).horizontalAdvance(r_val)
+                if right_key == "irating":
+                    tot = tot - QFontMetricsF(self._font(z["spd"])).horizontalAdvance(r_val)
+                    tot += self._irating_pair_width(d, z["spd"], h)
             return tot
 
         need = measure(1.0)
@@ -737,7 +786,13 @@ class DashWidget(QWidget):
                           self._col("label")) + z["g_icon"]
             if l_lbl:
                 x += draw(self._font(z["lbl"]), l_lbl, self._col("label")) + z["g_lbl"]
-            x += draw(self._font(z["lapv"]), l_val, self._col("value"))
+            if left_key == "irating":
+                pair_w = self._irating_pair_width(d, z["lapv"], h)
+                self._draw_irating_pair(
+                    p, QRectF(x, rect.top(), pair_w, h), d, z["lapv"])
+                x += pair_w
+            else:
+                x += draw(self._font(z["lapv"]), l_val, self._col("value"))
             if show_r:
                 x += z["g_grp"]
         if show_r:
@@ -746,7 +801,12 @@ class DashWidget(QWidget):
                           self._col("label")) + z["g_spd"]
             if r_lbl:
                 x += draw(self._font(z["lbl"]), r_lbl, self._col("label")) + z["g_lbl"]
-            x += draw(self._font(z["spd"]), r_val, self._col("value"))
+            if right_key == "irating":
+                pair_w = self._irating_pair_width(d, z["spd"], h)
+                self._draw_irating_pair(
+                    p, QRectF(x, rect.top(), pair_w, h), d, z["spd"])
+            else:
+                x += draw(self._font(z["spd"]), r_val, self._col("value"))
 
     # -- stats (two configurable stacked cells) ----------------------------
     def _draw_stats(self, p, rect, c, d):
@@ -759,20 +819,147 @@ class DashWidget(QWidget):
         x = rect.left()
         for key, lines in cells:
             self._draw_stat_cell(p, QRectF(x, rect.top(), cw, rect.height()),
-                                 key, lines)
+                                 key, lines, d)
             x += cw + gap
 
-    def _draw_stat_cell(self, p, rect, key, lines):
+    def _delta_color(self, delta: int | float) -> QColor:
+        if delta > 0:
+            return self._col("irating_delta_up")
+        if delta < 0:
+            return self._col("irating_delta_down")
+        return self._col("muted")
+
+    def _stat_icon_gap(self, h: float) -> float:
+        return h * 0.20
+
+    def _irating_layout(self, val_px: float) -> tuple[float, float, float]:
+        pad_x = val_px * 0.58
+        ir_delta_gap = val_px * 0.50
+        delta_icon_gap = val_px * 0.10
+        return pad_x, ir_delta_gap, delta_icon_gap
+
+    def _irating_outer_icon_px(self, rect_h: float) -> float:
+        return rect_h * 0.40
+
+    def _irating_icon_outer_width(self, rect_h: float) -> float:
+        glyph = icons.glyph("irating")
+        if not glyph:
+            return 0.0
+        ic_px = self._irating_outer_icon_px(rect_h)
+        ic_f = icons.icon_font(ic_px)
+        return QFontMetricsF(ic_f).horizontalAdvance(glyph) + self._stat_icon_gap(rect_h)
+
+    def _irating_delta_width(self, delta: int, val_px: float) -> float:
+        _, _, delta_icon_gap = self._irating_layout(val_px)
+        use_icons = icons.has("irating_up") and delta != 0
+        if use_icons:
+            iglyph = icons.glyph("irating_up" if delta > 0 else "irating_down")
+            ic_f = icons.icon_font(val_px * 0.55)
+            val_f = self._font(val_px * 0.78)
+            ic_w = QFontMetricsF(ic_f).horizontalAdvance(iglyph)
+            num_w = QFontMetricsF(val_f).horizontalAdvance(str(abs(delta)))
+            return ic_w + delta_icon_gap + num_w
+        return QFontMetricsF(self._font(val_px)).horizontalAdvance(f"{delta:+d}")
+
+    def _irating_pill_content_width(self, d: dict, val_px: float) -> float:
+        val_f = self._font(val_px)
+        ir_w = QFontMetricsF(val_f).horizontalAdvance(_f_irating(d))
+        if not _dash_show_irating_delta(d):
+            return ir_w
+        _, ir_delta_gap, _ = self._irating_layout(val_px)
+        return ir_w + ir_delta_gap + self._irating_delta_width(int(d["irating_delta"]), val_px)
+
+    def _irating_pill_width(self, d: dict, val_px: float) -> float:
+        pad_x, _, _ = self._irating_layout(val_px)
+        return self._irating_pill_content_width(d, val_px) + 2 * pad_x
+
+    def _irating_pair_width(self, d: dict, val_px: float, rect_h: float) -> float:
+        return self._irating_icon_outer_width(rect_h) + self._irating_pill_width(d, val_px)
+
+    def _irating_pill_rect(self, pill_left: float, rect: QRectF,
+                           d: dict, val_px: float) -> QRectF:
+        pill_w = min(self._irating_pill_width(d, val_px),
+                     max(0.0, rect.width() - (pill_left - rect.left())))
+        pill_h = rect.height() * 0.68
+        return QRectF(pill_left, rect.top() + (rect.height() - pill_h) / 2,
+                      pill_w, pill_h)
+
+    def _draw_irating_pair(self, p, rect, d: dict, val_px: float) -> None:
+        rect_h = rect.height()
+        pill_w = self._irating_pill_width(d, val_px)
+        icon_outer = self._irating_icon_outer_width(rect_h)
+        total_w = icon_outer + pill_w
+        block_left = rect.left() + max(0.0, (rect.width() - total_w) / 2)
+        pad_x, ir_delta_gap, delta_icon_gap = self._irating_layout(val_px)
+
+        glyph = icons.glyph("irating")
+        pill_left = block_left
+        if glyph:
+            ic_f = icons.icon_font(self._irating_outer_icon_px(rect_h))
+            ic_w = QFontMetricsF(ic_f).horizontalAdvance(glyph)
+            p.setFont(ic_f)
+            p.setPen(self._col("label"))
+            p.drawText(QRectF(block_left, rect.top(), ic_w, rect_h), _VC_LEFT, glyph)
+            pill_left = block_left + ic_w + self._stat_icon_gap(rect_h)
+
+        cell = self._irating_pill_rect(pill_left, rect, d, val_px)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(self._col("irating_bg"))
+        p.drawRoundedRect(cell, 4, 4)
+
+        val_f = self._font(val_px)
+        ir_txt = _f_irating(d)
+        ir_w = QFontMetricsF(val_f).horizontalAdvance(ir_txt)
+        content_w = self._irating_pill_content_width(d, val_px)
+        x = cell.left() + max(pad_x, (cell.width() - content_w) / 2)
+
+        p.setFont(val_f)
+        p.setPen(self._col("irating_text"))
+        p.drawText(QRectF(x, cell.top(), ir_w, cell.height()),
+                   _VC_LEFT, ir_txt)
+
+        if not _dash_show_irating_delta(d):
+            return
+
+        delta = int(d["irating_delta"])
+        dx = x + ir_w + ir_delta_gap
+        dcol = self._delta_color(delta)
+        use_icons = icons.has("irating_up") and delta != 0
+        if use_icons:
+            iglyph = icons.glyph("irating_up" if delta > 0 else "irating_down")
+            ifont = icons.icon_font(val_px * 0.55)
+            nfont = self._font(val_px * 0.78)
+            dtxt = str(abs(delta))
+            i_w = QFontMetricsF(ifont).horizontalAdvance(iglyph)
+            n_w = QFontMetricsF(nfont).horizontalAdvance(dtxt)
+            p.setFont(ifont)
+            p.setPen(dcol)
+            p.drawText(QRectF(dx, cell.top(), i_w, cell.height()), _VC_LEFT, iglyph)
+            p.setFont(nfont)
+            p.setPen(dcol)
+            p.drawText(QRectF(dx + i_w + delta_icon_gap, cell.top(), n_w, cell.height()),
+                       _VC_LEFT, dtxt)
+        else:
+            dtxt = f"{delta:+d}" if delta else "0"
+            p.setFont(val_f)
+            p.setPen(dcol)
+            d_w = QFontMetricsF(val_f).horizontalAdvance(dtxt)
+            p.drawText(QRectF(dx, cell.top(), d_w, cell.height()), _VC_LEFT, dtxt)
+
+    def _draw_stat_cell(self, p, rect, key, lines, d: dict):
         h = rect.height()
-        glyph = icons.glyph(key)
+        glyph = "" if key == "irating" else icons.glyph(key)
         ic_px, lbl_px, val_px = h * 0.40, h * 0.20, h * 0.24
-        icon_gap, lbl_gap = h * 0.12, h * 0.08
+        icon_gap, lbl_gap = self._stat_icon_gap(h), h * 0.08
         icon_w = (QFontMetricsF(icons.icon_font(ic_px)).horizontalAdvance(glyph)
                   + icon_gap) if glyph else 0.0
         lbl_fm = QFontMetricsF(self._font(lbl_px))
         val_fm = QFontMetricsF(self._font(val_px))
         widest = 0.0
         for lbl, val in lines:
+            if key == "irating":
+                widest = max(widest, self._irating_pair_width(d, val_px, h))
+                continue
             lw = (lbl_fm.horizontalAdvance(lbl) + lbl_gap) if lbl else 0.0
             widest = max(widest, lw + val_fm.horizontalAdvance(val))
         need = icon_w + widest + h * 0.08
@@ -793,6 +980,9 @@ class DashWidget(QWidget):
         for i, (lbl, val) in enumerate(lines):
             cy = rect.top() + (i + 0.5) / n * h
             row = QRectF(x, cy - h * 0.5 / n, rect.right() - x, h / n)
+            if key == "irating":
+                self._draw_irating_pair(p, row, d, val_px)
+                continue
             tx = x
             if lbl:
                 p.setFont(lbl_f)
@@ -964,9 +1154,16 @@ class DashWidget(QWidget):
         gap = sh * 0.18
         for i, key in enumerate(items):
             label = "" if key in _TIME_KEYS else _m_label(key)
+            glyph = icons.glyph(key)
+            if key == "irating":
+                val_px = sh * 0.34
+                pair_w = self._irating_pair_width(d, val_px, sh)
+                tx = cx0 + i * cell + (cell - pair_w) / 2
+                self._draw_irating_pair(
+                    p, QRectF(tx, pill.top(), pair_w, sh), d, val_px)
+                continue
             val = _m_str(key, d)
             parts = []
-            glyph = icons.glyph(key)
             if glyph:
                 parts.append((icons.icon_font(sh * 0.42), glyph, self._col("label")))
             if label:

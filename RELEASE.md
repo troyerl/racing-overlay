@@ -5,6 +5,28 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.27.0 - 2026-06-30
+
+- **SVG track import.** Import tracks from iRacing members-site HTML (SVG layers:
+  racing line, pit road, merge) via `tools/svg_layers_to_track.py` or the Track
+  Scan / schematic import panel. More reliable than PNG schematic import; oval
+  pit geometry fixes (e.g. Chicagoland entry/merge alignment).
+- **Dash iRating.** Single **iRating** metric for any dash slot, with optional
+  **Show projected iRating change next to iRating** toggle. Renders the
+  standings-style pill (value + green up / red down delta). Legacy
+  `irating_delta` / `irating_stack` slot keys migrate automatically.
+- **Dash car number.** **Car number** is available as a dash metric (icon +
+  value).
+- **Dash flag bar spacing.** More vertical space between the flag label and
+  context subtitle.
+- **Session time on grid.** Session/race time no longer shows `168:00:00` while
+  on the grid; invalid iRacing placeholders show as em dash until timing is live.
+- **Settings dropdowns sorted A-Z.** All combo boxes in the settings editor sort
+  options alphabetically by display label (strict, including "None").
+- **Fixed row height on tables.** **Fixed row height** on Relative and Standings
+  now honors the configured pixel size instead of shrinking rows when the panel
+  is short. Slider range is 0-72 (0 = scale-to-fit).
+
 ## 1.26.0 - 2026-06-30
 
 - **Schematic track import.** Import iRacing's in-sim map PNG (white racing line,

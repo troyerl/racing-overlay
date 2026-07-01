@@ -368,9 +368,9 @@ DEFAULTS: dict = {
         "show_delta_bar": False,
         "delta_bar_range": 1.0,
         # Every content slot below picks any metric (or "none" to hide it):
-        # speed, rpm, gear, position, lap_count, laps_left, lap, fuel,
+        # speed, rpm, gear, position, car_number, lap_count, laps_left, lap, fuel,
         # fuel_stack, fuel_laps, tires, incidents, last_lap, best_lap,
-        # cur_lap, delta, air_temp, track_temp.
+        # cur_lap, delta, irating, air_temp, track_temp.
         "top_right": "incidents",       # readout next to the shift bar
         "primary_left": "lap_count",    # small readout, lower-left
         "primary_right": "speed",       # big readout, lower-left
@@ -379,12 +379,21 @@ DEFAULTS: dict = {
         "strip_left": "air_temp",       # bottom strip
         "strip_center": "track_temp",
         "strip_right": "last_lap",
+        # iRating: assign "irating" to any slot; toggle show_irating_projection
+        # to draw the projected change inline next to the value.
+        "irating_abbreviate": True,
+        "show_irating_projection": False,
         "colors": {
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
             "panel_border": "#ffffff20",
             "label": "#8b93a1",
             "value": "#f4f6f8",
+            "muted": "#8b93a1",
+            "irating_bg": "#eef0f2",
+            "irating_text": "#14161a",
+            "irating_delta_up": "#46df7a",
+            "irating_delta_down": "#ff5050",
             "gear": "#ffffff",
             "green": "#46df7a",
             "ring_track": "#333a42",
@@ -751,6 +760,38 @@ def _migrate_table_split(user: dict) -> dict:
     return user
 
 
+_DASH_IRATING_ALIASES = {"irating_delta": "irating", "irating_stack": "irating"}
+_DASH_SLOT_KEYS = (
+    "top_right", "primary_left", "primary_right",
+    "stat_left", "stat_right",
+    "strip_left", "strip_center", "strip_right",
+)
+
+
+def _migrate_dash_irating(user: dict) -> dict:
+    """Fold legacy dash iRating slot keys into a single "irating" metric."""
+    if not isinstance(user, dict):
+        return user
+    user = copy.deepcopy(user)
+
+    def fix(d: dict) -> None:
+        dash = d.get("dash")
+        if not isinstance(dash, dict):
+            return
+        for key in _DASH_SLOT_KEYS:
+            slot = dash.get(key)
+            if slot not in _DASH_IRATING_ALIASES:
+                continue
+            dash[key] = "irating"
+            if slot == "irating_delta":
+                dash["show_irating_projection"] = True
+
+    fix(user)
+    if isinstance(user.get(GARAGE_KEY), dict):
+        fix(user[GARAGE_KEY])
+    return user
+
+
 def _to_v2(raw: dict) -> dict:
     """Upgrade a legacy single-config file to the multi-preset v2 layout.
 
@@ -854,7 +895,7 @@ def _blank_preset() -> dict:
 
 def _deserialize_preset(entry: dict) -> dict:
     """Build a live preset (base + garage + layout + cars + leagues) from disk."""
-    cfg = _migrate_table_split(entry.get("config") or {})
+    cfg = _migrate_dash_irating(_migrate_table_split(entry.get("config") or {}))
     base_user, garage = _split_user(cfg)
     return {
         "base": _deep_merge(DEFAULTS, base_user),

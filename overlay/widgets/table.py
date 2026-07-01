@@ -324,9 +324,6 @@ class BaseTable(QWidget):
             header_h = round(fixed_rh * 1.25 * hscale)
             footer_h = round(fixed_rh * 1.1 * fscale) if self.has_footer() else 0.0
             body_top = pad + header_h
-            body_h = h - body_top - footer_h - pad
-            if row_h * n > body_h:  # panel too short: shrink so nothing clips
-                row_h = max(1.0, body_h / n)
         else:
             pad = max(8.0, h * 0.025)
             header_h = max(26.0, h * 0.12) * hscale
