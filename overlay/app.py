@@ -640,13 +640,22 @@ class AdvancedSimHUD:
         try:
             if doc is None:
                 if not png_path:
-                    return False, "No PNG selected."
-                try:
-                    from tools.schematic_to_track import import_schematic
-                except ImportError:
-                    return False, "Install opencv-python-headless and numpy for import."
-                raw = import_schematic(
-                    png_path, num_corners=int(self._track_turns or 4) or 4)
+                    return False, "No track map file selected."
+                ext = os.path.splitext(png_path)[1].lower()
+                if ext in (".png", ".jpg", ".jpeg"):
+                    try:
+                        from tools.schematic_to_track import import_schematic
+                    except ImportError:
+                        return False, (
+                            "Install opencv-python-headless and numpy for PNG import.")
+                    raw = import_schematic(
+                        png_path,
+                        num_corners=int(self._track_turns or 4) or 4)
+                else:
+                    from tools.svg_layers_to_track import import_track_source
+                    raw = import_track_source(
+                        png_path,
+                        num_corners=int(self._track_turns or 4) or 4)
                 doc = {k: v for k, v in raw.items()
                        if not str(k).startswith("_")}
             name = self._learn_name or (str(self._track_id) if self._track_id

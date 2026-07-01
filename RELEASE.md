@@ -20,8 +20,8 @@ Release notes. To cut a release, add a new section to the top and push.
   anyone ahead in race position — garage and off-track cars behind you are hidden.
 - **Projected iRating change.** Optional **Show projected iRating change** toggle
   on Standings and Relative estimates +/- iRating from live class positions using
-  the SOF formula (race sessions only). Deltas render as green ▲ / red ▼ icons
-  beside the iRating column.
+  the SOF formula (race sessions only). Deltas render as green up / red down arrow
+  icons beside the iRating column.
 - **Table polish.** License column shows Safety Rating (e.g. `3.34`) instead of
   iRating + class pill. A speaker icon appears on the row of whoever is
   transmitting on radio. Lapped-traffic and player rows use a soft left-stripe

@@ -183,9 +183,10 @@ class SchematicImportPanel(QFrame):
         v.addWidget(t)
 
         hint = QLabel(
-            "Import the in-sim track map PNG (white loop, red pit road, blue "
-            "safe merge). Preview below; Import saves to the current TrackID "
-            "and loads on the overlay map with v2 legend styling.")
+            "Import the iRacing members track map: save the track page HTML "
+            "from DevTools (preferred — vector SVG layers, no API token), or "
+            "a schematic PNG (white loop, red pit, blue merge). Preview "
+            "below; Import saves to the current TrackID.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -194,7 +195,7 @@ class SchematicImportPanel(QFrame):
         self._path_lbl = QLabel("No file chosen")
         self._path_lbl.setObjectName("enableHint")
         self._path_lbl.setWordWrap(True)
-        browse = QPushButton("Choose PNG…")
+        browse = QPushButton("Choose file…")
         browse.setCursor(Qt.CursorShape.PointingHandCursor)
         browse.clicked.connect(self._browse)
         row.addWidget(self._path_lbl, 1)
@@ -225,8 +226,9 @@ class SchematicImportPanel(QFrame):
 
     def _browse(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose iRacing schematic PNG", "",
-            "Images (*.png *.jpg *.jpeg);;All files (*)")
+            self, "Choose iRacing track map", "",
+            "Track maps (*.html *.htm *.png *.jpg *.jpeg);;"
+            "HTML (*.html *.htm);;Images (*.png *.jpg *.jpeg);;All files (*)")
         if not path:
             return
         QTimer.singleShot(0, lambda: self._load_preview(path))
@@ -245,15 +247,19 @@ class SchematicImportPanel(QFrame):
         return out
 
     def _load_preview(self, path: str) -> None:
+        ext = os.path.splitext(path)[1].lower()
         try:
-            from tools.schematic_to_track import import_schematic
+            if ext in (".png", ".jpg", ".jpeg"):
+                from tools.schematic_to_track import import_schematic
+                raw = import_schematic(path, num_corners=4)
+            else:
+                from tools.svg_layers_to_track import import_track_source
+                raw = import_track_source(path, num_corners=4)
         except ImportError:
             self._status.setText(
-                "Missing deps: pip install opencv-python-headless numpy")
+                "PNG import needs: pip install opencv-python-headless numpy")
             self._import_btn.setEnabled(False)
             return
-        try:
-            raw = import_schematic(path, num_corners=4)
         except Exception as exc:
             self._status.setText(str(exc))
             self._import_btn.setEnabled(False)

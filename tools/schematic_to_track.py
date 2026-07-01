@@ -463,7 +463,7 @@ def _split_red_polyline(red: list[tuple[float, float]],
         return red, red
     # Junction: red point closest to the main loop (pit entry at the loop edge).
     loop_dists = [min(math.hypot(p[0] - q[0], p[1] - q[1]) for q in loop) for p in red]
-    j_idx = int(np.argmin(loop_dists))
+    j_idx = min(range(len(loop_dists)), key=lambda i: loop_dists[i])
     forward = red[j_idx:]
     backward = list(reversed(red[: j_idx + 1]))
     if len(forward) >= len(backward):

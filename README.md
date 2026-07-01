@@ -226,12 +226,20 @@ python3 tools/svg_to_track.py track.svg <TrackID> "Track Name"   # -> tracks/<Tr
 #    road + blue safe merge). Writes schema-2 JSON with fixed pit geometry — no
 #    pit scan required. Tool-only deps: pip install opencv-python-headless numpy
 python3 tools/schematic_to_track.py map.png <TrackID> "Track Name" --preview
+
+# E) Import from iRacing members-site track page HTML (DevTools — no API token).
+#    Vector SVG layers (#Pitroad, #Mergeline) chain reliably; no OpenCV needed.
+python3 tools/svg_layers_to_track.py track-page.html <TrackID> "Track Name"
 ```
 
 Schematic tracks set `"pit_source": "schematic"`. The overlay map uses **TrackMapWidgetV2**
 (iRacing legend colors: red pit road, blue safe merge) with a compact key in the
 corner. Authors can import from the **Track Scan → Schematic map (v2)** panel
-(choose PNG, preview, Import) or the CLI tool below.
+(choose HTML or PNG, preview, Import) or the CLI tools below.
+
+**Members HTML (recommended):** on [members.iracing.com](https://members.iracing.com),
+open the track page with Pit Road enabled, DevTools → copy/save the `#track-map-*`
+HTML, then import that file. No iRacing Data API token required.
 
 `tools/fetch_tracks.py` bypasses the official Data API entirely by downloading from
 the community-maintained [`iTelemetry/iracing-tracks`](https://github.com/iTelemetry/iracing-tracks)
@@ -256,7 +264,7 @@ Track JSON schema (schema 1 — outline only, or learned from GPS):
 
 Schema 2 adds schematic pit geometry (`pit_source`, `pit_in`, `pit_path`,
 `pit_out`, `pit_in_pct`, `pit_span`, `pit_out_pct`) from
-`tools/schematic_to_track.py`.
+`tools/schematic_to_track.py` (PNG) or `tools/svg_layers_to_track.py` (members HTML/SVG).
 
 Add `corners` entries by hand to get on-map labels like the reference image. The
 overlay only ships `tracks/_demo.json`; iRacing's official map SVGs are not

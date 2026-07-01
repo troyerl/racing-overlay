@@ -31,9 +31,13 @@ jobs:
       - name: Read version & notes from RELEASE.md
         id: ver
         shell: bash
+        env:
+          PYTHONUTF8: "1"
         run: |
           python - <<'PY'
-          import os, re
+          import os, re, sys
+          if hasattr(sys.stdout, "reconfigure"):
+              sys.stdout.reconfigure(encoding="utf-8")
           s = open("RELEASE.md", encoding="utf-8").read()
           # The topmost "## <version> - <date>" section drives the release.
           m = re.search(r'^##\s+(\d+\.\d+\.\d+)[^\n]*\n', s, re.M)
