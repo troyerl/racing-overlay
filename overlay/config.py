@@ -57,6 +57,8 @@ _TABLE_STYLE: dict = {
     # iRating is abbreviated ("1.4k"); turn it off to show the full number
     # ("1432"). Also applies to the iRating column and the SOF readouts.
     "irating_abbreviate": True,
+    # When on, show projected iRating +/- beside the iRating column (race only).
+    "show_irating_projection": False,
     # Header / footer text size, independent of the row font above.
     "header_font_scale": 1.0,
     "footer_font_scale": 1.0,
@@ -82,15 +84,18 @@ _TABLE_STYLE: dict = {
         "border": "#ffffff20",
         "cell_dark": "#0b0e12",
         "row_alt": "#ffffff0a",
-        "player_row": "#8a5a18b4",
+        "player_row": "#ff941650",
         # Lapped-traffic row tints: "threat" (red) = a car a lap ahead that
         # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
-        "threat": "#7a1a1adc",
-        "lapped": "#13386edc",
+        # Rendered as a soft left-to-right gradient wash in the relative table.
+        "threat": "#ff505060",
+        "lapped": "#4a8cff60",
         "text": "#f4f6f8",
         "muted": "#8b93a1",
         "irating_bg": "#eef0f2",
         "irating_text": "#14161a",
+        "irating_delta_up": "#46df7a",
+        "irating_delta_down": "#ff5050",
         "badge_player": "#ff9416",
         "badge_pit_bg": "#ebeef0",
         "badge_pit_text": "#141414",

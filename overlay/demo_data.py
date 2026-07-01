@@ -251,6 +251,9 @@ class FakeIRSDK:
         if key == "CarIdxClassPosition":
             return self["CarIdxPosition"]  # single-class demo field
 
+        if key == "SessionState":
+            return 4  # racing — enables iRating projection in demo
+
         if key == "CarIdxLastLapTime":
             # A plausible last lap per car: the demo pace scaled around lap_time,
             # nudged by a slow wobble so the values tick over time.
@@ -262,6 +265,10 @@ class FakeIRSDK:
         if key == "CarIdxBestLapTime":
             return [self.lap_time / self._speed[i] - 0.45
                     for i in range(self.num_cars)]
+
+        if key == "RadioTransmitCarIdx":
+            # Cycle through a few cars so the speaking badge is visible in demo.
+            return int((time.time() - self._start) // 3.0) % self.num_cars
 
         if key == "Lap":
             return int(self._total_laps()[self.player_idx]) + 1
@@ -286,6 +293,9 @@ class FakeIRSDK:
         if key == "SessionTimeTotal":
             return 45 * 60.0
 
+        if key == "SessionLapsRemainEx":
+            return max(0, 50 - int(self._total_laps()[self.player_idx]))
+
         if key == "SessionTimeRemain":
             return max(0.0, 45 * 60.0 - (time.time() - self._start))
 
@@ -298,8 +308,12 @@ class FakeIRSDK:
             # demo: caution -> red -> blue -> debris -> white -> black ->
             # meatball -> furled -> DQ -> crossed -> checkered -> green.
             cyc = (time.time() - self._start) % 60.0
+            if cyc < 2.0:
+                return 0x00004000 | 0x00008000   # caution waving
+            if cyc < 4.0:
+                return 0x00004000 | 0x00000200   # caution + 1 lap to green
             if cyc < 6.0:
-                return 0x00004000 | 0x00008000   # caution + caution waving
+                return 0x00004000 | 0x00001000   # caution + 5 to go
             if 9.0 <= cyc < 12.0:
                 return 0x00000010                # red flag (session stopped)
             if 14.0 <= cyc < 17.0:

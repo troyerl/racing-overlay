@@ -130,6 +130,7 @@ LABEL_OVERRIDES = {
     "row_height_px": "Fixed row height (px, 0 = scale to fit)",
     "max_row_height_frac": "Max row height (panel fraction)",
     "irating_abbreviate": "Abbreviate iRating (1.4k vs 1432)",
+    "show_irating_projection": "Show projected iRating change",
     "font_scale": "Row text size",
     "gap_font_scale": "Gap column text size",
     "header_font_scale": "Header text size (independent of rows)",
@@ -203,6 +204,7 @@ _WORD_FIXUPS = {
 }
 
 from .widgets.dash import METRIC_KEYS as _DASH_METRICS
+from .widgets.track_map_v2 import SchematicImportPanel
 
 # Items available for each table's header / footer sections. Every item works
 # in any slot; order_pill / title / count are standings-specific extras.
@@ -1578,6 +1580,9 @@ class ConfigEditor(QWidget):
             v.addWidget(note)
             v.addWidget(self._scan_actions_card())
             v.addWidget(self._pit_tuning_card())
+            self._schematic_panel = SchematicImportPanel(self._overlay)
+            self._schematic_panel.imported.connect(self._flash)
+            v.addWidget(self._schematic_panel)
             v.addWidget(self._track_authoring_card())
             v.addStretch(1)
             return page
@@ -1790,6 +1795,9 @@ class ConfigEditor(QWidget):
         self._pit_speed_spin.blockSignals(False)
         self._num_turns_spin.blockSignals(False)
         self._sync_corner_edit_mode()
+        if hasattr(self, "_schematic_panel"):
+            self._schematic_panel.set_overlay(self._overlay)
+            self._schematic_panel.refresh()
 
     def _pit_speed_authoring_changed(self, value: float) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_speed_authoring"):

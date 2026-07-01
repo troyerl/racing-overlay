@@ -5,12 +5,21 @@ __pycache__/
 .venv/
 venv/
 
+# Local pip vendor tree (tool deps installed with --target)
+.pip_deps/
+
+# PyInstaller build output
+dist/
+build/
+*.spec
+
 # Secrets / local env (e.g. GRIDGLANCE_MONGODB_URI)
 .env
 .env.*
 !.env.example
 
 # Runtime / user-generated state
+overlay_config.json
 overlay_layout.json
 stderr.txt
 *.log
@@ -19,6 +28,7 @@ stderr.txt
 .DS_Store
 .idea/
 .vscode/
+.cursor/
 
 # Fetched track library (keep only the bundled demo track)
 /tracks/*

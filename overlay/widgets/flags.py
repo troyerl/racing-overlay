@@ -8,7 +8,8 @@ dash flag so it sits naturally alongside the rest of the overlay. When nothing i
 flying it shows a calm muted state.
 
 Expected data dict:
-    flag   flag name from the app's session-flag logic, or None
+    flag          flag name from the app's session-flag logic, or None
+    flag_context  optional detail line (e.g. "1 lap to green")
 """
 
 from __future__ import annotations
@@ -92,9 +93,10 @@ class FlagsWidget(QWidget):
         p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
 
         pad = max(6.0, min(w, h) * 0.12)
-        self._draw_banner(p, QRectF(pad, pad, w - 2 * pad, h - 2 * pad), flag)
+        self._draw_banner(p, QRectF(pad, pad, w - 2 * pad, h - 2 * pad), flag,
+                          (self.data or {}).get("flag_context"))
 
-    def _draw_banner(self, p, rect: QRectF, flag) -> None:
+    def _draw_banner(self, p, rect: QRectF, flag, context=None) -> None:
         spec = _SPEC.get(flag)
         r = min(rect.height() * 0.34, 22.0)
         if spec is None:
@@ -135,6 +137,44 @@ class FlagsWidget(QWidget):
         p.restore()
 
         # Rounded plate behind the label so the texture frames it.
+        context = str(context).strip() if context else ""
+        if context:
+            title_font = self._font(rect.height() * 0.22, True)
+            sub_font = self._font(rect.height() * 0.15, False)
+            avail = rect.width() * 0.82
+            tw = max(QFontMetricsF(title_font).horizontalAdvance(label),
+                     QFontMetricsF(sub_font).horizontalAdvance(context))
+            if tw > avail and tw > 0:
+                scale = avail / tw
+                title_font = self._font(rect.height() * 0.22 * scale, True)
+                sub_font = self._font(rect.height() * 0.15 * scale, False)
+                tw = max(QFontMetricsF(title_font).horizontalAdvance(label),
+                         QFontMetricsF(sub_font).horizontalAdvance(context))
+            plate_pad = rect.height() * 0.24
+            plate_h = min(rect.height() * 0.72,
+                            title_font.pixelSize() * 2.6 + sub_font.pixelSize() * 1.2)
+            plate = QRectF(rect.center().x() - tw / 2 - plate_pad,
+                           rect.center().y() - plate_h / 2,
+                           tw + plate_pad * 2, plate_h)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(plate, plate.height() / 2, plate.height() / 2)
+            title_y = rect.center().y() - plate_h * 0.16
+            sub_y = rect.center().y() + plate_h * 0.18
+            p.setFont(title_font)
+            p.setPen(fg)
+            p.drawText(QRectF(rect.left(), title_y - title_font.pixelSize() * 0.5,
+                              rect.width(), title_font.pixelSize() * 1.4),
+                       Qt.AlignmentFlag.AlignCenter, label)
+            sub_fg = QColor(fg)
+            sub_fg.setAlpha(min(255, int(fg.alpha() * 0.88)))
+            p.setFont(sub_font)
+            p.setPen(sub_fg)
+            p.drawText(QRectF(rect.left(), sub_y - sub_font.pixelSize() * 0.5,
+                              rect.width(), sub_font.pixelSize() * 1.4),
+                       Qt.AlignmentFlag.AlignCenter, context)
+            return
+
         font = self._font(rect.height() * 0.30)
         avail = rect.width() * 0.82
         tw = QFontMetricsF(font).horizontalAdvance(label)

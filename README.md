@@ -206,7 +206,7 @@ configured speed unit.
 
 ### Building the track library
 
-Three ways to populate `tracks/`:
+Four ways to populate `tracks/`:
 
 ```bash
 # A) Fetch real track maps (no iRacing Data API token needed). Pulls outlines
@@ -221,7 +221,17 @@ python3 tools/record_track.py        # -> tracks/<TrackID>.json
 
 # C) Convert an iRacing track-outline SVG (drawn in driving direction from S/F):
 python3 tools/svg_to_track.py track.svg <TrackID> "Track Name"   # -> tracks/<TrackID>.json
+
+# D) Import a full schematic from iRacing's in-sim map PNG (white loop + red pit
+#    road + blue safe merge). Writes schema-2 JSON with fixed pit geometry — no
+#    pit scan required. Tool-only deps: pip install opencv-python-headless numpy
+python3 tools/schematic_to_track.py map.png <TrackID> "Track Name" --preview
 ```
+
+Schematic tracks set `"pit_source": "schematic"`. The overlay map uses **TrackMapWidgetV2**
+(iRacing legend colors: red pit road, blue safe merge) with a compact key in the
+corner. Authors can import from the **Track Scan → Schematic map (v2)** panel
+(choose PNG, preview, Import) or the CLI tool below.
 
 `tools/fetch_tracks.py` bypasses the official Data API entirely by downloading from
 the community-maintained [`iTelemetry/iracing-tracks`](https://github.com/iTelemetry/iracing-tracks)
@@ -232,7 +242,7 @@ in from the mirror's config, so there's no SVG parsing at runtime. Pass
 Files land in `tracks/` keyed by `TrackID`, so they auto-load the next time you
 join that track &mdash; no token, no GPS-learning lap.
 
-Track JSON schema:
+Track JSON schema (schema 1 — outline only, or learned from GPS):
 
 ```json
 {
@@ -243,6 +253,10 @@ Track JSON schema:
   "corners": [{"pct": 0.07, "label": "1"}, {"pct": 0.15, "label": "Repsol"}]
 }
 ```
+
+Schema 2 adds schematic pit geometry (`pit_source`, `pit_in`, `pit_path`,
+`pit_out`, `pit_in_pct`, `pit_span`, `pit_out_pct`) from
+`tools/schematic_to_track.py`.
 
 Add `corners` entries by hand to get on-map labels like the reference image. The
 overlay only ships `tracks/_demo.json`; iRacing's official map SVGs are not

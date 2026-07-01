@@ -67,6 +67,9 @@ _CODEPOINTS: dict[str, int] = {
     "order_pill": 0xF0CB,     # list-ol
     "title": 0xF091,          # trophy
     "count": 0xF0C0,          # users
+    "speaking": 0xF028,       # volume-high
+    "irating_up": 0xF062,     # arrow-up
+    "irating_down": 0xF063,   # arrow-down
 }
 
 _family: str | None = None

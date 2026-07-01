@@ -236,9 +236,9 @@ def normalize(doc: dict) -> dict:
         "start_finish": float(doc.get("start_finish", 0.0) or 0.0),
         "corners": [dict(c) for c in (doc.get("corners") or [])
                     if isinstance(c, dict) and "pct" in c and "label" in c],
-        "schema": 1,
+        "schema": doc.get("schema", 1),
     }
-    for key in ("pit_span", "pit_speed", "source", "learned",
+    for key in ("pit_span", "pit_speed", "source", "learned", "pit_source",
                 "pit_in_pct", "pit_out_pct", "num_turns"):
         if doc.get(key) is not None:
             out[key] = doc[key]

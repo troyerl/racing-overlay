@@ -22,6 +22,7 @@ Corrections vs. the common template:
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import math
 import os
@@ -36,11 +37,13 @@ from . import config
 from . import constants
 from . import demo_data
 from . import paths
+from . import irating_calc
 from . import sysstats
 from . import track_store
 from . import version
 from .panel import PanelWindow
 from .widgets import track_map
+from .widgets.track_map_v2 import TrackMapWidgetV2
 from .widgets.dash import DashWidget
 from .widgets.delta_bar import DeltaBarWidget
 from .widgets.flags import FlagsWidget
@@ -244,6 +247,10 @@ class AdvancedSimHUD:
         # as "on the pit route" (so it follows the exit blend) until its lap pct
         # passes the rejoin point. idx -> True while latched.
         self._pit_route_latch: dict[int, bool] = {}
+        self._pit_prev_on: dict[int, bool] = {}
+        self._pit_exit_latch: dict[int, float] = {}
+        # '' = telemetry-learned; 'schematic' = fixed geometry from image import.
+        self._pit_source = ""
         # Multi-lap scan progress: the track map finalizes only after SCAN_LAPS
         # *complete* laps; the pit lane only after PIT_PASSES passes (and only
         # once the track scan is done). _scan_seen_lap is the lap we were on when
@@ -284,6 +291,11 @@ class AdvancedSimHUD:
         self._fc_prev_lap = None
         self._fc_lap_start_fuel = None
         self._fc_use: list[float] = []
+        self._irating_deltas: dict[int, int] = {}
+        self._grid_session_uid: int | None = None
+        self._grid_positions_cache: list[int] | None = None
+        self._grid_class_positions_cache: list[int] | None = None
+        self._class_positions: list[int] | None = None
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -346,7 +358,7 @@ class AdvancedSimHUD:
         self.standings_widget = StandingsWidget()
         self.relative_widget = RelativeWidget()
         self.radar_widget = RadarWidget()
-        self.map_widget = track_map.TrackMapWidget()
+        self.map_widget = TrackMapWidgetV2()
         self.dash_widget = DashWidget()
         self.laptime_widget = LaptimeLogWidget()
         self.fuel_widget = FuelCalcWidget()
@@ -543,6 +555,123 @@ class AdvancedSimHUD:
             pit_in_pct=self._pit_in_pct,
             pit_out_pct=self._pit_out_pct,
             learned=bool(self._scan_done and not self._track_loaded))
+
+    def effective_track_id(self):
+        """TrackID for file naming (live session, or ``_demo`` in demo mode)."""
+        if self._track_id is not None:
+            return self._track_id
+        if self.demo:
+            return "_demo"
+        return None
+
+    def reload_current_track_file(self) -> bool:
+        """Re-read tracks/<TrackID>.json into the map (after schematic import)."""
+        tid = self.effective_track_id()
+        if tid is None:
+            return False
+        path = track_map.find_track_file(tid, self.tracks_dir)
+        if not path:
+            return False
+        try:
+            pts, sf, corners, _, meta = track_map.load_track(path)
+            self.map_widget.set_track(pts, sf, corners)
+            saved_turns = _coerce_int(meta.get("num_turns"))
+            self.map_widget.set_num_turns(self._track_turns or saved_turns)
+            if saved_turns and not self._track_turns:
+                self._track_turns = saved_turns
+            self._set_track_geom(pts)
+            self._apply_pit_meta(meta)
+            self._track_loaded = True
+            self._scan_done = True
+            self._refresh_settings_authoring()
+            return True
+        except Exception:
+            log.exception("reload track file failed")
+            return False
+
+    def _apply_schematic_doc(self, doc: dict) -> None:
+        """Push traced schematic geometry onto the live overlay map."""
+        pts = [(float(p[0]), float(p[1]))
+               for p in doc.get("points", []) if len(p) >= 2]
+        if len(pts) < 3:
+            raise ValueError("Trace produced too few track points.")
+        sf = float(doc.get("start_finish", 0.0))
+        corners = [c for c in doc.get("corners", []) if isinstance(c, dict)]
+        self.map_widget.set_track(pts, sf, corners)
+        turns = _coerce_int(doc.get("num_turns"))
+        if turns:
+            self.map_widget.set_num_turns(self._track_turns or turns)
+            if not self._track_turns:
+                self._track_turns = turns
+        self._set_track_geom(pts)
+        meta = {key: doc[key] for key in (
+            "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
+            "pit_out_pct", "pit_speed", "pit_source", "schema", "num_turns",
+        ) if key in doc}
+        meta.setdefault("pit_source", "schematic")
+        po = doc.get("pit_out") or []
+        pp = doc.get("pit_path") or []
+        if po and pp:
+            xs = [p[0] for p in po]; ys = [p[1] for p in po]
+            out_span = max(max(xs) - min(xs), max(ys) - min(ys))
+            xs = [p[0] for p in pp]; ys = [p[1] for p in pp]
+            path_span = max(max(xs) - min(xs), max(ys) - min(ys))
+            if out_span < path_span * 0.12:
+                raise ValueError(
+                    "Merge lane geometry looks too short — re-import the "
+                    "iRacing schematic PNG (white/red/blue dashes).")
+        self._apply_pit_meta(meta)
+        self._track_loaded = True
+        self._scan_done = True
+        self._refresh_settings_authoring()
+        n_in = len(doc.get("pit_in") or [])
+        n_path = len(doc.get("pit_path") or [])
+        n_out = len(doc.get("pit_out") or [])
+        self.map_widget.flash_hint(
+            f"Schematic — entry {n_in}, road {n_path}, merge {n_out}")
+        self.map_widget.update()
+
+    def import_schematic_track(self, png_path: str | None = None,
+                               *, doc: dict | None = None) -> tuple[bool, str]:
+        """Write a schema-2 schematic track file for the current TrackID and reload."""
+        tid = self.effective_track_id()
+        if tid is None:
+            return False, "No TrackID — join a track in iRacing first."
+        try:
+            if doc is None:
+                if not png_path:
+                    return False, "No PNG selected."
+                try:
+                    from tools.schematic_to_track import import_schematic
+                except ImportError:
+                    return False, "Install opencv-python-headless and numpy for import."
+                raw = import_schematic(
+                    png_path, num_corners=int(self._track_turns or 4) or 4)
+                doc = {k: v for k, v in raw.items()
+                       if not str(k).startswith("_")}
+            name = self._learn_name or (str(self._track_id) if self._track_id
+                                        else "Demo")
+            doc["track_id"] = tid
+            doc["name"] = name
+            doc.setdefault("schema", 2)
+            doc.setdefault("pit_source", "schematic")
+            if self._track_turns and not doc.get("num_turns"):
+                doc["num_turns"] = int(self._track_turns)
+            path = os.path.join(self.tracks_dir, f"{tid}.json")
+            os.makedirs(self.tracks_dir, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(doc, fh, indent=2)
+            self._apply_schematic_doc(doc)
+            if track_store.can_write():
+                self._track_sync.upload_local_async(self.tracks_dir, tid)
+            n_in = len(doc.get("pit_in") or [])
+            n_path = len(doc.get("pit_path") or [])
+            n_out = len(doc.get("pit_out") or [])
+            return True, (f"Saved {path} — entry {n_in}, road {n_path}, "
+                          f"merge {n_out} pts (overlay updated)")
+        except Exception as exc:
+            log.exception("schematic import failed")
+            return False, str(exc)
 
     def _persist_track_meta(self, **fields) -> bool:
         """Write track metadata locally and push to the cloud when allowed."""
@@ -755,8 +884,16 @@ class AdvancedSimHUD:
         player = self.ir["PlayerCarIdx"]
         need_order = en["standings"] or en["relative"] or en["dash"]
         need_drivers = en["standings"] or en["relative"] or en["map"] or en["dash"]
+        map_use_pos = (en["map"]
+                       and config.CFG["map"].get("car_label", "number") == "position")
+        need_pos = need_order or map_use_pos
         # Each array is only read if some visible widget consumes it.
-        positions = self.ir["CarIdxPosition"] if need_order else None
+        positions = None
+        self._class_positions = None
+        if need_pos:
+            live_pos = self.ir["CarIdxPosition"]
+            positions, self._class_positions = self._resolve_positions(
+                live_pos, player)
         lap_pct = (self.ir["CarIdxLapDistPct"]
                    if (en["radar"] or en["map"] or en["standings"]
                        or en["relative"] or en["sector_timing"]
@@ -794,16 +931,44 @@ class AdvancedSimHUD:
                 (en["standings"] and config.has_column("standings", "best_lap")):
             self._car_best = self.ir["CarIdxBestLapTime"]
 
+        radio_speaker = None
+        if ((en["relative"] and config.has_column("relative", "badge"))
+                or (en["standings"] and config.has_column("standings", "badge"))):
+            try:
+                idx = int(self.ir["RadioTransmitCarIdx"])
+                if idx >= 0:
+                    radio_speaker = idx
+            except (TypeError, ValueError, KeyError):
+                radio_speaker = None
+
+        need_irating_proj = (
+            (en["standings"] and config.has_column("standings", "irating")
+             and config.CFG.get("standings", {}).get("show_irating_projection"))
+            or (en["relative"] and config.has_column("relative", "irating")
+                and config.CFG.get("relative", {}).get("show_irating_projection"))
+        )
+        self._irating_deltas = {}
+        if need_irating_proj and drivers and (
+                self._demo_active or self._session_allows_irating_projection()):
+            class_pos = self._class_positions
+            if class_pos is None:
+                try:
+                    class_pos = self.ir["CarIdxClassPosition"]
+                except (TypeError, ValueError, KeyError):
+                    class_pos = None
+            self._irating_deltas = irating_calc.project_deltas_by_class(
+                drivers, class_pos, positions, self._pace_idxs)
+
         if en["radar"]:
             self._update_radar(player, lap_pct, surface, car_left_right)
         if en["standings"]:
             self._update_standings(positions, drivers, surface, car_f2, player,
-                                   lap_est, car_lap, sess_time)
+                                   lap_est, car_lap, sess_time, radio_speaker)
         if en["relative"]:
             self._update_relative(player, est_time, surface, drivers, positions,
-                                  car_lap, lap_est, sess_time)
+                                  car_lap, lap_est, sess_time, radio_speaker)
         if en["map"]:
-            self._update_map(player, lap_pct, surface, drivers)
+            self._update_map(player, lap_pct, surface, drivers, positions)
         if en["dash"]:
             self._update_dash(player, positions, car_lap)
         if en["laptime_log"]:
@@ -937,7 +1102,7 @@ class AdvancedSimHUD:
 
     def _build_standings_row(self, idx, drivers, positions, surface, car_f2,
                              player, lap_est, cols, car_lap, sess_time,
-                             pit_mode) -> dict:
+                             pit_mode, radio_speaker=None) -> dict:
         # Only compute fields whose column is actually shown.
         d = drivers.get(idx, {})
         cls = sr = ""
@@ -959,6 +1124,9 @@ class AdvancedSimHUD:
             else:
                 gap_text = f"+{f2:.1f}"
 
+        is_player = idx == player
+        lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
+
         return {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
@@ -969,14 +1137,32 @@ class AdvancedSimHUD:
             "lic_class": cls,
             "irating": (self._fmt_irating(d.get("IRating"), "standings")
                         if cols.get("irating") or cols.get("license") else ""),
+            "irating_delta": self._row_irating_delta(idx, cols, "standings"),
             "pit": pit,
             "gap_text": gap_text,
             "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
             "best_lap": self._lap_for(idx, self._car_best) if cols.get("best_lap") else "",
-            "is_player": idx == player,
+            "is_player": is_player,
             "in_pit": surface[idx] in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS),
-            "lapping": False,
+            "lapping": lapping,
+            "lap_ahead": lap_ahead,
+            "speaking": radio_speaker is not None and idx == radio_speaker,
         }
+
+    @staticmethod
+    def _relative_include(idx, surface, positions, player) -> bool:
+        """Relative rows: on-track cars, plus anyone ahead in race position."""
+        if not surface or idx >= len(surface):
+            return False
+        on_track = surface[idx] in (oc.TRK_ON_TRACK, oc.TRK_APPROACHING_PITS,
+                                    oc.TRK_IN_PIT_STALL)
+        if on_track:
+            return True
+        if not positions or player is None or idx >= len(positions):
+            return False
+        pos = positions[idx]
+        player_pos = positions[player] if player < len(positions) else 0
+        return bool(pos and player_pos and 0 < pos < player_pos)
 
     def _laps_done(self, idx, car_lap):
         """Total laps completed by a car (lap count + fraction into the lap).
@@ -1014,7 +1200,8 @@ class AdvancedSimHUD:
         return True, diff > 0
 
     def _update_standings(self, positions, drivers, surface, car_f2,
-                          player, lap_est, car_lap, sess_time) -> None:
+                          player, lap_est, car_lap, sess_time,
+                          radio_speaker=None) -> None:
         if not positions:
             return
         scfg = config.CFG["standings"]
@@ -1031,7 +1218,8 @@ class AdvancedSimHUD:
         def build(idx):
             return self._build_standings_row(idx, drivers, positions, surface,
                                              car_f2, player, lap_est, cols,
-                                             car_lap, sess_time, pit_mode)
+                                             car_lap, sess_time, pit_mode,
+                                             radio_speaker)
 
         center = scfg.get("center_on_player", True) and player in ranked
         if center:
@@ -1071,15 +1259,31 @@ class AdvancedSimHUD:
             return f"{ir / 1000:.1f}k"
         return str(ir)
 
+    def _session_allows_irating_projection(self) -> bool:
+        """iRating moves in race sessions only (not practice/qual)."""
+        try:
+            state = int(self.ir["SessionState"])
+        except (TypeError, ValueError, KeyError):
+            return False
+        return state in (4, 5)  # racing, checkered
+
+    def _row_irating_delta(self, idx, cols, section: str):
+        if not cols.get("irating"):
+            return None
+        sec = config.CFG.get(section, {})
+        if not isinstance(sec, dict) or not sec.get("show_irating_projection"):
+            return None
+        return self._irating_deltas.get(idx)
+
     @staticmethod
     def _parse_license(lic_str):
-        # LicString looks like "A 3.71"; return ("A", "3.7").
+        # LicString looks like "A 3.71"; return ("A", "3.71").
         if not lic_str:
             return "", ""
         parts = str(lic_str).split()
         cls = parts[0][:1] if parts else ""
         try:
-            sr = f"{float(parts[1]):.1f}"
+            sr = f"{float(parts[1]):.2f}"
         except (IndexError, ValueError):
             sr = ""
         return cls, sr
@@ -1191,7 +1395,8 @@ class AdvancedSimHUD:
         return {"rows": rows}
 
     def _build_relative_row(self, idx, delta, drivers, positions, surface, car_lap,
-                            player, is_player, cols, sess_time, pit_mode) -> dict:
+                            player, is_player, cols, sess_time, pit_mode,
+                            radio_speaker=None) -> dict:
         # Only compute fields whose column is actually shown.
         d = drivers.get(idx, {})
         cls = sr = ""
@@ -1214,6 +1419,7 @@ class AdvancedSimHUD:
             "lic_class": cls,
             "irating": (self._fmt_irating(d.get("IRating"), "relative")
                         if cols.get("irating") or cols.get("license") else ""),
+            "irating_delta": self._row_irating_delta(idx, cols, "relative"),
             "pit": pit,
             "gap": abs(delta) if cols.get("gap") else None,
             "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
@@ -1222,10 +1428,12 @@ class AdvancedSimHUD:
             "in_pit": in_pit,
             "lapping": lapping,
             "lap_ahead": lap_ahead,
+            "speaking": radio_speaker is not None and idx == radio_speaker,
         }
 
     def _update_relative(self, player, est_time, surface, drivers,
-                         positions, car_lap, lap_est, sess_time) -> None:
+                         positions, car_lap, lap_est, sess_time,
+                         radio_speaker=None) -> None:
         if player is None or not est_time or not surface or lap_est <= 0:
             return
 
@@ -1237,8 +1445,7 @@ class AdvancedSimHUD:
         for idx, t in enumerate(est_time):
             if idx == player or t is None or idx in self._pace_idxs:
                 continue
-            if surface[idx] not in (oc.TRK_ON_TRACK, oc.TRK_APPROACHING_PITS,
-                                     oc.TRK_IN_PIT_STALL):
+            if not self._relative_include(idx, surface, positions, player):
                 continue
             delta = t - me
             half = lap_est / 2.0
@@ -1262,14 +1469,14 @@ class AdvancedSimHUD:
         for delta, idx in reversed(ahead):
             rows.append(self._build_relative_row(
                 idx, delta, drivers, positions, surface, car_lap, player, False,
-                cols, sess_time, pit_mode))
+                cols, sess_time, pit_mode, radio_speaker))
         rows.append(self._build_relative_row(
             player, 0.0, drivers, positions, surface, car_lap, player, True,
-            cols, sess_time, pit_mode))
+            cols, sess_time, pit_mode, radio_speaker))
         for delta, idx in behind:
             rows.append(self._build_relative_row(
                 idx, delta, drivers, positions, surface, car_lap, player, False,
-                cols, sess_time, pit_mode))
+                cols, sess_time, pit_mode, radio_speaker))
         if rcfg.get("center_on_player", True):
             for k in range(n_behind - len(behind)):
                 rows.append(self._empty_row(f"rel_bot{k}"))
@@ -1371,8 +1578,105 @@ class AdvancedSimHUD:
             return "--"
         return self._fmt_irating(sum(irs) / len(irs), section)
 
+    def _qualify_grid_positions(self) -> tuple[list[int] | None, list[int] | None]:
+        """Starting grid from QualifyResultsInfo (CarIdxPosition is 0 pre-green)."""
+        uid = 0
+        try:
+            uid = int(self.ir["SessionUniqueID"])
+        except (TypeError, ValueError, KeyError):
+            pass
+        if self._grid_session_uid == uid and self._grid_positions_cache is not None:
+            return self._grid_positions_cache, self._grid_class_positions_cache
+        pos: list[int] | None = None
+        cls: list[int] | None = None
+        try:
+            q = self.ir["QualifyResultsInfo"]
+            results = q.get("Results") if isinstance(q, dict) else None
+            if results:
+                max_idx = 0
+                entries: list[tuple[int, int | None, int | None]] = []
+                for r in results:
+                    if not isinstance(r, dict):
+                        continue
+                    idx = r.get("CarIdx")
+                    if idx is None:
+                        continue
+                    idx = int(idx)
+                    max_idx = max(max_idx, idx)
+                    entries.append((idx, r.get("Position"), r.get("ClassPosition")))
+                n = max(max_idx + 1, 64)
+                pos = [0] * n
+                cls = [0] * n
+                for idx, p, cp in entries:
+                    if p is not None and int(p) > 0:
+                        pos[idx] = int(p)
+                    if cp is not None and int(cp) > 0:
+                        cls[idx] = int(cp)
+                    elif p is not None and int(p) > 0:
+                        cls[idx] = int(p)
+                if not any(pos):
+                    pos = None
+                    cls = None
+        except (TypeError, ValueError, KeyError):
+            pass
+        self._grid_session_uid = uid
+        self._grid_positions_cache = pos
+        self._grid_class_positions_cache = cls
+        return pos, cls
+
+    def _prefer_grid_positions(
+        self, live: list | None, player: int | None, grid: list[int] | None,
+    ) -> bool:
+        if not grid or not any(grid):
+            return False
+        try:
+            state = int(self.ir["SessionState"])
+        except (TypeError, ValueError, KeyError):
+            state = 4
+        if state < 4:
+            return True
+        try:
+            lc = self.ir["LapCompleted"]
+            if isinstance(lc, int) and lc < 0:
+                return True
+        except (TypeError, ValueError, KeyError):
+            pass
+        if live and player is not None and 0 <= player < len(live):
+            if not live[player] or int(live[player]) <= 0:
+                return True
+        valid_live = sum(
+            1 for p in (live or []) if isinstance(p, int) and int(p) > 0
+        )
+        grid_count = sum(1 for p in grid if p > 0)
+        if grid_count >= 2 and valid_live < max(2, grid_count // 2):
+            return True
+        return False
+
+    def _resolve_positions(
+        self, live: list | None, player: int | None,
+    ) -> tuple[list | None, list[int] | None]:
+        """Live race positions, falling back to qualify grid before green."""
+        if self._demo_active:
+            return live, None
+        grid_pos, grid_class = self._qualify_grid_positions()
+        if not self._prefer_grid_positions(live, player, grid_pos):
+            return live, None
+        n = max(len(live or []), len(grid_pos or []), 64)
+        pos = list(grid_pos or [])
+        if len(pos) < n:
+            pos.extend([0] * (n - len(pos)))
+        cls = list(grid_class) if grid_class else None
+        if cls is not None and len(cls) < n:
+            cls.extend([0] * (n - len(cls)))
+        return pos, cls
+
     def _class_position(self, drivers, positions, player) -> str:
-        cp = self.ir["CarIdxClassPosition"]
+        cp = self._class_positions
+        if cp is None:
+            try:
+                cp = self.ir["CarIdxClassPosition"]
+            except (TypeError, ValueError, KeyError):
+                cp = None
         if not cp or player is None or not cp[player] or cp[player] <= 0:
             return "\u2014"
         cid = self._player_class(drivers, player)
@@ -1410,22 +1714,33 @@ class AdvancedSimHUD:
 
     def _load_demo_track(self) -> None:
         pts = None
+        file_meta = None
         path = track_map.find_track_file("_demo", self.tracks_dir)
         if path:
             try:
-                pts, sf, corners, _, _ = track_map.load_track(path)
+                pts, sf, corners, _, file_meta = track_map.load_track(path)
                 self.map_widget.set_track(pts, sf, corners)
             except Exception:
                 pts = None
+                file_meta = None
         if pts is None:
             pts = track_map.build_demo_path()
             self.map_widget.set_path(pts)
-        # Synthesize a pit lane so all the map's pit features -- the lane, the
-        # yellow entry / blue exit blends, the static speed badge, and on-pit
-        # car placement -- are visible in demo mode without a live scan.
-        meta = self._demo_pit_geometry(pts)
-        if meta:
-            self._apply_pit_meta(meta)
+        # Prefer pit geometry from the track file (e.g. schematic import); only
+        # synthesize a demo lane when the file has no pit polylines.
+        if file_meta and file_meta.get("pit_path"):
+            if not file_meta.get("pit_source"):
+                file_meta = dict(file_meta, pit_source="schematic")
+            self._apply_pit_meta(file_meta)
+            n_in = len(file_meta.get("pit_in") or [])
+            n_path = len(file_meta.get("pit_path") or [])
+            n_out = len(file_meta.get("pit_out") or [])
+            self.map_widget.flash_hint(
+                f"Schematic — entry {n_in}, road {n_path}, merge {n_out}")
+        else:
+            meta = self._demo_pit_geometry(pts)
+            if meta:
+                self._apply_pit_meta(meta)
 
     def _demo_pit_geometry(self, pts):
         """Build a believable pit lane (lane + entry/exit blends + lap-% extents
@@ -1715,6 +2030,8 @@ class AdvancedSimHUD:
         self._player_route_ticks = 0
         self._pit_recent.clear()
         self._pit_route_latch.clear()
+        self._pit_prev_on.clear()
+        self._pit_exit_latch.clear()
         self._pit_passes = []
 
     def _rescan_pits(self) -> None:
@@ -1724,6 +2041,10 @@ class AdvancedSimHUD:
         strips it from the saved track file.
         """
         if self.demo:
+            return
+        if self._pit_source == "schematic":
+            self.map_widget.flash_hint(
+                "Schematic pit — re-import with tools/schematic_to_track.py")
             return
         self._reset_pit_state()  # re-learn the pit over PIT_PASSES fresh passes
         self._update_scan_status()
@@ -2246,6 +2567,8 @@ class AdvancedSimHUD:
         extent) from a track file into both our state and the map widget. A meta
         with no pit data fully clears any previous pit lane (e.g. when leaving
         the demo or switching to a track that hasn't been scanned)."""
+        self._pit_source = (meta.get("pit_source") or "").strip().lower()
+        self.map_widget.set_pit_source(self._pit_source or None)
         if meta.get("pit_speed"):
             self._pit_speed_ms = float(meta["pit_speed"])
         if not meta.get("pit_span"):
@@ -2268,8 +2591,10 @@ class AdvancedSimHUD:
         self._pit_in_pct = meta.get("pit_in_pct")
         self._pit_out_pct = meta.get("pit_out_pct")
         self.map_widget.set_pit_route_pct(self._pit_in_pct, self._pit_out_pct)
+        self.map_widget.update()
 
-    def _update_map(self, player, lap_pct, surface, drivers) -> None:
+    def _update_map(self, player, lap_pct, surface, drivers,
+                    positions=None) -> None:
         if player is None or not lap_pct or not surface:
             return
 
@@ -2289,7 +2614,9 @@ class AdvancedSimHUD:
         on_pit_arr = self.ir["CarIdxOnPitRoad"]
         pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
         use_pos = config.CFG["map"].get("car_label", "number") == "position"
-        positions = self.ir["CarIdxPosition"] if use_pos else None
+        if use_pos and positions is None:
+            positions, _ = self._resolve_positions(
+                self.ir["CarIdxPosition"], player)
         route = self._route_interval()  # (lo, hi) lap-% extent, or None
         blends_on = config.CFG["map"].get("show_pit_blends", True)
         palette = track_map.car_palette()
@@ -2312,7 +2639,8 @@ class AdvancedSimHUD:
             else:
                 num = str(d.get("CarNumber", "?")) if d else "?"
             color = player_color if is_player else palette[idx % len(palette)]
-            cars.append((pct, num, color, is_player, on_route))
+            cars.append((idx, pct, num, color, is_player, on_route, on_pit))
+        self.map_widget.set_schematic_exit_pcts(self._pit_exit_latch)
         self.map_widget.set_cars(cars)
 
     def _route_interval(self):
@@ -2457,6 +2785,17 @@ class AdvancedSimHUD:
         blend.reverse()
         return (blend if len(blend) >= 2 else []), in_pct
 
+    def _update_schematic_pit_latches(self, lap_pct, on_pit_arr) -> None:
+        """Record per-car exit lap % when leaving pit road (schematic tracks)."""
+        for idx, pct in enumerate(lap_pct):
+            if pct is None or pct < 0.0 or pct > 1.0:
+                continue
+            on = (bool(on_pit_arr[idx]) if on_pit_arr and idx < len(on_pit_arr)
+                  else False)
+            if self._pit_prev_on.get(idx) and not on:
+                self._pit_exit_latch[idx] = float(pct)
+            self._pit_prev_on[idx] = on
+
     def _learn_pit(self, player, lap_pct) -> None:
         """Learn pit road from the player's pass: the lane's entry/exit lap pct,
         the speed limit, and the real geometry of the whole route -- the yellow
@@ -2472,6 +2811,28 @@ class AdvancedSimHUD:
         on = bool(on)
         pct = lap_pct[player]
         speed = self.ir["Speed"]
+        on_pit_arr = self.ir["CarIdxOnPitRoad"]
+        if self._pit_source == "schematic":
+            self._update_schematic_pit_latches(lap_pct, on_pit_arr)
+            route = self._route_interval()
+            valid_pct = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
+            in_route = (route is not None and valid_pct is not None
+                        and self._pct_in_interval(valid_pct, route[0], route[1]))
+            self._player_route_ticks = self._player_route_ticks + 1 if on else 0
+            if self._player_route_ticks >= PIT_COMMIT_HOLD:
+                self._player_on_route = True
+            elif self._player_on_route and valid_pct is not None:
+                end = self._pit_out_pct if self._pit_out_pct is not None else (
+                    route[1] if route else None)
+                if end is None or not self._pct_in_interval(
+                        valid_pct, route[0] if route else 0.0, end):
+                    self._player_on_route = False
+            if on:
+                self._learn_pit_speed(speed)
+            else:
+                self._pit_s0 = self._pit_t0 = None
+            self.map_widget.set_player_xy(None)
+            return
         xy = self._player_pos  # GPS or dead reckoning (resolved this tick)
         # Player's track-surface zone, logged on every change through the pit
         # sequence so we can compare iRacing's own zone boundaries (OnTrack <->
@@ -2932,6 +3293,14 @@ class AdvancedSimHUD:
     _FLAG_WHITE = 0x00000002               # white flag (final lap)
     _FLAG_GREEN = 0x00000004 | 0x00000400   # green + green-held
     _FLAG_YELLOW = 0x00000008 | 0x00000100 | 0x00004000 | 0x00008000
+    _FLAG_YELLOW_BASE = 0x00000008
+    _FLAG_YELLOW_WAVING = 0x00000100
+    _FLAG_ONE_LAP_GREEN = 0x00000200
+    _FLAG_GREEN_HELD = 0x00000400
+    _FLAG_TEN_TO_GO = 0x00000800
+    _FLAG_FIVE_TO_GO = 0x00001000
+    _FLAG_CAUTION = 0x00004000
+    _FLAG_CAUTION_WAVING = 0x00008000
     _FLAG_RED = 0x00000010                  # session stopped
     _FLAG_BLUE = 0x00000020                 # faster car behind, let it by
     _FLAG_DEBRIS = 0x00000040               # debris on track
@@ -2940,6 +3309,107 @@ class AdvancedSimHUD:
     _FLAG_DQ = 0x00020000                   # disqualified
     _FLAG_FURLED = 0x00080000               # furled/rolled black = warning
     _FLAG_REPAIR = 0x00100000               # meatball (must pit to repair)
+    _FLAG_START_READY = 0x20000000
+    _FLAG_START_SET = 0x40000000
+    _FLAG_START_GO = 0x80000000
+
+    def _session_flag_bundle(self) -> tuple[str | None, str | None]:
+        """Resolved flag name plus a short contextual hint for the UI."""
+        flag = self._session_flag()
+        ctx = self._flag_context(flag, getattr(self, "_last_session_flags", 0))
+        return flag, ctx
+
+    def _flag_context(self, flag: str | None, sf: int) -> str | None:
+        """Human-readable detail for the current flag state."""
+        if flag is None:
+            if sf & self._FLAG_START_GO:
+                return "Green light — go"
+            if sf & self._FLAG_START_SET:
+                return "Start lights set"
+            if sf & self._FLAG_START_READY:
+                return "Get ready — start imminent"
+            return None
+
+        if flag == "yellow":
+            if sf & self._FLAG_ONE_LAP_GREEN:
+                return "1 lap to green"
+            if sf & self._FLAG_TEN_TO_GO:
+                return "10 to go"
+            if sf & self._FLAG_FIVE_TO_GO:
+                return "5 to go"
+            if sf & self._FLAG_CAUTION_WAVING:
+                return "Caution waving — pits closed"
+            if sf & self._FLAG_CAUTION:
+                return "Full course caution — hold position"
+            if sf & self._FLAG_YELLOW_WAVING:
+                return "Local yellow — slow in sector"
+            if sf & self._FLAG_YELLOW_BASE:
+                return "Local yellow — slow down"
+            return "Slow down — no passing"
+
+        if flag == "green":
+            if sf & self._FLAG_GREEN_HELD:
+                return "Green held — stay in formation"
+            return "Track clear — racing resumes"
+
+        if flag == "red":
+            try:
+                remain = self.ir["SessionTimeRemain"]
+            except Exception:
+                remain = None
+            if isinstance(remain, (int, float)) and remain > 0:
+                return f"Session stopped — {self._fmt_clock(remain)} left"
+            return "Session stopped — stand by"
+
+        if flag == "white":
+            try:
+                laps_rem = self.ir["SessionLapsRemainEx"]
+            except Exception:
+                laps_rem = None
+            if isinstance(laps_rem, int) and laps_rem == 1:
+                return "1 lap remaining"
+            try:
+                total = self.ir["SessionLapsTotal"]
+                lap = self.ir["Lap"]
+            except Exception:
+                total = lap = None
+            if isinstance(total, (int, float)) and isinstance(lap, int) and total > 0:
+                return f"Lap {lap} of {int(total)} — finish this lap"
+            return "Final lap — finish the race"
+
+        if flag == "blue":
+            return "Faster car approaching — let them pass"
+
+        if flag == "black":
+            return "Report to the pits — penalty"
+
+        if flag == "meatball":
+            return "Mandatory pit — repairs required"
+
+        if flag == "furled":
+            return "Warning — next infraction is a penalty"
+
+        if flag == "dq":
+            return "Disqualified — exit the track"
+
+        if flag == "debris":
+            return "Debris on track — reduce speed"
+
+        if flag == "crossed":
+            try:
+                total = self.ir["SessionLapsTotal"]
+                lap = self.ir["Lap"]
+            except Exception:
+                total = lap = None
+            if isinstance(total, (int, float)) and isinstance(lap, int) and total > 0:
+                rem = max(0, int(total) - lap)
+                return f"Halfway — {rem} laps to go"
+            return "Halfway point"
+
+        if flag == "checkered":
+            return "Session complete"
+
+        return None
 
     def _update_context(self) -> None:
         """Pick the 'garage' or 'race' profile from telemetry (iRacing's
@@ -2987,6 +3457,7 @@ class AdvancedSimHUD:
             sf = int(raw) & 0xFFFFFFFF
         except (TypeError, ValueError):
             sf = 0
+        self._last_session_flags = sf
         now = self.ir["SessionTime"]
         if not isinstance(now, (int, float)):
             now = time.time()
@@ -3051,6 +3522,10 @@ class AdvancedSimHUD:
         clutch_raw = self.ir["Clutch"]
         clutch = (1.0 - clutch_raw) if isinstance(clutch_raw, (int, float)) else None
         abs_active = self.ir["BrakeABSactive"]
+        show_flags = config.CFG["dash"].get("show_flags", True)
+        flag = ctx = None
+        if show_flags:
+            flag, ctx = self._session_flag_bundle()
         self.dash_widget.set_data({
             "gear": self.ir["Gear"],
             "rpm": self.ir["RPM"],
@@ -3081,8 +3556,8 @@ class AdvancedSimHUD:
             "best_lap": self.ir["LapBestLapTime"],
             "cur_lap": self.ir["LapCurrentLapTime"],
             "delta": self.ir["LapDeltaToSessionBest"],
-            "flag": (self._session_flag()
-                     if config.CFG["dash"].get("show_flags", True) else None),
+            "flag": flag,
+            "flag_context": ctx,
         })
 
     def _update_inputs(self) -> None:
@@ -3126,7 +3601,8 @@ class AdvancedSimHUD:
     def _update_flags(self) -> None:
         """Feed the standalone flag banner (hidden entirely when no flag flies,
         except in layout-edit mode where a placeholder stays visible)."""
-        self.flags_widget.set_data({"flag": self._session_flag(),
+        flag, ctx = self._session_flag_bundle()
+        self.flags_widget.set_data({"flag": flag, "flag_context": ctx,
                                     "edit": self.edit_mode_enabled()})
 
     def _update_sectors(self, player, lap_pct) -> None:

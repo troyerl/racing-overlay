@@ -350,6 +350,13 @@ def detect_corners(path, start_finish: float = 0.0,
     return corners
 
 
+def _arc_length_chain(pts: list[tuple[float, float]]) -> float:
+    total = 0.0
+    for a, b in zip(pts, pts[1:]):
+        total += math.hypot(b[0] - a[0], b[1] - a[1])
+    return total
+
+
 def _parse_corner(c) -> tuple[float, str, float, float]:
     """Normalize a corner to (lap_pct, label, model_offset_x, model_offset_y)."""
     if isinstance(c, dict):
@@ -544,6 +551,10 @@ def load_track(path: str, n: int = 720):
             meta[key] = float(data[key])
     if data.get("num_turns"):
         meta["num_turns"] = int(data["num_turns"])
+    if data.get("pit_source"):
+        meta["pit_source"] = str(data["pit_source"])
+    if data.get("schema"):
+        meta["schema"] = int(data["schema"])
     return points, sf, corners, data.get("name", ""), meta
 
 
@@ -704,6 +715,10 @@ class TrackMapWidget(QWidget):
         # place cars onto the route by their CarIdxLapDistPct.
         self.pit_in_pct: float | None = None
         self.pit_out_pct: float | None = None
+        # "schematic" = fixed pit geometry from image import; cars follow polylines.
+        self.pit_source: str = ""
+        # Per-car lap % when OnPitRoad dropped (schematic exit placement).
+        self._schematic_exit_pcts: dict[int, float] = {}
         # The player's live position (model-space x, y) from real GPS, used to
         # draw the player exactly on the pit route while pitting. None when not
         # available / not pitting.
@@ -717,11 +732,8 @@ class TrackMapWidget(QWidget):
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
         self.wind_speed_ms: float = 0.0
-        # Each car: (lap_pct, label, color_hex, is_player, on_route). on_route is
-        # true when the car is on the pit route (pit road, or -- for the player
-        # via GPS, or an opponent latched between pit entry and rejoin -- a blend
-        # lane); such cars are drawn along the real pit geometry, grayed/faded.
-        self.cars: list[tuple[float, str, str, bool, bool]] = []
+        # Each car: (idx, lap_pct, label, color_hex, is_player, on_route, on_pit).
+        self.cars: list[tuple[int, float, str, str, bool, bool, bool]] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
         self._progress_pct = -1
         # Multi-lap scan UI: a persistent badge while scanning ('LAP n/3' or
@@ -796,6 +808,8 @@ class TrackMapWidget(QWidget):
             self.pit_out = None
             self.pit_in_pct = None
             self.pit_out_pct = None
+            self.pit_source = ""
+            self._schematic_exit_pcts = {}
             self.player_xy = None
             self._invalidate_route()
         self.update()
@@ -876,6 +890,96 @@ class TrackMapWidget(QWidget):
         self.pit_in_pct = float(in_pct) if in_pct is not None else None
         self.pit_out_pct = float(out_pct) if out_pct is not None else None
 
+    def set_pit_source(self, source: str | None) -> None:
+        """Mark pit geometry origin: '' learned, 'schematic' from image import."""
+        self.pit_source = (source or "").strip().lower()
+        self._schematic_exit_pcts.clear()
+
+    def set_schematic_exit_pcts(self, pcts: dict[int, float]) -> None:
+        """Per-car lap % when they left pit road (schematic exit placement)."""
+        self._schematic_exit_pcts = dict(pcts)
+
+    @staticmethod
+    def _pct_in_interval(pct: float, lo: float, hi: float) -> bool:
+        span = (hi - lo) % 1.0
+        if span <= 1e-6:
+            return False
+        return ((pct - lo) % 1.0) <= span
+
+    def _pos_on_polyline(self, pts: list[tuple[float, float]], t: float):
+        if not pts or len(pts) < 2:
+            return None
+        t = min(max(t, 0.0), 1.0)
+        cum = [0.0]
+        for a, b in zip(pts, pts[1:]):
+            cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+        total = cum[-1]
+        if total <= 0.0:
+            return pts[0]
+        target = t * total
+        for i in range(len(pts) - 1):
+            if cum[i + 1] >= target:
+                seg = cum[i + 1] - cum[i]
+                local = (target - cum[i]) / seg if seg else 0.0
+                a, b = pts[i], pts[i + 1]
+                return (a[0] + (b[0] - a[0]) * local,
+                        a[1] + (b[1] - a[1]) * local)
+        return pts[-1]
+
+    def _pos_on_polyline_chain(self, segs: list[list[tuple[float, float]]], t: float):
+        parts = [s for s in segs if s and len(s) >= 2]
+        if not parts:
+            return None
+        lengths = [_arc_length_chain(s) for s in parts]
+        total = sum(lengths)
+        if total <= 0.0:
+            return parts[0][0]
+        target = min(max(t, 0.0), 1.0) * total
+        acc = 0.0
+        for seg, ln in zip(parts, lengths):
+            if acc + ln >= target or seg is parts[-1]:
+                local = (target - acc) / ln if ln else 0.0
+                return self._pos_on_polyline(seg, local)
+            acc += ln
+        return parts[-1][-1]
+
+    def _pos_for_schematic_route(self, idx: int, pct: float, on_route: bool,
+                                 on_pit_road: bool):
+        """Place a car on authored pit polylines (schematic tracks only)."""
+        if not on_route or self.pit_source != "schematic":
+            return None
+        lo = self.pit_in_pct
+        hi = self.pit_out_pct
+        lane = self.pit_span
+        exit_pct = self._schematic_exit_pcts.get(idx)
+        if exit_pct is None and lane:
+            exit_pct = lane[1]
+
+        # Entry + lane: on pit road or lap % within pit lane span.
+        in_lane = on_pit_road
+        if not in_lane and lane:
+            in_lane = self._pct_in_interval(pct, lane[0], lane[1])
+        if in_lane and lo is not None:
+            end = lane[1] if lane else hi
+            if end is None:
+                end = hi
+            span = (end - lo) % 1.0
+            if span > 1e-6:
+                t = ((pct - lo) % 1.0) / span
+                t = min(max(t, 0.0), 1.0)
+                segs = [s for s in (self.pit_in, self.pit_path) if s]
+                return self._pos_on_polyline_chain(segs, t)
+
+        # Exit blend only: left pit road, still before rejoin.
+        if (not on_pit_road and hi is not None and exit_pct is not None
+                and self.pit_out
+                and self._pct_in_interval(pct, exit_pct, hi)):
+            span = (hi - exit_pct) % 1.0
+            if span > 1e-6:
+                t = ((pct - exit_pct) % 1.0) / span
+                return self._pos_on_polyline(self.pit_out, min(max(t, 0.0), 1.0))
+        return None
+
     def set_player_xy(self, xy) -> None:
         """Set the player's live (model-space) position, or None to clear.
 
@@ -897,6 +1001,8 @@ class TrackMapWidget(QWidget):
         self.pit_out = None
         self.pit_in_pct = None
         self.pit_out_pct = None
+        self.pit_source = ""
+        self._schematic_exit_pcts = {}
         self.player_xy = None
         self._invalidate_route()
         self.update()
@@ -1019,108 +1125,118 @@ class TrackMapWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        rect = QRectF(self.rect())
+        try:
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            rect = QRectF(self.rect())
 
-        mc = _mcfg()
-        # Rounded card behind the map so it matches the dash/table panels.
-        if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
-            radius = max(8.0, min(rect.width(), rect.height())
-                         * mc.get("corner_radius_frac", 0.08))
-            grad = QLinearGradient(0, 0, 0, rect.height())
-            grad.setColorAt(0.0, _mcol("bg_top"))
-            grad.setColorAt(1.0, _mcol("bg_bottom"))
-            p.setBrush(grad)
-            p.setPen(QPen(_mcol("panel_border"), 1))
-            p.drawRoundedRect(
-                QRectF(0.5, 0.5, rect.width() - 1, rect.height() - 1), radius, radius)
+            mc = _mcfg()
+            # Rounded card behind the map so it matches the dash/table panels.
+            if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
+                radius = max(8.0, min(rect.width(), rect.height())
+                             * mc.get("corner_radius_frac", 0.08))
+                grad = QLinearGradient(0, 0, 0, rect.height())
+                grad.setColorAt(0.0, _mcol("bg_top"))
+                grad.setColorAt(1.0, _mcol("bg_bottom"))
+                p.setBrush(grad)
+                p.setPen(QPen(_mcol("panel_border"), 1))
+                p.drawRoundedRect(
+                    QRectF(0.5, 0.5, rect.width() - 1, rect.height() - 1),
+                    radius, radius)
 
-        if not self.path:
-            p.setPen(QColor(220, 220, 220))
-            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.placeholder)
-            self._draw_scan_overlays(p, rect)
-            return
+            if not self.path:
+                p.setPen(QColor(220, 220, 220))
+                p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.placeholder)
+                self._draw_scan_overlays(p, rect)
+                self._paint_extras(p, rect)
+                return
 
-        # Orientation: mirror (flip x) then rotate in 90-degree steps. Applied in
-        # model space so the bounding-box fit, cars, corners and pit all follow.
-        rot = int(round((mc.get("rotation", 0) or 0) / 90.0)) * 90 % 360
-        mirror = bool(mc.get("mirror", False))
+            # Orientation: mirror (flip x) then rotate in 90-degree steps. Applied in
+            # model space so the bounding-box fit, cars, corners and pit all follow.
+            rot = int(round((mc.get("rotation", 0) or 0) / 90.0)) * 90 % 360
+            mirror = bool(mc.get("mirror", False))
 
-        def model(pt):
-            x, y = pt[0], pt[1]
-            if mirror:
-                x = -x
-            if rot == 90:
-                x, y = y, -x
-            elif rot == 180:
-                x, y = -x, -y
-            elif rot == 270:
-                x, y = -y, x
-            return x, y
+            def model(pt):
+                x, y = pt[0], pt[1]
+                if mirror:
+                    x = -x
+                if rot == 90:
+                    x, y = y, -x
+                elif rot == 180:
+                    x, y = -x, -y
+                elif rot == 270:
+                    x, y = -y, x
+                return x, y
 
-        mpts = [model(pt) for pt in self.path]
-        # Include the pit-lane geometry (lane + entry/exit blends) in the fit so
-        # it isn't clipped if it runs a little outside the racing loop's bounds.
-        fit = list(mpts)
-        for seg in (self.pit_path, self.pit_in, self.pit_out):
-            if seg:
-                fit.extend(model(pt) for pt in seg)
-        xs = [m[0] for m in fit]
-        ys = [m[1] for m in fit]
-        minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
-        pad = 26.0
-        avail_w = rect.width() - 2 * pad
-        avail_h = rect.height() - 2 * pad
-        span_x = (maxx - minx) or 1e-6
-        span_y = (maxy - miny) or 1e-6
-        scale = min(avail_w / span_x, avail_h / span_y)
-        ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
-        oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
-        self._layout_scale = scale
-        self._layout_mirror = mirror
-        self._layout_rot = rot
+            mpts = [model(pt) for pt in self.path]
+            # Include the pit-lane geometry (lane + entry/exit blends) in the fit so
+            # it isn't clipped if it runs a little outside the racing loop's bounds.
+            fit = list(mpts)
+            for seg in (self.pit_path, self.pit_in, self.pit_out):
+                if seg:
+                    fit.extend(model(pt) for pt in seg)
+            xs = [m[0] for m in fit]
+            ys = [m[1] for m in fit]
+            minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+            pad = 26.0
+            avail_w = rect.width() - 2 * pad
+            avail_h = rect.height() - 2 * pad
+            span_x = (maxx - minx) or 1e-6
+            span_y = (maxy - miny) or 1e-6
+            scale = min(avail_w / span_x, avail_h / span_y)
+            ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
+            oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
+            self._layout_scale = scale
+            self._layout_mirror = mirror
+            self._layout_rot = rot
 
-        def tx(pt):
-            mx, my = model(pt)
-            return QPointF(mx * scale + ox, my * scale + oy)
+            def tx(pt):
+                mx, my = model(pt)
+                return QPointF(mx * scale + ox, my * scale + oy)
 
-        qpath = QPainterPath()
-        qpath.moveTo(tx(self.path[0]))
-        for pt in self.path[1:]:
-            qpath.lineTo(tx(pt))
-        qpath.closeSubpath()
+            qpath = QPainterPath()
+            qpath.moveTo(tx(self.path[0]))
+            for pt in self.path[1:]:
+                qpath.lineTo(tx(pt))
+            qpath.closeSubpath()
 
-        # Background only fills the infield enclosed by the track loop.
-        if mc.get("show_infield", True):
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_mcol("infield"))
+            # Background only fills the infield enclosed by the track loop.
+            if mc.get("show_infield", True):
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(_mcol("infield"))
+                p.drawPath(qpath)
+
+            asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 11))
+            asphalt.setCapStyle(Qt.PenCapStyle.RoundCap)
+            asphalt.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(asphalt)
+            p.drawPath(qpath)
+            p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 2)))
             p.drawPath(qpath)
 
-        asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 11))
-        asphalt.setCapStyle(Qt.PenCapStyle.RoundCap)
-        asphalt.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-        p.setPen(asphalt)
-        p.drawPath(qpath)
-        p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 2)))
-        p.drawPath(qpath)
+            if mc.get("show_pit", True) and (self.pit_path or self.pit_in
+                                             or self.pit_out
+                                             or self.pit_span is not None):
+                self._draw_pit(p, tx)
+            if mc.get("show_corners", True):
+                self._draw_corners(p, tx, self.display_corners())
+            if mc.get("show_start_finish", True):
+                self._draw_start_finish(p, tx)
+            self._draw_cars(p, tx)
+            if mc.get("show_wind", True) and self.wind_dir is not None:
+                # Drop the compass in whichever corner the track intrudes on least,
+                # so it stops sitting on top of the layout (e.g. road-course ends).
+                step = max(1, len(self.path) // 180)
+                scr = [tx(pt) for pt in self.path[::step]]
+                self._draw_wind(p, rect, self._best_wind_corner(scr, rect))
+            self._draw_scan_overlays(p, rect)
+            self._paint_extras(p, rect)
+        finally:
+            if p.isActive():
+                p.end()
 
-        if mc.get("show_pit", True) and (self.pit_path or self.pit_in
-                                         or self.pit_out
-                                         or self.pit_span is not None):
-            self._draw_pit(p, tx)
-        if mc.get("show_corners", True):
-            self._draw_corners(p, tx, self.display_corners())
-        if mc.get("show_start_finish", True):
-            self._draw_start_finish(p, tx)
-        self._draw_cars(p, tx)
-        if mc.get("show_wind", True) and self.wind_dir is not None:
-            # Drop the compass in whichever corner the track intrudes on least,
-            # so it stops sitting on top of the layout (e.g. road-course ends).
-            step = max(1, len(self.path) // 180)
-            scr = [tx(pt) for pt in self.path[::step]]
-            self._draw_wind(p, rect, self._best_wind_corner(scr, rect))
-        self._draw_scan_overlays(p, rect)
+    def _paint_extras(self, p: QPainter, rect: QRectF) -> None:
+        """Hook for subclasses to draw overlays in the same paint pass."""
 
     def _draw_start_finish(self, p: QPainter, tx) -> None:
         sf_idx = self._index_for_pct(0.0)
@@ -1497,15 +1613,22 @@ class TrackMapWidget(QWidget):
             dot_frac = 0.05
         rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
         # Draw the player last so it sits on top of traffic.
-        for pct, label, color, is_player, on_pit in sorted(
-                self.cars, key=lambda c: c[3]):
+        schematic = self.pit_source == "schematic"
+        for car in sorted(self.cars, key=lambda c: c[4]):
+            if len(car) >= 7:
+                idx, pct, label, color, is_player, on_route, on_pit = car
+            else:
+                idx, pct, label, color, is_player = car[:5]
+                on_route = on_pit = False
             c = None
-            # Cars on the pit route follow the real pit geometry. The player is
-            # placed from true GPS; others are mapped onto the route by lap pct.
-            if on_pit:
-                if is_player and self.player_xy is not None:
+            if on_route:
+                if schematic:
+                    pos = self._pos_for_schematic_route(idx, pct, on_route, on_pit)
+                    if pos is not None:
+                        c = tx(pos)
+                elif is_player and self.player_xy is not None:
                     c = tx(self.player_xy)
-                elif has_route:
+                elif self.pit_path and len(self.pit_path) >= 2:
                     t = self._route_t_for_pct(pct)
                     if t is not None:
                         pos = self._pos_on_route(t)
@@ -1521,12 +1644,12 @@ class TrackMapWidget(QWidget):
                     c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
             r = (12.5 if is_player else 9.0) * rad_scale
             # Cars in the pits are grayed out and faded back.
-            if on_pit:
+            if on_route or on_pit:
                 p.setOpacity(pit_opacity)
-            fill = pit_fill if on_pit else QColor(color)
+            fill = pit_fill if (on_route or on_pit) else QColor(color)
             # Make the player unmistakable: a soft glow halo plus a bright
             # double ring around a larger dot.
-            if is_player and not on_pit:
+            if is_player and not on_route and not on_pit:
                 glow = QColor(fill)
                 glow.setAlpha(70)
                 p.setPen(Qt.PenStyle.NoPen)

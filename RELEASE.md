@@ -5,6 +5,32 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.26.0 - 2026-06-30
+
+- **Schematic track import.** Import iRacing's in-sim map PNG (white racing line,
+  red pit road, blue merge) into a schema-2 track JSON via
+  `tools/schematic_to_track.py` or the **Track Scan** tab (write access). The map
+  renders schematic legend styling and places pitting cars on the authored
+  polylines instead of learning the lane from telemetry.
+- **Starting grid positions before green.** While on the grid or in formation,
+  standings, relative, dash, and map position labels now show qualify starting
+  positions from `QualifyResultsInfo` instead of 0 until live
+  `CarIdxPosition` values are published.
+- **Smarter relative list.** The relative widget only shows cars on track plus
+  anyone ahead in race position — garage and off-track cars behind you are hidden.
+- **Projected iRating change.** Optional **Show projected iRating change** toggle
+  on Standings and Relative estimates +/- iRating from live class positions using
+  the SOF formula (race sessions only). Deltas render as green ▲ / red ▼ icons
+  beside the iRating column.
+- **Table polish.** License column shows Safety Rating (e.g. `3.34`) instead of
+  iRating + class pill. A speaker icon appears on the row of whoever is
+  transmitting on radio. Lapped-traffic and player rows use a soft left-stripe
+  gradient instead of solid fills; empty status badges draw nothing (no black
+  box). Standings now tints lapped traffic the same way as Relative.
+- **Flag context on dash and flags widget.** Yellow, start, and other flag states
+  show a short subtitle when the sim exposes detail (e.g. **1 lap to green**,
+  **Get ready — start imminent**).
+
 ## 1.25.0 - 2026-06-30
 
 - **Smarter pit scanning on road courses and ovals.** Pit entry/exit blend lengths

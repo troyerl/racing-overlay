@@ -395,7 +395,8 @@ class DashWidget(QWidget):
         flag_top = None
         flag_bar_h = 0.0
         if c.get("show_flags", True):
-            flag_bar_h = max(6.0, h * 0.105)
+            ctx = d.get("flag_context") if d.get("flag") else None
+            flag_bar_h = max(8.0 if ctx else 6.0, h * (0.145 if ctx else 0.105))
             flag_top = panels_top
             panels_top += flag_bar_h + h * 0.03   # small gap below the bar
 
@@ -497,10 +498,11 @@ class DashWidget(QWidget):
 
         # --- flag bar (yellow / black / green) on top of everything ------
         if flag_rect is not None:
-            self._draw_flag(p, flag_rect, c, d.get("flag"), ring_cx)
+            self._draw_flag(p, flag_rect, c, d.get("flag"), ring_cx,
+                            d.get("flag_context"))
 
     # -- flag bar ----------------------------------------------------------
-    def _draw_flag(self, p, rect, c, flag, center_x=None) -> None:
+    def _draw_flag(self, p, rect, c, flag, center_x=None, context=None) -> None:
         """A thin colored bar across the top of the dash with a label. Color +
         text convey the flag (yellow / black / green); it waves by flashing."""
         spec = {
@@ -564,11 +566,30 @@ class DashWidget(QWidget):
                 x += step
         p.restore()
 
+        context = str(context).strip() if context else ""
+        cx = center_x if center_x is not None else rect.center().x()
+        if context:
+            title_font = self._font(rect.height() * 0.36, True)
+            sub_font = self._font(rect.height() * 0.24, False)
+            tw = max(QFontMetricsF(title_font).horizontalAdvance(label),
+                     QFontMetricsF(sub_font).horizontalAdvance(context))
+            pad = rect.height() * 0.55
+            gap = QRectF(cx - tw / 2 - pad, rect.top(), tw + pad * 2, rect.height())
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(bg)
+            p.drawRoundedRect(gap, gap.height() * 0.5, gap.height() * 0.5)
+            title_y = rect.center().y() - rect.height() * 0.14
+            sub_y = rect.center().y() + rect.height() * 0.16
+            self._text_centered(p, QPointF(cx, title_y), title_font, label, fg)
+            sub_fg = QColor(fg)
+            sub_fg.setAlpha(min(255, int(fg.alpha() * 0.88)))
+            self._text_centered(p, QPointF(cx, sub_y), sub_font, context, sub_fg)
+            return
+
         # clear a rounded gap behind the text so the slashes frame it
         font = self._font(rect.height() * 0.52, True)
         tw = QFontMetricsF(font).horizontalAdvance(label)
         pad = rect.height() * 0.6
-        cx = center_x if center_x is not None else rect.center().x()
         gap = QRectF(cx - tw / 2 - pad, rect.top(), tw + pad * 2, rect.height())
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(bg)

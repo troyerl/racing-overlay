@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
@@ -394,7 +394,10 @@ class BaseTable(QWidget):
             if k == "license":
                 return h * wf["license"]
             if k == "irating":
-                return h * wf["irating"]
+                w = h * wf["irating"]
+                if _tcfg().get("show_irating_projection"):
+                    w *= 1.35
+                return w
             if k == "pit":
                 return h * wf.get("pit", 2.1)
             if k == "gap":
@@ -427,20 +430,16 @@ class BaseTable(QWidget):
         else:
             bg_left = x
         is_player = row.get("is_player")
+        row_rect = QRectF(bg_left, y, right - bg_left, h)
         if is_player:
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col("player_row"))
-            p.drawRect(QRectF(bg_left, y, right - bg_left, h))
+            self._draw_row_tint(p, row_rect, "player_row")
         elif i % 2 == 1 and tc["alt_row_shading"]:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("row_alt"))
-            p.drawRect(QRectF(bg_left, y, right - bg_left, h))
+            p.drawRect(row_rect)
         if row.get("lapping"):
-            # Tint the whole row (red for a car a lap ahead, blue for a car a
-            # lap down) all the way to the right edge.
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(col("threat") if row.get("lap_ahead") else col("lapped"))
-            p.drawRect(QRectF(bg_left, y, right - bg_left, h))
+            self._draw_row_tint(
+                p, row_rect, "threat" if row.get("lap_ahead") else "lapped")
 
         if "badge" in slots:
             bx, bw = slots["badge"]
@@ -484,6 +483,35 @@ class BaseTable(QWidget):
             bx, bw = slots["best_lap"]
             self._draw_laptime(p, row, "best_lap", bx, y, bw, h, fs)
 
+    def _draw_row_tint(self, p, rect: QRectF, color_key: str) -> None:
+        """Soft horizontal wash for player / lapped-traffic row highlights."""
+        accent = col(color_key)
+        h = rect.height()
+        stripe_w = max(2.5, h * 0.07)
+
+        edge = QColor(accent)
+        edge.setAlpha(min(255, edge.alpha() + 50))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(edge)
+        p.drawRoundedRect(QRectF(rect.left(), rect.top() + h * 0.12,
+                                 stripe_w, h * 0.76), 1.5, 1.5)
+
+        grad = QLinearGradient(rect.topLeft(), rect.topRight())
+        for stop, scale in ((0.0, 0.42), (0.35, 0.22), (0.72, 0.08), (1.0, 0.0)):
+            c = QColor(accent)
+            c.setAlpha(int(accent.alpha() * scale))
+            grad.setColorAt(stop, c)
+        p.setBrush(grad)
+        p.drawRect(rect)
+
+        rim = QColor(accent)
+        rim.setAlpha(min(255, int(accent.alpha() * 0.55)))
+        p.setPen(QPen(rim, 1))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        inset = rect.adjusted(0.5, 0.5, -0.5, -0.5)
+        p.drawLine(inset.topLeft(), inset.topRight())
+        p.drawLine(inset.bottomLeft(), inset.bottomRight())
+
     def _draw_badge(self, p, row, x, y, bw, h):
         cx, cy = x + bw / 2, y + h / 2
         size = min(bw, h) * 0.62
@@ -509,10 +537,8 @@ class BaseTable(QWidget):
             p.setBrush(col("badge_lap"))
             p.drawRoundedRect(box, 3, 3)
             self._draw_clock(p, box)
-        else:
-            p.setPen(QPen(col("badge_empty_border"), 1))
-            p.setBrush(col("badge_empty_fill"))
-            p.drawRoundedRect(box, 3, 3)
+        elif row.get("speaking"):
+            self._draw_speaker(p, box)
 
     def _draw_clock(self, p, box):
         p.setPen(QPen(QColor(255, 255, 255), max(1.0, box.width() * 0.08)))
@@ -523,6 +549,14 @@ class BaseTable(QWidget):
         c = inner.center()
         p.drawLine(c, QPointF(c.x(), c.y() - inner.height() * 0.32))
         p.drawLine(c, QPointF(c.x() + inner.width() * 0.26, c.y()))
+
+    def _draw_speaker(self, p, box):
+        g = icons.glyph("speaking")
+        if not g:
+            return
+        p.setPen(col("text"))
+        p.setFont(icons.icon_font(box.height() * 0.52))
+        p.drawText(box, Qt.AlignmentFlag.AlignCenter, g)
 
     def _draw_position(self, p, row, x, y, pw, h, fs, stripe_on):
         if stripe_on:
@@ -536,12 +570,10 @@ class BaseTable(QWidget):
                    str(row.get("position", "")))
 
     def _draw_license(self, p, row, x, y, lw, h, fs):
-        # A class-colored pill that hugs its text: shows iRating + class letter
-        # (e.g. "1.4k R"). The pill is sized to the text plus a little padding
-        # rather than filling the whole column.
+        # Class-colored pill showing safety rating (e.g. "3.34").
         letter = str(row.get("lic_class", ""))
-        ir = str(row.get("irating", "")).strip()
-        text = " ".join(t for t in (ir, letter) if t) or "\u2014"
+        sr = str(row.get("sr", "")).strip()
+        text = sr or "\u2014"
         bg = license_color(letter)
         p.setFont(tfont(fs * 0.84))
         tw = p.fontMetrics().horizontalAdvance(text)
@@ -560,9 +592,60 @@ class BaseTable(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(col("irating_bg"))
         p.drawRoundedRect(cell, 4, 4)
-        p.setPen(col("irating_text"))
+
+        ir_txt = str(row.get("irating", ""))
+        delta = row.get("irating_delta")
+        show_delta = (_tcfg().get("show_irating_projection")
+                      and delta is not None and ir_txt and ir_txt != "--")
+
         p.setFont(tfont(fs * 0.82))
-        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, str(row.get("irating", "")))
+        if show_delta:
+            ir_w = QFontMetricsF(p.font()).horizontalAdvance(ir_txt)
+            gap = fs * 0.12
+            dcol = col("irating_delta_up") if delta > 0 else (
+                col("irating_delta_down") if delta < 0 else col("muted"))
+
+            use_icons = icons.has("irating_up") and delta != 0
+            if use_icons:
+                iglyph = icons.glyph("irating_up" if delta > 0 else "irating_down")
+                ifont = icons.icon_font(fs * 0.55)
+                nfont = tfont(fs * 0.78)
+                dtxt = str(abs(delta))
+                i_w = QFontMetricsF(ifont).horizontalAdvance(iglyph)
+                n_w = QFontMetricsF(nfont).horizontalAdvance(dtxt)
+                icon_gap = fs * 0.06
+                d_w = i_w + icon_gap + n_w
+            else:
+                dtxt = f"{delta:+d}" if delta else "0"
+                nfont = p.font()
+                d_w = QFontMetricsF(nfont).horizontalAdvance(dtxt)
+
+            total = ir_w + gap + d_w
+            left = cell.left() + max(4.0, (cell.width() - total) / 2.0)
+            p.setPen(col("irating_text"))
+            p.drawText(QRectF(left, cell.top(), ir_w, cell.height()),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       ir_txt)
+
+            dx = left + ir_w + gap
+            if use_icons:
+                p.setFont(ifont)
+                p.setPen(dcol)
+                p.drawText(QRectF(dx, cell.top(), i_w, cell.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                           iglyph)
+                p.setFont(nfont)
+                p.drawText(QRectF(dx + i_w + icon_gap, cell.top(), n_w, cell.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                           dtxt)
+            else:
+                p.setPen(dcol)
+                p.drawText(QRectF(dx, cell.top(), d_w, cell.height()),
+                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                           dtxt)
+        else:
+            p.setPen(col("irating_text"))
+            p.drawText(cell, Qt.AlignmentFlag.AlignCenter, ir_txt)
 
     def _draw_pit(self, p, row, x, y, pw, h, fs):
         cell = QRectF(x, y + h * 0.2, pw, h * 0.6)
