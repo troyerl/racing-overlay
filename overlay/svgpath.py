@@ -51,6 +51,39 @@ def _quad(p0, p1, p2, steps):
     return out
 
 
+_SUBPATH_SPLIT_RE = re.compile(r"(?=[Mm])")
+
+
+def split_subpaths(d: str, bezier_steps: int = 18) -> list[list[tuple[float, float]]]:
+    """Flatten each M/m-started subpath in ``d`` separately.
+
+    iRacing track outlines often pack the outer loop plus inner shading bands
+    into one ``d`` attribute; flattening the whole string draws chords between
+    unrelated subpaths.
+    """
+    parts = [p.strip() for p in _SUBPATH_SPLIT_RE.split(d.strip()) if p.strip()]
+    if not parts:
+        return []
+    out: list[list[tuple[float, float]]] = []
+    for part in parts:
+        try:
+            pts = flatten_path(part, bezier_steps=bezier_steps)
+        except (ValueError, IndexError):
+            pts = []
+        if len(pts) >= 2:
+            out.append(pts)
+            continue
+        moveto = re.match(
+            r"^[Mm]\s*(-?\d*\.?\d+(?:[eE][-+]?\d+)?)"
+            r"[,\s]+(-?\d*\.?\d+(?:[eE][-+]?\d+)?)",
+            part,
+        )
+        if moveto:
+            p = (float(moveto.group(1)), float(moveto.group(2)))
+            out.append([p, (p[0] + 2.0, p[1])])
+    return out
+
+
 def flatten_path(d: str, bezier_steps: int = 18) -> list[tuple[float, float]]:
     tokens = _tokenize(d)
     i = 0

@@ -13,8 +13,8 @@ import json
 import math
 import os
 
-from PyQt6.QtCore import Qt, QRectF, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
                              QPushButton, QVBoxLayout, QWidget)
 
@@ -24,7 +24,7 @@ from . import track_map
 # iRacing schematic legend colors (BGR order in OpenCV import; Qt uses RGB).
 _SCHEMATIC_RED = "#d94040"
 _SCHEMATIC_BLUE = "#3aa0ff"
-_SCHEMATIC_WHITE = "#f0f0f0"
+_SCHEMATIC_DASH = [6.0, 4.0]
 
 
 def apply_schematic_meta(widget: track_map.TrackMapWidget, meta: dict) -> None:
@@ -39,55 +39,172 @@ def apply_schematic_meta(widget: track_map.TrackMapWidget, meta: dict) -> None:
 
 
 class TrackMapWidgetV2(track_map.TrackMapWidget):
-    """Map widget with schematic-track legend rendering."""
-
-    def _paint_extras(self, p: QPainter, rect: QRectF) -> None:
-        if self.pit_source != "schematic" or not self.path:
-            return
-        self._draw_schematic_legend(p)
+    """Map widget with schematic-track pit lane styling."""
 
     def _draw_pit(self, p: QPainter, tx) -> None:
-        if self.pit_source == "schematic" and self.pit_path and len(self.pit_path) >= 2:
+        if self.pit_source in track_map.SCHEMATIC_PIT_SOURCES and self.pit_path and len(self.pit_path) >= 2:
             self._draw_pit_schematic(p, tx)
             return
         super()._draw_pit(p, tx)
 
-    def _inset_schematic(self, seg: list[tuple[float, float]],
-                         frac: float = 0.022) -> list[tuple[float, float]]:
-        """Nudge authored lanes slightly infield so they read on top of asphalt."""
+    def _nearest_loop_point(self, x: float, y: float) -> tuple[tuple[float, float], float]:
+        """Return closest point on the closed loop polyline and its distance."""
+        loop = self.path
+        if not loop:
+            return (x, y), 0.0
+        best_q = loop[0]
+        best_d = float("inf")
+        n = len(loop)
+        for i in range(n):
+            a = loop[i]
+            b = loop[(i + 1) % n]
+            ax, ay = a
+            bx, by = b
+            dx, dy = bx - ax, by - ay
+            if dx == 0 and dy == 0:
+                qx, qy = ax, ay
+            else:
+                t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
+                qx, qy = ax + t * dx, ay + t * dy
+            d = math.hypot(x - qx, y - qy)
+            if d < best_d:
+                best_d = d
+                best_q = (qx, qy)
+        return best_q, best_d
+
+    def _offset_from_loop(self, seg: list[tuple[float, float]],
+                          frac: float | None = None) -> list[tuple[float, float]]:
+        """Push schematic pit points away from the nearest loop edge."""
         if not seg or not self.path:
             return seg
-        cx, cy = self._centroid
         xs = [p[0] for p in self.path]
         ys = [p[1] for p in self.path]
         span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
-        d = span * frac
-        out = []
+        if frac is None:
+            frac = config.CFG["map"].get("pit_lane_inset", 0.035)
+        target = span * frac
+        dirs: list[tuple[float, float]] = []
         for x, y in seg:
-            dx, dy = cx - x, cy - y
-            ln = math.hypot(dx, dy) or 1.0
-            out.append((x + dx / ln * d, y + dy / ln * d))
+            q, _dist = self._nearest_loop_point(x, y)
+            dx, dy = x - q[0], y - q[1]
+            ln = math.hypot(dx, dy)
+            if ln > 1e-9:
+                dirs.append((dx / ln, dy / ln))
+        if dirs:
+            ux = sum(d[0] for d in dirs) / len(dirs)
+            uy = sum(d[1] for d in dirs) / len(dirs)
+            ln = math.hypot(ux, uy)
+            if ln > 1e-9:
+                ux, uy = ux / ln, uy / ln
+            else:
+                ux, uy = 0.0, 1.0
+        else:
+            ux, uy = 0.0, 1.0
+        out: list[tuple[float, float]] = []
+        for x, y in seg:
+            q, dist = self._nearest_loop_point(x, y)
+            if dist >= target:
+                out.append((x, y))
+                continue
+            push = (target - dist) if dist > 1e-9 else target
+            out.append((x + ux * push, y + uy * push))
         return out
 
+    @staticmethod
+    def _distance_to_polyline(
+        pt: tuple[float, float], poly: list[tuple[float, float]],
+    ) -> float:
+        if len(poly) < 2:
+            return float("inf")
+        px, py = pt
+        best = float("inf")
+        for (ax, ay), (bx, by) in zip(poly, poly[1:]):
+            dx, dy = bx - ax, by - ay
+            if dx == 0 and dy == 0:
+                d = math.hypot(px - ax, py - ay)
+            else:
+                t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy)
+                                    / (dx * dx + dy * dy)))
+                qx, qy = ax + t * dx, ay + t * dy
+                d = math.hypot(px - qx, py - qy)
+            if d < best:
+                best = d
+        return best
+
+    def _pit_draw_path(self, seg: list[tuple[float, float]]) -> list[tuple[float, float]]:
+        """Inset schematic pit from loop unless import already placed it near the edge."""
+        if not seg or not self.path:
+            return seg
+        mc = config.CFG["map"]
+        frac = mc.get("pit_lane_inset", 0.035)
+        xs = [p[0] for p in self.path]
+        ys = [p[1] for p in self.path]
+        span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+        target = span * frac
+        dists = [self._nearest_loop_point(x, y)[1] for x, y in seg]
+        if sum(dists) / len(dists) < target:
+            return seg
+        return self._offset_from_loop(seg)
+
+    def _trim_merge_colinear_prefix(
+        self, merge: list[tuple[float, float]],
+    ) -> list[tuple[float, float]]:
+        """Drop blue points that sit on the red pit straight backward of handoff."""
+        if len(merge) < 2 or not self.pit_path or not self.path:
+            return merge
+        pit_path = [(p[0], p[1]) for p in self.pit_path]
+        handoff = pit_path[0]
+        d_entry = math.hypot(merge[0][0] - handoff[0], merge[0][1] - handoff[1])
+        d_exit = math.hypot(merge[0][0] - pit_path[-1][0], merge[0][1] - pit_path[-1][1])
+        if d_entry > d_exit:
+            return merge
+        xs = [p[0] for p in self.path]
+        ys = [p[1] for p in self.path]
+        span = max(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+        y_eps = span * 0.008
+        x_buf = span * 0.005
+        lane_tol = span * 0.01
+        out: list[tuple[float, float]] = []
+        for p in merge:
+            if (p[0] < handoff[0] - x_buf
+                    and abs(p[1] - handoff[1]) <= y_eps
+                    and self._distance_to_polyline(p, pit_path) < lane_tol):
+                continue
+            out.append(p)
+        return out if len(out) >= 2 else merge
+
     def _draw_pit_schematic(self, p: QPainter, tx) -> None:
-        """Pit geometry styled like the iRacing map key (dashed red/blue lanes)."""
+        """Pit geometry for schematic imports: solid red lane, solid blue merge."""
         mc = config.CFG["map"]
         scale = self._layout_scale or 1.0
         lane_w = max(1.4, min(2.0, scale * 0.007))
-        entry_w = max(1.8, min(2.4, lane_w * 1.15))
         merge_w = max(2.2, min(3.0, lane_w * 1.5))
+        blends = mc.get("show_pit_blends", True)
+        dashed = bool(mc.get("pit_lane_dashed", False))
         if mc.get("show_pit", True) and self.pit_path and len(self.pit_path) >= 2:
-            path = self._inset_schematic(self.pit_path, 0.018)
-            self._draw_schematic_lane(p, tx, path, _SCHEMATIC_RED, lane_w, dashed=True)
-            self._draw_pit_label(p, tx(path[0]))
-        if mc.get("show_pit_blends", True) and self.pit_in and len(self.pit_in) >= 2:
+            path = self._pit_draw_path(self.pit_path)
+            use_path_only = self.pit_source == "inactive"
+            if blends and self.pit_in and len(self.pit_in) >= 2 and not use_path_only:
+                handoff = self.pit_path[0]
+                entry_ok = (
+                    math.hypot(self.pit_in[0][0] - handoff[0],
+                               self.pit_in[0][1] - handoff[1]) <= 0.12)
+                if entry_ok:
+                    entry = self._pit_draw_path(self.pit_in)
+                    red_lane = list(entry) + path[1:]
+                else:
+                    red_lane = path
+            else:
+                red_lane = path
             self._draw_schematic_lane(
-                p, tx, self._inset_schematic(self.pit_in, 0.022),
-                _SCHEMATIC_RED, entry_w, dashed=True, outline=True)
-        if mc.get("show_pit_blends", True) and self.pit_out and len(self.pit_out) >= 2:
-            merge = self._inset_schematic(self.pit_out, 0.032)
-            self._draw_schematic_lane(p, tx, merge, _SCHEMATIC_BLUE, merge_w,
-                                      dashed=True, outline=True)
+                p, tx, red_lane, _SCHEMATIC_RED, lane_w,
+                dashed=dashed, outline=True)
+        if blends and self.pit_out and len(self.pit_out) >= 2:
+            merge = self._pit_draw_path(self.pit_out)
+            merge = self._trim_merge_colinear_prefix(merge)
+            self._draw_schematic_lane(
+                p, tx, merge, _SCHEMATIC_BLUE, merge_w,
+                dashed=dashed, outline=True)
 
     @staticmethod
     def _draw_schematic_lane(p: QPainter, tx, seg, color_hex: str, width: float,
@@ -111,7 +228,7 @@ class TrackMapWidgetV2(track_map.TrackMapWidget):
         pen = QPen(QColor(color_hex), width)
         if dashed:
             pen.setStyle(Qt.PenStyle.CustomDashLine)
-            pen.setDashPattern([6.0, 4.0])
+            pen.setDashPattern(_SCHEMATIC_DASH)
         else:
             pen.setStyle(Qt.PenStyle.SolidLine)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -122,44 +239,6 @@ class TrackMapWidgetV2(track_map.TrackMapWidget):
         p.setOpacity(op)
         p.drawPath(path)
         p.setOpacity(1.0)
-
-    def _draw_schematic_legend(self, p: QPainter) -> None:
-        """Compact key matching the iRacing schematic legend."""
-        n_in = len(self.pit_in or [])
-        n_path = len(self.pit_path or [])
-        n_out = len(self.pit_out or [])
-        items = (
-            (_SCHEMATIC_WHITE, "Track"),
-            (_SCHEMATIC_RED, f"Pit road ({n_path})"),
-            (_SCHEMATIC_BLUE, f"Merge ({n_out})"),
-        )
-        if n_in >= 2:
-            items = (
-                (_SCHEMATIC_WHITE, "Track"),
-                (_SCHEMATIC_RED, f"Entry ({n_in})"),
-                (_SCHEMATIC_RED, f"Pit road ({n_path})"),
-                (_SCHEMATIC_BLUE, f"Merge ({n_out})"),
-            )
-        fam = config.CFG.get("font_family", "Arial")
-        p.setFont(QFont(fam, 8))
-        fm = p.fontMetrics()
-        line_h = fm.height() + 4
-        pad = 8
-        w = max(fm.horizontalAdvance(label) for _, label in items) + 28
-        h = pad * 2 + line_h * len(items)
-        x, y = 10.0, self.height() - h - 10.0
-        rect = QRectF(x, y, w, h)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(20, 22, 26, 210))
-        p.drawRoundedRect(rect, 6, 6)
-        ty = y + pad + fm.ascent()
-        for color, label in items:
-            p.setPen(QPen(QColor(color), 2))
-            p.drawLine(int(x + pad), int(ty - fm.ascent() // 2),
-                       int(x + pad + 14), int(ty - fm.ascent() // 2))
-            p.setPen(QColor(220, 224, 230))
-            p.drawText(int(x + pad + 20), int(ty), label)
-            ty += line_h
 
 
 class SchematicImportPanel(QFrame):

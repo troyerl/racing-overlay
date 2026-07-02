@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+tracks-html/
 
 # Local pip vendor tree (tool deps installed with --target)
 .pip_deps/

@@ -1,0 +1,5 @@
+-r requirements.txt
+# Optional — svgpathtools for inactive pit extraction (v1) and v2 import tests
+beautifulsoup4>=4.12
+svgpathtools>=1.6
+pytest>=8.0

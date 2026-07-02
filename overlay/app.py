@@ -43,6 +43,7 @@ from . import track_store
 from . import version
 from .panel import PanelWindow
 from .widgets import track_map
+from .widgets.track_map import is_schematic_pit_source
 from .widgets.track_map_v2 import TrackMapWidgetV2
 from .widgets.dash import DashWidget
 from .widgets.delta_bar import DeltaBarWidget
@@ -121,9 +122,11 @@ def _coerce_int(value):
 class AdvancedSimHUD:
     """Owns the telemetry connection and drives the independent panel windows."""
 
-    def __init__(self, click_through: bool = True, demo: bool = False):
+    def __init__(self, click_through: bool = True, demo: bool = False,
+                 demo_track: str | None = None, tracks_dir: str | None = None):
         self.click_through = click_through
         self.demo = demo
+        self._demo_track_id = demo_track
         # The real telemetry source. self.ir points at whatever feeds the widgets
         # this tick -- usually _sdk, but a synthetic source while arranging the
         # layout offline (see process_telemetry_tick).
@@ -308,7 +311,7 @@ class AdvancedSimHUD:
         self._player_pos: tuple[float, float] | None = None
         self._player_pos_wrapped = False  # crossed start/finish this tick (DR)
         self._player_pos_gps = False      # came from real GPS (not dead reckoning)
-        self.tracks_dir = paths.tracks_dir()
+        self.tracks_dir = tracks_dir or paths.tracks_dir()
         # Shared (cloud) track maps: download missing tracks on demand, and
         # (author only) upload ones learned locally. All DB I/O is off-thread.
         self._track_sync = track_store.TrackSync()
@@ -561,7 +564,7 @@ class AdvancedSimHUD:
         if self._track_id is not None:
             return self._track_id
         if self.demo:
-            return "_demo"
+            return self._demo_track_id or "_demo"
         return None
 
     def reload_current_track_file(self) -> bool:
@@ -1791,7 +1794,8 @@ class AdvancedSimHUD:
     def _load_demo_track(self) -> None:
         pts = None
         file_meta = None
-        path = track_map.find_track_file("_demo", self.tracks_dir)
+        tid = self._demo_track_id or "_demo"
+        path = track_map.find_track_file(tid, self.tracks_dir)
         if path:
             try:
                 pts, sf, corners, _, file_meta = track_map.load_track(path)
@@ -2118,7 +2122,7 @@ class AdvancedSimHUD:
         """
         if self.demo:
             return
-        if self._pit_source == "schematic":
+        if is_schematic_pit_source(self._pit_source):
             self.map_widget.flash_hint(
                 "Schematic pit — re-import with tools/schematic_to_track.py")
             return
@@ -2647,7 +2651,35 @@ class AdvancedSimHUD:
         self.map_widget.set_pit_source(self._pit_source or None)
         if meta.get("pit_speed"):
             self._pit_speed_ms = float(meta["pit_speed"])
+
+        pit_path = meta.get("pit_path")
+        pit_span = meta.get("pit_span")
+        if not pit_span and pit_path and len(pit_path) >= 2:
+            if is_schematic_pit_source(self._pit_source) and self.map_widget.path:
+                from tools.schematic_to_track import _pit_span_on_loop
+
+                loop = [(p[0], p[1]) for p in self.map_widget.path]
+                lo, hi = _pit_span_on_loop(loop, pit_path)
+                pit_span = (round(lo, 5), round(hi, 5))
+                meta = dict(meta, pit_span=pit_span)
+
         if not meta.get("pit_span"):
+            if pit_path and len(pit_path) >= 2 and is_schematic_pit_source(self._pit_source):
+                self._pit_span = None
+                self._pit_speed_ms = meta.get("pit_speed", 0.0)
+                self._pit_path = pit_path
+                self._pit_in = meta.get("pit_in")
+                self._pit_out = meta.get("pit_out")
+                self._pit_in_pct = meta.get("pit_in_pct")
+                self._pit_out_pct = meta.get("pit_out_pct")
+                self.map_widget.set_pit_path(pit_path)
+                self.map_widget.set_pit_blends(self._pit_in, self._pit_out)
+                self.map_widget.set_pit_route_pct(
+                    self._pit_in_pct, self._pit_out_pct)
+                if self._pit_speed_ms > 0:
+                    self.map_widget.pit_speed_ms = self._pit_speed_ms
+                self.map_widget.update()
+                return
             self._pit_span = None
             self._pit_path = self._pit_in = self._pit_out = None
             self._pit_in_pct = self._pit_out_pct = None
@@ -2888,7 +2920,7 @@ class AdvancedSimHUD:
         pct = lap_pct[player]
         speed = self.ir["Speed"]
         on_pit_arr = self.ir["CarIdxOnPitRoad"]
-        if self._pit_source == "schematic":
+        if is_schematic_pit_source(self._pit_source):
             self._update_schematic_pit_latches(lap_pct, on_pit_arr)
             route = self._route_interval()
             valid_pct = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
@@ -3947,6 +3979,16 @@ def main() -> int:
 
     click_through = "--no-clickthrough" not in sys.argv
     demo = "--demo" in sys.argv
+    demo_track = None
+    if "--demo-track" in sys.argv:
+        i = sys.argv.index("--demo-track")
+        if i + 1 < len(sys.argv):
+            demo_track = sys.argv[i + 1]
+    tracks_dir = None
+    if "--tracks-dir" in sys.argv:
+        i = sys.argv.index("--tracks-dir")
+        if i + 1 < len(sys.argv):
+            tracks_dir = os.path.abspath(sys.argv[i + 1])
     # Default launch (e.g. double-clicking the desktop icon) opens settings and
     # waits for you to press "Start Overlay". --start shows the widgets right
     # away; --no-settings skips opening the settings window.
@@ -3977,7 +4019,8 @@ def main() -> int:
     keepalive.start(200)
     keepalive.timeout.connect(lambda: None)
 
-    hud = AdvancedSimHUD(click_through=click_through, demo=demo)
+    hud = AdvancedSimHUD(click_through=click_through, demo=demo,
+                         demo_track=demo_track, tracks_dir=tracks_dir)
 
     # In-app auto-update: check GitHub for a newer release and offer to install.
     from .updater import UpdateChecker

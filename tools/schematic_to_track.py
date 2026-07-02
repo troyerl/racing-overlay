@@ -120,6 +120,44 @@ def _nearest_index(pts: list[tuple[float, float]], pt: tuple[float, float]) -> i
     return bi
 
 
+def _pit_lane_straight_points(
+    pit_path: list[tuple[float, float]],
+    *,
+    y_span_thresh: float = 0.015,
+) -> list[tuple[float, float]]:
+    """Samples from the main pit straight when the path includes an entry hook."""
+    if len(pit_path) < 4:
+        return list(pit_path)
+    ys = [p[1] for p in pit_path]
+    y_span = max(ys) - min(ys)
+    if y_span < y_span_thresh:
+        return list(pit_path)
+    xs = [p[0] for p in pit_path]
+    mid_x = (min(xs) + max(xs)) * 0.5
+    hi = [p for p in pit_path if p[0] >= mid_x]
+    if len(hi) < 3:
+        return list(pit_path)
+    med_y = sorted(p[1] for p in hi)[len(hi) // 2]
+    tol = max(0.006, y_span * 0.12)
+    straight = [p for p in hi if abs(p[1] - med_y) <= tol]
+    return straight if len(straight) >= 3 else hi
+
+
+def _pit_span_on_loop(
+    loop: list[tuple[float, float]],
+    pit_path: list[tuple[float, float]],
+) -> tuple[float, float]:
+    """Loop pct extent of pit road; handles parallel straights with entry hooks."""
+    pts = _pit_lane_straight_points(pit_path)
+    pcts = [_pct_on_loop(loop, tuple(p)) for p in pts]
+    lo, hi = min(pcts), max(pcts)
+    if (hi - lo) % 1.0 < 0.02:
+        p0 = _pct_on_loop(loop, tuple(pit_path[0]))
+        p1 = _pct_on_loop(loop, tuple(pit_path[-1]))
+        lo, hi = min(p0, p1), max(p0, p1)
+    return lo, hi
+
+
 def _pct_on_loop(loop: list[tuple[float, float]], pt: tuple[float, float]) -> float:
     """Arc-length lap fraction of the nearest point on a closed loop."""
     n = len(loop)
@@ -484,14 +522,19 @@ def _connect_blend_to_loop(blend: list[tuple[float, float]],
                            loop: list[tuple[float, float]], *,
                            attach_end: bool = False,
                            n_loop: int = 20,
-                           max_pts: int | None = None) -> list[tuple[float, float]]:
-    """Extend entry/exit blends so they visibly meet the racing loop."""
+                           max_pts: int | None = None,
+                           pit_path: list[tuple[float, float]] | None = None,
+                           lane_y: float | None = None,
+                           entry_anchor: tuple[float, float] | None = None,
+                           ) -> list[tuple[float, float]]:
+    """Extend entry blends toward the racing loop (never walk loop for pit_out)."""
     if not blend or len(blend) < 2 or not loop:
         return blend
     cap = max_pts if max_pts is not None else max(56, len(blend) + n_loop)
     xs = [p[0] for p in loop]
     ys = [p[1] for p in loop]
     prox = max(max(xs) - min(xs), max(ys) - min(ys)) * 0.035
+    lane_floor = (lane_y - max(25.0, prox)) if lane_y is not None else None
     n = len(loop)
     if attach_end:
         anchor = blend[-1]
@@ -499,14 +542,20 @@ def _connect_blend_to_loop(blend: list[tuple[float, float]],
             return _resample_open(blend, min(len(blend), cap))
         li = min(range(n), key=lambda i: _dist(loop[i], anchor))
         ext = [loop[(li + k) % n] for k in range(n_loop)]
+        if lane_floor is not None:
+            ext = [p for p in ext if p[1] < lane_floor]
         merged = list(blend) + ext[1:]
     else:
         anchor = blend[0]
         if min(_dist(anchor, p) for p in loop) < prox:
             return _resample_open(blend, min(len(blend), cap))
+        n_ext = min(n_loop, 4) if entry_anchor is not None else n_loop
         li = min(range(n), key=lambda i: _dist(loop[i], anchor))
-        ext = [loop[(li - k) % n] for k in range(n_loop)]
+        ext = [loop[(li - k) % n] for k in range(n_ext)]
         ext.reverse()
+        if entry_anchor is not None:
+            stay = prox * 2.5
+            ext = [p for p in ext if _dist(p, entry_anchor) <= stay]
         merged = ext + blend[1:]
     return _resample_open(merged, max(16, min(len(merged), cap)))
 

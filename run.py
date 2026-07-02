@@ -2,7 +2,8 @@
 """Entry point for the multi-widget iRacing overlay.
 
 Usage:
-    python3 run.py [--demo] [--no-clickthrough] [--settings] [--dump-config]
+    python3 run.py [--demo] [--demo-track ID] [--tracks-dir PATH]
+                   [--no-clickthrough] [--settings] [--dump-config]
 
 See README.md for the full list of flags. The standalone settings editor has
 its own entry point:

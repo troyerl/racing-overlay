@@ -27,6 +27,12 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 from .. import config
 from .. import svgpath
 
+SCHEMATIC_PIT_SOURCES = frozenset({"schematic", "inactive", "dashes"})
+
+
+def is_schematic_pit_source(source: str | None) -> bool:
+    return (source or "").strip().lower() in SCHEMATIC_PIT_SOURCES
+
 
 def _mcfg() -> dict:
     return config.CFG["map"]
@@ -546,6 +552,10 @@ def load_track(path: str, n: int = 720):
         seg = data.get(key)
         if isinstance(seg, list) and len(seg) >= 2:
             meta[key] = [(float(a), float(b)) for a, b in seg]
+    if "pit_path" not in meta:
+        seg = data.get("pit_lane_points")
+        if isinstance(seg, list) and len(seg) >= 2:
+            meta["pit_path"] = [(float(a), float(b)) for a, b in seg]
     for key in ("pit_in_pct", "pit_out_pct"):
         if data.get(key) is not None:
             meta[key] = float(data[key])
@@ -926,6 +936,35 @@ class TrackMapWidget(QWidget):
                         a[1] + (b[1] - a[1]) * local)
         return pts[-1]
 
+    @staticmethod
+    def _closest_point_on_chain(
+        segs: list[list[tuple[float, float]]],
+        target: tuple[float, float],
+    ) -> tuple[float, float] | None:
+        """Nearest point on a polyline chain to *target* (model space)."""
+        parts = [s for s in segs if s and len(s) >= 2]
+        if not parts:
+            return None
+        tx, ty = target
+        best: tuple[float, float] | None = None
+        best_d = float("inf")
+        for pts in parts:
+            for a, b in zip(pts, pts[1:]):
+                ax, ay = a
+                bx, by = b
+                dx, dy = bx - ax, by - ay
+                ln2 = dx * dx + dy * dy
+                if ln2 < 1e-12:
+                    q = (ax, ay)
+                else:
+                    t = max(0.0, min(1.0, ((tx - ax) * dx + (ty - ay) * dy) / ln2))
+                    q = (ax + dx * t, ay + dy * t)
+                d = math.hypot(q[0] - tx, q[1] - ty)
+                if d < best_d:
+                    best_d = d
+                    best = q
+        return best
+
     def _pos_on_polyline_chain(self, segs: list[list[tuple[float, float]]], t: float):
         parts = [s for s in segs if s and len(s) >= 2]
         if not parts:
@@ -946,7 +985,7 @@ class TrackMapWidget(QWidget):
     def _pos_for_schematic_route(self, idx: int, pct: float, on_route: bool,
                                  on_pit_road: bool):
         """Place a car on authored pit polylines (schematic tracks only)."""
-        if not on_route or self.pit_source != "schematic":
+        if not on_route or not is_schematic_pit_source(self.pit_source):
             return None
         lo = self.pit_in_pct
         hi = self.pit_out_pct
@@ -955,10 +994,26 @@ class TrackMapWidget(QWidget):
         if exit_pct is None and lane:
             exit_pct = lane[1]
 
+        # Exit blend only: left pit road, still before rejoin.
+        if (not on_pit_road and hi is not None and exit_pct is not None
+                and self.pit_out
+                and self._pct_in_interval(pct, exit_pct, hi)):
+            span = (hi - exit_pct) % 1.0
+            if span > 1e-6:
+                t = ((pct - exit_pct) % 1.0) / span
+                return self._pos_on_polyline(self.pit_out, min(max(t, 0.0), 1.0))
+
         # Entry + lane: on pit road or lap % within pit lane span.
         in_lane = on_pit_road
         if not in_lane and lane:
             in_lane = self._pct_in_interval(pct, lane[0], lane[1])
+        if in_lane and self.path:
+            chain = [s for s in (self.pit_in, self.pit_path) if s]
+            if chain:
+                loop_pt = self.path[self._index_for_pct(pct)]
+                pos = self._closest_point_on_chain(chain, loop_pt)
+                if pos is not None:
+                    return pos
         if in_lane and lo is not None:
             end = lane[1] if lane else hi
             if end is None:
@@ -969,15 +1024,6 @@ class TrackMapWidget(QWidget):
                 t = min(max(t, 0.0), 1.0)
                 segs = [s for s in (self.pit_in, self.pit_path) if s]
                 return self._pos_on_polyline_chain(segs, t)
-
-        # Exit blend only: left pit road, still before rejoin.
-        if (not on_pit_road and hi is not None and exit_pct is not None
-                and self.pit_out
-                and self._pct_in_interval(pct, exit_pct, hi)):
-            span = (hi - exit_pct) % 1.0
-            if span > 1e-6:
-                t = ((pct - exit_pct) % 1.0) / span
-                return self._pos_on_polyline(self.pit_out, min(max(t, 0.0), 1.0))
         return None
 
     def set_player_xy(self, xy) -> None:
@@ -1613,7 +1659,7 @@ class TrackMapWidget(QWidget):
             dot_frac = 0.05
         rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
         # Draw the player last so it sits on top of traffic.
-        schematic = self.pit_source == "schematic"
+        schematic = is_schematic_pit_source(self.pit_source)
         for car in sorted(self.cars, key=lambda c: c[4]):
             if len(car) >= 7:
                 idx, pct, label, color, is_player, on_route, on_pit = car

@@ -104,6 +104,13 @@ Flags:
   changing**, and a tight battle pack around your car weaves past on both sides
   so the **radar regularly shows left / right / both**. Every panel animates.
   Great for layout/styling work.
+- `--demo-track <ID>` &mdash; with `--demo`, load `<ID>.json` from the writable
+  tracks directory instead of the built-in demo track (e.g. `--demo-track 451` to
+  preview a schematic import). On macOS that is
+  `~/Library/Application Support/GridGlance/tracks/` (see `overlay/paths.py`), not
+  necessarily the repo's `tracks/` folder.
+- `--tracks-dir <PATH>` &mdash; override the tracks directory (useful in dev:
+  `--tracks-dir tracks` loads from the repo checkout without copying to App Support).
 - `--no-clickthrough` &mdash; "edit mode": windows become interactive so you can
   **drag them**, then relaunch without the flag to lock them.
 - `--start` (run.py) &mdash; show the overlay widgets immediately on launch.
@@ -229,6 +236,8 @@ python3 tools/schematic_to_track.py map.png <TrackID> "Track Name" --preview
 
 # E) Import from iRacing members-site track page HTML (DevTools — no API token).
 #    Vector SVG layers (#Pitroad, #Mergeline) chain reliably; no OpenCV needed.
+#    By default writes to the same GridGlance tracks dir the overlay loads at runtime
+#    (App Support on macOS). Pass an explicit output dir to write elsewhere (e.g. tests).
 python3 tools/svg_layers_to_track.py track-page.html <TrackID> "Track Name"
 ```
 
