@@ -1612,6 +1612,7 @@ class ConfigEditor(QWidget):
             from .widgets.track_import_panel import TrackImportV2Panel
             self._v2_import_panel = TrackImportV2Panel(self._overlay)
             self._v2_import_panel.saved.connect(self._flash)
+            self._v2_import_panel.notified.connect(self._flash)
             v.addWidget(self._v2_import_panel)
             v.addWidget(self._pit_tuning_card())
             v.addWidget(self._track_authoring_card())

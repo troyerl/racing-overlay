@@ -254,6 +254,8 @@ class AdvancedSimHUD:
         # '' = telemetry-learned; 'schematic' = fixed geometry from image import.
         self._pit_source = ""
         self._v2_loop_doc: dict | None = None
+        self._v2_authoring_track_id = None
+        self._v2_authoring_name = ""
         # Multi-lap scan progress: the track map finalizes only after SCAN_LAPS
         # *complete* laps; the pit lane only after PIT_PASSES passes (and only
         # once the track scan is done). _scan_seen_lap is the lap we were on when
@@ -567,6 +569,12 @@ class AdvancedSimHUD:
             return self._demo_track_id or "_demo"
         return None
 
+    def _authoring_track_id(self):
+        """TrackID for v2 HTML import / manual pit save (HTML or live session)."""
+        if self._v2_authoring_track_id is not None:
+            return self._v2_authoring_track_id
+        return self.effective_track_id()
+
     def reload_current_track_file(self) -> bool:
         """Re-read tracks/<TrackID>.json into the map."""
         tid = self.effective_track_id()
@@ -657,13 +665,34 @@ class AdvancedSimHUD:
 
     def import_loop_v2(self, html_path: str) -> tuple[bool, str]:
         """Import racing loop from members HTML (v2); pit drawn manually on map."""
-        tid = self.effective_track_id()
-        if tid is None:
-            return False, "No TrackID — join a track in iRacing first."
         try:
-            from tools.svg_layers_to_track_v2 import import_track_source_v2
-        except ImportError:
-            return False, "Install beautifulsoup4 and svgpathtools (requirements-dev.txt)."
+            from tools.svg_layers_to_track_v2 import (
+                import_track_source_v2,
+                parse_track_id_from_html,
+            )
+        except ImportError as exc:
+            name = (getattr(exc, "name", None) or str(exc)).lower()
+            if "tools" in name:
+                msg = ("Track import module not found — run GridGlance from the "
+                       "repo root (python run.py).")
+            elif "bs4" in name or "beautifulsoup" in name:
+                msg = ("Missing beautifulsoup4 — run: pip install -r requirements.txt")
+            elif "svgpathtools" in name or "svgpath" in name:
+                msg = ("Missing svgpathtools — run: pip install -r requirements.txt")
+            else:
+                msg = ("Missing HTML import deps — run: pip install -r requirements.txt")
+            log.warning("v2 loop import failed: %s (%s)", msg, exc)
+            return False, msg
+
+        tid = parse_track_id_from_html(html_path=html_path)
+        if tid is None:
+            tid = self.effective_track_id()
+        if tid is None:
+            msg = ("No TrackID — save members HTML with id=\"track-map-123\" "
+                   "(outer track-map div), or join a track in iRacing.")
+            log.warning("v2 loop import skipped: %s", msg)
+            return False, msg
+
         try:
             doc = import_track_source_v2(
                 html_path,
@@ -671,12 +700,20 @@ class AdvancedSimHUD:
             )
         except Exception as exc:
             log.exception("v2 loop import failed")
-            return False, str(exc)
+            msg = str(exc)
+            log.warning("v2 loop import failed: %s", msg)
+            return False, msg
+
+        stem = os.path.splitext(os.path.basename(html_path))[0]
+        self._v2_authoring_track_id = tid
+        self._v2_authoring_name = stem or str(tid)
         self._apply_loop_v2_doc(doc)
         self._v2_loop_doc = doc
         n = len(doc.get("points") or [])
-        return True, (f"Loop imported — {n} pts. Click pit road on the map, "
-                      f"then merge, then Save track.")
+        msg = (f"Loop imported for TrackID {tid} — {n} pts. "
+               f"Draw pit road on the map, then merge, then Save track.")
+        log.info("v2 loop import OK for TrackID %s (%d pts)", tid, n)
+        return True, msg
 
     def _apply_loop_v2_doc(self, doc: dict) -> None:
         """Load loop-only v2 import onto the map; clear pit for manual authoring."""
@@ -722,9 +759,10 @@ class AdvancedSimHUD:
 
     def save_manual_track_v2(self) -> tuple[bool, str]:
         """Finalize manual pit geometry and write tracks/<TrackID>.json."""
-        tid = self.effective_track_id()
+        tid = self._authoring_track_id()
         if tid is None:
-            return False, "No TrackID — join a track in iRacing first."
+            return False, ("No TrackID — import members HTML with "
+                           "id=\"track-map-123\" first.")
         if not self.map_widget.path or len(self.map_widget.path) < 3:
             return False, "No track loop loaded — import loop first."
         road, merge = self.map_widget.pit_edit_snapshot()
@@ -760,7 +798,7 @@ class AdvancedSimHUD:
             "import_version": 2,
             "pit_source": "manual",
             "track_id": tid,
-            "name": self._learn_name or str(tid),
+            "name": (self._learn_name or self._v2_authoring_name or str(tid)),
             "start_finish": float(self.map_widget.start_finish),
             "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
             "corners": track_map.corners_to_json(
@@ -807,12 +845,14 @@ class AdvancedSimHUD:
     def pit_edit_state(self) -> dict:
         """Snapshot for Track Scan v2 import panel."""
         road, merge = self.map_widget.pit_edit_snapshot()
+        tid = self._authoring_track_id()
         return {
             "road_count": len(road),
             "merge_count": len(merge),
             "pit_edit_mode": self.map_widget.pit_edit_mode,
             "pit_edit_phase": self.map_widget.pit_edit_phase,
             "has_loop": bool(self.map_widget.path and len(self.map_widget.path) >= 3),
+            "authoring_track_id": tid,
         }
 
     def _pit_scan_active(self) -> bool:

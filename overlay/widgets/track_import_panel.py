@@ -17,16 +17,26 @@ from PyQt6.QtWidgets import (
 )
 
 
+def _parse_html_track_id(path: str) -> int | None:
+    try:
+        from tools.svg_layers_to_track_v2 import parse_track_id_from_html
+        return parse_track_id_from_html(html_path=path)
+    except Exception:
+        return None
+
+
 class TrackImportV2Panel(QFrame):
     """Track Scan card: import members HTML loop, draw pit on overlay map."""
 
     saved = pyqtSignal(str)
+    notified = pyqtSignal(str)
 
     def __init__(self, overlay=None, parent=None):
         super().__init__(parent)
         self.setObjectName("enableCard")
         self._overlay = overlay
         self._html_path: str | None = None
+        self._html_track_id: int | None = None
 
         v = QVBoxLayout(self)
         v.setContentsMargins(15, 11, 15, 12)
@@ -38,8 +48,9 @@ class TrackImportV2Panel(QFrame):
 
         hint = QLabel(
             "Import the racing loop from a members-site track page (active-config "
-            "layer only). Then click pit road and merge points on the live overlay "
-            "map; entry blend is generated on save.")
+            "layer only). TrackID is read from the HTML (id=\"track-map-123\") — "
+            "iRacing does not need to be running. Draw pit road and merge on the "
+            "overlay map; entry blend is generated on save.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -109,42 +120,69 @@ class TrackImportV2Panel(QFrame):
         self._overlay = overlay
         self.refresh()
 
-    def _track_id(self):
+    def _session_track_id(self):
         if self._overlay is None:
             return None
         if hasattr(self._overlay, "effective_track_id"):
             return self._overlay.effective_track_id()
         return getattr(self._overlay, "_track_id", None)
 
+    def _can_import(self) -> bool:
+        return bool(self._html_path and (
+            self._html_track_id is not None or self._session_track_id() is not None))
+
+    def _report(self, msg: str, *, flash: bool = True) -> None:
+        self._status.setText(msg)
+        if flash and msg:
+            self.notified.emit(msg)
+
     def _browse(self) -> None:
+        parent = self.window() or self
         path, _ = QFileDialog.getOpenFileName(
-            self, "Choose members track HTML", "",
+            parent, "Choose members track HTML", "",
             "HTML (*.html *.htm);;All files (*)")
         if not path:
             return
         ext = os.path.splitext(path)[1].lower()
         if ext not in (".html", ".htm"):
-            self._status.setText("V2 import requires a .html / .htm members page.")
+            self._report("V2 import requires a .html / .htm members page.")
             return
         self._html_path = path
-        self._path_lbl.setText(os.path.basename(path))
-        self._import_btn.setEnabled(self._track_id() is not None)
-        if self._track_id() is None:
-            self._status.setText(
-                "Start overlay in iRacing so a TrackID is available.")
-        else:
-            self._status.setText(f"Ready to import for TrackID {self._track_id()}.")
+        self._html_track_id = _parse_html_track_id(path)
+        label = os.path.basename(path)
+        if self._html_track_id is not None:
+            label = f"{label}  (TrackID {self._html_track_id})"
+        self._path_lbl.setText(label)
+        self._import_btn.setEnabled(self._can_import())
+        if self._html_track_id is None and self._session_track_id() is None:
+            self._report(
+                "No track-map-### id in HTML — save the outer members "
+                "track-map div from DevTools.")
+            return
+        self._report(f"Importing {os.path.basename(path)}…", flash=False)
+        self._import_loop()
 
     def _import_loop(self) -> None:
-        if not self._html_path or self._overlay is None:
+        if not self._html_path:
+            self._report("Choose an HTML file first.")
             return
+        if self._overlay is None:
+            self._report("Start the overlay first.")
+            return
+        if not self._can_import():
+            self._report(
+                "No TrackID — HTML needs id=\"track-map-123\" on the outer div.")
+            return
+
+        path = self._html_path
 
         def _run() -> None:
             try:
-                ok, msg = self._overlay.import_loop_v2(self._html_path)
+                ok, msg = self._overlay.import_loop_v2(path)
             except Exception as exc:
                 ok, msg = False, str(exc)
             self._status.setText(msg)
+            self.notified.emit(msg if msg else ("Import failed" if not ok else ""))
             if ok:
                 self.saved.emit(msg)
                 self._sync_from_overlay()
@@ -181,7 +219,10 @@ class TrackImportV2Panel(QFrame):
         self._sync_from_overlay()
 
     def _save_track(self) -> None:
-        if self._overlay is None or not hasattr(self._overlay, "save_manual_track_v2"):
+        if self._overlay is None:
+            self._report("Start the overlay first.")
+            return
+        if not hasattr(self._overlay, "save_manual_track_v2"):
             return
 
         def _run() -> None:
@@ -190,6 +231,7 @@ class TrackImportV2Panel(QFrame):
             except Exception as exc:
                 ok, msg = False, str(exc)
             self._status.setText(msg)
+            self.notified.emit(msg if msg else ("Save failed" if not ok else ""))
             if ok:
                 self.saved.emit(msg)
             self.refresh()
@@ -207,27 +249,26 @@ class TrackImportV2Panel(QFrame):
         self._merge_btn.setChecked(phase == "merge")
         if state.get("has_loop"):
             base = self._status.text().split("\n")[0] if self._status.text() else ""
+            tid = state.get("authoring_track_id")
+            suffix = f" (TrackID {tid})" if tid is not None else ""
             if base.startswith("Saved "):
                 self._status.setText(
-                    f"{base}\nPit road: {nr} pts · Merge: {nm} pts.")
+                    f"{base}\nPit road: {nr} pts · Merge: {nm} pts.{suffix}")
             else:
-                self._status.setText(f"Pit road: {nr} pts · Merge: {nm} pts.")
+                self._status.setText(
+                    f"Pit road: {nr} pts · Merge: {nm} pts.{suffix}")
 
     def refresh(self) -> None:
-        tid = self._track_id()
         has_loop = False
         if self._overlay is not None and hasattr(self._overlay, "pit_edit_state"):
             has_loop = bool(self._overlay.pit_edit_state().get("has_loop"))
-        can_import = tid is not None and bool(self._html_path)
-        self._import_btn.setEnabled(can_import)
-        enabled = tid is not None and has_loop
+        self._import_btn.setEnabled(self._can_import())
+        enabled = has_loop
         self._pit_edit_sw.setEnabled(enabled)
         self._road_btn.setEnabled(enabled)
         self._merge_btn.setEnabled(enabled)
         if enabled:
             self._sync_from_overlay()
-        elif tid is None:
+        elif not self._status.text():
             self._status.setText(
-                "Join iRacing (or demo with --demo-track) for a TrackID.")
-        elif not has_loop and not self._status.text():
-            self._status.setText("Import a loop to begin pit authoring.")
+                "Choose members HTML — TrackID is read from track-map-###.")

@@ -112,3 +112,12 @@ def test_v2_compound_oval_picks_outer_loop():
     pts = doc["points"]
     jumps = [_dist(pts[i], pts[i + 1]) for i in range(len(pts) - 1)]
     assert max(jumps) < 0.15
+
+
+def test_v2_parse_track_id_from_html():
+    from tools.svg_layers_to_track_v2 import parse_track_id_from_html
+
+    assert parse_track_id_from_html(html_text=_fixture("rudskogen_pit.html")) == 451
+    assert parse_track_id_from_html(
+        html_path=_require_html("Oval", "Chicagoland.html")) == 123
+    assert parse_track_id_from_html(html_text=_fixture("compound_oval.html")) is None

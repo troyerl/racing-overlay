@@ -8,3 +8,6 @@ psutil>=5.9
 pymongo[srv]>=4.6
 # CA bundle for MongoDB Atlas TLS on macOS python.org builds (see track_store).
 certifi>=2024.2.2
+# Track Scan v2 HTML loop import (active-config layer).
+beautifulsoup4>=4.12
+svgpathtools>=1.6

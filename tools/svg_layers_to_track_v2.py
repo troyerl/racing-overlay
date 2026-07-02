@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from typing import Any
 
@@ -32,6 +33,28 @@ from tools.svg_layers_to_track import (
 )
 
 _SUBPATH_LENGTH_TIE_FRAC = 0.03
+_TRACK_MAP_ID_RE = re.compile(r"^track-map-(\d+)$", re.I)
+
+
+def parse_track_id_from_html(
+    *,
+    html_path: str | None = None,
+    html_text: str | None = None,
+) -> int | None:
+    """Read iRacing TrackID from a members page ``id=\"track-map-123\"`` wrapper."""
+    _require_v2_deps()
+    from bs4 import BeautifulSoup  # type: ignore
+
+    if html_text is None:
+        if not html_path:
+            return None
+        html_text = _read_text(html_path) or ""
+    soup = BeautifulSoup(html_text, "html.parser")
+    for tag in soup.find_all(id=True):
+        m = _TRACK_MAP_ID_RE.match(str(tag.get("id", "")).strip())
+        if m:
+            return int(m.group(1))
+    return None
 
 
 def _require_v2_deps():

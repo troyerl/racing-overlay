@@ -75,6 +75,12 @@ def build(icon: str | None) -> str:
         # static analysis can miss them -- bundle them explicitly.
         "--hidden-import", "pymongo",
         "--hidden-import", "dns",
+        # Track Scan v2 HTML import (lazy imports; PyInstaller misses these).
+        "--hidden-import", "tools.svg_layers_to_track_v2",
+        "--hidden-import", "tools.svg_layers_to_track",
+        "--hidden-import", "tools.schematic_to_track",
+        "--hidden-import", "bs4",
+        "--hidden-import", "svgpathtools",
     ]
     if icon:
         args += ["--icon", icon]
