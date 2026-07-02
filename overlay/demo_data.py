@@ -116,6 +116,10 @@ class FakeIRSDK:
 
         self._start = time.time()
 
+    def _fuel_burn_per_sec(self) -> float:
+        """Litres/sec consumed on track, matched to FuelUsePerHour and lap_time."""
+        return 176.0 * (self.lap_time / 3600.0) / self.lap_time
+
     @property
     def pace_idx(self) -> int:
         return self.num_cars
@@ -351,7 +355,7 @@ class FakeIRSDK:
             return max(0.0, min(1.0, 0.88 - 0.02 * (0.5 + 0.5 * math.sin(t * 0.05 + 1))))
 
         if key == "FuelUsePerHour":
-            return 176.0  # L/hr -> ~12 laps remaining at the demo fuel level
+            return 176.0 * (self.lap_time / 32.0)
 
         if key == "SessionTime":
             return time.time() - self._start
@@ -445,7 +449,7 @@ class FakeIRSDK:
 
         if key == "FuelLevel":
             t = time.time() - self._start
-            return max(2.0, 60.0 - t * 0.18)  # liters, slowly burning down
+            return max(2.0, 60.0 - t * self._fuel_burn_per_sec())
 
         if key == "FuelLevelPct":
             return self["FuelLevel"] / 60.0
@@ -529,10 +533,11 @@ class FakeIRSDK:
             return (time.time() - self._start) % self.lap_time
 
         if key == "LapLastLapTime":
-            return 105.035
+            jit = self._lap_jitter() * 0.12
+            return self.lap_time + jit
 
         if key == "LapBestLapTime":
-            return 104.512
+            return self.lap_time - 0.35
 
         return None
 

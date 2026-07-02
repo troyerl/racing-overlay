@@ -281,6 +281,9 @@ DEFAULTS: dict = {
         # Stats grid row height (0 = scale to fit the stats block).
         "row_height_px": 0,
         "max_row_height_frac": 0.14,
+        # Stats grid text size, independent of the widget text_scale above.
+        "stats_header_font_scale": 1.0,
+        "stats_row_font_scale": 1.0,
         "colors": {
             **_WIDGET_CHROME_COLORS,
             # Vertical gradient card matching the dash/tables.

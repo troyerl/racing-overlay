@@ -5,6 +5,25 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.42.0 - 2026-07-02
+
+- **Practice relative list.** During practice, the relative table shows only cars
+  physically on track — garage and off-track entries are hidden.
+- **Qualifying standings.** During qualifying, the standings tower orders drivers
+  from live QualifyResultsInfo (with best-lap fallback) instead of race positions.
+
+## 1.41.0 - 2026-07-02
+
+- **Standings pin podium keeps you visible.** When P1–P3 are pinned, your row
+  stays in the list — neighbor rows trim first instead of dropping you from view.
+- **Fuel calc stats text scale.** Separate header/row text size settings for the
+  AVG/MAX/MIN grid, independent of the rest of the widget text scale.
+- **Lap log live updates.** Demo lap counter syncs so new laps append each lap;
+  live sessions fall back to CarIdxLastLapTime when LapLastLapTime is zero and
+  clear stale history on session reset.
+- **Fuel calc accuracy.** Demo fuel burn matches FuelUsePerHour and lap time;
+  projections prefer the car's estimated lap when the lap log times don't match.
+
 ## 1.40.0 - 2026-07-01
 
 - **Standings pin podium.** Optional setting keeps P1–P3 in the first three rows

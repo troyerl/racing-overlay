@@ -18,9 +18,13 @@ def _tabular_family() -> str:
     return "SF Mono" if sys.platform == "darwin" else "Consolas"
 
 
-def tfont(size: float, bold: bool = True) -> QFont:
+def tfont(size: float, bold: bool = True, *, widget_scale: bool = True) -> QFont:
     fam = config.CFG.get("font_family", "Segoe UI")
-    pt = round(max(5.0, size * config.text_scale_for()), 1)
+    if widget_scale:
+        scale = config.text_scale_for()
+    else:
+        scale = float(config.CFG.get("text_scale", 1.0) or 1.0)
+    pt = round(max(5.0, size * scale), 1)
     key = (fam, pt, bold, False)
     f = _FONT_CACHE.get(key)
     if f is None:
@@ -34,9 +38,13 @@ def tfont(size: float, bold: bool = True) -> QFont:
     return f
 
 
-def tabfont(size: float, bold: bool = False) -> QFont:
+def tabfont(size: float, bold: bool = False, *, widget_scale: bool = True) -> QFont:
     fam = _tabular_family()
-    pt = round(max(5.0, size * config.text_scale_for()), 1)
+    if widget_scale:
+        scale = config.text_scale_for()
+    else:
+        scale = float(config.CFG.get("text_scale", 1.0) or 1.0)
+    pt = round(max(5.0, size * scale), 1)
     key = (fam, pt, bold, True)
     f = _FONT_CACHE.get(key)
     if f is None:

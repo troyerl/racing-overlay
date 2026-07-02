@@ -170,6 +170,9 @@ class AdvancedSimHUD:
         self._lc_key = None
         self._sector_starts_cache = None
         self._session_info_counter = 0
+        self._practice_cache: bool | None = None
+        self._qualifying_cache: bool | None = None
+        self._session_type_cache = ""
         # Flag state: remember whether we were under yellow so we can flash a
         # brief green when racing resumes, and when that green window ends.
         self._flag_was_yellow = False
@@ -1215,11 +1218,44 @@ class AdvancedSimHUD:
             "speaking": radio_speaker is not None and idx == radio_speaker,
         }
 
-    @staticmethod
-    def _relative_include(idx, surface, positions, player) -> bool:
-        """Relative rows: on-track cars, plus anyone ahead in race position."""
+    def _current_session_type(self) -> str:
+        """Lower-case SessionType for the active session (cached ~1 s)."""
+        if self._session_info_counter % 60 == 0 or self._practice_cache is None:
+            st = ""
+            try:
+                sn = int(self.ir["SessionNum"])
+                info = self.ir["SessionInfo"]
+                if isinstance(info, dict):
+                    sessions = info.get("Sessions") or []
+                    if 0 <= sn < len(sessions):
+                        st = str(sessions[sn].get("SessionType") or "").lower()
+            except (TypeError, ValueError, KeyError):
+                st = ""
+            self._practice_cache = ("practice" in st or st == "open")
+            self._qualifying_cache = ("qualif" in st or st == "qual")
+            self._session_type_cache = st
+        return getattr(self, "_session_type_cache", "")
+
+    def _is_practice_session(self) -> bool:
+        """True during a practice session (open or scheduled)."""
+        if self.demo or self._demo_active:
+            return False
+        self._current_session_type()
+        return bool(self._practice_cache)
+
+    def _is_qualifying_session(self) -> bool:
+        """True during a qualifying session."""
+        if self.demo or self._demo_active:
+            return False
+        self._current_session_type()
+        return bool(self._qualifying_cache)
+
+    def _relative_include(self, idx, surface, positions, player) -> bool:
+        """Relative rows: on-track cars; in practice, strictly on-track only."""
         if not surface or idx >= len(surface):
             return False
+        if self._is_practice_session():
+            return surface[idx] == oc.TRK_ON_TRACK
         on_track = surface[idx] in (oc.TRK_ON_TRACK, oc.TRK_APPROACHING_PITS,
                                     oc.TRK_IN_PIT_STALL)
         if on_track:
@@ -1470,11 +1506,46 @@ class AdvancedSimHUD:
         return f"{t:.1f}{config.temp_unit()}" if t is not None else "\u2014"
 
     def _seed_demo_laptimes(self) -> None:
-        """Prefill the log with a few plausible laps so demo mode looks alive."""
-        seed = [(17, 136.949), (16, 137.151), (15, 136.704), (14, 136.853),
-                (13, 180.165), (11, 142.291), (10, 137.020), (9, 136.840)]
-        self._ll_laps = [{"lap": lp, "secs": t, "temp_c": 23.4} for lp, t in seed]
-        self._ll_prev_lap = 18
+        """Prefill the log with recent oval laps and sync the lap counter."""
+        try:
+            cur = int(self.ir["Lap"])
+        except (TypeError, ValueError):
+            cur = 1
+        est = float(self._car_info.get("est_lap") or 0.0)
+        if est <= 0:
+            try:
+                est = float(self.ir["DriverInfo"]["DriverCarEstLapTime"])
+            except (TypeError, ValueError, KeyError):
+                est = 32.0
+        seed = []
+        for lp in range(max(1, cur - 8), cur):
+            jit = (((lp * 37) % 7) - 3) * 0.04
+            seed.append((lp, est + jit))
+        self._ll_laps = [{"lap": lp, "secs": t,
+                          "temp_c": self.ir["TrackTemp"] or 27.0}
+                         for lp, t in seed]
+        self._ll_prev_lap = cur
+        self._fc_prev_lap = None
+        self._fc_lap_start_fuel = None
+        self._fc_use = []
+
+    def _player_last_lap_time(self) -> float | None:
+        """Last completed lap for the player (LapLastLapTime, then CarIdx)."""
+        last = self.ir["LapLastLapTime"]
+        if isinstance(last, (int, float)) and last > 0:
+            return float(last)
+        player = self.ir["PlayerCarIdx"]
+        try:
+            arr = self.ir["CarIdxLastLapTime"]
+            if arr is not None and player is not None:
+                idx = int(player)
+                if 0 <= idx < len(arr):
+                    v = arr[idx]
+                    if isinstance(v, (int, float)) and v > 0:
+                        return float(v)
+        except (TypeError, ValueError, KeyError):
+            pass
+        return None
 
     def _update_laptime_log(self) -> None:
         """Record each completed player lap (time + track temp) and push rows."""
@@ -1486,18 +1557,22 @@ class AdvancedSimHUD:
             if self._ll_prev_lap is None:
                 self._ll_prev_lap = lap
             elif lap > self._ll_prev_lap:
-                last = self.ir["LapLastLapTime"]
+                last = self._player_last_lap_time()
                 completed = lap - 1
-                if (isinstance(last, (int, float)) and last > 0
+                if (last is not None
                         and (not self._ll_laps
                              or self._ll_laps[0]["lap"] != completed)):
                     temp = self.ir["TrackTemp"]
                     if temp is None:
                         temp = self.ir["TrackTempCrew"]
                     self._ll_laps.insert(0, {"lap": completed,
-                                             "secs": float(last),
+                                             "secs": last,
                                              "temp_c": temp})
                     del self._ll_laps[60:]  # keep memory bounded
+                self._ll_prev_lap = lap
+            elif lap < self._ll_prev_lap:
+                # New session / reset -- drop stale history.
+                self._ll_laps = []
                 self._ll_prev_lap = lap
         self.laptime_widget.set_data(self._build_laptime_rows())
 
@@ -1705,14 +1780,20 @@ class AdvancedSimHUD:
             return "--"
         return self._fmt_irating(sum(irs) / len(irs), section)
 
-    def _qualify_grid_positions(self) -> tuple[list[int] | None, list[int] | None]:
-        """Starting grid from QualifyResultsInfo (CarIdxPosition is 0 pre-green)."""
+    def _qualify_grid_positions(self, *, live: bool = False) -> tuple[list[int] | None, list[int] | None]:
+        """Qualifying / starting-grid positions from QualifyResultsInfo.
+
+        When ``live`` is true the YAML is re-read every call so provisional qual
+        standings stay current; otherwise the result is cached for the session.
+        """
         uid = 0
         try:
             uid = int(self.ir["SessionUniqueID"])
         except (TypeError, ValueError, KeyError):
             pass
-        if self._grid_session_uid == uid and self._grid_positions_cache is not None:
+        if (not live
+                and self._grid_session_uid == uid
+                and self._grid_positions_cache is not None):
             return self._grid_positions_cache, self._grid_class_positions_cache
         pos: list[int] | None = None
         cls: list[int] | None = None
@@ -1746,10 +1827,48 @@ class AdvancedSimHUD:
                     cls = None
         except (TypeError, ValueError, KeyError):
             pass
-        self._grid_session_uid = uid
-        self._grid_positions_cache = pos
-        self._grid_class_positions_cache = cls
+        if not live:
+            self._grid_session_uid = uid
+            self._grid_positions_cache = pos
+            self._grid_class_positions_cache = cls
         return pos, cls
+
+    def _positions_from_best_lap(self, live: list | None) -> list[int] | None:
+        """Provisional qual order from best lap times when results aren't ready."""
+        try:
+            best = self.ir["CarIdxBestLapTime"]
+        except (TypeError, ValueError, KeyError):
+            return None
+        if not best:
+            return None
+        n = max(len(live or []), len(best), 64)
+        entries: list[tuple[float, int]] = []
+        for idx in range(n):
+            if idx in self._pace_idxs:
+                continue
+            t = best[idx] if idx < len(best) else None
+            if isinstance(t, (int, float)) and t > 0:
+                entries.append((float(t), idx))
+        if not entries:
+            return None
+        entries.sort(key=lambda e: e[0])
+        pos = [0] * n
+        for rank, (_, idx) in enumerate(entries, start=1):
+            pos[idx] = rank
+        return pos
+
+    @staticmethod
+    def _pad_position_arrays(
+        pos: list[int], cls: list[int] | None, live: list | None,
+    ) -> tuple[list[int], list[int] | None]:
+        n = max(len(live or []), len(pos), 64)
+        out = list(pos)
+        if len(out) < n:
+            out.extend([0] * (n - len(out)))
+        out_cls = list(cls) if cls else None
+        if out_cls is not None and len(out_cls) < n:
+            out_cls.extend([0] * (n - len(out_cls)))
+        return out, out_cls
 
     def _prefer_grid_positions(
         self, live: list | None, player: int | None, grid: list[int] | None,
@@ -1782,19 +1901,29 @@ class AdvancedSimHUD:
     def _resolve_positions(
         self, live: list | None, player: int | None,
     ) -> tuple[list | None, list[int] | None]:
-        """Live race positions, falling back to qualify grid before green."""
+        """Live race positions; qual standings or starting grid when appropriate."""
         if self._demo_active:
+            return live, None
+        if self._is_qualifying_session():
+            qpos, qcls = self._qualify_grid_positions(live=True)
+            if qpos and any(qpos):
+                pos, cls = self._pad_position_arrays(qpos, qcls, live)
+                if live:
+                    for idx, p in enumerate(live):
+                        if idx >= len(pos):
+                            break
+                        lp = int(p or 0)
+                        if lp > 0 and (not pos[idx] or pos[idx] <= 0):
+                            pos[idx] = lp
+                return pos, cls
+            blap = self._positions_from_best_lap(live)
+            if blap and any(blap):
+                return blap, None
             return live, None
         grid_pos, grid_class = self._qualify_grid_positions()
         if not self._prefer_grid_positions(live, player, grid_pos):
             return live, None
-        n = max(len(live or []), len(grid_pos or []), 64)
-        pos = list(grid_pos or [])
-        if len(pos) < n:
-            pos.extend([0] * (n - len(pos)))
-        cls = list(grid_class) if grid_class else None
-        if cls is not None and len(cls) < n:
-            cls.extend([0] * (n - len(cls)))
+        pos, cls = self._pad_position_arrays(grid_pos or [], grid_class, live)
         return pos, cls
 
     def _class_position(self, drivers, positions, player) -> str:
@@ -2942,13 +3071,22 @@ class AdvancedSimHUD:
             return level / pct
         return None
 
-    def _avg_lap_secs(self):
-        """Average recent lap time (s): logged laps if any, else the est lap."""
+    def _fuel_lap_secs(self):
+        """Lap time used for fuel time projections (prefer car est over mismatched log)."""
+        est = self._car_info.get("est_lap") or 0.0
         good = [l["secs"] for l in self._ll_laps if l.get("secs", 0) > 0]
+        if good and est > 0:
+            avg = sum(good[:10]) / len(good[:10])
+            if abs(avg - est) / est <= 0.20:
+                return avg
+            return est
         if good:
             return sum(good[:10]) / len(good[:10])
-        est = self._car_info.get("est_lap") or 0.0
         return est if est > 0 else None
+
+    def _avg_lap_secs(self):
+        """Average recent lap time (s): logged laps if any, else the est lap."""
+        return self._fuel_lap_secs()
 
     def _race_remaining(self, lap_avg):
         """(laps_remaining, time_remaining) for the current session, or Nones."""
@@ -2999,8 +3137,9 @@ class AdvancedSimHUD:
         else:
             est = None
             per_hr = self.ir["FuelUsePerHour"]
-            if per_hr and lap_avg:
-                est = per_hr * (lap_avg / 3600.0)
+            lap_s = self._fuel_lap_secs()
+            if per_hr and lap_s:
+                est = per_hr * (lap_s / 3600.0)
             u_avg = u_max = u_min = est
 
         def scenario(u):

@@ -281,24 +281,26 @@ class FuelCalcWidget(QWidget):
 
         band = QRectF(x, y, w, head_h)
         draw_edge_band(p, band, "header_bg", _SECTION, bottom_line=True)
-        p.setFont(tfont(head_h * 0.5, bold=False))
+        hscale = max(0.3, float(cfg.get("stats_header_font_scale", 1.0) or 1.0))
+        p.setFont(tfont(head_h * 0.5 * hscale, bold=False, widget_scale=False))
         p.setPen(_col("header"))
         for i, k in enumerate(_STAT_COLS):
             cx = x + label_w + i * col_w
             p.drawText(QRectF(cx, y, col_w, head_h), _CENTER, _STAT_HEADERS[k])
 
+        rscale = max(0.3, float(cfg.get("stats_row_font_scale", 1.0) or 1.0))
         for r, rk in enumerate(_STAT_ROWS):
             ry = y + head_h + r * row_h
             if r % 2 == 1:
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(_col("row_alt"))
                 p.drawRoundedRect(QRectF(x, ry, w, row_h), 4, 4)
-            p.setFont(tfont(row_h * 0.4, True))
+            p.setFont(tfont(row_h * 0.4 * rscale, True, widget_scale=False))
             p.setPen(_col("muted"))
             p.drawText(QRectF(x + 2, ry, label_w, row_h), _VC_LEFT, rk.upper())
             data = rows.get(rk) or {}
             p.setPen(_col("text"))
-            p.setFont(tabfont(row_h * 0.46, bold=data_bold))
+            p.setFont(tabfont(row_h * 0.46 * rscale, bold=data_bold, widget_scale=False))
             for i, k in enumerate(_STAT_COLS):
                 cx = x + label_w + i * col_w
                 p.drawText(QRectF(cx, ry, col_w, row_h), _CENTER,
