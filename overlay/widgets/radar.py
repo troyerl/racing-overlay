@@ -24,8 +24,7 @@ from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
-from .chrome import draw_card
-from .table import ease
+from .chrome import draw_card, ease
 
 
 def _rcfg() -> dict:
@@ -61,7 +60,18 @@ class RadarWidget(QWidget):
         self._clock.start()
         self._last_ms = 0
         self._animating = False
+        self._pix_cache: dict[tuple, QPixmap] = {}
         self.setMinimumSize(140, 180)
+
+    def _cached_pixmap(self, key: tuple, build) -> QPixmap:
+        pm = self._pix_cache.get(key)
+        if pm is not None:
+            return pm
+        pm = build()
+        if len(self._pix_cache) > 48:
+            self._pix_cache.clear()
+        self._pix_cache[key] = pm
+        return pm
 
     def set_data(self, data: dict) -> None:
         changed = data != self.data
@@ -176,21 +186,22 @@ class RadarWidget(QWidget):
 
     def _side_marker(self, p, x0, x1, yc, marker_h, strong, to_left,
                      closeness=None):
-        # A soft marker beside the car, centered at yc (which slides up/down with
-        # the rival's fore/aft position): strong at the inner edge next to you and
-        # fading outward, with its top/bottom edges feathered to a point. Solid
-        # red by default (iRacing gives no sideways distance); when closeness is
-        # supplied it fades yellow->red by fore/aft overlap instead.
         left, right = min(x0, x1), max(x0, x1)
         w = max(1, int(round(right - left)))
         h = max(1, int(round(marker_h)))
-        base = _rcol("red") if closeness is None else _prox_color(closeness, 255)
         alpha = 235 if strong else 195
+        c_bucket = -1 if closeness is None else int(max(0.0, min(1.0, closeness)) * 20)
+        key = ("side", w, h, to_left, alpha, c_bucket)
+        pm = self._cached_pixmap(key, lambda: self._build_side_pixmap(
+            w, h, to_left, alpha, closeness))
+        p.drawPixmap(int(round(left)), int(round(yc - marker_h / 2.0)), pm)
+
+    def _build_side_pixmap(self, w, h, to_left, alpha, closeness):
+        base = _rcol("red") if closeness is None else _prox_color(closeness, 255)
         pm = QPixmap(w, h)
         pm.fill(Qt.GlobalColor.transparent)
         pp = QPainter(pm)
         pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Horizontal fade: strongest at the inner edge (nearest the car).
         if to_left:
             grad = QLinearGradient(float(w), 0.0, 0.0, 0.0)
         else:
@@ -200,29 +211,34 @@ class RadarWidget(QWidget):
         pp.fillRect(0, 0, w, h, grad)
         self._feather_mask(pp, w, h, vertical=True)
         pp.end()
-        p.drawPixmap(int(round(left)), int(round(yc - marker_h / 2.0)), pm)
+        return pm
 
     def _v_glow(self, p, cx, y_inner, y_outer, closeness, up):
-        # A soft bar ahead/behind the car: strong near the car and fading toward
-        # the edge, with the side edges feathered so there's no box.
         half_w = self.width() * _rcfg()["sizes"]["glow_w"]
         top, bottom = min(y_inner, y_outer), max(y_inner, y_outer)
         w = max(1, int(round(half_w * 2.0)))
         h = max(1, int(round(bottom - top)))
+        inner_local = float(y_inner - top)
+        outer_local = float(y_outer - top)
+        c_bucket = int(max(0.0, min(1.0, closeness)) * 20)
         peak = int(80 + 130 * max(0.0, min(1.0, closeness)))
+        key = ("glow", w, h, c_bucket, peak,
+               round(inner_local, 1), round(outer_local, 1))
+        pm = self._cached_pixmap(key, lambda: self._build_glow_pixmap(
+            w, h, peak, closeness, inner_local, outer_local))
+        p.drawPixmap(int(round(cx - half_w)), int(round(top)), pm)
+
+    def _build_glow_pixmap(self, w, h, peak, closeness, inner_local, outer_local):
         col = _prox_color(closeness, peak)
         fade = QColor(col.red(), col.green(), col.blue(), 0)
         pm = QPixmap(w, h)
         pm.fill(Qt.GlobalColor.transparent)
         pp = QPainter(pm)
         pp.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        # Vertical fade: strongest at the inner edge (nearest the car).
-        inner_local = float(y_inner - top)
-        outer_local = float(y_outer - top)
         grad = QLinearGradient(0.0, inner_local, 0.0, outer_local)
         grad.setColorAt(0.0, col)
         grad.setColorAt(1.0, fade)
         pp.fillRect(0, 0, w, h, grad)
         self._feather_mask(pp, w, h, vertical=False)
         pp.end()
-        p.drawPixmap(int(round(cx - half_w)), int(round(top)), pm)
+        return pm

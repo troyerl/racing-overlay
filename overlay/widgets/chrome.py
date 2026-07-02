@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen)
 
@@ -179,3 +181,10 @@ def resolve_row_height(*, body_h: float, row_count: int, panel_h: float,
     if max_rh_frac > 0:
         row_h = min(row_h, panel_h * max_rh_frac)
     return row_h
+
+
+def ease(current: float, target: float, dt: float, tau: float = 0.12) -> float:
+    """Frame-rate-independent exponential smoothing toward a target."""
+    if tau <= 0:
+        return target
+    return current + (target - current) * (1.0 - math.exp(-dt / tau))

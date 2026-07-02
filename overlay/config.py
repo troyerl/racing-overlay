@@ -97,6 +97,7 @@ _TABLE_STYLE: dict = {
         # Rendered as a soft left-to-right gradient wash in the relative table.
         "threat": "#ff505060",
         "lapped": "#4a8cff60",
+        "speaking_row": "#22c55e50",
         "text": "#f4f6f8",
         "muted": "#8b93a1",
         "irating_bg": "#0b0d11cc",
@@ -108,6 +109,9 @@ _TABLE_STYLE: dict = {
         "badge_pit_bg": "#ebeef0",
         "badge_pit_text": "#141414",
         "badge_lap": "#7638c4",
+        "badge_speaking_bg": "#22c55e",
+        "badge_speaking_text": "#ffffff",
+        "badge_speaking_border": "#ffffffcc",
         "badge_empty_border": "#ffffff28",
         "badge_empty_fill": "#00000078",
     },
@@ -752,7 +756,7 @@ DEFAULTS: dict = {
             "outline": "#8b93a1",
             "infield": "#0f1216c8",
             "player": "#46df7a",
-            "competitor": "#3aa0ff",
+            "competitor": "#b06bff",
             "lapped": "#4a8cff",
             "lapping": "#ff5050",
             "corner_bg": "#0b0d11cc",
@@ -784,6 +788,10 @@ DEFAULTS: dict = {
             "marker_ahead": "#46df7a",
             "marker_behind": "#ff5050",
             "marker_line": "#ffffff40",
+            "speaking_ring": "#46df7a",
+            "speaking_glow": "#46df7a55",
+            "speaking_badge_bg": "#22c55e",
+            "speaking_badge_text": "#ffffff",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",
@@ -1158,6 +1166,7 @@ def reload() -> dict:
     """Reload every preset from disk and recompute the live config."""
     _load_all()
     _compute_cfg()
+    _clear_column_caches()
     _notify()
     _notify_preset()
     return CFG
@@ -1222,6 +1231,7 @@ def apply_base(full_cfg: dict, notify: bool = True) -> dict:
     BASE = copy.deepcopy(full_cfg)
     _PRESETS[ACTIVE_PRESET]["base"] = BASE
     _compute_cfg()
+    _clear_column_caches()
     if notify:
         _notify()
     return CFG
@@ -1569,20 +1579,37 @@ def write_template(path: str = CONFIG_FILE) -> str:
     return path
 
 
+_col_order_cache: dict[str, list] = {}
+_col_order_sig: dict[str, object] = {}
+
+
+def _clear_column_caches() -> None:
+    _col_order_cache.clear()
+    _col_order_sig.clear()
+
+
 def table_column_order(section: str) -> list:
     """Normalized list of visible columns (in order) for a table section.
 
     Unknown keys are dropped and duplicates removed. If a section has no
     configured order at all, every known column is shown.
     """
+    sig = tuple(CFG.get(section, {}).get("column_order") or ())
+    if _col_order_sig.get(section) == sig and section in _col_order_cache:
+        return _col_order_cache[section]
     order = CFG.get(section, {}).get("column_order")
     if not order:
-        return list(TABLE_COLUMNS)
-    result = []
-    for k in order:
-        if k in TABLE_COLUMNS and k not in result:
-            result.append(k)
-    return result or list(TABLE_COLUMNS)
+        result = list(TABLE_COLUMNS)
+    else:
+        result = []
+        for k in order:
+            if k in TABLE_COLUMNS and k not in result:
+                result.append(k)
+        if not result:
+            result = list(TABLE_COLUMNS)
+    _col_order_cache[section] = result
+    _col_order_sig[section] = sig
+    return result
 
 
 def has_column(section: str, key: str) -> bool:

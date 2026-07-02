@@ -7,15 +7,13 @@ All colors, fonts, column visibility, sizing and easing come from config.CFG
 
 from __future__ import annotations
 
-import math
-
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
 from . import icons
-from .chrome import contrast_text, draw_edge_band, resolve_row_height
+from .chrome import contrast_text, draw_edge_band, ease, resolve_row_height
 from .chrome import draw_row_divider as _draw_row_divider_chrome
 from .chrome import soften_color as _soften_color
 from .fonts import data_font_bold as _data_font_bold, tabfont, tfont
@@ -47,11 +45,9 @@ SLOT_ITEMS: dict[str, tuple[str, str]] = {
 }
 
 
-def ease(current: float, target: float, dt: float, tau: float = 0.12) -> float:
-    """Frame-rate-independent exponential smoothing toward a target."""
-    if tau <= 0:
-        return target
-    return current + (target - current) * (1.0 - math.exp(-dt / tau))
+# When a row jumps farther than this many slots, snap instead of sliding through
+# intermediate rows (avoids cars crossing each other on big reorder).
+_ROW_SNAP_SLOTS = 1.25
 
 
 def _tcfg() -> dict:
@@ -309,6 +305,9 @@ class BaseTable(QWidget):
 
         rows = (self.data or {}).get("rows", [])
         n = max(1, len(rows))
+        self._paint_tc = tc
+        self._paint_cols = self._columns()
+        self._paint_has_footer = self.has_footer()
         # Header / footer band heights scale with their own font scale so larger
         # header/footer text grows the band (instead of clipping) and is fully
         # independent of the row text size.
@@ -321,12 +320,12 @@ class BaseTable(QWidget):
             row_h = fixed_rh
             pad = 8.0
             header_h = round(fixed_rh * 1.25 * hscale)
-            footer_h = round(fixed_rh * 1.1 * fscale) if self.has_footer() else 0.0
+            footer_h = round(fixed_rh * 1.1 * fscale) if self._paint_has_footer else 0.0
             body_top = card.top() + pad + header_h
         else:
             pad = max(8.0, h * 0.025)
             header_h = max(26.0, h * 0.12) * hscale
-            footer_h = (max(24.0, h * 0.11) * fscale) if self.has_footer() else 0.0
+            footer_h = (max(24.0, h * 0.11) * fscale) if self._paint_has_footer else 0.0
             body_top = card.top() + pad + header_h
             body_h = h - body_top - footer_h - pad
             row_h = resolve_row_height(body_h=body_h, row_count=n,
@@ -337,34 +336,54 @@ class BaseTable(QWidget):
         dt = self._dt()
         keys_now = set()
         animating = False
+        tau = float(tc.get("row_ease_tau", 0.16) or 0.16)
         for tgt, row in enumerate(rows):
             key = row.get("key", tgt)
             keys_now.add(key)
+            if row.get("empty"):
+                st = self._anim.get(key)
+                if st is None:
+                    st = {"idx": float(tgt)}
+                    self._anim[key] = st
+                st["idx"] = float(tgt)
+                continue
             st = self._anim.get(key)
             if st is None:
-                st = {"idx": float(tgt), "alpha": 0.0}
+                st = {"idx": float(tgt)}
                 self._anim[key] = st
-            st["idx"] = ease(st["idx"], float(tgt), dt, tc["row_ease_tau"])
-            st["alpha"] = ease(st["alpha"], 1.0, dt, tc["fade_ease_tau"])
-            if abs(st["idx"] - tgt) > 0.01 or st["alpha"] < 0.99:
+            target = float(tgt)
+            if abs(st["idx"] - target) > _ROW_SNAP_SLOTS:
+                st["idx"] = target
+            else:
+                st["idx"] = ease(st["idx"], target, dt, tau)
+            if abs(st["idx"] - target) > 0.02:
                 animating = True
         for dead in [k for k in self._anim if k not in keys_now]:
             del self._anim[dead]
         self._animating = animating
 
-        for tgt, row in enumerate(rows):
+        draw_order = sorted(
+            range(len(rows)),
+            key=lambda i: self._anim[rows[i].get("key", i)]["idx"],
+        )
+        prev_draw_idx = None
+        for tgt in draw_order:
+            row = rows[tgt]
             st = self._anim[row.get("key", tgt)]
             y = body_top + st["idx"] * row_h
-            p.save()
-            p.setOpacity(max(0.0, min(1.0, st["alpha"])))
             self._draw_row(p, row, tgt, pad, y, w - 2 * pad, row_h)
-            p.restore()
-            if (tc.get("row_dividers", True) and tgt < len(rows) - 1
+            if (tc.get("row_dividers", True) and prev_draw_idx is not None
+                    and abs(st["idx"] - prev_draw_idx) <= 1.05
                     and not row.get("empty")):
-                self._draw_row_divider(p, pad, y + row_h, w - 2 * pad)
+                self._draw_row_divider(p, pad, y, w - 2 * pad)
+            if not row.get("empty"):
+                prev_draw_idx = st["idx"]
 
-        if self.has_footer():
+        if self._paint_has_footer:
             self.draw_footer(p, card, radius, pad, footer_h)
+
+        if animating:
+            self.update()
 
     # --- row + cells --------------------------------------------------------
 
@@ -374,8 +393,8 @@ class BaseTable(QWidget):
     def _draw_row(self, p, row, i, x, y, w, h):
         if row.get("empty"):  # blank placeholder used to keep the player centered
             return
-        tc = _tcfg()
-        cols = self._columns()
+        tc = getattr(self, "_paint_tc", None) or _tcfg()
+        cols = getattr(self, "_paint_cols", None) or self._columns()
         wf = tc["widths"]
         fs = h * tc["font_scale"]
         gutter = h * wf["gutter"]
@@ -430,10 +449,15 @@ class BaseTable(QWidget):
                 p, row_rect, "threat" if row.get("lap_ahead") else "lapped")
         elif row.get("in_pit"):
             self._draw_row_tint(p, row_rect, "pit_row")
+        elif row.get("speaking"):
+            self._draw_row_tint(p, row_rect, "speaking_row")
         elif i % 2 == 1 and tc["alt_row_shading"]:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("row_alt"))
             p.drawRect(row_rect)
+
+        if row.get("speaking"):
+            self._draw_speaking_accent(p, row_rect)
 
         if "badge" in slots:
             bx, bw = slots["badge"]
@@ -447,7 +471,12 @@ class BaseTable(QWidget):
         if "name" in slots:
             nx, nw = slots["name"]
             name_bold = tc.get("name_font_bold", True)
-            p.setPen(col("muted") if row.get("in_pit") else col("text"))
+            if row.get("speaking"):
+                p.setPen(col("badge_speaking_bg"))
+            elif row.get("in_pit"):
+                p.setPen(col("muted"))
+            else:
+                p.setPen(col("text"))
             p.setFont(tfont(fs, bold=name_bold))
             name = str(row.get("name", ""))
             elided = QFontMetricsF(p.font()).elidedText(
@@ -525,10 +554,31 @@ class BaseTable(QWidget):
         p.drawLine(inset.topLeft(), inset.topRight())
         p.drawLine(inset.bottomLeft(), inset.bottomRight())
 
+    def _draw_speaking_accent(self, p, rect: QRectF) -> None:
+        """Bright green stripe + wash so radio traffic reads at a glance."""
+        accent = col("badge_speaking_bg")
+        h = rect.height()
+        stripe_w = max(3.5, h * 0.09)
+
+        edge = QColor(accent)
+        edge.setAlpha(255)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(edge)
+        p.drawRoundedRect(QRectF(rect.left(), rect.top() + h * 0.10,
+                                 stripe_w, h * 0.80), 2.0, 2.0)
+
+        wash = QColor(accent)
+        wash.setAlpha(38)
+        p.setBrush(wash)
+        p.drawRect(rect)
+
     def _draw_badge(self, p, row, x, y, bw, h):
         cx, cy = x + bw / 2, y + h / 2
         size = min(bw, h) * 0.62
         box = QRectF(cx - size / 2, cy - size / 2, size, size)
+        if row.get("speaking"):
+            self._draw_speaker_badge(p, box)
+            return
         if row.get("is_player"):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("badge_player"))
@@ -550,12 +600,23 @@ class BaseTable(QWidget):
             p.setBrush(col("badge_lap"))
             p.drawRoundedRect(box, 3, 3)
             self._draw_clock(p, box)
-        elif row.get("speaking"):
-            self._draw_speaker(p, box)
         else:
             p.setPen(QPen(col("badge_empty_border"), 1))
             p.setBrush(col("badge_empty_fill"))
             p.drawEllipse(box)
+
+    def _draw_speaker_badge(self, p, box: QRectF) -> None:
+        g = icons.glyph("speaking")
+        if not g:
+            return
+        pad = box.width() * 0.06
+        pill = box.adjusted(-pad, -pad, pad, pad)
+        p.setPen(QPen(col("badge_speaking_border"), max(1.2, box.width() * 0.08)))
+        p.setBrush(col("badge_speaking_bg"))
+        p.drawEllipse(pill)
+        p.setPen(col("badge_speaking_text"))
+        p.setFont(icons.icon_font(pill.height() * 0.58))
+        p.drawText(pill, Qt.AlignmentFlag.AlignCenter, g)
 
     def _draw_clock(self, p, box):
         p.setPen(QPen(QColor(255, 255, 255), max(1.0, box.width() * 0.08)))
@@ -566,14 +627,6 @@ class BaseTable(QWidget):
         c = inner.center()
         p.drawLine(c, QPointF(c.x(), c.y() - inner.height() * 0.32))
         p.drawLine(c, QPointF(c.x() + inner.width() * 0.26, c.y()))
-
-    def _draw_speaker(self, p, box):
-        g = icons.glyph("speaking")
-        if not g:
-            return
-        p.setPen(col("text"))
-        p.setFont(icons.icon_font(box.height() * 0.52))
-        p.drawText(box, Qt.AlignmentFlag.AlignCenter, g)
 
     def _draw_position(self, p, row, x, y, pw, h, fs, stripe_on):
         if stripe_on:

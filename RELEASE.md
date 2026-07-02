@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.43.0 - 2026-07-02
+
+- **Smoother row and marker motion.** Relative/standings rows slide without
+  flicker (stable placeholder keys, correct draw order, snap on big jumps).
+  Map traffic markers ease toward their targets instead of jumping every tick.
+- **Radio speaker visibility.** Green badge, row highlight, and driver name tint
+  in the timing tables; map cars keep their number with a ring and mic badge
+  while transmitting.
+- **Map car colors.** Same-lap traffic uses one configurable color (default
+  purple); blue and red are reserved for lapped cars and cars lapping you.
+- **Grid session time.** Footer session clock counts down during qualifying/grid
+  when iRacing reports SessionTimeRemain as unknown.
+- **Performance.** Demo telemetry is cached per tick; the update loop skips work
+  when the overlay is hidden; map/radar/table paths reuse cached layout and
+  pixmap data where safe.
+
 ## 1.42.0 - 2026-07-02
 
 - **Practice relative list.** During practice, the relative table shows only cars

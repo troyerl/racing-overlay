@@ -115,6 +115,48 @@ class FakeIRSDK:
                 self._w[i] = rng.uniform(0.03, 0.07)
 
         self._start = time.time()
+        self._frame: dict | None = None
+
+    def begin_tick(self) -> None:
+        """Refresh per-tick simulation cache (call once per overlay update)."""
+        self._frame = None
+        self._ensure_frame()
+
+    def _ensure_frame(self) -> None:
+        if self._frame is not None:
+            return
+        t = time.time() - self._start
+        totals = [
+            self._rate * self._speed[i] * t
+            + self._amp[i] * math.sin(self._w[i] * t + self._phase[i])
+            + self._offset[i]
+            for i in range(self.num_cars)
+        ]
+        pcts = [self._pit_adjusted_tot(i, totals[i]) % 1.0
+                for i in range(self.num_cars)]
+        on_pit: list[bool] = []
+        for i in range(self.num_cars):
+            frac = pcts[i]
+            if i in self._pit_cars and self._pit_visit_lap_at(i, totals[i]):
+                on_pit.append(_on_demo_pit_lane(frac))
+            else:
+                lap = int(totals[i]) + 1
+                on_pit.append(((lap + i * 3) % 8 == 0) and frac < 0.06)
+        lap_counts = [int(d) + 1 for d in totals]
+        if self.player_idx < len(lap_counts) and lap_counts[self.player_idx] < 2:
+            lap_counts = [lap + 1 for lap in lap_counts]
+        order = sorted(range(self.num_cars), key=lambda i: totals[i], reverse=True)
+        positions = [0] * self.num_cars
+        for rank, idx in enumerate(order, start=1):
+            positions[idx] = rank
+        self._frame = {
+            "t": t,
+            "totals": totals,
+            "pcts": pcts,
+            "on_pit": on_pit,
+            "lap_counts": lap_counts,
+            "positions": positions,
+        }
 
     def _fuel_burn_per_sec(self) -> float:
         """Litres/sec consumed on track, matched to FuelUsePerHour and lap_time."""
@@ -142,21 +184,19 @@ class FakeIRSDK:
     # --- simulation ---------------------------------------------------------
 
     def _total_laps(self) -> list[float]:
-        t = time.time() - self._start
-        return [
-            self._rate * self._speed[i] * t
-            + self._amp[i] * math.sin(self._w[i] * t + self._phase[i])
-            + self._offset[i]
-            for i in range(self.num_cars)
-        ]
+        self._ensure_frame()
+        return self._frame["totals"]
+
+    def _pit_visit_lap_at(self, i: int, tot: float) -> bool:
+        """Whether car i is on a staggered pit-stop lap (not every lap)."""
+        return (int(tot) + i) % 4 == 0
 
     def _pit_visit_lap(self, i: int) -> bool:
-        """Whether car i is on a staggered pit-stop lap (not every lap)."""
-        return (int(self._total_laps()[i]) + i) % 4 == 0
+        return self._pit_visit_lap_at(i, self._total_laps()[i])
 
     def _pit_adjusted_tot(self, i: int, tot: float) -> float:
         """Stretch time on the demo pit route so lap-% matches pit speed."""
-        if i not in self._pit_cars or not self._pit_visit_lap(i):
+        if i not in self._pit_cars or not self._pit_visit_lap_at(i, tot):
             return tot
         in_pt = DEMO_PIT_IN_PCT
         out_pt = DEMO_PIT_OUT_PCT
@@ -176,28 +216,20 @@ class FakeIRSDK:
         return whole
 
     def _lap_frac(self, i: int) -> float:
-        return self._pit_adjusted_tot(i, self._total_laps()[i]) % 1.0
+        self._ensure_frame()
+        return self._frame["pcts"][i]
 
     def _lap_pct(self) -> list[float]:
-        return [self._lap_frac(i) for i in range(self.num_cars)]
+        self._ensure_frame()
+        return self._frame["pcts"]
 
     def _lap_counts(self) -> list[int]:
-        laps = [int(d) + 1 for d in self._total_laps()]
-        if self.player_idx < len(laps) and laps[self.player_idx] < 2:
-            laps = [lap + 1 for lap in laps]
-        return laps
+        self._ensure_frame()
+        return self._frame["lap_counts"]
 
     def _on_pit_list(self) -> list[bool]:
-        """Which cars are on pit road this tick."""
-        out = []
-        for i in range(self.num_cars):
-            frac = self._lap_frac(i)
-            if i in self._pit_cars and self._pit_visit_lap(i):
-                out.append(_on_demo_pit_lane(frac))
-            else:
-                lap = int(self._total_laps()[i]) + 1
-                out.append(((lap + i * 3) % 8 == 0) and frac < 0.06)
-        return out
+        self._ensure_frame()
+        return self._frame["on_pit"]
 
     def _lap_jitter(self) -> float:
         """A small deterministic per-lap wobble (-1..1) so consecutive laps differ
@@ -302,13 +334,8 @@ class FakeIRSDK:
             return base + [oc.TRK_ON_TRACK]
 
         if key == "CarIdxPosition":
-            order = sorted(
-                range(self.num_cars), key=lambda i: self._total_laps()[i], reverse=True
-            )
-            positions = [0] * self.num_cars
-            for rank, idx in enumerate(order, start=1):
-                positions[idx] = rank
-            return positions + [0]
+            self._ensure_frame()
+            return self._frame["positions"] + [0]
 
         if key == "CarIdxLap":
             return self._lap_counts()

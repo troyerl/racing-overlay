@@ -145,15 +145,15 @@ def standings_row_list(
             rows_behind=below,
         )
         context = [build(idx) for idx in picked]
-        while len(context) < slots:
-            context.append(empty(f"pad{len(context)}"))
+        for i in range(len(context), slots):
+            context.append(empty(f"ctx{i}"))
         return podium + context
 
     out: list[T] = []
     start = pidx - above
-    for slot in range(start, start + window):
+    for i, slot in enumerate(range(start, start + window)):
         if 0 <= slot < total:
             out.append(build(ranked[slot]))
         else:
-            out.append(empty(f"std{slot}"))
+            out.append(empty(f"win{i}"))
     return out

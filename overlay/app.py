@@ -929,9 +929,13 @@ class AdvancedSimHUD:
         if not connected and not use_demo:
             self.ir = self._sdk
             return
+        if connected and not self._overlay_running and not self.edit_mode_enabled():
+            return
         if connected:
             self._demo_active = False
         self.ir = self._demo_feed() if use_demo else self._sdk
+        if use_demo and hasattr(self.ir, "begin_tick"):
+            self.ir.begin_tick()
 
         # Switch the garage vs on-track profile before anything else, so widget
         # visibility + content reflect the right context this tick.
@@ -1439,7 +1443,12 @@ class AdvancedSimHUD:
         return float(secs)
 
     def _session_time_remain(self) -> float | None:
-        """Seconds left in session, or None when not meaningful (e.g. on grid)."""
+        """Seconds left in session.
+
+        iRacing sends SessionTimeRemain = -1 before the green flag; in that case
+        derive remaining from SessionTimeTotal − SessionTime when the total is
+        a sane race length (not the 168 h unlimited placeholder).
+        """
         try:
             rem = self.ir["SessionTimeRemain"]
         except (TypeError, ValueError, KeyError):
@@ -1452,11 +1461,16 @@ class AdvancedSimHUD:
             tot = self.ir["SessionTimeTotal"]
         except (TypeError, ValueError, KeyError):
             return None
-        if not isinstance(el, (int, float)) or el <= 0:
-            return None
         if not isinstance(tot, (int, float)):
             return None
-        return self._sane_session_seconds(tot - el)
+        tot_s = self._sane_session_seconds(tot)
+        if tot_s is None:
+            return None
+        el_s = 0.0
+        if isinstance(el, (int, float)) and el >= 0:
+            el_s = self._sane_session_seconds(el) or 0.0
+        left = tot_s - el_s
+        return left if left > 0 else None
 
     def _race_time_display(self) -> str:
         try:
@@ -1464,7 +1478,7 @@ class AdvancedSimHUD:
             tot = self.ir["SessionTimeTotal"]
         except (TypeError, ValueError, KeyError):
             return "\u2014"
-        el_s = self._sane_session_seconds(el) if isinstance(el, (int, float)) and el > 0 else None
+        el_s = self._sane_session_seconds(el) if isinstance(el, (int, float)) and el >= 0 else None
         tot_s = self._sane_session_seconds(tot)
         if el_s is None and tot_s is None:
             return "\u2014"
@@ -2491,9 +2505,9 @@ class AdvancedSimHUD:
         return abs(delta) <= prox
 
     def _map_car_color(self, idx, player, car_lap, lap_pct) -> str:
-        """Map dot color: default competitor, blue if lapped, red if lapping."""
+        """Map dot color: one competitor color, blue if lapped, red if lapping."""
         colors = config.CFG["map"]["colors"]
-        base = colors.get("competitor", colors.get("player", "#3aa0ff"))
+        base = colors.get("competitor", "#b06bff")
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, False)
         if not lapping:
             return base
