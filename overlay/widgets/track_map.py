@@ -756,8 +756,12 @@ class TrackMapWidget(QWidget):
         self.wind_dir: float | None = None
         self.wind_speed_ms: float = 0.0
         # Each car: (idx, lap_pct, label, color_hex, is_player, on_route,
-        # on_pit, speaking).
+        # on_pit, speaking, is_pace).
         self.cars: list[tuple] = []
+        self.sector_boundaries: list[float] = []
+        self.traffic_markers: dict[str, dict | None] = {
+            "ahead": None, "behind": None, "leader": None,
+        }
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
         self._progress_pct = -1
         # Multi-lap scan UI: a persistent badge while scanning ('LAP n/3' or
@@ -1535,6 +1539,224 @@ class TrackMapWidget(QWidget):
         self.cars = cars
         self.update()
 
+    def set_sector_boundaries(self, starts) -> None:
+        starts = list(starts or [])
+        if starts == self.sector_boundaries:
+            return
+        self.sector_boundaries = starts
+        self.update()
+
+    def set_traffic_markers(self, markers: dict | None) -> None:
+        markers = markers or {}
+        norm: dict[str, dict | None] = {}
+        for slot in ("ahead", "behind", "leader"):
+            raw = markers.get(slot)
+            if raw is None:
+                norm[slot] = None
+            elif isinstance(raw, dict):
+                norm[slot] = {
+                    "idx": raw.get("idx"),
+                    "pct": raw.get("pct"),
+                    "label": str(raw.get("label") or ""),
+                }
+            else:
+                norm[slot] = {"idx": None, "pct": float(raw), "label": ""}
+        if norm == self.traffic_markers:
+            return
+        self.traffic_markers = norm
+        self.update()
+
+    def _marker_slots_by_idx(self) -> dict[int, str]:
+        out: dict[int, str] = {}
+        for slot in ("leader", "ahead", "behind"):
+            m = self.traffic_markers.get(slot)
+            if m and m.get("idx") is not None:
+                out[int(m["idx"])] = slot
+        return out
+
+    def _find_car(self, idx: int | None):
+        if idx is None:
+            return None
+        for car in self.cars:
+            if car[0] == idx:
+                return car
+        return None
+
+    def _car_screen_point(self, tx, car) -> QPointF | None:
+        """Screen position of a car dot (matches _draw_cars placement)."""
+        if car is None:
+            return None
+        speaking = is_pace = False
+        if len(car) >= 9:
+            idx, pct, _label, _color, is_player, on_route, on_pit, speaking, is_pace = car
+        elif len(car) >= 8:
+            idx, pct, _label, _color, is_player, on_route, on_pit, speaking = car
+        elif len(car) >= 7:
+            idx, pct, _label, _color, is_player, on_route, on_pit = car
+        else:
+            idx, pct, _label, _color, is_player = car[:5]
+            on_route = on_pit = False
+        cc = tx(self._centroid)
+        mc = _mcfg()
+        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        schematic = is_schematic_pit_source(self.pit_source)
+        c = None
+        if on_route:
+            if schematic:
+                pos = self._pos_for_schematic_route(idx, pct, on_route, on_pit)
+                if pos is not None:
+                    c = tx(pos)
+            elif is_player and self.player_xy is not None:
+                c = tx(self.player_xy)
+            elif self.pit_path and len(self.pit_path) >= 2:
+                t = self._route_t_for_pct(pct)
+                if t is not None:
+                    pos = self._pos_on_route(t)
+                    if pos is not None:
+                        c = tx(pos)
+        if c is None:
+            c = tx(self.path[self._index_for_pct(pct)])
+            if on_pit:
+                dx, dy = c.x() - cc.x(), c.y() - cc.y()
+                ln = math.hypot(dx, dy) or 1.0
+                c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
+        return c
+
+    def _loop_frac_for_pct(self, pct: float) -> float:
+        return (pct - self.start_finish) % 1.0
+
+    def _layout_pad(self, mc: dict | None = None) -> float:
+        """Screen-space inset so outward labels/icons are not clipped."""
+        mc = mc or _mcfg()
+        pad = 26.0
+        asph = mc.get("asphalt_width", 11)
+        outward = 0.0
+        if mc.get("show_traffic_markers", True):
+            sz = max(8, round(10 * config.text_scale_for("map")))
+            icon_off = asph * 1.2 + sz + 10.0
+            side = max(sz + 6, 22.0)
+            pill_h = sz + 14.0
+            outward = max(outward, icon_off + side / 2.0 + pill_h + 4.0)
+        if mc.get("show_corners", True):
+            sz = max(5, round(8 * config.text_scale_for("map")))
+            off = asph * 0.5 + sz + 8.0
+            outward = max(outward, off + sz + 8.0)
+        if mc.get("show_sector_boundaries", True):
+            sz = max(5, round(7 * config.text_scale_for("map")))
+            off = asph * 0.5 + sz + 6.0
+            outward = max(outward, off + sz + 6.0)
+        return pad + outward
+
+    def _outward_point(self, tx, pct: float, extra: float) -> QPointF:
+        s = tx(self.path[self._index_for_pct(pct)])
+        cc = tx(self._centroid)
+        dx, dy = s.x() - cc.x(), s.y() - cc.y()
+        ln = math.hypot(dx, dy) or 1.0
+        return QPointF(s.x() + dx / ln * extra, s.y() + dy / ln * extra)
+
+    def _track_point(self, tx, pct: float) -> QPointF:
+        return tx(self.path[self._index_for_pct(pct)])
+
+    def _draw_perpendicular_tick(self, p: QPainter, tx, pct: float,
+                               *, color_key: str, tick: float = 6.0,
+                               width: float = 2.0) -> None:
+        from tools.schematic_to_track import _point_on_loop_at_frac
+
+        if not self.path:
+            return
+        n = len(self.path)
+        frac = self._loop_frac_for_pct(pct)
+        a = _point_on_loop_at_frac(self.path, frac)
+        b = _point_on_loop_at_frac(self.path, (frac + 3.0 / max(n, 1)) % 1.0)
+        ax, ay = tx(a).x(), tx(a).y()
+        bx, by = tx(b).x(), tx(b).y()
+        dx, dy = bx - ax, by - ay
+        ln = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / ln, dx / ln
+        p.setPen(QPen(_mcol_def(color_key, "#ffffff"), width))
+        p.drawLine(
+            QPointF(ax - nx * tick, ay - ny * tick),
+            QPointF(ax + nx * tick, ay + ny * tick),
+        )
+
+    def _draw_sector_boundaries(self, p: QPainter, tx) -> None:
+        if not self.sector_boundaries:
+            return
+        mc = _mcfg()
+        asph = mc.get("asphalt_width", 11)
+        sz = max(5, round(7 * config.text_scale_for("map")))
+        fam = config.CFG.get("font_family", "Arial")
+        p.setFont(QFont(fam, sz, QFont.Weight.Bold))
+        fm = p.fontMetrics()
+        label_off = asph * 0.5 + sz + 6.0
+        sf_frac = self._sf_loop_frac()
+        starts = sorted(set(float(s) for s in self.sector_boundaries))
+        label_num = 2
+        for start in starts:
+            frac = self._loop_frac_for_pct(start)
+            if abs(frac) < 1e-4 or abs(frac - sf_frac) < 0.01:
+                continue
+            self._draw_perpendicular_tick(
+                p, tx, start, color_key="sector_line", tick=6.0, width=2.0)
+            outward = self._outward_point(tx, start, label_off)
+            label = f"S{label_num}"
+            label_num += 1
+            bw = max(fm.height() + 2, fm.horizontalAdvance(label) + 8)
+            bh = fm.height() + 2
+            rect = QRectF(outward.x() - bw / 2, outward.y() - bh / 2, bw, bh)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(_mcol_def("sector_line", "#a78bfa"))
+            p.drawRoundedRect(rect, 3, 3)
+            p.setPen(_mcol_def("sector_text", "#c4b5fd"))
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
+
+    def _draw_traffic_markers(self, p: QPainter, tx) -> None:
+        mc = _mcfg()
+        asph = mc.get("asphalt_width", 11)
+        sz = max(8, round(10 * config.text_scale_for("map")))
+        icon_off = asph * 1.2 + sz + 10.0
+        specs = (
+            ("leader", "leader", "marker_leader"),
+            ("ahead", "car_ahead", "marker_ahead"),
+            ("behind", "car_behind", "marker_behind"),
+        )
+        for slot, glyph, col_key in specs:
+            m = self.traffic_markers.get(slot)
+            if not m or m.get("pct") is None:
+                continue
+            pct = m["pct"]
+            idx = m.get("idx")
+            label = m.get("label") or ""
+            car = self._find_car(idx)
+            car_pt = self._car_screen_point(tx, car)
+            if car_pt is None:
+                car_pt = self._track_point(tx, pct)
+            icon_pt = self._outward_point(tx, pct, icon_off)
+            line_col = _mcol_def(col_key, "#ffffff")
+            p.setPen(QPen(line_col, 2.0))
+            p.drawLine(car_pt, icon_pt)
+            side = max(sz + 6, 22.0)
+            icon_rect = QRectF(icon_pt.x() - side / 2, icon_pt.y() - side / 2,
+                               side, side)
+            draw_dark_cell(p, icon_rect, "map", radius=5)
+            if icons.has(glyph):
+                p.setFont(icons.icon_font(sz))
+                p.setPen(_mcol_def(col_key, "#ffffff"))
+                p.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter,
+                           icons.glyph(glyph))
+            if label:
+                p.setFont(QFont(config.CFG.get("font_family", "Arial"),
+                                max(7, sz - 2), QFont.Weight.Bold))
+                fm = p.fontMetrics()
+                pw = fm.horizontalAdvance(label) + 8
+                ph = fm.height() + 4
+                pill = QRectF(icon_pt.x() - pw / 2, icon_rect.bottom() + 2, pw, ph)
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(_mcol_def(col_key, "#ffffff"))
+                p.drawRoundedRect(pill, 3, 3)
+                p.setPen(QColor(20, 20, 20))
+                p.drawText(pill, Qt.AlignmentFlag.AlignCenter, label)
+
     def _index_for_pct(self, pct: float) -> int:
         n = len(self.path)
         return int(((pct - self.start_finish) % 1.0) * n) % n
@@ -1633,7 +1855,7 @@ class TrackMapWidget(QWidget):
             xs = [m[0] for m in fit]
             ys = [m[1] for m in fit]
             minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
-            pad = 26.0
+            pad = self._layout_pad(mc)
             avail_w = rect.width() - 2 * pad
             avail_h = rect.height() - 2 * pad
             span_x = (maxx - minx) or 1e-6
@@ -1685,11 +1907,15 @@ class TrackMapWidget(QWidget):
                 self._draw_pit(p, tx)
             if self.pit_edit_mode:
                 self._draw_pit_edit(p, tx)
+            if mc.get("show_sector_boundaries", True):
+                self._draw_sector_boundaries(p, tx)
             if mc.get("show_corners", True):
                 self._draw_corners(p, tx, self.display_corners())
             if mc.get("show_start_finish", True):
                 self._draw_start_finish(p, tx)
             self._draw_cars(p, tx)
+            if mc.get("show_traffic_markers", True):
+                self._draw_traffic_markers(p, tx)
             if mc.get("show_wind", True) and self.wind_dir is not None:
                 # Drop the compass in whichever corner the track intrudes on least,
                 # so it stops sitting on top of the layout (e.g. road-course ends).
@@ -2319,9 +2545,12 @@ class TrackMapWidget(QWidget):
         rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
         # Draw the player last so it sits on top of traffic.
         schematic = is_schematic_pit_source(self.pit_source)
+        marker_slots = self._marker_slots_by_idx()
         for car in sorted(self.cars, key=lambda c: c[4]):
-            speaking = False
-            if len(car) >= 8:
+            speaking = is_pace = False
+            if len(car) >= 9:
+                idx, pct, label, color, is_player, on_route, on_pit, speaking, is_pace = car
+            elif len(car) >= 8:
                 idx, pct, label, color, is_player, on_route, on_pit, speaking = car
             elif len(car) >= 7:
                 idx, pct, label, color, is_player, on_route, on_pit = car
@@ -2351,10 +2580,20 @@ class TrackMapWidget(QWidget):
                     ln = math.hypot(dx, dy) or 1.0
                     c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
             r = (12.5 if is_player else 9.0) * rad_scale
+            slot = marker_slots.get(idx)
+            if slot and not is_player:
+                col_key = f"marker_{slot}"
+                p.setOpacity(1.0)
+                p.setPen(QPen(_mcol_def(col_key, "#ffffff"), 2.6))
+                p.setBrush(Qt.BrushStyle.NoBrush)
+                p.drawEllipse(c, r + 5.0, r + 5.0)
             # Cars in the pits are grayed out and faded back.
             if on_route or on_pit:
                 p.setOpacity(pit_opacity)
-            fill = pit_fill if (on_route or on_pit) else QColor(color)
+            if is_pace:
+                fill = _mcol_def("pace_car", "#0b0e12")
+            else:
+                fill = pit_fill if (on_route or on_pit) else QColor(color)
             # Make the player unmistakable: a soft glow halo plus a bright
             # double ring around a larger dot.
             if is_player and not on_route and not on_pit:
@@ -2373,13 +2612,15 @@ class TrackMapWidget(QWidget):
                 p.setBrush(fill)
                 p.setPen(QPen(QColor(0, 0, 0), 1))
                 p.drawEllipse(c, r, r)
-            p.setPen(QColor(20, 20, 20) if is_player else QColor(255, 255, 255))
+            p.setPen(_mcol_def("pace_car_text", "#ffffff") if is_pace
+                       else (QColor(20, 20, 20) if is_player else QColor(255, 255, 255)))
             text_rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
-            if speaking and icons.has("speaking"):
+            if speaking and icons.has("speaking") and not is_pace:
                 p.setFont(icons.icon_font(sz * 1.05))
                 p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter,
                            icons.glyph("speaking"))
             else:
                 p.setFont(label_font)
-                p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, label)
+                draw_label = "PC" if is_pace else label
+                p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, draw_label)
             p.setOpacity(1.0)

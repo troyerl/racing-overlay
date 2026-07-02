@@ -729,6 +729,13 @@ DEFAULTS: dict = {
         "lap_proximity_pct": 0.04,
         # Show a small wind compass (arrow + speed) in the map's corner.
         "show_wind": True,
+        # Pace car dot (CarIsPaceCar) and sector / traffic marker overlays.
+        "show_pace_car": True,
+        "show_sector_boundaries": True,
+        "show_traffic_markers": True,
+        # Seconds a new ahead/behind/leader candidate must hold before the icon
+        # moves (prevents flicker when two cars are side-by-side).
+        "marker_hold_seconds": 3.0,
         # Draw a rounded card behind the whole map. Off by default so only the
         # infield (the area enclosed by the track loop) is shaded.
         "show_panel": False,
@@ -763,6 +770,14 @@ DEFAULTS: dict = {
             # Wind compass arrow + label.
             "wind": "#9fd0ff",
             "wind_text": "#eaf3ff",
+            "pace_car": "#0b0e12",
+            "pace_car_text": "#ffffff",
+            "sector_line": "#a78bfa",
+            "sector_text": "#c4b5fd",
+            "marker_leader": "#ffd23a",
+            "marker_ahead": "#46df7a",
+            "marker_behind": "#ff5050",
+            "marker_line": "#ffffff40",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",

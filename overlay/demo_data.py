@@ -17,6 +17,9 @@ import time
 
 from . import common as oc
 
+# Default demo map: Chicagoland Speedway (iRacing TrackID 123).
+DEMO_TRACK_ID = 123
+
 # (car number, name, iRating, license string, class color)
 _DEMO_DRIVERS = [
     ("11", "Denny Hamlin", 4600, "B 2.34", "#ff5bac"),
@@ -42,19 +45,26 @@ DEMO_PIT_OUT_PCT = 0.12
 # Pit-lane-only sub-span inside the full route (entry/exit blends sit outside).
 DEMO_PIT_LANE_LO = 0.95
 DEMO_PIT_LANE_HI = 0.06
-# Number of cars (never the player) that make a pit stop every lap in the demo.
-DEMO_PIT_CARS = 3
+# Number of cars (never the player) that occasionally visit the pit route.
+DEMO_PIT_CARS = 1
 # Lap-% rate on the pit route vs racing line (pit speed limit ~40% of race pace).
 _DEMO_PIT_PACE = 0.38
-# Map dot color showcase: idx -> (lap offset from player, lap-% offset from player).
-# Player (idx 4) is green; these four stay on track with fixed lap gaps so
-# competitor / lapped / lapping colors are visible at once.
-_MAP_SHOWCASE = {
-    5: (0, 0.32),    # same lap — default competitor blue
-    6: (-1, 0.18),   # one lap down — lapped blue
-    7: (1, 0.025),   # one lap ahead, alongside — lapping red
-    8: (2, 0.55),    # two laps ahead — lapping red (full lap clear)
-}
+def configure_pit_extents(
+    in_pct: float | None,
+    out_pct: float | None,
+    lane_lo: float | None,
+    lane_hi: float | None,
+) -> None:
+    """Sync demo pit-car simulation with loaded track pit lap-% extents."""
+    global DEMO_PIT_IN_PCT, DEMO_PIT_OUT_PCT, DEMO_PIT_LANE_LO, DEMO_PIT_LANE_HI
+    if in_pct is not None:
+        DEMO_PIT_IN_PCT = float(in_pct)
+    if out_pct is not None:
+        DEMO_PIT_OUT_PCT = float(out_pct)
+    if lane_lo is not None:
+        DEMO_PIT_LANE_LO = float(lane_lo)
+    if lane_hi is not None:
+        DEMO_PIT_LANE_HI = float(lane_hi)
 
 
 def _in_demo_pit(frac: float) -> bool:
@@ -73,19 +83,12 @@ class FakeIRSDK:
     def __init__(self, num_cars: int = len(_DEMO_DRIVERS), player_idx: int = 4):
         self.num_cars = min(num_cars, len(_DEMO_DRIVERS))
         self.player_idx = min(player_idx, self.num_cars - 1)
-        self.lap_time = 92.0  # seconds, also used as DriverCarEstLapTime
+        self.lap_time = 32.0  # Chicagoland oval-ish; also DriverCarEstLapTime
         self._rate = 1.0 / self.lap_time  # laps per second (baseline)
 
         rng = random.Random(7)
-        # Per-car pace: a steady speed offset plus an oscillating surge so the
-        # running order keeps shuffling (overtakes happen as the sines cross).
-        # amp * w stays below the baseline rate so cars never travel backwards.
-        #
-        # A tight battle pack around the player keeps cars beside you so the
-        # radar regularly shows left / right / both; the rest of the field is
-        # spread around the lap so the track map stays populated. Pack cars run
-        # near the player's pace with small surges so they weave fore/aft and
-        # cross sides instead of streaming away.
+        # Per-car pace: small steady offset + gentle oscillation so order shuffles
+        # without teleporting dots. Cars spread evenly around the lap at t=0.
         self._speed = [0.0] * self.num_cars
         self._amp = [0.0] * self.num_cars
         self._w = [0.0] * self.num_cars
@@ -95,26 +98,30 @@ class FakeIRSDK:
         # right -- a demo heuristic for which side they appear on when alongside.
         self._lane = ["left" if i < self.player_idx else "right"
                       for i in range(self.num_cars)]
-        # A few cars (never the player) make a full pit stop every lap so the
-        # demo always shows opponents riding the pit route (entry/exit blends +
-        # lane). They're spread around the lap, so they reach the pits at
-        # different times rather than nose-to-tail.
+        # One car (never the player) visits the pit route on staggered laps so
+        # the pit geometry is visible without cluttering the map every lap.
         others = [i for i in range(self.num_cars) if i != self.player_idx]
         self._pit_cars = frozenset(others[-DEMO_PIT_CARS:])
 
         for i in range(self.num_cars):
+            self._offset[i] = i / self.num_cars + rng.uniform(-0.008, 0.008)
             if abs(i - self.player_idx) <= 2:
-                self._speed[i] = 1.0 + rng.uniform(-0.004, 0.004)
-                self._amp[i] = rng.uniform(0.010, 0.022)
-                self._w[i] = rng.uniform(0.06, 0.13)
-                self._offset[i] = 0.5 + (i - self.player_idx) * 0.006
+                self._speed[i] = 1.0 + rng.uniform(-0.003, 0.003)
+                self._amp[i] = rng.uniform(0.004, 0.012)
+                self._w[i] = rng.uniform(0.05, 0.11)
             else:
-                self._speed[i] = 1.0 + rng.uniform(-0.03, 0.03)
-                self._amp[i] = rng.uniform(0.05, 0.09)
-                self._w[i] = rng.uniform(0.04, 0.09)
-                self._offset[i] = i / self.num_cars + rng.uniform(-0.01, 0.01)
+                self._speed[i] = 1.0 + rng.uniform(-0.015, 0.015)
+                self._amp[i] = rng.uniform(0.008, 0.018)
+                self._w[i] = rng.uniform(0.03, 0.07)
 
         self._start = time.time()
+
+    @property
+    def pace_idx(self) -> int:
+        return self.num_cars
+
+    def _pace_lap_pct(self) -> float:
+        return ((time.time() - self._start) * 0.012) % 1.0
 
     # --- pyirsdk-compatible surface ----------------------------------------
 
@@ -139,9 +146,13 @@ class FakeIRSDK:
             for i in range(self.num_cars)
         ]
 
+    def _pit_visit_lap(self, i: int) -> bool:
+        """Whether car i is on a staggered pit-stop lap (not every lap)."""
+        return (int(self._total_laps()[i]) + i) % 4 == 0
+
     def _pit_adjusted_tot(self, i: int, tot: float) -> float:
         """Stretch time on the demo pit route so lap-% matches pit speed."""
-        if i not in self._pit_cars:
+        if i not in self._pit_cars or not self._pit_visit_lap(i):
             return tot
         in_pt = DEMO_PIT_IN_PCT
         out_pt = DEMO_PIT_OUT_PCT
@@ -164,47 +175,20 @@ class FakeIRSDK:
         return self._pit_adjusted_tot(i, self._total_laps()[i]) % 1.0
 
     def _lap_pct(self) -> list[float]:
-        pcts = [self._lap_frac(i) for i in range(self.num_cars)]
-        return self._apply_map_showcase(pcts, lap_key=False)
+        return [self._lap_frac(i) for i in range(self.num_cars)]
 
     def _lap_counts(self) -> list[int]:
         laps = [int(d) + 1 for d in self._total_laps()]
         if self.player_idx < len(laps) and laps[self.player_idx] < 2:
             laps = [lap + 1 for lap in laps]
-        return self._apply_map_showcase(laps, lap_key=True)
-
-    def _apply_map_showcase(self, values: list, *, lap_key: bool) -> list:
-        """Pin showcase cars' lap counts / lap-% for map color demo."""
-        if self.player_idx >= len(values):
-            return values
-        out = list(values)
-        if lap_key:
-            player_lap = out[self.player_idx]
-            for idx, (lap_off, _pct_off) in _MAP_SHOWCASE.items():
-                if idx >= len(out) or idx == self.player_idx:
-                    continue
-                out[idx] = max(1, player_lap + lap_off)
-        else:
-            player_pct = out[self.player_idx]
-            for idx, (_lap_off, pct_off) in _MAP_SHOWCASE.items():
-                if idx >= len(out) or idx == self.player_idx:
-                    continue
-                out[idx] = (player_pct + pct_off) % 1.0
-        return out
+        return laps
 
     def _on_pit_list(self) -> list[bool]:
-        """Which cars are on pit road this tick.
-
-        The designated pit cars ride the full pit route every lap (on pit road
-        across the entry -> exit span); the rest only duck onto pit road
-        occasionally (staggered, ~6% of a lap) for variety.
-        """
+        """Which cars are on pit road this tick."""
         out = []
         for i in range(self.num_cars):
             frac = self._lap_frac(i)
-            if i in self._pit_cars:
-                # Full route extent for latch/on_route; lane-only for OnPitRoad so
-                # exit-blend positioning kicks in after the car leaves pit road.
+            if i in self._pit_cars and self._pit_visit_lap(i):
                 out.append(_on_demo_pit_lane(frac))
             else:
                 lap = int(self._total_laps()[i]) + 1
@@ -276,20 +260,30 @@ class FakeIRSDK:
                         "CarClassID": 0,
                     }
                     for i in range(self.num_cars)
-                ],
+                ] + [{
+                    "CarIdx": self.pace_idx,
+                    "CarNumber": "00",
+                    "UserName": "Pace Car",
+                    "IRating": 0,
+                    "LicString": "P",
+                    "CarClassColor": "#111111",
+                    "CarClassID": 0,
+                    "CarIsPaceCar": True,
+                }],
             }
 
         if key == "PlayerCarIdx":
             return self.player_idx
 
         if key == "CarIdxLapDistPct":
-            return self._lap_pct()
+            pcts = self._lap_pct()
+            return pcts + [self._pace_lap_pct()]
 
         if key == "CarIdxEstTime":
-            return [p * self.lap_time for p in self._lap_pct()]
+            return [p * self.lap_time for p in self._lap_pct()] + [0.0]
 
         if key == "CarIdxOnPitRoad":
-            return self._on_pit_list()
+            return self._on_pit_list() + [False]
 
         if key == "OnPitRoad":
             return self._on_pit_list()[self.player_idx]
@@ -299,8 +293,9 @@ class FakeIRSDK:
             return 0x10 if self._on_pit_list()[self.player_idx] else 0
 
         if key == "CarIdxTrackSurface":
-            return [oc.TRK_IN_PIT_STALL if on else oc.TRK_ON_TRACK
+            base = [oc.TRK_IN_PIT_STALL if on else oc.TRK_ON_TRACK
                     for on in self._on_pit_list()]
+            return base + [oc.TRK_ON_TRACK]
 
         if key == "CarIdxPosition":
             order = sorted(
@@ -309,7 +304,7 @@ class FakeIRSDK:
             positions = [0] * self.num_cars
             for rank, idx in enumerate(order, start=1):
                 positions[idx] = rank
-            return positions
+            return positions + [0]
 
         if key == "CarIdxLap":
             return self._lap_counts()
@@ -416,9 +411,11 @@ class FakeIRSDK:
             return 11
 
         if key == "WeekendInfo":
-            return {"TrackID": "_demo", "TrackDisplayName": "Demo Speedpark",
-                    "TrackConfigName": "Oval", "TrackLength": "4.00 km",
+            return {"TrackID": DEMO_TRACK_ID,
+                    "TrackDisplayName": "Chicagoland Speedway",
+                    "TrackConfigName": "Oval", "TrackLength": "2.25 km",
                     "TrackType": "oval course", "Category": "Oval",
+                    "TrackNumTurns": 4,
                     "WeekendOptions": {"IncidentLimit": 17}}
 
         if key == "SplitTimeInfo":

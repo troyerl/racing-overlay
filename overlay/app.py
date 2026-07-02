@@ -40,6 +40,9 @@ from . import irating_calc
 from . import sysstats
 from . import track_store
 from . import version
+from .map_markers import (
+    fresh_hold_states, resolve_traffic_markers, select_marker_candidates,
+)
 from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.track_map import TrackMapWidget, is_schematic_pit_source
@@ -115,6 +118,8 @@ class AdvancedSimHUD:
         self._driver_cache: dict[int, dict] = {}
         # CarIdx values of pace/safety cars, so they're never shown as competitors.
         self._pace_idxs: set[int] = set()
+        # Map ahead/behind/leader icon hold state (debounce side-by-side flicker).
+        self._marker_hold = fresh_hold_states()
         # Engine/shift-light params from the session YAML (cached with drivers).
         self._car_info: dict = {}
         self._driver_refresh_counter = 0
@@ -140,8 +145,6 @@ class AdvancedSimHUD:
         self._pit_speed_ms = 0.0
         self._pit_lane_speed_pct = 1.0
         self._pit_latch_seed_pending = False
-        self._pit_s0 = None
-        self._pit_t0 = None
         self._pit_span = None
         self._pit_path = None
         self._pit_in = None
@@ -208,6 +211,7 @@ class AdvancedSimHUD:
         self._track_sync.fetched.connect(self._on_remote_track)
         self._track_sync.synced.connect(self._on_tracks_synced)
         self._remote_tried: set = set()  # track ids we've already asked for
+        self._demo_track_pending_id: str | None = None
         # MongoDB is the source of truth: on launch, refresh the local cache so
         # any maps the author changed are pulled in (runs off the GUI thread).
         if not self.demo and config.cloud_tracks():
@@ -444,11 +448,11 @@ class AdvancedSimHUD:
             learned=False)
 
     def effective_track_id(self):
-        """TrackID for file naming (live session, or ``_demo`` in demo mode)."""
+        """TrackID for file naming (live session, or demo track id in demo mode)."""
         if self._track_id is not None:
             return self._track_id
         if self.demo:
-            return self._demo_track_id or "_demo"
+            return self._resolve_demo_track_id()
         return None
 
     def _authoring_track_id(self):
@@ -499,7 +503,7 @@ class AdvancedSimHUD:
         return True
 
     def set_pit_speed_authoring(self, speed_ms: float) -> bool:
-        """Override the learned pit speed limit and save to the track record."""
+        """Set the pit speed limit manually and save to the track record."""
         speed_ms = max(0.0, float(speed_ms))
         self._pit_speed_ms = speed_ms
         if self._pit_span is not None:
@@ -1845,62 +1849,78 @@ class AdvancedSimHUD:
             return self._demo_track_id
         if self._v2_authoring_track_id is not None:
             return str(self._v2_authoring_track_id)
-        tracks_dir = self.tracks_dir or ""
+        return str(demo_data.DEMO_TRACK_ID)
+
+    def _sync_demo_pit_from_meta(self, meta: dict | None) -> None:
+        """Align demo pit-car simulation with loaded track pit lap-% extents."""
+        if not self.demo or not meta:
+            return
+        span = meta.get("pit_span")
+        lane_lo = lane_hi = None
+        if isinstance(span, (list, tuple)) and len(span) >= 2:
+            lane_lo, lane_hi = span[0], span[1]
+        demo_data.configure_pit_extents(
+            meta.get("pit_in_pct"),
+            meta.get("pit_out_pct"),
+            lane_lo,
+            lane_hi,
+        )
+
+    def _apply_track_from_path(self, path: str, tid: str) -> bool:
+        """Load a track JSON/SVG into the map widget; return False on failure."""
         try:
-            best_mtime = 0.0
-            best_tid: str | None = None
-            for name in os.listdir(tracks_dir):
-                if not name.endswith(".json") or name.startswith("_"):
-                    continue
-                tid = name[:-5]
-                path = os.path.join(tracks_dir, name)
-                mtime = os.path.getmtime(path)
-                if mtime > best_mtime:
-                    best_mtime = mtime
-                    best_tid = tid
-            if best_tid is not None:
-                return best_tid
-        except OSError:
-            pass
-        return "_demo"
+            pts, sf, corners, name, file_meta = track_map.load_track(path)
+        except Exception:
+            return False
+        self.map_widget.set_track(pts, sf, corners)
+        if tid not in ("_demo", "demo"):
+            try:
+                self._v2_authoring_track_id = int(tid)
+            except (TypeError, ValueError):
+                pass
+            if name:
+                self._v2_authoring_name = name
+        saved_turns = _coerce_int((file_meta or {}).get("num_turns"))
+        if saved_turns:
+            self.map_widget.set_num_turns(saved_turns)
+        meta = file_meta or {}
+        if meta.get("pit_path"):
+            if not meta.get("pit_source"):
+                meta = dict(meta, pit_source="schematic")
+            self._apply_pit_meta(meta)
+            self._sync_demo_pit_from_meta(meta)
+        return True
 
     def _load_demo_track(self) -> None:
-        pts = None
-        file_meta = None
         tid = self._resolve_demo_track_id()
+        self._demo_track_pending_id = tid
+        legacy_demo = tid in ("_demo", "demo")
+        if str(tid) == str(demo_data.DEMO_TRACK_ID):
+            self.map_widget.set_track_is_oval(True)
+            self.map_widget.set_num_turns(4)
+
         path = track_map.find_track_file(tid, self.tracks_dir)
-        if path:
-            try:
-                pts, sf, corners, name, file_meta = track_map.load_track(path)
-                self.map_widget.set_track(pts, sf, corners)
-                if tid not in ("_demo", "demo"):
-                    try:
-                        self._v2_authoring_track_id = int(tid)
-                    except (TypeError, ValueError):
-                        pass
-                    if name:
-                        self._v2_authoring_name = name
-            except Exception:
-                pts = None
-                file_meta = None
-        if pts is None:
-            pts = track_map.build_demo_path()
-            self.map_widget.set_path(pts)
-        # Prefer pit geometry from the track file (e.g. schematic import); only
-        # synthesize a demo lane when the file has no pit polylines.
-        if file_meta and file_meta.get("pit_path"):
-            if not file_meta.get("pit_source"):
-                file_meta = dict(file_meta, pit_source="schematic")
-            self._apply_pit_meta(file_meta)
-            n_in = len(file_meta.get("pit_in") or [])
-            n_path = len(file_meta.get("pit_path") or [])
-            n_out = len(file_meta.get("pit_out") or [])
-            self.map_widget.flash_hint(
-                f"Schematic — entry {n_in}, road {n_path}, merge {n_out}")
-        else:
-            meta = self._demo_pit_geometry(pts)
+        loaded = bool(path and self._apply_track_from_path(path, tid))
+
+        if not loaded:
+            if legacy_demo:
+                pts = track_map.build_demo_path()
+                self.map_widget.set_path(pts)
+                meta = self._demo_pit_geometry(pts)
+                if meta:
+                    self._apply_pit_meta(meta)
+                    self._sync_demo_pit_from_meta(meta)
+            else:
+                label = "Chicagoland" if str(tid) == str(demo_data.DEMO_TRACK_ID) else tid
+                self.map_widget.flash_hint(f"Loading {label} from cloud…")
+        elif not self._pit_path:
+            meta = self._demo_pit_geometry(self.map_widget.path)
             if meta:
                 self._apply_pit_meta(meta)
+                self._sync_demo_pit_from_meta(meta)
+
+        if config.cloud_tracks() and not legacy_demo:
+            self._track_sync.fetch_async(tid)
 
     def _demo_pit_geometry(self, pts):
         """Build a believable pit lane (lane + entry/exit blends + lap-% extents
@@ -2002,48 +2022,54 @@ class AdvancedSimHUD:
     def _on_tracks_synced(self, n) -> None:
         """Startup cache refresh finished; if the map we're showing was one of
         the tracks that changed, reload it so the live view is up to date."""
-        if self.demo or not n or self._track_id is None:
+        if not n:
+            return
+        if self.demo:
+            tid = self._demo_track_pending_id or self._resolve_demo_track_id()
+            path = track_map.find_track_file(tid, self.tracks_dir)
+            if not path:
+                return
+            if not self._apply_track_from_path(path, str(tid)):
+                return
+            self._refresh_settings_authoring()
+            return
+        if self._track_id is None:
             return
         path = track_map.find_track_file(self._track_id, self.tracks_dir)
         if not path:
             return
-        try:
-            pts, sf, corners, _, meta = track_map.load_track(path)
-        except Exception:
+        if not self._apply_track_from_path(path, str(self._track_id)):
             return
-        self.map_widget.set_track(pts, sf, corners)
-        self.map_widget.set_num_turns(self._track_turns or meta.get("num_turns"))
-        self._apply_pit_meta(meta)
         self._track_loaded = True
         self._refresh_settings_authoring()
 
     def _on_remote_track(self, track_id, doc) -> None:
         """A shared track map arrived from the cloud (off the GUI thread)."""
-        if not doc or not track_store.same_track_id(track_id, self._track_id):
+        target = (self._demo_track_pending_id if self.demo else self._track_id)
+        if not doc or not track_store.same_track_id(track_id, target):
             return
-        if self._track_loaded:
+        if self._track_loaded and not self.demo:
             return
         try:
             path = track_store.write_local(self.tracks_dir, doc)
             if not path:
                 return
-            pts, sf, corners, _, meta = track_map.load_track(path)
-            self.map_widget.set_track(pts, sf, corners)
-            saved_turns = _coerce_int(meta.get("num_turns"))
-            self.map_widget.set_num_turns(self._track_turns or saved_turns)
-            if saved_turns and not self._track_turns:
-                self._track_turns = saved_turns
-            self._apply_pit_meta(meta)
+            if not self._apply_track_from_path(path, str(target)):
+                return
+            if not self.demo:
+                saved_turns = _coerce_int(doc.get("num_turns"))
+                self.map_widget.set_num_turns(self._track_turns or saved_turns)
+                if saved_turns and not self._track_turns:
+                    self._track_turns = saved_turns
             self._track_loaded = True
             track_store.enforce_cache_limit(
-                self.tracks_dir, protect=[self._track_id])
+                self.tracks_dir, protect=[target])
             self._refresh_settings_authoring()
         except Exception:
             pass
 
     def _reset_pit_state(self) -> None:
         """Clear pit-route runtime state (latches, not saved geometry)."""
-        self._pit_s0 = self._pit_t0 = None
         self._player_on_route = False
         self._player_route_ticks = 0
         self._pit_route_latch.clear()
@@ -2206,26 +2232,81 @@ class AdvancedSimHUD:
                       else surface[idx] in pit_surf)
             approaching = (surface is not None and idx < len(surface)
                            and surface[idx] == oc.TRK_APPROACHING_PITS)
-            # Show cars that are on track or on pit road; skip garage/off-world.
-            if surface[idx] != oc.TRK_ON_TRACK and not on_pit and not is_player:
+            is_pace = idx in self._pace_idxs
+            # Show cars on track or pit road; pace car only when on the racing line.
+            if not is_pace and not is_player and surface[idx] != oc.TRK_ON_TRACK and not on_pit:
                 continue
+            if is_pace:
+                if not config.CFG["map"].get("show_pace_car", True):
+                    continue
+                if surface[idx] != oc.TRK_ON_TRACK:
+                    continue
             on_route = self._car_on_route(idx, pct, on_pit, is_player, route,
                                           blends_on, approaching=approaching)
             d = drivers.get(idx)
-            if use_pos and positions and idx < len(positions) and positions[idx]:
+            if is_pace:
+                num = "PC"
+                color = config.CFG["map"]["colors"].get("pace_car", "#0b0e12")
+            elif use_pos and positions and idx < len(positions) and positions[idx]:
                 num = str(positions[idx])
+                color = player_color if is_player else self._map_car_color(
+                    idx, player, car_lap, lap_pct)
             else:
                 num = str(d.get("CarNumber", "?")) if d else "?"
-            if is_player:
-                color = player_color
-            else:
-                color = self._map_car_color(
-                    idx, player, car_lap, lap_pct)
+                if is_player:
+                    color = player_color
+                else:
+                    color = self._map_car_color(
+                        idx, player, car_lap, lap_pct)
             speaking = radio_speaker is not None and idx == radio_speaker
             cars.append((idx, pct, num, color, is_player, on_route, on_pit,
-                           speaking))
+                         speaking, is_pace))
+        mcfg = config.CFG["map"]
+        if mcfg.get("show_sector_boundaries", True):
+            self.map_widget.set_sector_boundaries(self._sector_starts())
+        else:
+            self.map_widget.set_sector_boundaries([])
+        if mcfg.get("show_traffic_markers", True):
+            markers = self._map_traffic_markers(
+                player, lap_pct, surface, positions, on_pit_arr, drivers)
+            self.map_widget.set_traffic_markers(markers)
+        else:
+            self.map_widget.set_traffic_markers({})
         self.map_widget.set_schematic_exit_pcts(self._pit_exit_latch)
         self.map_widget.set_cars(cars)
+
+    def _map_traffic_markers(self, player, lap_pct, surface, positions,
+                             on_pit_arr, drivers) -> dict[str, dict | None]:
+        """Ahead/behind/leader targets with hold-before-switch debouncing."""
+        try:
+            now = float(self.ir["SessionTime"])
+        except (TypeError, ValueError, KeyError):
+            now = 0.0
+        hold = float(config.CFG["map"].get("marker_hold_seconds", 3.0) or 3.0)
+        pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
+        candidates = select_marker_candidates(
+            player, lap_pct, surface, positions,
+            pace_idxs=self._pace_idxs,
+            on_pit_arr=on_pit_arr,
+            pit_surfaces=pit_surf,
+        )
+        raw = resolve_traffic_markers(
+            self._marker_hold, candidates, lap_pct,
+            now=now, hold_sec=hold,
+            surface=surface, on_pit_arr=on_pit_arr,
+            pace_idxs=self._pace_idxs,
+            pit_surfaces=pit_surf,
+        )
+        out: dict[str, dict | None] = {}
+        for slot, m in raw.items():
+            if not m:
+                out[slot] = None
+                continue
+            idx = m.get("idx")
+            d = drivers.get(idx) if idx is not None else None
+            label = str(d.get("CarNumber", "")) if d else ""
+            out[slot] = {**m, "label": label}
+        return out
 
     def _route_interval(self):
         """The pit route's lap-% extent (divergence -> rejoin), preferring the
@@ -2349,32 +2430,30 @@ class AdvancedSimHUD:
             self._pit_route_latch[idx] = False
         return False
 
-    # iRacing EngineWarnings bitfield: pit speed limiter engaged.
-    _PIT_LIMITER_BIT = 0x10
-
-    def _learn_pit_speed(self, speed) -> None:
-        """Estimate the pit speed limit while on pit road.
-
-        The limit is the speed held during the steady cruise down pit lane, so
-        we accept a sample when either the pit limiter is engaged or the speed
-        has been steady over a ~0.4s window (which rejects the entry braking and
-        exit acceleration). The running max of those is the limit.
-        """
-        if not isinstance(speed, (int, float)) or speed <= 3.0:
+    def _update_pit_route(self, player, lap_pct) -> None:
+        """Update schematic pit route latches while on pit road."""
+        if player is None or not lap_pct:
             return
-        ew = self.ir["EngineWarnings"]
-        limiter = bool(ew and (int(ew) & self._PIT_LIMITER_BIT))
-        steady = False
-        t = self.ir["SessionTime"]
-        if isinstance(t, (int, float)):
-            if self._pit_t0 is None:
-                self._pit_s0, self._pit_t0 = speed, t
-            elif t - self._pit_t0 >= 0.4:
-                # < ~1.25 m/s change over the window => essentially constant.
-                steady = abs(speed - self._pit_s0) < 0.5
-                self._pit_s0, self._pit_t0 = speed, t
-        if (limiter or steady) and speed > self._pit_speed_ms:
-            self._pit_speed_ms = speed
+        on = self.ir["OnPitRoad"]
+        if on is None:
+            arr = self.ir["CarIdxOnPitRoad"]
+            on = bool(arr[player]) if arr and player < len(arr) else False
+        on = bool(on)
+        pct = lap_pct[player]
+        on_pit_arr = self.ir["CarIdxOnPitRoad"]
+        self._update_schematic_pit_latches(lap_pct, on_pit_arr)
+        route = self._route_interval()
+        valid_pct = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
+        self._player_route_ticks = self._player_route_ticks + 1 if on else 0
+        if self._player_route_ticks >= PIT_COMMIT_HOLD:
+            self._player_on_route = True
+        elif self._player_on_route and valid_pct is not None:
+            end = self._pit_out_pct if self._pit_out_pct is not None else (
+                route[1] if route else None)
+            if end is None or not self._pct_in_interval(
+                    valid_pct, route[0] if route else 0.0, end):
+                self._player_on_route = False
+        self.map_widget.set_player_xy(None)
 
     def _update_player_pos(self, pct) -> None:
         """Compute the player's model-space position for this tick.
@@ -2404,36 +2483,6 @@ class AdvancedSimHUD:
             if self._pit_prev_on.get(idx) and not on:
                 self._pit_exit_latch[idx] = float(pct)
             self._pit_prev_on[idx] = on
-
-    def _update_pit_route(self, player, lap_pct) -> None:
-        """Update schematic pit route latches and learn pit speed from telemetry."""
-        if player is None or not lap_pct:
-            return
-        on = self.ir["OnPitRoad"]
-        if on is None:
-            arr = self.ir["CarIdxOnPitRoad"]
-            on = bool(arr[player]) if arr and player < len(arr) else False
-        on = bool(on)
-        pct = lap_pct[player]
-        speed = self.ir["Speed"]
-        on_pit_arr = self.ir["CarIdxOnPitRoad"]
-        self._update_schematic_pit_latches(lap_pct, on_pit_arr)
-        route = self._route_interval()
-        valid_pct = pct if (pct is not None and 0.0 <= pct <= 1.0) else None
-        self._player_route_ticks = self._player_route_ticks + 1 if on else 0
-        if self._player_route_ticks >= PIT_COMMIT_HOLD:
-            self._player_on_route = True
-        elif self._player_on_route and valid_pct is not None:
-            end = self._pit_out_pct if self._pit_out_pct is not None else (
-                route[1] if route else None)
-            if end is None or not self._pct_in_interval(
-                    valid_pct, route[0] if route else 0.0, end):
-                self._player_on_route = False
-        if on:
-            self._learn_pit_speed(speed)
-        else:
-            self._pit_s0 = self._pit_t0 = None
-        self.map_widget.set_player_xy(None)
 
     # iRacing SessionFlags bitfield bits (irsdk_Flags).
     _FLAG_CHECKERED = 0x00000001           # session finished

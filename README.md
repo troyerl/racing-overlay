@@ -104,11 +104,10 @@ Flags:
   changing**, and a tight battle pack around your car weaves past on both sides
   so the **radar regularly shows left / right / both**. Every panel animates.
   Great for layout/styling work.
-- `--demo-track <ID>` &mdash; with `--demo`, load `<ID>.json` from the writable
-  tracks directory instead of the built-in demo track (e.g. `--demo-track 451` to
-  preview a schematic import). On macOS that is
-  `~/Library/Application Support/GridGlance/tracks/` (see `overlay/paths.py`), not
-  necessarily the repo's `tracks/` folder.
+- `--demo-track <ID>` &mdash; with `--demo`, load a different track from the
+  shared library instead of the default Chicagoland (TrackID 123). The map is
+  fetched from MongoDB on each launch; a local cache is used only while the
+  download is in flight (e.g. `--demo-track 451` to preview another layout).
 - `--tracks-dir <PATH>` &mdash; override the tracks directory (useful in dev:
   `--tracks-dir tracks` loads from the repo checkout without copying to App Support).
 - `--no-clickthrough` &mdash; "edit mode": windows become interactive so you can
@@ -167,7 +166,10 @@ in this priority order:
 2. **Cloud library:** if no local file exists, the overlay may fetch one from the
    shared track library when cloud tracks are enabled.
 3. If neither is available, import a members HTML track map in **Track Scan**.
-4. **Demo mode:** loads the most recently saved track or `tracks/_demo.json`.
+4. **Demo mode:** loads **Chicagoland Speedway** (TrackID 123) from the shared
+   track library on every launch (local cache as stale-while-revalidate). Use
+   `--demo-track <ID>` to try another track; `--demo-track _demo` restores the
+   built-in generic oval.
 
 ### Pit lane
 

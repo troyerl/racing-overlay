@@ -69,6 +69,9 @@ _CODEPOINTS: dict[str, int] = {
     "title": 0xF091,          # trophy
     "count": 0xF0C0,          # users
     "speaking": 0xF028,       # volume-high
+    "leader": 0xF521,        # crown
+    "car_ahead": 0xF062,     # arrow-up
+    "car_behind": 0xF063,    # arrow-down
     "irating_up": 0xF062,     # arrow-up
     "irating_down": 0xF063,   # arrow-down
     "irating": 0xF201,        # chart-line

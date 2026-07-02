@@ -194,6 +194,10 @@ LABEL_OVERRIDES = {
     "show_pit_speed": "Show pit speed limit",
     "pit_lane_opacity": "Pit lane opacity",
     "pit_dot_opacity": "Pit car dot opacity",
+    "show_pace_car": "Show pace car (PC)",
+    "show_sector_boundaries": "Show sector boundaries",
+    "show_traffic_markers": "Show ahead/behind/leader icons",
+    "marker_hold_seconds": "Marker switch delay (seconds)",
     "dot_radius_frac": "Car dot size",
     "pit_blend": "Pit entry line",
     "pit_blend_out": "Pit exit line",
@@ -1194,7 +1198,9 @@ class ConfigEditor(QWidget):
         self.overlay_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.overlay_btn.clicked.connect(self._toggle_overlay)
         controls.addWidget(self.overlay_btn)
-        self.edit_w, self.edit_sw = self._opt_toggle("Edit layout", False)
+        self.edit_w, self.edit_sw = self._opt_toggle(
+            "Edit layout",
+            self._overlay.edit_mode_enabled() if self._overlay else False)
         self.edit_w.setToolTip("Make the overlay widgets draggable so you can "
                                "move and resize them; turn off to lock.")
         self.edit_sw.toggled.connect(self._toggle_edit)
@@ -1678,8 +1684,10 @@ class ConfigEditor(QWidget):
         v.setSpacing(8)
         t = QLabel("Track metadata")
         t.setObjectName("enableTitle")
-        hint = QLabel("Corner count, pit speed, and label positions. Drag corner "
-                      "numbers on the map when edit is enabled; release to save.")
+        hint = QLabel("Corner count, pit speed limit, pit lane speed %, and label "
+                      "positions. Pit speeds are set manually here (not learned "
+                      "from driving). Drag corner numbers on the map when edit "
+                      "is enabled; release to save.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(t)
@@ -2080,9 +2088,7 @@ class ConfigEditor(QWidget):
         """Reflect the overlay's current edit/lock state without re-firing it."""
         if self._overlay is None or not hasattr(self._overlay, "edit_mode_enabled"):
             return
-        self.edit_sw.blockSignals(True)
-        self.edit_sw.setChecked(self._overlay.edit_mode_enabled())
-        self.edit_sw.blockSignals(False)
+        self.edit_sw.set_checked_silent(self._overlay.edit_mode_enabled())
 
     def _toggle_edit(self, on: bool) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_edit_mode"):

@@ -5,6 +5,45 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.38.0 - 2026-07-01
+
+- **Map traffic marker clipping.** Layout padding now reserves space for outward
+  floating icons and car-number pills so they are not cut off at the widget edge.
+
+## 1.37.0 - 2026-07-01
+
+- **Manual pit speeds only.** Pit speed limit and pit lane speed % are no longer
+  updated from telemetry when you drive through pit road — set them in Track Scan
+  metadata (or load from the track file).
+
+## 1.36.0 - 2026-07-01
+
+- **Edit layout toggle sync.** Settings now reflects `--no-clickthrough` on launch
+  (the switch knob matches actual edit mode).
+- **Natural demo map traffic.** Removed artificial lap-% pinning; oval pacing and
+  staggered pit visits so Chicagoland demo dots flow like live traffic.
+- **Clearer traffic markers.** Leader/ahead/behind icons show the car number,
+  draw a solid line to the actual car dot, and highlight the target with a ring.
+
+## 1.35.0 - 2026-07-01
+
+- **Demo Chicagoland from MongoDB.** `--demo` now loads Chicagoland Speedway
+  (TrackID 123) from the shared track library on every launch, using the local
+  cache only as a placeholder while the cloud fetch runs. `--demo-track <ID>`
+  still overrides for testing other layouts.
+- **Crown leader icon.** The map's overall-leader traffic marker uses a crown
+  instead of a trophy.
+
+## 1.34.0 - 2026-07-01
+
+- **Map pace car.** When iRacing reports a pace car on track, the map shows a
+  black dot with white **PC** (configurable in Settings).
+- **Sector boundaries on the track loop.** Split-time sector starts render as
+  perpendicular ticks with S2/S3 labels outside the circuit.
+- **Traffic markers.** Floating icons outside the track mark the car ahead, car
+  behind, and overall leader (P1). Each slot holds its current target for 3
+  seconds before switching to reduce flicker when rivals are side-by-side.
+
 ## 1.33.0 - 2026-07-06
 
 - **Configurable row height on every table.** Relative, Standings, Laptime Log,
