@@ -12,8 +12,9 @@ arrange panels, then relaunch locked; saved positions are restored either way.
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtWidgets import QLabel, QSizeGrip, QVBoxLayout, QWidget
+from PyQt6.QtCore import Qt, QTimer, QPoint
+from PyQt6.QtGui import QColor, QPainter, QPen
+from PyQt6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from . import common as oc
 from . import layout_store
@@ -21,6 +22,69 @@ from . import layout_store
 # Clamp how far a text panel's font scales relative to its default height.
 _MIN_FONT_SCALE = 0.6
 _MAX_FONT_SCALE = 4.0
+
+# Bottom-right resize handle — larger and higher-contrast than native QSizeGrip
+# on translucent frameless windows (macOS + Windows).
+_GRIP_SIZE = 30
+_GRIP_ACCENT = QColor(70, 223, 122, 240)
+_GRIP_BG = QColor(12, 14, 18, 210)
+_GRIP_BORDER = QColor(255, 255, 255, 200)
+_EDIT_BORDER = QColor(70, 223, 122, 140)
+
+
+class ResizeGrip(QWidget):
+    """Custom bottom-right resize handle (visible on macOS and Windows)."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self._drag_origin: QPoint | None = None
+        self._geom_origin = None
+        self.setFixedSize(_GRIP_SIZE, _GRIP_SIZE)
+        self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        self.setToolTip("Drag to resize")
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, False)
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(1, 1, -2, -2)
+        p.setBrush(_GRIP_BG)
+        p.setPen(QPen(_GRIP_BORDER, 1.5))
+        p.drawRoundedRect(rect, 5, 5)
+        p.setPen(QPen(_GRIP_ACCENT, 2.4, Qt.PenStyle.SolidLine,
+                       Qt.PenCapStyle.RoundCap))
+        inset = 5
+        spacing = 5
+        for i in range(4):
+            d = inset + i * spacing
+            p.drawLine(self.width() - d, self.height() - inset,
+                       self.width() - inset, self.height() - d)
+        p.end()
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            win = self.window()
+            self._drag_origin = event.globalPosition().toPoint()
+            self._geom_origin = win.geometry()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self._drag_origin is not None and self._geom_origin is not None:
+            win = self.window()
+            delta = event.globalPosition().toPoint() - self._drag_origin
+            g = self._geom_origin
+            win.resize(max(win.minimumWidth(), g.width() + delta.x()),
+                       max(win.minimumHeight(), g.height() + delta.y()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        self._drag_origin = None
+        self._geom_origin = None
+        super().mouseReleaseEvent(event)
 
 
 class PanelWindow(QWidget):
@@ -67,8 +131,9 @@ class PanelWindow(QWidget):
 
         # A resize handle in the bottom-right corner, only in edit mode.
         if not self.click_through:
-            self._grip = QSizeGrip(self)
-            self._grip.resize(16, 16)
+            self._grip = ResizeGrip(self)
+            self._grip.show()
+            self._grip.raise_()
 
         # Debounce saves while the user drags the resize grip.
         self._save_timer = QTimer(self)
@@ -84,6 +149,9 @@ class PanelWindow(QWidget):
     def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         super().showEvent(event)
         oc.set_windows_click_through(self, self.click_through)
+        self._position_grip()
+        if self._grip is not None:
+            self._grip.raise_()
 
     def set_click_through(self, value: bool) -> None:
         """Flip between locked (click-through) and edit mode (draggable) live.
@@ -103,16 +171,32 @@ class PanelWindow(QWidget):
                 self._grip.deleteLater()
                 self._grip = None
         elif self._grip is None:
-            self._grip = QSizeGrip(self)
-            self._grip.resize(16, 16)
-            self._grip.move(self.width() - 16, self.height() - 16)
+            self._grip = ResizeGrip(self)
+            self._position_grip()
             self._grip.show()
+            self._grip.raise_()
         self.update()
+
+    def _position_grip(self) -> None:
+        if self._grip is not None:
+            self._grip.move(max(0, self.width() - _GRIP_SIZE),
+                            max(0, self.height() - _GRIP_SIZE))
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        super().paintEvent(event)
+        if not self.click_through:
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(QPen(_EDIT_BORDER, 2, Qt.PenStyle.DashLine))
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRoundedRect(self.rect().adjusted(2, 2, -3, -3), 4, 4)
+            p.end()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
+        self._position_grip()
         if self._grip is not None:
-            self._grip.move(self.width() - 16, self.height() - 16)
+            self._grip.raise_()
         self._rescale_font()
         # A resize that wasn't triggered by our own setGeometry should persist.
         if self.isVisible():

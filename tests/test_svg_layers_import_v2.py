@@ -121,3 +121,109 @@ def test_v2_parse_track_id_from_html():
     assert parse_track_id_from_html(
         html_path=_require_html("Oval", "Chicagoland.html")) == 123
     assert parse_track_id_from_html(html_text=_fixture("compound_oval.html")) is None
+
+
+def test_v2_chicagoland_sf_direction_and_turn_labels():
+    from bs4 import BeautifulSoup
+
+    from tools.schematic_to_track import _pct_on_loop
+    from tools.svg_layers_to_track import (
+        _sf_anchor_point,
+        _sf_stripe_centroid,
+        extract_layers_from_html,
+    )
+    from tools.svg_layers_to_track_v2 import (
+        _align_loop_from_sf,
+        _normalize_loop,
+        _resolve_loop_segment,
+        _sample_segment,
+    )
+
+    path = _require_html("Oval", "Chicagoland.html")
+    html = open(path, encoding="utf-8").read()
+    soup = BeautifulSoup(html, "html.parser")
+    segment = _resolve_loop_segment(soup)
+    raw = _sample_segment(segment, 400)
+    layers = extract_layers_from_html(html)
+    aligned = _align_loop_from_sf(raw, layers.get("start_finish"))
+    normalized, norm = _normalize_loop([[p[0], p[1]] for p in aligned])
+    loop = [(p[0], p[1]) for p in normalized]
+
+    doc = import_loop_from_html(html_path=path, num_samples=400)
+
+    assert doc["start_finish"] == 0.0
+    assert len(doc["corners"]) == 4
+    assert {c["label"] for c in doc["corners"]} == {"1", "2", "3", "4"}
+    # Members ovals: turn 4 sits just after S/F when following the arrow (same as v1).
+    assert [c["label"] for c in doc["corners"]] == ["4", "3", "2", "1"]
+
+    sf_svg = layers["start_finish"]
+    anchor = _sf_anchor_point(sf_svg)
+    stripe = _sf_stripe_centroid(sf_svg)
+    assert anchor is not None and stripe is not None and anchor == stripe
+    min_x, min_y, span = norm
+    anchor_norm = (
+        (anchor[0] - min_x) / span,
+        1.0 - ((anchor[1] - min_y) / span),
+    )
+    sf_pct = _pct_on_loop(loop, anchor_norm)
+    assert sf_pct < 0.05 or sf_pct > 0.95
+
+    pcts = [c["pct"] for c in doc["corners"]]
+    assert pcts == sorted(pcts)
+    assert all(pcts[i] < pcts[i + 1] for i in range(len(pcts) - 1))
+
+
+def test_v2_indianapolis_sf_stripe_anchor():
+    from bs4 import BeautifulSoup
+
+    from tools.schematic_to_track import _dist, _pct_on_loop
+    from tools.svg_layers_to_track import (
+        _sf_anchor_point,
+        _sf_arrow_tip,
+        _sf_stripe_centroid,
+        extract_layers_from_html,
+    )
+    from tools.svg_layers_to_track_v2 import (
+        _align_loop_from_sf,
+        _normalize_loop,
+        _resolve_loop_segment,
+        _sample_segment,
+    )
+
+    path = _require_html("Oval", "Indianapolis Motor Speedway.html")
+    html = open(path, encoding="utf-8").read()
+    soup = BeautifulSoup(html, "html.parser")
+    segment = _resolve_loop_segment(soup)
+    raw = _sample_segment(segment, 400)
+    layers = extract_layers_from_html(html)
+    sf_svg = layers["start_finish"]
+    aligned = _align_loop_from_sf(raw, sf_svg)
+    normalized, norm = _normalize_loop([[p[0], p[1]] for p in aligned])
+    loop = [(p[0], p[1]) for p in normalized]
+
+    doc = import_loop_from_html(html_path=path, num_samples=400)
+    assert doc["start_finish"] == 0.0
+
+    stripe = _sf_stripe_centroid(sf_svg)
+    tip = _sf_arrow_tip(sf_svg)
+    anchor = _sf_anchor_point(sf_svg)
+    assert stripe is not None and tip is not None and anchor == stripe
+    min_x, min_y, span = norm
+    loop_pt = loop[0]
+
+    def _to_norm(pt):
+        return (
+            (pt[0] - min_x) / span,
+            1.0 - ((pt[1] - min_y) / span),
+        )
+
+    stripe_norm = _to_norm(stripe)
+    tip_norm = _to_norm(tip)
+    assert loop_pt[0] < tip_norm[0]  # stripe is left of direction arrow
+    assert abs(loop_pt[0] - stripe_norm[0]) < 0.02
+    assert _dist(loop_pt, stripe_norm) < 0.06
+
+    sf_pct = _pct_on_loop(loop, stripe_norm)
+    assert sf_pct < 0.05 or sf_pct > 0.95
+    assert tip[0] > stripe[0]

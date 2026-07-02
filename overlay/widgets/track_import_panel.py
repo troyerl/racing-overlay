@@ -1,4 +1,4 @@
-"""Track Scan v2: HTML loop import + manual pit authoring on the live map."""
+"""Track Scan: in-session track editing + optional HTML loop import."""
 
 from __future__ import annotations
 
@@ -21,12 +21,14 @@ def _parse_html_track_id(path: str) -> int | None:
     try:
         from tools.svg_layers_to_track_v2 import parse_track_id_from_html
         return parse_track_id_from_html(html_path=path)
-    except Exception:
+    except ImportError:
+        return None
+    except (OSError, ValueError):
         return None
 
 
 class TrackImportV2Panel(QFrame):
-    """Track Scan card: import members HTML loop, draw pit on overlay map."""
+    """Track Scan card: edit pit/merge on map in session, or import loop from HTML."""
 
     saved = pyqtSignal(str)
     notified = pyqtSignal(str)
@@ -42,38 +44,20 @@ class TrackImportV2Panel(QFrame):
         v.setContentsMargins(15, 11, 15, 12)
         v.setSpacing(8)
 
-        t = QLabel("HTML loop import (v2)")
+        t = QLabel("Edit track on map")
         t.setObjectName("enableTitle")
         v.addWidget(t)
 
         hint = QLabel(
-            "Import the racing loop from a members-site track page (active-config "
-            "layer only). TrackID is read from the HTML (id=\"track-map-123\") — "
-            "iRacing does not need to be running. Draw pit road and merge on the "
-            "overlay map; entry blend is generated on save.")
+            "While on track in iRacing, draw or adjust the pit road (red) and "
+            "exit merge line (blue) on the overlay map. Corner labels are edited "
+            "in Track metadata below. Save writes tracks/<TrackID>.json.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(hint)
 
-        row = QHBoxLayout()
-        self._path_lbl = QLabel("No HTML file chosen")
-        self._path_lbl.setObjectName("enableHint")
-        self._path_lbl.setWordWrap(True)
-        browse = QPushButton("Choose HTML…")
-        browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse.clicked.connect(self._browse)
-        row.addWidget(self._path_lbl, 1)
-        row.addWidget(browse, 0)
-        v.addLayout(row)
-
-        self._import_btn = QPushButton("Import loop")
-        self._import_btn.setEnabled(False)
-        self._import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._import_btn.clicked.connect(self._import_loop)
-        v.addWidget(self._import_btn)
-
         phase_row = QHBoxLayout()
-        phase_lbl = QLabel("Draw on map")
+        phase_lbl = QLabel("Pit road / merge")
         phase_lbl.setObjectName("rowLabel")
         phase_row.addWidget(phase_lbl)
         self._phase_group = QButtonGroup(self)
@@ -92,6 +76,9 @@ class TrackImportV2Panel(QFrame):
         v.addLayout(phase_row)
 
         btn_row = QHBoxLayout()
+        self._load_pit_btn = QPushButton("Load saved pit")
+        self._load_pit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._load_pit_btn.clicked.connect(self._load_saved_pit)
         undo = QPushButton("Undo last point")
         undo.setCursor(Qt.CursorShape.PointingHandCursor)
         undo.clicked.connect(self._undo_point)
@@ -102,6 +89,7 @@ class TrackImportV2Panel(QFrame):
         save = QPushButton("Save track")
         save.setCursor(Qt.CursorShape.PointingHandCursor)
         save.clicked.connect(self._save_track)
+        btn_row.addWidget(self._load_pit_btn)
         btn_row.addWidget(undo)
         btn_row.addWidget(clear)
         btn_row.addStretch(1)
@@ -112,6 +100,39 @@ class TrackImportV2Panel(QFrame):
         self._status.setObjectName("enableHint")
         self._status.setWordWrap(True)
         v.addWidget(self._status)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setObjectName("cardSep")
+        v.addWidget(sep)
+
+        import_title = QLabel("Import loop from HTML (optional)")
+        import_title.setObjectName("rowLabel")
+        v.addWidget(import_title)
+
+        import_hint = QLabel(
+            "Replace the racing line from a members-site track page. TrackID is "
+            "read from id=\"track-map-123\" in the HTML.")
+        import_hint.setObjectName("enableHint")
+        import_hint.setWordWrap(True)
+        v.addWidget(import_hint)
+
+        row = QHBoxLayout()
+        self._path_lbl = QLabel("No HTML file chosen")
+        self._path_lbl.setObjectName("enableHint")
+        self._path_lbl.setWordWrap(True)
+        browse = QPushButton("Choose HTML…")
+        browse.setCursor(Qt.CursorShape.PointingHandCursor)
+        browse.clicked.connect(self._browse)
+        row.addWidget(self._path_lbl, 1)
+        row.addWidget(browse, 0)
+        v.addLayout(row)
+
+        self._import_btn = QPushButton("Import loop")
+        self._import_btn.setEnabled(False)
+        self._import_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._import_btn.clicked.connect(self._import_loop)
+        v.addWidget(self._import_btn)
 
         self._road_btn.setChecked(True)
         self.refresh()
@@ -206,6 +227,17 @@ class TrackImportV2Panel(QFrame):
         self._overlay.set_pit_edit_mode(on, phase)
         self._sync_from_overlay()
 
+    def _load_saved_pit(self) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "load_pit_into_editor"):
+            return
+        if self._overlay.load_pit_into_editor(force=True):
+            self._report("Loaded pit road and merge from saved track.", flash=False)
+            self._sync_from_overlay()
+        else:
+            self._report(
+                "No saved pit geometry — click pit road points on the map, "
+                "or complete pit scans first.")
+
     def _undo_point(self) -> None:
         if self._overlay is None or not hasattr(self._overlay, "map_widget"):
             return
@@ -223,6 +255,11 @@ class TrackImportV2Panel(QFrame):
             self._report("Start the overlay first.")
             return
         if not hasattr(self._overlay, "save_manual_track_v2"):
+            return
+        state = (self._overlay.pit_edit_state()
+                 if hasattr(self._overlay, "pit_edit_state") else {})
+        if not state.get("has_loop"):
+            self._report("No track loaded — join a session or import HTML first.")
             return
 
         def _run() -> None:
@@ -247,28 +284,39 @@ class TrackImportV2Panel(QFrame):
         phase = state.get("pit_edit_phase", "road")
         self._road_btn.setChecked(phase == "road")
         self._merge_btn.setChecked(phase == "merge")
-        if state.get("has_loop"):
-            base = self._status.text().split("\n")[0] if self._status.text() else ""
-            tid = state.get("authoring_track_id")
-            suffix = f" (TrackID {tid})" if tid is not None else ""
-            if base.startswith("Saved "):
-                self._status.setText(
-                    f"{base}\nPit road: {nr} pts · Merge: {nm} pts.{suffix}")
-            else:
-                self._status.setText(
-                    f"Pit road: {nr} pts · Merge: {nm} pts.{suffix}")
+        if not state.get("has_loop"):
+            return
+        tid = state.get("authoring_track_id")
+        suffix = f"TrackID {tid}" if tid is not None else "no TrackID"
+        in_sim = state.get("in_sim")
+        mode = "In session" if in_sim else "Authoring"
+        base = self._status.text().split("\n")[0] if self._status.text() else ""
+        if base.startswith("Saved "):
+            self._status.setText(
+                f"{base}\n{mode} · {suffix} · "
+                f"Pit road: {nr} pts · Merge: {nm} pts.")
+        else:
+            self._status.setText(
+                f"{mode} · {suffix} · Pit road: {nr} pts · Merge: {nm} pts.")
 
     def refresh(self) -> None:
-        has_loop = False
+        state: dict = {}
         if self._overlay is not None and hasattr(self._overlay, "pit_edit_state"):
-            has_loop = bool(self._overlay.pit_edit_state().get("has_loop"))
+            state = self._overlay.pit_edit_state()
+        has_loop = bool(state.get("has_loop"))
+        in_sim = bool(state.get("in_sim"))
+        has_saved_pit = bool(state.get("has_saved_pit"))
+
         self._import_btn.setEnabled(self._can_import())
-        enabled = has_loop
-        self._pit_edit_sw.setEnabled(enabled)
-        self._road_btn.setEnabled(enabled)
-        self._merge_btn.setEnabled(enabled)
-        if enabled:
+        edit_enabled = has_loop
+        self._pit_edit_sw.setEnabled(edit_enabled)
+        self._road_btn.setEnabled(edit_enabled)
+        self._merge_btn.setEnabled(edit_enabled)
+        self._load_pit_btn.setEnabled(edit_enabled and has_saved_pit)
+        if edit_enabled:
             self._sync_from_overlay()
+        elif in_sim:
+            self._status.setText("Track loading — pit editor enables when the loop is ready.")
         elif not self._status.text():
             self._status.setText(
-                "Choose members HTML — TrackID is read from track-map-###.")
+                "Join a session on track to edit, or import a loop from HTML.")

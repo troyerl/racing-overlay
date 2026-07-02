@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -25,15 +26,40 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-from overlay import paths
-from tools.schematic_to_track import _oval_corners
+from overlay import paths, svgpath
+from tools.schematic_to_track import (
+    _ensure_ccw,
+    _reorder_loop,
+)
 from tools.svg_layers_to_track import (
+    _detect_sf_svg,
     _parse_turn_numbers,
+    _sf_anchor_point,
+    _sf_paths_sorted,
+    _sf_stripe_centroid,
     extract_layers_from_html,
 )
 
 _SUBPATH_LENGTH_TIE_FRAC = 0.03
 _TRACK_MAP_ID_RE = re.compile(r"^track-map-(\d+)$", re.I)
+_TRACK_MAP_ID_ATTR_RE = re.compile(
+    r"""id\s*=\s*["']track-map-(\d+)["']""", re.I)
+
+
+def _read_text(path: str | None) -> str | None:
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    for enc in ("utf-8-sig", "utf-16", "utf-16-le", "utf-16-be", "cp1252", "latin-1"):
+        try:
+            return raw.decode(enc)
+        except (UnicodeDecodeError, LookupError):
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 def parse_track_id_from_html(
@@ -42,18 +68,27 @@ def parse_track_id_from_html(
     html_text: str | None = None,
 ) -> int | None:
     """Read iRacing TrackID from a members page ``id=\"track-map-123\"`` wrapper."""
-    _require_v2_deps()
-    from bs4 import BeautifulSoup  # type: ignore
-
     if html_text is None:
         if not html_path:
             return None
         html_text = _read_text(html_path) or ""
+
+    m = _TRACK_MAP_ID_ATTR_RE.search(html_text)
+    if m:
+        return int(m.group(1))
+
+    try:
+        _require_v2_deps()
+    except ImportError:
+        return None
+
+    from bs4 import BeautifulSoup  # type: ignore
+
     soup = BeautifulSoup(html_text, "html.parser")
     for tag in soup.find_all(id=True):
-        m = _TRACK_MAP_ID_RE.match(str(tag.get("id", "")).strip())
-        if m:
-            return int(m.group(1))
+        mid = _TRACK_MAP_ID_RE.match(str(tag.get("id", "")).strip())
+        if mid:
+            return int(mid.group(1))
     return None
 
 
@@ -67,11 +102,49 @@ def _require_v2_deps():
             "run: pip install beautifulsoup4 svgpathtools") from exc
 
 
-def _read_text(path: str | None) -> str | None:
-    if not path:
+def _sf_arrow_direction(sf_svg: str | None) -> tuple[float, float] | None:
+    """Unit vector of the start-finish direction arrow (SVG coords, Y down)."""
+    paths = _sf_paths_sorted(sf_svg)
+    if len(paths) < 2:
         return None
-    with open(path, encoding="utf-8", errors="replace") as fh:
-        return fh.read()
+    arrow_pts = paths[-1]
+    stripe = _sf_stripe_centroid(sf_svg)
+    if stripe is None:
+        return None
+    sfx, sfy = stripe
+    best_near, best_far = 1e18, -1.0
+    near_pt = far_pt = arrow_pts[0]
+    for p in arrow_pts:
+        d = math.hypot(p[0] - sfx, p[1] - sfy)
+        if d < best_near:
+            best_near, near_pt = d, p
+        if d > best_far:
+            best_far, far_pt = d, p
+    dx, dy = far_pt[0] - near_pt[0], far_pt[1] - near_pt[1]
+    ln = math.hypot(dx, dy)
+    if ln < 1e-6:
+        return None
+    return dx / ln, dy / ln
+
+
+def _align_loop_from_sf(
+    raw_points: list[list[float]],
+    sf_svg: str | None,
+) -> list[tuple[float, float]]:
+    """Rotate to S/F at index 0 and match members arrow driving direction."""
+    loop = [(float(p[0]), float(p[1])) for p in raw_points]
+    if len(loop) < 3:
+        return loop
+    sf_idx = _detect_sf_svg(loop, sf_svg)
+    loop = _reorder_loop(loop, sf_idx)
+    arrow = _sf_arrow_direction(sf_svg)
+    if arrow and len(loop) >= 2:
+        dx = loop[1][0] - loop[0][0]
+        dy = loop[1][1] - loop[0][1]
+        ln = math.hypot(dx, dy) or 1.0
+        if (dx / ln) * arrow[0] + (dy / ln) * arrow[1] < 0:
+            loop = [loop[0]] + list(reversed(loop[1:]))
+    return _ensure_ccw(loop)
 
 
 def _find_class_element(soup, class_token: str):
@@ -189,31 +262,34 @@ def import_loop_from_html(
         soup = BeautifulSoup(html_text, "html.parser")
     elif html_path is not None:
         html = _read_text(html_path) or ""
-        with open(html_path, encoding="utf-8", errors="replace") as fh:
-            soup = BeautifulSoup(fh.read(), "html.parser")
+        soup = BeautifulSoup(html, "html.parser")
     else:
         raise ValueError("No HTML provided")
 
     segment = _resolve_loop_segment(soup)
     raw_points = _sample_segment(segment, num_samples)
-    normalized, norm = _normalize_loop(raw_points)
+
+    layers = extract_layers_from_html(html) if html else {}
+    sf_svg = layers.get("start_finish")
+    turns_svg = layers.get("turns")
+
+    aligned = _align_loop_from_sf(raw_points, sf_svg)
+    normalized, norm = _normalize_loop(
+        [[p[0], p[1]] for p in aligned])
     loop = [(p[0], p[1]) for p in normalized]
 
     corners: list[dict] = []
-    turns_svg = None
-    if html:
-        layers = extract_layers_from_html(html)
-        turns_svg = layers.get("turns")
     if turns_svg:
-        corners = _parse_turn_numbers(turns_svg, loop, norm)
+        corners = _parse_turn_numbers(turns_svg, loop, norm, flip_y=True)
     elif num_corners:
+        from tools.schematic_to_track import _oval_corners
         corners = _oval_corners(loop, num_corners)
 
     return {
         "schema": 2,
         "import_version": 2,
         "pit_source": "manual",
-        "start_finish": float(start_finish),
+        "start_finish": 0.0,
         "points": normalized,
         "corners": corners,
         "num_turns": len(corners) if corners else (num_corners or None),

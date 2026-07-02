@@ -1602,9 +1602,10 @@ class ConfigEditor(QWidget):
 
         if key == "__scan__":
             note = QLabel("Authoring tools \u2014 you see these because you have "
-                          "write access. Re-scan the track or pit lane, tune blend "
-                          "lengths (session only), and edit pit speed / corner labels "
-                          "(saved to the cloud).")
+                          "write access. On track in iRacing you can edit corner "
+                          "labels, pit road, and exit merge points; changes save "
+                          "to the track file and cloud. Re-scan overwrites learned "
+                          "geometry; pit blend sliders are session-only.")
             note.setObjectName("subtitle")
             note.setWordWrap(True)
             v.addWidget(note)
@@ -1614,8 +1615,8 @@ class ConfigEditor(QWidget):
             self._v2_import_panel.saved.connect(self._flash)
             self._v2_import_panel.notified.connect(self._flash)
             v.addWidget(self._v2_import_panel)
-            v.addWidget(self._pit_tuning_card())
             v.addWidget(self._track_authoring_card())
+            v.addWidget(self._pit_tuning_card())
             v.addStretch(1)
             return page
 
@@ -1732,8 +1733,8 @@ class ConfigEditor(QWidget):
         v.setSpacing(8)
         t = QLabel("Track metadata")
         t.setObjectName("enableTitle")
-        hint = QLabel("Changes save to the track file and cloud immediately "
-                      "when a track is loaded.")
+        hint = QLabel("Corner count, pit speed, and label positions. Drag corner "
+                      "numbers on the map when edit is enabled; release to save.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(t)
@@ -1809,9 +1810,11 @@ class ConfigEditor(QWidget):
             n = state.get("num_turns")
             self._num_turns_spin.setValue(int(n) if n else 0)
             cnt = state.get("corner_count", 0)
+            tid = state.get("authoring_track_id")
+            tid_txt = f" (TrackID {tid})" if tid is not None else ""
             self._authoring_status.setText(
-                f"{cnt} corner labels on map."
-                if cnt else "No corner labels yet.")
+                f"{cnt} corner labels on map{tid_txt}."
+                if cnt else f"No corner labels yet{tid_txt}.")
         else:
             self._pit_speed_spin.setValue(0.0)
             self._num_turns_spin.setValue(0)
@@ -1854,6 +1857,13 @@ class ConfigEditor(QWidget):
             self._flash("Save failed")
 
     def _corner_edit_toggled(self, on: bool) -> None:
+        if on and self._overlay is not None and hasattr(
+                self._overlay, "set_pit_edit_mode"):
+            self._overlay.set_pit_edit_mode(False)
+            if hasattr(self, "_v2_import_panel"):
+                self._v2_import_panel._pit_edit_sw.blockSignals(True)
+                self._v2_import_panel._pit_edit_sw.setChecked(False)
+                self._v2_import_panel._pit_edit_sw.blockSignals(False)
         self._sync_corner_edit_mode()
         if on:
             self._authoring_status.setText(

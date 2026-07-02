@@ -1039,40 +1039,33 @@ class TrackMapWidget(QWidget):
         lo = self.pit_in_pct
         hi = self.pit_out_pct
         lane = self.pit_span
+        lane_lo = lane[0] if lane else lo
+        lane_hi = lane[1] if lane else hi
         exit_pct = self._schematic_exit_pcts.get(idx)
-        if exit_pct is None and lane:
-            exit_pct = lane[1]
+        if exit_pct is None:
+            exit_pct = lane_hi
 
-        # Exit blend only: left pit road, still before rejoin.
-        if (not on_pit_road and hi is not None and exit_pct is not None
-                and self.pit_out
+        # Exit blend: lane end -> rejoin (even if OnPitRoad still true in demo).
+        if (hi is not None and exit_pct is not None and self.pit_out
                 and self._pct_in_interval(pct, exit_pct, hi)):
             span = (hi - exit_pct) % 1.0
             if span > 1e-6:
                 t = ((pct - exit_pct) % 1.0) / span
                 return self._pos_on_polyline(self.pit_out, min(max(t, 0.0), 1.0))
 
-        # Entry + lane: on pit road or lap % within pit lane span.
-        in_lane = on_pit_road
-        if not in_lane and lane:
-            in_lane = self._pct_in_interval(pct, lane[0], lane[1])
-        if in_lane and self.path:
-            chain = [s for s in (self.pit_in, self.pit_path) if s]
-            if chain:
-                loop_pt = self.path[self._index_for_pct(pct)]
-                pos = self._closest_point_on_chain(chain, loop_pt)
-                if pos is not None:
-                    return pos
-        if in_lane and lo is not None:
-            end = lane[1] if lane else hi
-            if end is None:
-                end = hi
-            span = (end - lo) % 1.0
-            if span > 1e-6:
-                t = ((pct - lo) % 1.0) / span
-                t = min(max(t, 0.0), 1.0)
+        # Entry blend + pit lane: route start -> lane end.
+        if lo is not None and lane_hi is not None:
+            on_entry_lane = on_pit_road or (
+                lane_lo is not None
+                and self._pct_in_interval(pct, lo, lane_hi))
+            if on_entry_lane:
                 segs = [s for s in (self.pit_in, self.pit_path) if s]
-                return self._pos_on_polyline_chain(segs, t)
+                if segs:
+                    span = (lane_hi - lo) % 1.0
+                    if span > 1e-6:
+                        t = ((pct - lo) % 1.0) / span
+                        return self._pos_on_polyline_chain(
+                            segs, min(max(t, 0.0), 1.0))
         return None
 
     def set_player_xy(self, xy) -> None:

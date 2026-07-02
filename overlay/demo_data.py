@@ -39,6 +39,9 @@ _DEMO_DRIVERS = [
 # (entry / exit blends + lane) is visible without a live scan. Keep in sync.
 DEMO_PIT_IN_PCT = 0.90
 DEMO_PIT_OUT_PCT = 0.12
+# Pit-lane-only sub-span inside the full route (entry/exit blends sit outside).
+DEMO_PIT_LANE_LO = 0.95
+DEMO_PIT_LANE_HI = 0.06
 # Number of cars (never the player) that make a pit stop every lap in the demo.
 DEMO_PIT_CARS = 3
 
@@ -47,6 +50,12 @@ def _in_demo_pit(frac: float) -> bool:
     """Whether a lap fraction lies on the demo pit route (circular interval)."""
     span = (DEMO_PIT_OUT_PCT - DEMO_PIT_IN_PCT) % 1.0
     return ((frac - DEMO_PIT_IN_PCT) % 1.0) <= span
+
+
+def _on_demo_pit_lane(frac: float) -> bool:
+    """True on the pit lane itself (not entry/exit blends) — matches iRacing OnPitRoad."""
+    span = (DEMO_PIT_LANE_HI - DEMO_PIT_LANE_LO) % 1.0
+    return ((frac - DEMO_PIT_LANE_LO) % 1.0) <= span
 
 
 class FakeIRSDK:
@@ -134,7 +143,9 @@ class FakeIRSDK:
         for i, tot in enumerate(totals):
             frac = tot % 1.0
             if i in self._pit_cars:
-                out.append(_in_demo_pit(frac))
+                # Full route extent for latch/on_route; lane-only for OnPitRoad so
+                # exit-blend positioning kicks in after the car leaves pit road.
+                out.append(_on_demo_pit_lane(frac))
             else:
                 lap = int(tot) + 1
                 out.append(((lap + i * 3) % 8 == 0) and frac < 0.06)

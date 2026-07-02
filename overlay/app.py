@@ -524,31 +524,43 @@ class AdvancedSimHUD:
     def track_authoring_state(self) -> dict:
         """Snapshot for the Track Scan authoring tab (pit speed, corners)."""
         mw = self.map_widget
+        tid = self._authoring_track_id()
         n = self._track_turns if self._track_turns else mw.num_turns
         has_geom = mw.path is not None and len(mw.path) >= 2
+        in_sim = not self.demo and self._track_id is not None
         return {
-            "has_track": (not self.demo and self._track_id is not None and has_geom),
+            "has_track": bool(tid is not None and has_geom and not self.demo),
+            "in_sim": in_sim,
             "demo": self.demo,
             "pit_speed_ms": self._pit_speed_ms,
             "num_turns": n,
             "corner_count": len(mw.display_corners()),
+            "has_pit_geometry": bool(
+                self._pit_path and len(self._pit_path) >= 2),
+            "authoring_track_id": tid,
         }
 
     def _refresh_settings_authoring(self) -> None:
         """Re-sync Track Scan controls after a track loads in the background."""
         w = self._settings_window
-        if w is not None and hasattr(w, "_refresh_track_authoring"):
+        if w is None:
+            return
+        if hasattr(w, "_refresh_track_authoring"):
             w._refresh_track_authoring()
+        panel = getattr(w, "_v2_import_panel", None)
+        if panel is not None and hasattr(panel, "refresh"):
+            panel.refresh()
 
     def _ensure_local_track_file(self) -> bool:
         """Make sure tracks/<id>.json exists so metadata edits can be saved."""
-        if self._track_id is None or not self.map_widget.path:
+        tid = self._authoring_track_id()
+        if tid is None or not self.map_widget.path:
             return False
         corners = track_map.corners_to_json(self.map_widget.display_corners())
         pit_span = self._pit_span
         return track_map.ensure_track_file(
-            self.tracks_dir, self._track_id, self.map_widget.path,
-            name=self._learn_name,
+            self.tracks_dir, tid, self.map_widget.path,
+            name=self._learn_name or self._v2_authoring_name,
             start_finish=self.map_widget.start_finish,
             corners=corners,
             pit_span=pit_span,
@@ -602,19 +614,20 @@ class AdvancedSimHUD:
 
     def _persist_track_meta(self, **fields) -> bool:
         """Write track metadata locally and push to the cloud when allowed."""
-        if self._track_id is None or not fields:
+        tid = self._authoring_track_id()
+        if tid is None or not fields:
             return False
         if not self._ensure_local_track_file():
             return False
         try:
             ok = track_map.update_track_meta(
-                self.tracks_dir, self._track_id, **fields)
+                self.tracks_dir, tid, **fields)
         except Exception:
             return False
         if not ok:
             return False
         if config.cloud_tracks():
-            self._track_sync.upload_local_async(self.tracks_dir, self._track_id)
+            self._track_sync.upload_local_async(self.tracks_dir, tid)
         return True
 
     def set_pit_speed_authoring(self, speed_ms: float) -> bool:
@@ -744,10 +757,37 @@ class AdvancedSimHUD:
             "Loop imported — draw pit road, then merge (Track Scan)")
         self.map_widget.update()
 
+    def load_pit_into_editor(self, *, force: bool = False) -> bool:
+        """Copy saved pit road / exit merge into the manual edit buffers."""
+        road, merge = self.map_widget.pit_edit_snapshot()
+        if not force and (len(road) >= 2 or len(merge) >= 2):
+            return True
+        road_pts: list[tuple[float, float]] = []
+        for pt in self._pit_path or []:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                road_pts.append((float(pt[0]), float(pt[1])))
+        merge_pts: list[tuple[float, float]] = []
+        for pt in self._pit_out or []:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                merge_pts.append((float(pt[0]), float(pt[1])))
+        if len(road_pts) < 2 and len(merge_pts) < 2:
+            return False
+        self.map_widget.load_pit_edit(
+            road_pts if len(road_pts) >= 2 else [],
+            merge_pts if len(merge_pts) >= 2 else [],
+        )
+        return True
+
     def set_pit_edit_mode(self, enabled: bool, phase: str = "road") -> None:
         """Toggle manual pit authoring clicks on the live map."""
         if enabled:
             self.set_corner_edit_mode(False)
+            self.load_pit_into_editor()
+            w = self._settings_window
+            if w is not None and hasattr(w, "_corner_edit_sw"):
+                w._corner_edit_sw.blockSignals(True)
+                w._corner_edit_sw.setChecked(False)
+                w._corner_edit_sw.blockSignals(False)
         self.map_widget.set_pit_edit(
             enabled, self._save_pit_authoring if enabled else None)
         if enabled:
@@ -761,10 +801,10 @@ class AdvancedSimHUD:
         """Finalize manual pit geometry and write tracks/<TrackID>.json."""
         tid = self._authoring_track_id()
         if tid is None:
-            return False, ("No TrackID — import members HTML with "
-                           "id=\"track-map-123\" first.")
+            return False, ("No TrackID — join a session on track, or import "
+                           "members HTML with id=\"track-map-123\".")
         if not self.map_widget.path or len(self.map_widget.path) < 3:
-            return False, "No track loop loaded — import loop first."
+            return False, "No track loop loaded."
         road, merge = self.map_widget.pit_edit_snapshot()
         if len(road) < 2:
             return False, "Need at least 2 pit road points."
@@ -853,6 +893,9 @@ class AdvancedSimHUD:
             "pit_edit_phase": self.map_widget.pit_edit_phase,
             "has_loop": bool(self.map_widget.path and len(self.map_widget.path) >= 3),
             "authoring_track_id": tid,
+            "in_sim": not self.demo and self._track_id is not None,
+            "has_saved_pit": bool(
+                self._pit_path and len(self._pit_path) >= 2),
         }
 
     def _pit_scan_active(self) -> bool:
@@ -1967,8 +2010,10 @@ class AdvancedSimHUD:
         # span; the lane sub-span (lane_lo..lane_hi) sits inside it.
         in_pct = demo_data.DEMO_PIT_IN_PCT
         out_pct = demo_data.DEMO_PIT_OUT_PCT
-        lane_lo, lane_hi = 0.95, 0.06
+        lane_lo = demo_data.DEMO_PIT_LANE_LO
+        lane_hi = demo_data.DEMO_PIT_LANE_HI
         return {
+            "pit_source": "schematic",
             "pit_span": (lane_lo, lane_hi),
             "pit_speed": 22.0,  # ~50 mph / 80 km/h, shown as a static badge
             "pit_in": span_pts(in_pct, lane_lo, 14, 0.0, 1.0),
@@ -2233,7 +2278,7 @@ class AdvancedSimHUD:
             return
         if is_schematic_pit_source(self._pit_source):
             self.map_widget.flash_hint(
-                "Schematic pit — re-import with tools/schematic_to_track.py")
+                "Edit pit road & merge in Track Scan settings")
             return
         self._reset_pit_state()  # re-learn the pit over PIT_PASSES fresh passes
         self._update_scan_status()
@@ -2836,6 +2881,8 @@ class AdvancedSimHUD:
                 self.ir["CarIdxPosition"], player)
         route = self._route_interval()  # (lo, hi) lap-% extent, or None
         blends_on = config.CFG["map"].get("show_pit_blends", True)
+        if self.demo and is_schematic_pit_source(self._pit_source):
+            self._update_schematic_pit_latches(lap_pct, on_pit_arr)
         palette = track_map.car_palette()
         player_color = config.CFG["map"]["colors"]["player"]
         cars = []
@@ -2879,6 +2926,12 @@ class AdvancedSimHUD:
             return False
         return ((pct - lo) % 1.0) <= span
 
+    def _is_demo_pit_car(self, idx: int) -> bool:
+        if not self.demo:
+            return False
+        pit_cars = getattr(self.ir, "_pit_cars", None)
+        return pit_cars is not None and idx in pit_cars
+
     def _car_on_route(self, idx, pct, on_pit, is_player, route,
                       blends_on=True) -> bool:
         """Decide whether a car should be drawn on the pit route this tick.
@@ -2904,6 +2957,13 @@ class AdvancedSimHUD:
                 latched = False  # past the rejoin point -> back on track
         elif latched and route is None:
             latched = False
+        elif (self.demo and route is not None
+              and is_schematic_pit_source(self._pit_source)
+              and self._is_demo_pit_car(idx)
+              and self._pct_in_interval(pct, route[0], route[1])):
+            # Demo pit cars ride the full authored route every lap (entry blend
+            # before OnPitRoad turns true).
+            latched = True
         self._pit_route_latch[idx] = latched
         return on_pit or latched
 

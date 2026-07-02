@@ -1510,24 +1510,66 @@ def _main_loop_path(
     return _resample_closed(best, 720)
 
 
-def _detect_sf_svg(loop: list[tuple[float, float]], sf_svg: str | None) -> int:
-    if sf_svg:
-        centroids: list[tuple[float, float]] = []
-        for d in _paths_d_in_svg(sf_svg):
-            pts = svgpath.flatten_path(d)
-            if not pts:
-                continue
-            cx = sum(p[0] for p in pts) / len(pts)
-            cy = sum(p[1] for p in pts) / len(pts)
-            centroids.append((cx, cy))
-        if centroids:
-            tx, ty = max(centroids, key=lambda t: t[1])
-            return _nearest_index(loop, (tx, ty))
+def _path_bbox_area(pts: list[tuple[float, float]]) -> float:
+    if not pts:
+        return 0.0
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def _sf_paths_sorted(sf_svg: str | None) -> list[list[tuple[float, float]]]:
+    """Paths in the start-finish layer, smallest bbox first (stripe before arrow)."""
+    paths: list[list[tuple[float, float]]] = []
+    for d in _paths_d_in_svg(sf_svg or ""):
+        pts = svgpath.flatten_path(d)
+        if pts:
+            paths.append(pts)
+    paths.sort(key=_path_bbox_area)
+    return paths
+
+
+def _sf_stripe_centroid(sf_svg: str | None) -> tuple[float, float] | None:
+    """Centroid of the S/F stripe (smallest path), not the direction arrow."""
+    paths = _sf_paths_sorted(sf_svg)
+    if not paths:
+        return None
+    pts = paths[0]
+    return (sum(p[0] for p in pts) / len(pts), sum(p[1] for p in pts) / len(pts))
+
+
+def _sf_arrow_tip(sf_svg: str | None) -> tuple[float, float] | None:
+    """Moveto / tip of the direction arrow (largest path) in SVG coords."""
+    paths = _sf_paths_sorted(sf_svg)
+    if len(paths) < 2:
+        return None
+    return paths[-1][0]
+
+
+def _sf_anchor_point(sf_svg: str | None) -> tuple[float, float] | None:
+    """Point on the racing line for S/F alignment (start-finish layer stripe).
+
+    Members maps stack layers in a shared viewBox; the smallest path in the
+    start-finish layer is the vertical stripe crossing the track. Single-path
+    layers (some road courses) use that path's centroid.
+    """
+    return _sf_stripe_centroid(sf_svg)
+
+
+def _detect_sf_svg(
+    loop: list[tuple[float, float]],
+    sf_svg: str | None,
+) -> int:
+    pt = _sf_anchor_point(sf_svg)
+    if pt is not None and loop:
+        pct = _pct_on_loop(loop, pt)
+        return int(pct * len(loop)) % len(loop)
     return max(range(len(loop)), key=lambda i: loop[i][1])
 
 
 def _parse_turn_numbers(svg_text: str, loop: list[tuple[float, float]],
-                        norm: tuple[float, float, float]) -> list[dict]:
+                        norm: tuple[float, float, float],
+                        *, flip_y: bool = False) -> list[dict]:
     """Turn labels from members SVG; positions normalized with the track loop."""
     ox, oy, scale = norm
     corners: list[dict] = []
@@ -1548,6 +1590,8 @@ def _parse_turn_numbers(svg_text: str, loop: list[tuple[float, float]],
             continue
         nx = (tx - ox) / scale
         ny = (ty - oy) / scale
+        if flip_y:
+            ny = 1.0 - ny
         corners.append({
             "pct": round(_pct_on_loop(loop, (nx, ny)), 5),
             "label": label,
