@@ -5,6 +5,31 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.28.0 - 2026-07-01
+
+- **Unified panel chrome across all widgets.** Every overlay panel (dash, lap log,
+  fuel calc, lap compare, sector timing, delta bar, inputs, flags, radar, map,
+  relative, standings) now shares the same visual system: gradient card shells,
+  consistent border weight, dark translucent cells for numeric readouts, and
+  tabular mono fonts for lap times, gaps, and deltas. Shared helpers live in
+  `overlay/widgets/chrome.py`, `fonts.py`, and `formats.py`.
+- **Table polish (Relative & Standings).** Dark iRating pills with borders,
+  optional chart icon, full-width player row highlight, opaque header/footer bands
+  with corner-matched rounding, hairline row dividers, softened license pills,
+  and signed relative gaps. Footer no longer shows rows bleeding through.
+- **Dash polish.** Top/bottom sub-panels, strip pill, position box, and iRating
+  pill use the shared chrome; numeric readouts render in tabular mono. iRating
+  pill is now dark (matching tables). Stat cells can show row dividers between
+  stacked values (e.g. fuel + laps).
+- **Widget-specific polish.** Lap log, fuel calc, lap compare, sector timing,
+  delta bar, inputs, flags, radar, and map each adopt card chrome, dark cells,
+  and/or tabular numerics where appropriate. Map scan/hint overlays and
+  schematic pit-lane colors are now config-driven.
+- **New config keys.** Shared chrome settings (`header_bg`, `footer_bg`,
+  `row_dividers`, `cell_border`, `data_font_bold`, `corner_radius_frac`, etc.)
+  are available per widget; `border` and `panel_border` are aliases. Settings
+  editor labels added for the new keys.
+
 ## 1.27.0 - 2026-06-30
 
 - **SVG track import.** Import tracks from iRacing members-site HTML (SVG layers:

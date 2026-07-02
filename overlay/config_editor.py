@@ -69,7 +69,7 @@ COLOR_PARENTS = {"colors", "license_colors"}
 # kept as an option so the dropdown never discards it.
 FONT_CHOICES = [
     "Segoe UI", "Bahnschrift", "Bahnschrift Condensed", "Agency FB",
-    "Eurostile", "Consolas", "Tahoma", "Verdana", "Arial",
+    "Eurostile", "Consolas", "SF Mono", "Menlo", "Tahoma", "Verdana", "Arial",
 ]
 
 ENUMS = {
@@ -81,12 +81,14 @@ ENUMS = {
     "mode": ["session_best", "best_lap", "optimal"],
     "rotation": [0, 90, 180, 270],
     "font_family": FONT_CHOICES,
+    "tabular_font_family": [""] + FONT_CHOICES,
 }
 
 # Friendly display text for raw config option values (combo boxes show these,
 # but the underlying stored value is unchanged).
 OPTION_LABELS = {
     "none": "None",
+    "": "Default (Consolas / SF Mono)",
     # dash metrics
     "speed": "Speed", "speed_kph": "Speed (km/h)", "speed_mph": "Speed (mph)",
     "rpm": "RPM", "gear": "Gear", "position": "Position", "car_number": "Car number",
@@ -134,8 +136,28 @@ LABEL_OVERRIDES = {
     "irating_abbreviate": "Abbreviate iRating (1.4k vs 1432)",
     "show_irating_projection": "Show projected iRating change",
     "dash.show_irating_projection": "Show projected iRating change next to iRating",
+    "dash.corner_radius_frac": "Sub-panel corner roundness",
+    "dash.irating_border": "iRating pill border",
     "font_scale": "Row text size",
     "gap_font_scale": "Gap column text size",
+    "row_dividers": "Hairline dividers between rows",
+    "header_bg": "Header band background",
+    "footer_bg": "Footer band background",
+    "cell_dark": "Dark cell / pill fill",
+    "cell_border": "Dark cell / pill border",
+    "border": "Panel border (alias for panel_border)",
+    "panel_border": "Panel border",
+    "row_alt": "Alternating row shading",
+    "corner_border": "Corner label pill border",
+    "pit_lane_in": "Schematic pit lane (entry) color",
+    "pit_lane_out": "Schematic pit merge (exit) color",
+    "scan_bg": "Track-scan badge background",
+    "hint_bg": "Transient hint banner background",
+    "hint_text": "Hint banner text color",
+    "name_font_bold": "Bold driver names",
+    "data_font_bold": "Bold position / gap / lap times",
+    "irating_show_icon": "Show iRating chart icon",
+    "tabular_font_family": "Tabular font (gap / lap times)",
     "header_font_scale": "Header text size (independent of rows)",
     "footer_font_scale": "Footer text size (independent of rows)",
     "radar.show_front": "Front sensing",

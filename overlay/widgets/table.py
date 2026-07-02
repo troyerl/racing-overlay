@@ -10,11 +10,15 @@ from __future__ import annotations
 import math
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
 from . import icons
+from .chrome import contrast_text, draw_edge_band
+from .chrome import draw_row_divider as _draw_row_divider_chrome
+from .chrome import soften_color as _soften_color
+from .fonts import data_font_bold as _data_font_bold, tabfont, tfont
 
 _VA_LEFT = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
 
@@ -62,39 +66,12 @@ def _tcfg() -> dict:
 
 
 def col(key: str) -> QColor:
-    return config.qcolor(_tcfg()["colors"][key])
+    colors = _tcfg().get("colors", {})
+    return config.qcolor(colors[key])
 
 
 def license_color(letter: str) -> QColor:
     return config.qcolor(_tcfg()["license_colors"].get(letter, "#666666"))
-
-
-def _contrast_text(bg: QColor) -> QColor:
-    """Black or white, whichever reads better on the given background."""
-    lum = (0.299 * bg.red() + 0.587 * bg.green() + 0.114 * bg.blue()) / 255.0
-    return QColor(20, 22, 26) if lum > 0.6 else QColor(255, 255, 255)
-
-
-# Cache fonts by their resolved parameters; building a QFont (and the implicit
-# metrics work) every frame is wasteful. A new size/scale/family is just a new
-# key, so no invalidation is needed. Returned fonts must not be mutated.
-_FONT_CACHE: dict = {}
-
-
-def tfont(size: float, bold: bool = True) -> QFont:
-    fam = config.CFG.get("font_family", "Segoe UI")
-    pt = round(max(5.0, size * config.text_scale_for()), 1)
-    key = (fam, pt, bold)
-    f = _FONT_CACHE.get(key)
-    if f is None:
-        f = QFont(fam)
-        f.setStyleHint(QFont.StyleHint.SansSerif)
-        f.setPointSizeF(pt)
-        f.setBold(bold)
-        if len(_FONT_CACHE) > 512:
-            _FONT_CACHE.clear()
-        _FONT_CACHE[key] = f
-    return f
 
 
 _ALL_COLUMNS = {"stripe": True}
@@ -190,11 +167,32 @@ class BaseTable(QWidget):
             return False
         return bool(config.CFG.get(self.section, {}).get("show_footer", False))
 
-    def draw_header(self, p, x, y, w, h):
-        self._draw_slots(p, x, y, w, h, "header", "header_icons", line=False)
+    def draw_header(self, p, card: QRectF, radius: float, pad: float, h: float):
+        band = QRectF(card.left(), card.top(), card.width(), pad + h)
+        draw_edge_band(p, band, "header_bg", self.section, bottom_line=True,
+                       radius_top=radius)
+        self._draw_slots(p, card.left() + pad, card.top() + pad,
+                         card.width() - 2 * pad, h,
+                         "header", "header_icons", line=False)
 
-    def draw_footer(self, p, x, y, w, h):
-        self._draw_slots(p, x, y, w, h, "footer", "footer_icons", line=True)
+    def draw_footer(self, p, card: QRectF, radius: float, pad: float, h: float):
+        band_top = card.bottom() - pad * 0.5 - h
+        band = QRectF(card.left(), band_top, card.width(), card.bottom() - band_top)
+        draw_edge_band(p, band, "footer_bg", self.section, top_line=True,
+                       radius_bottom=radius, opaque=True)
+        self._draw_slots(p, card.left() + pad, band_top,
+                         card.width() - 2 * pad, h,
+                         "footer", "footer_icons", line=False)
+
+    def _draw_edge_band(self, p, rect: QRectF, bg_key: str, *,
+                        top_line: bool = False, bottom_line: bool = False,
+                        radius_top: float = 0.0,
+                        radius_bottom: float = 0.0,
+                        opaque: bool = False) -> None:
+        draw_edge_band(p, rect, bg_key, self.section,
+                       top_line=top_line, bottom_line=bottom_line,
+                       radius_top=radius_top, radius_bottom=radius_bottom,
+                       opaque=opaque)
 
     def _draw_slots(self, p, x, y, w, h, group, icons_key, line):
         if not self.section:
@@ -305,8 +303,9 @@ class BaseTable(QWidget):
             p.setBrush(grad)
         else:
             p.setBrush(col("bg"))
+        card = QRectF(0.5, 0.5, w - 1, h - 1)
         p.setPen(QPen(col("border"), 1))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+        p.drawRoundedRect(card, radius, radius)
 
         rows = (self.data or {}).get("rows", [])
         n = max(1, len(rows))
@@ -323,12 +322,12 @@ class BaseTable(QWidget):
             pad = 8.0
             header_h = round(fixed_rh * 1.25 * hscale)
             footer_h = round(fixed_rh * 1.1 * fscale) if self.has_footer() else 0.0
-            body_top = pad + header_h
+            body_top = card.top() + pad + header_h
         else:
             pad = max(8.0, h * 0.025)
             header_h = max(26.0, h * 0.12) * hscale
             footer_h = (max(24.0, h * 0.11) * fscale) if self.has_footer() else 0.0
-            body_top = pad + header_h
+            body_top = card.top() + pad + header_h
             body_h = h - body_top - footer_h - pad
             row_h = body_h / n
             # With only a few rows, don't let them stretch (and the text balloon)
@@ -337,7 +336,7 @@ class BaseTable(QWidget):
             if max_rh_frac > 0:
                 row_h = min(row_h, h * max_rh_frac)
 
-        self.draw_header(p, pad, pad, w - 2 * pad, header_h)
+        self.draw_header(p, card, radius, pad, header_h)
 
         dt = self._dt()
         keys_now = set()
@@ -364,11 +363,17 @@ class BaseTable(QWidget):
             p.setOpacity(max(0.0, min(1.0, st["alpha"])))
             self._draw_row(p, row, tgt, pad, y, w - 2 * pad, row_h)
             p.restore()
+            if (tc.get("row_dividers", True) and tgt < len(rows) - 1
+                    and not row.get("empty")):
+                self._draw_row_divider(p, pad, y + row_h, w - 2 * pad)
 
         if self.has_footer():
-            self.draw_footer(p, pad, h - footer_h - pad * 0.5, w - 2 * pad, footer_h)
+            self.draw_footer(p, card, radius, pad, footer_h)
 
     # --- row + cells --------------------------------------------------------
+
+    def _draw_row_divider(self, p, x, y, w) -> None:
+        _draw_row_divider_chrome(p, x, y, w, self.section)
 
     def _draw_row(self, p, row, i, x, y, w, h):
         if row.get("empty"):  # blank placeholder used to keep the player centered
@@ -378,8 +383,6 @@ class BaseTable(QWidget):
         wf = tc["widths"]
         fs = h * tc["font_scale"]
         gutter = h * wf["gutter"]
-
-        right = x + w
 
         def fixed_width(k: str) -> float:
             if k == "badge":
@@ -393,7 +396,9 @@ class BaseTable(QWidget):
             if k == "irating":
                 w = h * wf["irating"]
                 if _tcfg().get("show_irating_projection"):
-                    w *= 1.35
+                    w *= 1.50
+                if _tcfg().get("irating_show_icon", True) and icons.has("irating"):
+                    w *= 1.12
                 return w
             if k == "pit":
                 return h * wf.get("pit", 2.1)
@@ -419,24 +424,20 @@ class BaseTable(QWidget):
             slots[k] = (cx, cw)
             cx += cw + gutter
 
-        # Row backgrounds. A leading badge sits in the gutter outside the
-        # highlight (matching the original look); otherwise highlight the row.
-        if order and order[0] == "badge":
-            bx, bw = slots["badge"]
-            bg_left = bx + bw
-        else:
-            bg_left = x
+        # Row backgrounds span the full row width (badge included).
+        row_rect = QRectF(x, y, w, h)
         is_player = row.get("is_player")
-        row_rect = QRectF(bg_left, y, right - bg_left, h)
         if is_player:
             self._draw_row_tint(p, row_rect, "player_row")
+        elif row.get("lapping"):
+            self._draw_row_tint(
+                p, row_rect, "threat" if row.get("lap_ahead") else "lapped")
+        elif row.get("in_pit"):
+            self._draw_row_tint(p, row_rect, "pit_row")
         elif i % 2 == 1 and tc["alt_row_shading"]:
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("row_alt"))
             p.drawRect(row_rect)
-        if row.get("lapping"):
-            self._draw_row_tint(
-                p, row_rect, "threat" if row.get("lap_ahead") else "lapped")
 
         if "badge" in slots:
             bx, bw = slots["badge"]
@@ -449,11 +450,15 @@ class BaseTable(QWidget):
             self._draw_number(p, row, cnx, y, cnw, h, fs)
         if "name" in slots:
             nx, nw = slots["name"]
+            name_bold = tc.get("name_font_bold", True)
             p.setPen(col("muted") if row.get("in_pit") else col("text"))
-            p.setFont(tfont(fs))
+            p.setFont(tfont(fs, bold=name_bold))
+            name = str(row.get("name", ""))
+            elided = QFontMetricsF(p.font()).elidedText(
+                name, Qt.TextElideMode.ElideRight, max(10.0, nw))
             p.drawText(QRectF(nx, y, max(10.0, nw), h),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                       row.get("name", ""))
+                       elided)
         if "license" in slots:
             lx, lw = slots["license"]
             self._draw_license(p, row, lx, y, lw, h, fs)
@@ -465,14 +470,29 @@ class BaseTable(QWidget):
             self._draw_pit(p, row, qx, y, qw, h, fs)
         if "gap" in slots:
             gx, gw = slots["gap"]
-            p.setPen(col("text"))
-            p.setFont(tfont(fs * tc["gap_font_scale"]))
             gap = row.get("gap")
             gtxt = row.get("gap_text")
             if gtxt is None:
-                gtxt = f"{gap:.1f}" if gap is not None else "--"
+                if gap is None:
+                    gtxt = "--"
+                elif isinstance(gap, (int, float)) and gap == 0:
+                    gtxt = "0.0"
+                elif isinstance(gap, (int, float)):
+                    gtxt = f"{abs(gap):.1f}"
+                else:
+                    gtxt = str(gap)
+            gpen = col("text")
+            if (self.section == "relative" and isinstance(gap, (int, float))
+                    and not row.get("is_player")):
+                if gap > 0:
+                    gpen = col("irating_delta_down")
+                elif gap < 0:
+                    gpen = col("irating_delta_up")
+            p.setPen(gpen)
+            p.setFont(tabfont(fs * tc["gap_font_scale"], bold=_data_font_bold()))
             p.drawText(QRectF(gx, y, max(10.0, gw - gutter), h),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, gtxt)
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                       gtxt)
         if "last_lap" in slots:
             lx, lw = slots["last_lap"]
             self._draw_laptime(p, row, "last_lap", lx, y, lw, h, fs)
@@ -536,6 +556,10 @@ class BaseTable(QWidget):
             self._draw_clock(p, box)
         elif row.get("speaking"):
             self._draw_speaker(p, box)
+        else:
+            p.setPen(QPen(col("badge_empty_border"), 1))
+            p.setBrush(col("badge_empty_fill"))
+            p.drawEllipse(box)
 
     def _draw_clock(self, p, box):
         p.setPen(QPen(QColor(255, 255, 255), max(1.0, box.width() * 0.08)))
@@ -561,44 +585,74 @@ class BaseTable(QWidget):
             p.setBrush(config.qcolor(row.get("class_color", "#888888")))
             p.drawRoundedRect(QRectF(x, y + h * 0.18, h * 0.12, h * 0.64), 2, 2)
         p.setPen(col("text"))
-        p.setFont(tfont(fs))
+        p.setFont(tfont(fs, bold=_data_font_bold()))
         p.drawText(QRectF(x + h * 0.2, y, pw - h * 0.2, h),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    str(row.get("position", "")))
 
     def _draw_license(self, p, row, x, y, lw, h, fs):
-        # Class-colored pill showing safety rating (e.g. "3.34").
-        letter = str(row.get("lic_class", ""))
+        # Class-colored pill showing license class + safety rating (e.g. "R 3.34").
+        letter = str(row.get("lic_class", "")).strip()
         sr = str(row.get("sr", "")).strip()
-        text = sr or "\u2014"
-        bg = license_color(letter)
-        p.setFont(tfont(fs * 0.84))
+        if letter and sr:
+            text = f"{letter} {sr}"
+        else:
+            text = sr or letter or "\u2014"
+        bg = _soften_color(license_color(letter))
+        p.setFont(tfont(fs * 0.84, bold=_data_font_bold()))
         tw = p.fontMetrics().horizontalAdvance(text)
-        pad_x = fs * 0.32
+        pad_x = fs * 0.28
         pill_h = h * 0.54
         pill_w = min(lw, tw + 2 * pad_x)
         cell = QRectF(x, y + (h - pill_h) / 2.0, pill_w, pill_h)
-        p.setPen(Qt.PenStyle.NoPen)
+        edge = QColor(bg)
+        edge.setAlpha(min(255, int(bg.alpha() * 0.55) + 60))
+        p.setPen(QPen(edge, 1))
         p.setBrush(bg)
         p.drawRoundedRect(cell, 4, 4)
-        p.setPen(_contrast_text(bg))
+        p.setPen(contrast_text(bg))
         p.drawText(cell, Qt.AlignmentFlag.AlignCenter, text)
+
+    def _baseline_y(self, fm: QFontMetricsF, rect: QRectF) -> float:
+        """Baseline that vertically centers text ink inside *rect*."""
+        return rect.center().y() + (fm.ascent() - fm.descent()) / 2.0
 
     def _draw_irating(self, p, row, x, y, iw, h, fs):
         cell = QRectF(x, y + h * 0.2, iw, h * 0.6)
-        p.setPen(Qt.PenStyle.NoPen)
+        tc = _tcfg()
+        show_icon = tc.get("irating_show_icon", True) and icons.has("irating")
+        icon_gap = fs * 0.10
+        icon_outer = 0.0
+        pill_left = cell.left()
+        if show_icon:
+            glyph = icons.glyph("irating")
+            ic_px = cell.height() * 0.48
+            ic_f = icons.icon_font(ic_px)
+            ic_w = QFontMetricsF(ic_f).horizontalAdvance(glyph)
+            icon_outer = ic_w + icon_gap
+            p.setFont(ic_f)
+            p.setPen(col("muted"))
+            p.drawText(QRectF(cell.left(), cell.top(), ic_w, cell.height()),
+                       _VA_LEFT, glyph)
+            pill_left = cell.left() + icon_outer
+
+        pill = QRectF(pill_left, cell.top(), max(4.0, cell.right() - pill_left),
+                      cell.height())
+        p.setPen(QPen(col("irating_border"), 1))
         p.setBrush(col("irating_bg"))
-        p.drawRoundedRect(cell, 4, 4)
+        p.drawRoundedRect(pill, 4, 4)
 
         ir_txt = str(row.get("irating", ""))
         delta = row.get("irating_delta")
-        show_delta = (_tcfg().get("show_irating_projection")
+        show_delta = (tc.get("show_irating_projection")
                       and delta is not None and ir_txt and ir_txt != "--")
 
-        p.setFont(tfont(fs * 0.82))
+        p.setFont(tfont(fs * 0.82, bold=_data_font_bold()))
         if show_delta:
-            ir_w = QFontMetricsF(p.font()).horizontalAdvance(ir_txt)
-            gap = fs * 0.12
+            ir_font = p.font()
+            ir_fm = QFontMetricsF(ir_font)
+            ir_w = ir_fm.horizontalAdvance(ir_txt)
+            gap = fs * 0.50
             dcol = col("irating_delta_up") if delta > 0 else (
                 col("irating_delta_down") if delta < 0 else col("muted"))
 
@@ -606,43 +660,45 @@ class BaseTable(QWidget):
             if use_icons:
                 iglyph = icons.glyph("irating_up" if delta > 0 else "irating_down")
                 ifont = icons.icon_font(fs * 0.55)
-                nfont = tfont(fs * 0.78)
+                nfont = tfont(fs * 0.78, bold=False)
                 dtxt = str(abs(delta))
-                i_w = QFontMetricsF(ifont).horizontalAdvance(iglyph)
-                n_w = QFontMetricsF(nfont).horizontalAdvance(dtxt)
-                icon_gap = fs * 0.06
-                d_w = i_w + icon_gap + n_w
+                i_fm = QFontMetricsF(ifont)
+                n_fm = QFontMetricsF(nfont)
+                i_w = i_fm.horizontalAdvance(iglyph)
+                n_w = n_fm.horizontalAdvance(dtxt)
+                icon_slot = fs * 0.42
+                icon_gap_d = fs * 0.10
+                d_w = icon_slot + icon_gap_d + n_w
             else:
                 dtxt = f"{delta:+d}" if delta else "0"
                 nfont = p.font()
-                d_w = QFontMetricsF(nfont).horizontalAdvance(dtxt)
+                n_fm = QFontMetricsF(nfont)
+                d_w = n_fm.horizontalAdvance(dtxt)
 
             total = ir_w + gap + d_w
-            left = cell.left() + max(4.0, (cell.width() - total) / 2.0)
+            pad_x = fs * 0.18
+            left = pill.left() + max(pad_x, (pill.width() - total) / 2.0)
+            ir_baseline = self._baseline_y(ir_fm, pill)
             p.setPen(col("irating_text"))
-            p.drawText(QRectF(left, cell.top(), ir_w, cell.height()),
-                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                       ir_txt)
+            p.drawText(QPointF(left, ir_baseline), ir_txt)
 
             dx = left + ir_w + gap
             if use_icons:
+                num_baseline = self._baseline_y(n_fm, pill)
+                num_mid = num_baseline - (n_fm.ascent() - n_fm.descent()) / 2.0
+                icon_baseline = num_mid + (i_fm.ascent() - i_fm.descent()) / 2.0
+                icon_x = dx + max(0.0, (icon_slot - i_w) / 2.0)
                 p.setFont(ifont)
                 p.setPen(dcol)
-                p.drawText(QRectF(dx, cell.top(), i_w, cell.height()),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           iglyph)
+                p.drawText(QPointF(icon_x, icon_baseline), iglyph)
                 p.setFont(nfont)
-                p.drawText(QRectF(dx + i_w + icon_gap, cell.top(), n_w, cell.height()),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           dtxt)
+                p.drawText(QPointF(dx + icon_slot + icon_gap_d, num_baseline), dtxt)
             else:
                 p.setPen(dcol)
-                p.drawText(QRectF(dx, cell.top(), d_w, cell.height()),
-                           Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                           dtxt)
+                p.drawText(QPointF(dx, self._baseline_y(n_fm, pill)), dtxt)
         else:
             p.setPen(col("irating_text"))
-            p.drawText(cell, Qt.AlignmentFlag.AlignCenter, ir_txt)
+            p.drawText(pill, Qt.AlignmentFlag.AlignCenter, ir_txt)
 
     def _draw_pit(self, p, row, x, y, pw, h, fs):
         cell = QRectF(x, y + h * 0.2, pw, h * 0.6)
@@ -660,11 +716,11 @@ class BaseTable(QWidget):
         cell = QRectF(x, y + h * 0.2, nw, h * 0.6)
         num = str(row.get("car_number", "")).strip()
         p.setPen(col("muted") if row.get("in_pit") else col("text"))
-        p.setFont(tfont(fs * 0.9))
+        p.setFont(tabfont(fs * 0.9, bold=_data_font_bold()))
         p.drawText(cell, Qt.AlignmentFlag.AlignCenter, f"#{num}" if num else "")
 
     def _draw_laptime(self, p, row, key, x, y, lw, h, fs):
         p.setPen(col("muted") if row.get("in_pit") else col("text"))
-        p.setFont(tfont(fs * 0.92))
+        p.setFont(tabfont(fs * 0.92, bold=_data_font_bold()))
         p.drawText(QRectF(x, y, lw, h), Qt.AlignmentFlag.AlignCenter,
                    row.get(key) or "\u2014")

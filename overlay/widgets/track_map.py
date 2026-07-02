@@ -20,12 +20,13 @@ import math
 import os
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QMouseEvent, QPainter,
+from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QMouseEvent, QPainter,
                          QPainterPath, QPen)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
 from .. import svgpath
+from .chrome import draw_card, draw_dark_cell
 
 SCHEMATIC_PIT_SOURCES = frozenset({"schematic", "inactive", "dashes"})
 
@@ -1153,9 +1154,9 @@ class TrackMapWidget(QWidget):
             bh = fm.height() + 4.0
             br = QRectF((rect.width() - bw) / 2.0, 6.0, bw, bh)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0, 150))
+            p.setBrush(_mcol_def("scan_bg", "#000000c8"))
             p.drawRoundedRect(br, 6, 6)
-            p.setPen(QColor(240, 240, 240))
+            p.setPen(_mcol_def("corner_text", "#d6dce2"))
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, self._scan_text)
         if self._hint_text:
             p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
@@ -1164,9 +1165,9 @@ class TrackMapWidget(QWidget):
             bh = fm.height() + 5.0
             br = QRectF((rect.width() - bw) / 2.0, rect.height() - bh - 8.0, bw, bh)
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(184, 70, 38, 215))
+            p.setBrush(_mcol_def("hint_bg", "#ff9416e6"))
             p.drawRoundedRect(br, 6, 6)
-            p.setPen(QColor(255, 255, 255))
+            p.setPen(_mcol_def("hint_text", "#ffffff"))
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, self._hint_text)
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
@@ -1178,16 +1179,7 @@ class TrackMapWidget(QWidget):
             mc = _mcfg()
             # Rounded card behind the map so it matches the dash/table panels.
             if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
-                radius = max(8.0, min(rect.width(), rect.height())
-                             * mc.get("corner_radius_frac", 0.08))
-                grad = QLinearGradient(0, 0, 0, rect.height())
-                grad.setColorAt(0.0, _mcol("bg_top"))
-                grad.setColorAt(1.0, _mcol("bg_bottom"))
-                p.setBrush(grad)
-                p.setPen(QPen(_mcol("panel_border"), 1))
-                p.drawRoundedRect(
-                    QRectF(0.5, 0.5, rect.width() - 1, rect.height() - 1),
-                    radius, radius)
+                draw_card(p, rect.width(), rect.height(), "map")
 
             if not self.path:
                 p.setPen(QColor(220, 220, 220))
@@ -1631,12 +1623,12 @@ class TrackMapWidget(QWidget):
             bw = max(bh, fm.horizontalAdvance(label) + 12)
             rect = QRectF(ax - bw / 2, ay - bh / 2, bw, bh)
             if self.corner_edit_mode:
+                p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(QColor(255, 200, 60, 220 if idx == self._drag_corner
                                   else 160))
+                p.drawRoundedRect(rect, 4, 4)
             else:
-                p.setBrush(_mcol("corner_bg"))
-            p.setPen(Qt.PenStyle.NoPen)
-            p.drawRoundedRect(rect, 4, 4)
+                draw_dark_cell(p, rect, "map", radius=4)
             p.setPen(_mcol("corner_text"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
             self._corner_hit.append((rect, idx))

@@ -31,7 +31,12 @@ from PyQt6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .table import tfont
+from .chrome import col as _chrome_col
+from .chrome import draw_accent_bar, draw_card, draw_dark_cell, draw_edge_band
+from .chrome import draw_row_divider
+from .fonts import data_font_bold, tabfont, tfont
+
+_SECTION = "fuel_calc"
 
 _VC = Qt.AlignmentFlag.AlignVCenter
 _VC_LEFT = _VC | Qt.AlignmentFlag.AlignLeft
@@ -49,7 +54,7 @@ def _cfg() -> dict:
 
 
 def _col(key: str) -> QColor:
-    return config.qcolor(_cfg()["colors"][key])
+    return _chrome_col(key, _SECTION)
 
 
 def _fmt1(x) -> str:
@@ -93,23 +98,13 @@ class FuelCalcWidget(QWidget):
         w, h = self.width(), self.height()
         cfg = _cfg()
         d = self.data or {}
-        radius = max(10.0, h * cfg.get("corner_radius_frac", 0.04))
-
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, _col("bg_top"))
-        grad.setColorAt(1.0, _col("bg_bottom"))
-        p.setBrush(grad)
-        p.setPen(QPen(_col("border"), 1))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+        card, radius = draw_card(p, w, h, _SECTION)
 
         m = w * 0.04
         inner = w - 2 * m
 
-        # Thin accent bar always pins the top.
         bar_h = max(3.0, h * 0.018)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(_col("accent"))
-        p.drawRoundedRect(QRectF(m, h * 0.012, inner, bar_h), bar_h / 2, bar_h / 2)
+        draw_accent_bar(p, QRectF(m, h * 0.012, inner, bar_h), _SECTION)
 
         # Build the stack of enabled blocks (each a relative weight), then place
         # them top-to-bottom so hidden features collapse and the rest reflow.
@@ -143,6 +138,10 @@ class FuelCalcWidget(QWidget):
         for key, wt in blocks:
             bh = avail * wt / sumw
             if key == "title":
+                title_h = bh
+                band = QRectF(card.left(), cy, card.width(), title_h)
+                draw_edge_band(p, band, "header_bg", _SECTION, bottom_line=True,
+                               radius_top=0)
                 p.setFont(tfont(bh * 0.62, True))
                 p.setPen(_col("title"))
                 p.drawText(QRectF(m, cy, inner, bh), _CENTER,
@@ -230,11 +229,9 @@ class FuelCalcWidget(QWidget):
     def _draw_add(self, p, d, x, y, w, h) -> None:
         add = d.get("add")
         rect = QRectF(x, y, w, h)
-        p.setBrush(_col("add_bg"))
-        p.setPen(QPen(_col("border"), 1))
-        p.drawRoundedRect(rect, 8, 8)
+        draw_dark_cell(p, rect, _SECTION, radius=8)
         p.setPen(_col("add_text"))
-        p.setFont(tfont(h * 0.46, True))
+        p.setFont(tabfont(h * 0.46, bold=True))
         txt = f"+{add:.1f}L" if isinstance(add, (int, float)) else "\u2014"
         p.drawText(rect, _CENTER, txt)
 
@@ -243,7 +240,7 @@ class FuelCalcWidget(QWidget):
         cap = d.get("cap")
         bar = QRectF(x, y + h * 0.18, w, h * 0.36)
         p.setBrush(_col("gauge_bg"))
-        p.setPen(QPen(_col("gauge_border"), 1))
+        p.setPen(QPen(_col("cell_border"), 1))
         p.drawRoundedRect(bar, 4, 4)
         if isinstance(level, (int, float)) and isinstance(cap, (int, float)) and cap > 0:
             frac = max(0.0, min(1.0, level / cap))
@@ -272,14 +269,17 @@ class FuelCalcWidget(QWidget):
         col_w = (w - label_w) / len(_STAT_COLS)
         head_h = h * 0.22
         row_h = (h - head_h) / len(_STAT_ROWS)
+        data_bold = data_font_bold(_SECTION)
 
-        # Column headers.
-        p.setFont(tfont(head_h * 0.5, True))
+        band = QRectF(x, y, w, head_h)
+        draw_edge_band(p, band, "header_bg", _SECTION, bottom_line=True)
+        p.setFont(tfont(head_h * 0.5, bold=False))
         p.setPen(_col("header"))
         for i, k in enumerate(_STAT_COLS):
             cx = x + label_w + i * col_w
             p.drawText(QRectF(cx, y, col_w, head_h), _CENTER, _STAT_HEADERS[k])
 
+        cfg = _cfg()
         for r, rk in enumerate(_STAT_ROWS):
             ry = y + head_h + r * row_h
             if r % 2 == 1:
@@ -291,11 +291,13 @@ class FuelCalcWidget(QWidget):
             p.drawText(QRectF(x + 2, ry, label_w, row_h), _VC_LEFT, rk.upper())
             data = rows.get(rk) or {}
             p.setPen(_col("text"))
-            p.setFont(tfont(row_h * 0.46, True))
+            p.setFont(tabfont(row_h * 0.46, bold=data_bold))
             for i, k in enumerate(_STAT_COLS):
                 cx = x + label_w + i * col_w
                 p.drawText(QRectF(cx, ry, col_w, row_h), _CENTER,
                            _fmt1(data.get(k)))
+            if cfg.get("row_dividers", True) and r < len(_STAT_ROWS) - 1:
+                draw_row_divider(p, x, ry + row_h, w, _SECTION)
 
     # -- PIT lap-timeline strip ---------------------------------------------
     def _draw_strip(self, p, d, x, y, w, h) -> None:
@@ -331,9 +333,7 @@ class FuelCalcWidget(QWidget):
     # -- a summary box (TIME / LAPS until empty) ----------------------------
     def _draw_box(self, p, label, value, margin_txt, margin_val, x, y, w, h) -> None:
         rect = QRectF(x, y, w, h)
-        p.setBrush(_col("cell_dark"))
-        p.setPen(QPen(_col("box_border"), 1.5))
-        p.drawRoundedRect(rect, 6, 6)
+        draw_dark_cell(p, rect, _SECTION, radius=6)
         pad = w * 0.02
         # Three non-overlapping zones: label | value | margin. Fonts scale with
         # height but are capped by zone width so a tall box can't overlap/clip.
@@ -345,11 +345,11 @@ class FuelCalcWidget(QWidget):
         p.setFont(self._fit_font(label, label_w - pad, h * 0.30))
         p.setPen(_col("text"))
         p.drawText(QRectF(x + pad, y, label_w - pad, h), _VC_LEFT, label)
-        p.setFont(self._fit_font(value, value_w, h * 0.52))
+        p.setFont(tabfont(min(h * 0.52, 48), bold=data_font_bold(_SECTION)))
         p.setPen(_col("box_value"))
         p.drawText(QRectF(x + label_w + gap, y, value_w, h), _VC_RIGHT, value)
         warn = isinstance(margin_val, (int, float)) and margin_val < 0
-        p.setFont(self._fit_font(margin_txt, margin_w - pad, h * 0.32))
+        p.setFont(tabfont(min(h * 0.32, 32), bold=False))
         p.setPen(_col("box_warn") if warn else _col("muted"))
         p.drawText(QRectF(x + label_w + gap * 2 + value_w, y, margin_w - pad, h),
                    _VC_RIGHT, margin_txt)

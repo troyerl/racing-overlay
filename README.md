@@ -350,6 +350,14 @@ glows **fade/grow** smoothly instead of popping.
   (`units`).
 - Relative + Standings share `overlay/widgets/table.py`'s `BaseTable` for row rendering.
 
+**Shared panel chrome.** Every widget (dash, lap log, fuel, radar, map, flags,
+inputs, delta bar, lap compare, sector timing, …) uses the same card shell from
+`overlay/widgets/chrome.py`: gradient background, rounded corners, and a unified
+border weight. List-style panels also get opaque header/footer bands, row dividers,
+and dark translucent cells for numeric readouts. Lap times, gaps, and deltas use
+the tabular mono font from `overlay/widgets/fonts.py` (`tabular_font_family` in
+config). The `border` and `panel_border` color keys are aliases — set either one.
+
 Data sources: gaps from `CarIdxEstTime`/`CarIdxF2Time`, license/iRating from
 `DriverInfo`, lap differences from `CarIdxLap`, radar proximity from
 `CarIdxLapDistPct` + `CarLeftRight`, footer from `SessionTime`/`SessionTimeTotal`

@@ -41,6 +41,10 @@ TABLE_COLUMNS = ["badge", "position", "car_number", "name", "license",
 _TABLE_STYLE: dict = {
     "corner_radius_frac": 0.05,
     "alt_row_shading": True,
+    "row_dividers": True,
+    "name_font_bold": True,
+    "data_font_bold": False,
+    "irating_show_icon": True,
     # Fixed row height in pixels. When > 0, rows, text and header keep this
     # size no matter how big the panel is dragged -- resizing the panel just
     # reveals more empty space instead of zooming the table. Set to 0 to fall
@@ -70,7 +74,7 @@ _TABLE_STYLE: dict = {
         "car_number": 1.60,
         "gap": 1.70,
         "irating": 1.20,
-        "license": 1.20,
+        "license": 1.35,
         "pit": 2.10,
         "last_lap": 2.90,
         "best_lap": 2.90,
@@ -81,10 +85,13 @@ _TABLE_STYLE: dict = {
         "bg": "#1b1f26f2",
         "bg_top": "#1b1f26f2",
         "bg_bottom": "#0f1216f2",
-        "border": "#ffffff20",
+        "border": "#ffffff28",
         "cell_dark": "#0b0e12",
-        "row_alt": "#ffffff0a",
-        "player_row": "#ff941650",
+        "row_alt": "#ffffff14",
+        "player_row": "#ff941658",
+        "header_bg": "#0b0e12bb",
+        "footer_bg": "#0f1216",
+        "pit_row": "#8b93a118",
         # Lapped-traffic row tints: "threat" (red) = a car a lap ahead that
         # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
         # Rendered as a soft left-to-right gradient wash in the relative table.
@@ -92,8 +99,9 @@ _TABLE_STYLE: dict = {
         "lapped": "#4a8cff60",
         "text": "#f4f6f8",
         "muted": "#8b93a1",
-        "irating_bg": "#eef0f2",
-        "irating_text": "#14161a",
+        "irating_bg": "#0b0d11cc",
+        "irating_border": "#ffffff20",
+        "irating_text": "#f4f6f8",
         "irating_delta_up": "#46df7a",
         "irating_delta_down": "#ff5050",
         "badge_player": "#ff9416",
@@ -113,8 +121,24 @@ _TABLE_STYLE: dict = {
     },
 }
 
+# Shared polish keys merged into list-style / card widgets (not dash).
+_WIDGET_CHROME: dict = {
+    "row_dividers": True,
+    "data_font_bold": False,
+}
+_WIDGET_CHROME_COLORS: dict = {
+    "header_bg": "#0b0e12bb",
+    "footer_bg": "#0f1216",
+    "cell_dark": "#0b0e12",
+    "cell_border": "#ffffff20",
+    "row_alt": "#ffffff14",
+}
+
 DEFAULTS: dict = {
     "font_family": "Segoe UI",
+    # Monospace family for gap / lap-time columns (empty = SF Mono on macOS,
+    # Consolas elsewhere).
+    "tabular_font_family": "",
     # Global multiplier applied to every text size in every widget. Raise it to
     # make all text bigger, lower it to make everything smaller. Each widget also
     # has its own "text_scale" that multiplies on top of this one.
@@ -194,6 +218,7 @@ DEFAULTS: dict = {
         "footer_icons": {"left": False, "center": False, "right": False},
     },
     "laptime_log": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -212,11 +237,12 @@ DEFAULTS: dict = {
         # "best" (your best lap so far this session).
         "delta_mode": "previous",
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             # Vertical gradient card matching the dash/tables.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",
-            "border": "#ffffff20",
-            "row_alt": "#ffffff0a",
+            "border": "#ffffff28",
+            "panel_border": "#ffffff28",
             "text": "#f4f6f8",
             "muted": "#8b93a1",
             # Column headers (LAP / TIME / DELTA / TEMP.).
@@ -227,6 +253,7 @@ DEFAULTS: dict = {
         },
     },
     "fuel_calc": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -246,16 +273,18 @@ DEFAULTS: dict = {
         "show_time": True,       # TIME UNTIL EMPTY box
         "show_laps": True,       # LAPS UNTIL EMPTY box
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             # Vertical gradient card matching the dash/tables.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",
-            "border": "#ffffff20",
+            "border": "#ffffff28",
+            "panel_border": "#ffffff28",
             "accent": "#e23b3b",      # thin top bar
             "title": "#f4f6f8",
             "header": "#8b93a1",
             "text": "#f4f6f8",
             "muted": "#8b93a1",
-            "row_alt": "#ffffff12",
+            "row_alt": "#ffffff14",
             "cell_dark": "#0b0e12",
             # Pit-window status pill + the big "add fuel" box.
             "pill_open": "#46df7a",
@@ -278,6 +307,7 @@ DEFAULTS: dict = {
         },
     },
     "radar": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         "range_pct": 0.03,
@@ -310,6 +340,7 @@ DEFAULTS: dict = {
             "nose_len": 0.16,
         },
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "car": "#f4f6f8",
             "red": "#e23b3b",
             "yellow": "#ffd23a",
@@ -318,14 +349,16 @@ DEFAULTS: dict = {
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
         },
     },
     "dash": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
+        "corner_radius_frac": 0.22,
         "shift_segments": 20,
         "shift_red_frac": 0.16,
         "shift_yellow_frac": 0.24,
@@ -384,14 +417,17 @@ DEFAULTS: dict = {
         "irating_abbreviate": True,
         "show_irating_projection": False,
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
-            "panel_border": "#ffffff20",
+            "border": "#ffffff28",
+            "panel_border": "#ffffff28",
             "label": "#8b93a1",
             "value": "#f4f6f8",
             "muted": "#8b93a1",
-            "irating_bg": "#eef0f2",
-            "irating_text": "#14161a",
+            "irating_bg": "#0b0d11cc",
+            "irating_border": "#ffffff20",
+            "irating_text": "#f4f6f8",
             "irating_delta_up": "#46df7a",
             "irating_delta_down": "#ff5050",
             "gear": "#ffffff",
@@ -454,6 +490,7 @@ DEFAULTS: dict = {
         },
     },
     "inputs": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -481,9 +518,10 @@ DEFAULTS: dict = {
         # Trace line thickness in pixels.
         "line_width": 2.4,
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
             # The vertical accent bar beside the title.
             "accent": "#e23b3b",
             "label": "#cdd3db",
@@ -510,6 +548,7 @@ DEFAULTS: dict = {
         },
     },
     "delta_bar": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -522,9 +561,10 @@ DEFAULTS: dict = {
         # Show the big signed number above the bar.
         "show_value": True,
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
             "faster": "#46df7a",
             "slower": "#e23b3b",
             "track": "#262b34",
@@ -534,6 +574,7 @@ DEFAULTS: dict = {
         },
     },
     "flags": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -541,9 +582,10 @@ DEFAULTS: dict = {
         # Text shown when no flag is flying.
         "idle_text": "TRACK CLEAR",
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
             # Calm "no flag" state.
             "idle_bg": "#1f242c",
             "idle_text": "#9fb0a4",
@@ -575,6 +617,8 @@ DEFAULTS: dict = {
         },
     },
     "lap_compare": {
+        **_WIDGET_CHROME,
+        "alt_row_shading": True,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -588,21 +632,24 @@ DEFAULTS: dict = {
         # Show the delta-over-distance sparkline.
         "show_graph": True,
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
             "accent": "#e23b3b",
             "text": "#f4f6f8",
             "muted": "#8b93a1",
             "faster": "#46df7a",
             "slower": "#e23b3b",
-            "chip_bg": "#262b34",
+            "chip_bg": "#0b0d11cc",
+            "chip_border": "#ffffff20",
             "graph_bg": "#0b0d11",
             "grid": "#ffffff1f",
             "graph_line": "#ffd23a",
         },
     },
     "sector_timing": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
@@ -610,9 +657,10 @@ DEFAULTS: dict = {
         # Fallback sector count when the session provides no sector layout.
         "sectors": 3,
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
             "bg_bottom": "#0f1216",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
             "text": "#f4f6f8",
             "muted": "#8b93a1",
             # Sector cell fills by state: matched your best (purple), completed,
@@ -626,6 +674,7 @@ DEFAULTS: dict = {
         },
     },
     "map": {
+        **_WIDGET_CHROME,
         # Show or hide this whole widget (its window + all of its per-tick work).
         "show": True,
         # Per-widget text size (corner labels, car numbers), x global text_scale.
@@ -676,12 +725,19 @@ DEFAULTS: dict = {
         "show_panel": False,
         "corner_radius_frac": 0.08,
         "colors": {
+            **_WIDGET_CHROME_COLORS,
             "asphalt": "#333a42",
             "outline": "#8b93a1",
             "infield": "#0f1216c8",
             "player": "#46df7a",
-            "corner_bg": "#0b0d11c8",
+            "corner_bg": "#0b0d11cc",
+            "corner_border": "#ffffff20",
             "corner_text": "#d6dce2",
+            "pit_lane_in": "#d94040",
+            "pit_lane_out": "#3aa0ff",
+            "scan_bg": "#000000c8",
+            "hint_bg": "#ff9416e6",
+            "hint_text": "#14161a",
             # Pit-lane highlight (thin red slashed line), its label text, and the
             # over-limit warning color.
             "pit": "#ff4d4d",
@@ -700,7 +756,7 @@ DEFAULTS: dict = {
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",
-            "panel_border": "#ffffff20",
+            "panel_border": "#ffffff28",
         },
         "palette": [
             "#3aa0ff", "#ff5bac", "#46d27a", "#b06bff", "#ffa23a",

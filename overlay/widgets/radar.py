@@ -24,6 +24,7 @@ from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
+from .chrome import draw_card
 from .table import ease
 
 
@@ -85,13 +86,7 @@ class RadarWidget(QWidget):
 
         # Rounded card behind the radar so it matches the dash/table panels.
         if rc.get("show_panel", True) and "bg_top" in rc["colors"]:
-            radius = max(8.0, min(w, h) * rc.get("corner_radius_frac", 0.12))
-            grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0.0, _rcol("bg_top"))
-            grad.setColorAt(1.0, _rcol("bg_bottom"))
-            p.setBrush(grad)
-            p.setPen(QPen(_rcol("panel_border"), 1))
-            p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+            draw_card(p, w, h, "radar")
 
         car_w = max(12.0, w * sz["car_w"])
         car_h = max(24.0, h * sz["car_h"])

@@ -15,10 +15,15 @@ from __future__ import annotations
 import math
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from .chrome import col, draw_card
+from .fonts import data_font_bold, tabfont
+from .formats import signed_delta
+
+_SECTION = "delta_bar"
 
 
 class DeltaBarWidget(QWidget):
@@ -30,7 +35,6 @@ class DeltaBarWidget(QWidget):
         self._clock.start()
         self._last_ms = 0
         self._animating = False
-        self._font_cache: dict = {}
         self.setMinimumSize(220, 90)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -39,26 +43,7 @@ class DeltaBarWidget(QWidget):
         self.update()
 
     def _cfg(self) -> dict:
-        return config.CFG["delta_bar"]
-
-    def _col(self, key: str) -> QColor:
-        return config.qcolor(self._cfg()["colors"].get(key, "#ff00ff"))
-
-    def _font(self, px: float, bold: bool = True):
-        from PyQt6.QtGui import QFont
-        fam = config.CFG.get("font_family", "Segoe UI")
-        pxi = max(6, int(round(px * config.text_scale_for("delta_bar"))))
-        key = (fam, pxi, bold)
-        f = self._font_cache.get(key)
-        if f is None:
-            f = QFont(fam)
-            f.setStyleHint(QFont.StyleHint.SansSerif)
-            f.setPixelSize(pxi)
-            f.setBold(bold)
-            if len(self._font_cache) > 64:
-                self._font_cache.clear()
-            self._font_cache[key] = f
-        return f
+        return config.CFG[_SECTION]
 
     def _dt(self) -> float:
         now = self._clock.elapsed()
@@ -67,19 +52,14 @@ class DeltaBarWidget(QWidget):
         return max(0.0, min(0.1, dt))
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        config.use_section(_SECTION)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = float(self.width()), float(self.height())
         c = self._cfg()
         d = self.data or {}
 
-        radius = max(8.0, min(w, h) * 0.14)
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, self._col("bg_top"))
-        grad.setColorAt(1.0, self._col("bg_bottom"))
-        p.setBrush(grad)
-        p.setPen(QPen(self._col("panel_border"), 1.2))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+        draw_card(p, w, h, _SECTION)
 
         delta = d.get("delta")
         have = isinstance(delta, (int, float))
@@ -93,38 +73,38 @@ class DeltaBarWidget(QWidget):
 
         pad = max(6.0, h * 0.12)
         show_val = c.get("show_value", True)
-        # Numeric readout takes the top ~55%, the bar sits beneath it.
+        data_bold = data_font_bold(_SECTION)
         if show_val:
-            txt = f"{delta:+.2f}" if have else "--.--"
-            col = (self._col("muted") if not have or abs(delta) < 0.005
-                   else (self._col("faster") if delta < 0 else self._col("slower")))
-            p.setFont(self._font(h * 0.46))
-            p.setPen(col)
+            txt = signed_delta(delta, 2) if have else "--.--"
+            tcol = (col("muted", _SECTION) if not have or abs(delta) < 0.005
+                    else (col("faster", _SECTION) if delta < 0
+                          else col("slower", _SECTION)))
+            p.setFont(tabfont(h * 0.46, bold=data_bold))
+            p.setPen(tcol)
             p.drawText(QRectF(pad, pad * 0.4, w - 2 * pad, h * 0.5),
                        Qt.AlignmentFlag.AlignCenter, txt)
             bar = QRectF(pad, h * 0.62, w - 2 * pad, h * 0.24)
         else:
             bar = QRectF(pad, h * 0.40, w - 2 * pad, h * 0.20)
 
-        # Track + center tick.
         r = bar.height() / 2
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self._col("track"))
+        p.setBrush(col("track", _SECTION))
         p.drawRoundedRect(bar, r, r)
         cx = bar.center().x()
 
-        # Fill from center toward the side matching the sign.
         if have and abs(self._eased) > 0.001:
             half = bar.width() / 2
             mag = abs(self._eased) * half
-            if self._eased < 0:  # faster -> grow left
+            if self._eased < 0:
                 fill = QRectF(cx - mag, bar.top(), mag, bar.height())
-                p.setBrush(self._col("faster"))
-            else:                # slower -> grow right
+                p.setBrush(col("faster", _SECTION))
+            else:
                 fill = QRectF(cx, bar.top(), mag, bar.height())
-                p.setBrush(self._col("slower"))
+                p.setBrush(col("slower", _SECTION))
             p.drawRoundedRect(fill, r, r)
 
-        p.setPen(QPen(self._col("center"), max(1.5, h * 0.02)))
+        from PyQt6.QtGui import QPen
+        p.setPen(QPen(col("center", _SECTION), max(1.5, h * 0.02)))
         p.drawLine(QPointF(cx, bar.top() - h * 0.03),
                    QPointF(cx, bar.bottom() + h * 0.03))

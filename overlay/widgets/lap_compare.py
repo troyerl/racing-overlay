@@ -19,20 +19,18 @@ import math
 from collections import deque
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath,
-                         QPen)
+from PyQt6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config, lap_compare_store
+from .chrome import col, draw_card, draw_dark_cell, draw_edge_band
+from .chrome import draw_row_divider
+from .fonts import data_font_bold, tabfont, tfont
+from .formats import clock, signed_delta
+
+_SECTION = "lap_compare"
 
 N_BINS = 240  # track-position resolution (~one sample per 0.4% of the lap)
-
-
-def _clock(sec) -> str:
-    if not isinstance(sec, (int, float)) or sec <= 0:
-        return "--:--.---"
-    m = int(sec // 60)
-    return f"{m}:{sec - m * 60:06.3f}"
 
 
 def _ffill(arr: list):
@@ -546,7 +544,6 @@ class LapCompareWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data: dict = {}
-        self._font_cache: dict = {}
         self.setMinimumSize(280, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -561,22 +558,7 @@ class LapCompareWidget(QWidget):
         return config.CFG["lap_compare"]
 
     def _col(self, key: str) -> QColor:
-        return config.qcolor(self._cfg()["colors"].get(key, "#ff00ff"))
-
-    def _font(self, px: float, bold: bool = True) -> QFont:
-        fam = config.CFG.get("font_family", "Segoe UI")
-        pxi = max(6, int(round(px * config.text_scale_for("lap_compare"))))
-        key = (fam, pxi, bold)
-        f = self._font_cache.get(key)
-        if f is None:
-            f = QFont(fam)
-            f.setStyleHint(QFont.StyleHint.SansSerif)
-            f.setPixelSize(pxi)
-            f.setBold(bold)
-            if len(self._font_cache) > 64:
-                self._font_cache.clear()
-            self._font_cache[key] = f
-        return f
+        return col(key, _SECTION)
 
     def _delta_color(self, d) -> QColor:
         if not isinstance(d, (int, float)) or abs(d) < 0.005:
@@ -584,26 +566,21 @@ class LapCompareWidget(QWidget):
         return self._col("faster") if d < 0 else self._col("slower")
 
     def paintEvent(self, event) -> None:  # noqa: N802
+        config.use_section(_SECTION)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = float(self.width()), float(self.height())
         c = self._cfg()
         d = self.data or {}
-
-        radius = max(8.0, min(w, h) * 0.08)
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, self._col("bg_top"))
-        grad.setColorAt(1.0, self._col("bg_bottom"))
-        p.setBrush(grad)
-        p.setPen(QPen(self._col("panel_border"), 1.2))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+        card, radius = draw_card(p, w, h, _SECTION)
+        data_bold = data_font_bold(_SECTION)
 
         pad = max(7.0, min(w, h) * 0.06)
         x0, iw = pad, w - 2 * pad
         y = pad
 
         if not d.get("have_ref"):
-            p.setFont(self._font(h * 0.07))
+            p.setFont(tfont(h * 0.07))
             p.setPen(self._col("muted"))
             p.drawText(QRectF(pad, pad, iw, h - 2 * pad),
                        Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
@@ -611,68 +588,68 @@ class LapCompareWidget(QWidget):
                        "then every lap is compared to it.")
             return
 
-        # Header: title + best lap time.
         hh = h * 0.12
-        p.setFont(self._font(hh * 0.62))
+        band = QRectF(card.left(), y, card.width(), hh)
+        draw_edge_band(p, band, "header_bg", _SECTION, bottom_line=True,
+                       radius_top=radius)
+        p.setFont(tfont(hh * 0.62, bold=True))
         p.setPen(self._col("accent"))
         p.drawText(QRectF(x0, y, iw * 0.5, hh),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    "VS BEST")
-        p.setFont(self._font(hh * 0.52))
+        p.setFont(tabfont(hh * 0.52, bold=data_bold))
         p.setPen(self._col("muted"))
         p.drawText(QRectF(x0 + iw * 0.4, y, iw * 0.6, hh),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                   _clock(d.get("ref_time")))
+                   clock(d.get("ref_time")))
         y += hh
 
-        # Big live delta (or last completed lap delta + NEW BEST tag).
         live = d.get("live_delta")
         show_live = c.get("show_live_delta", True) and isinstance(live, (int, float))
         big = live if show_live else d.get("last_delta")
         bh = h * 0.20
         if isinstance(big, (int, float)):
-            p.setFont(self._font(bh * 0.84))
+            p.setFont(tabfont(bh * 0.84, bold=data_bold))
             p.setPen(self._delta_color(big))
             p.drawText(QRectF(x0, y, iw, bh), Qt.AlignmentFlag.AlignCenter,
-                       f"{big:+.2f}")
+                       signed_delta(big, 2))
         if d.get("is_new_best"):
-            p.setFont(self._font(bh * 0.26))
+            p.setFont(tfont(bh * 0.26))
             p.setPen(self._col("faster"))
             p.drawText(QRectF(x0, y + bh * 0.78, iw, bh * 0.3),
                        Qt.AlignmentFlag.AlignCenter, "NEW BEST LAP")
         y += bh
 
-        # Delta-over-distance sparkline.
         if c.get("show_graph", True) and d.get("graph"):
             gh = h * 0.16
             self._draw_graph(p, QRectF(x0, y, iw, gh), d["graph"])
             y += gh + pad * 0.4
 
-        # Consistency footer (reserve a strip at the bottom when we have it).
         foot = 0.0
         spread = d.get("consistency")
         if isinstance(spread, (int, float)):
             foot = h * 0.09
-            fr = QRectF(x0, h - pad - foot, iw, foot)
-            p.setFont(self._font(foot * 0.52))
+            fr_top = h - pad - foot
+            band = QRectF(card.left(), fr_top, card.width(), foot + pad * 0.5)
+            draw_edge_band(p, band, "footer_bg", _SECTION, top_line=True,
+                           radius_bottom=radius, opaque=True)
+            fr = QRectF(x0, fr_top, iw, foot)
+            p.setFont(tfont(foot * 0.52, bold=False))
             p.setPen(self._col("muted"))
             p.drawText(fr, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        "CONSISTENCY")
-            col = (self._col("faster") if spread <= 0.3
-                   else self._col("slower") if spread >= 0.8 else self._col("text"))
-            p.setFont(self._font(foot * 0.56))
-            p.setPen(col)
+            ccol = (self._col("faster") if spread <= 0.3
+                    else self._col("slower") if spread >= 0.8 else self._col("text"))
+            p.setFont(tabfont(foot * 0.56, bold=data_bold))
+            p.setPen(ccol)
             p.drawText(fr, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        f"\u00b1{spread / 2:.2f}s / {d.get('laps', 0)} laps")
 
-        # Ranked corner analysis.
         self._draw_turns(p, QRectF(x0, y, iw, h - pad - foot - y),
                          d.get("turns") or [], c)
 
     def _draw_graph(self, p, rect: QRectF, pts) -> None:
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self._col("graph_bg"))
-        p.drawRoundedRect(rect, 5, 5)
+        draw_dark_cell(p, rect, _SECTION, radius=5)
         mid = rect.center().y()
         p.setPen(QPen(self._col("grid"), 1))
         p.drawLine(QPointF(rect.left(), mid), QPointF(rect.right(), mid))
@@ -696,7 +673,7 @@ class LapCompareWidget(QWidget):
         shown = shown[:int(c.get("max_turns", 6) or 6)]
         shown = sorted(shown, key=lambda t: t.get("order", 0))
         if not shown:
-            p.setFont(self._font(rect.height() * 0.12))
+            p.setFont(tfont(rect.height() * 0.12))
             p.setPen(self._col("muted"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter,
                        "Matching your best lap -- nice and tidy.")
@@ -704,8 +681,15 @@ class LapCompareWidget(QWidget):
         rh = min(rect.height() / len(shown), rect.height() * 0.34)
         rh = max(rh, 1.0)
         y = rect.top()
-        for t in shown:
-            self._turn_row(p, QRectF(rect.left(), y, rect.width(), rh), t)
+        for i, t in enumerate(shown):
+            row = QRectF(rect.left(), y, rect.width(), rh)
+            if c.get("alt_row_shading", True) and i % 2 == 1:
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(col("row_alt", _SECTION))
+                p.drawRect(row)
+            self._turn_row(p, row, t)
+            if c.get("row_dividers", True) and i < len(shown) - 1:
+                draw_row_divider(p, rect.left(), y + rh, rect.width(), _SECTION)
             y += rh
 
     def _turn_row(self, p, rect: QRectF, t) -> None:
@@ -714,22 +698,18 @@ class LapCompareWidget(QWidget):
         # Corner chip.
         chip_w = rect.width() * 0.16
         chip = QRectF(rect.left(), rect.top() + h * 0.12, chip_w, h * 0.76)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self._col("chip_bg"))
-        p.drawRoundedRect(chip, 5, 5)
-        p.setFont(self._font(h * 0.32))
+        draw_dark_cell(p, chip, _SECTION, radius=5)
+        p.setFont(tfont(h * 0.32, bold=True))
         p.setPen(self._col("text"))
         p.drawText(chip, Qt.AlignmentFlag.AlignCenter, str(t.get("label", "")))
-        # Time delta for the corner.
         dt_w = rect.width() * 0.20
-        p.setFont(self._font(h * 0.34))
+        p.setFont(tabfont(h * 0.34, bold=data_font_bold(_SECTION)))
         p.setPen(self._delta_color(lost))
         p.drawText(QRectF(chip.right() + rect.width() * 0.02, rect.top(), dt_w, h),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   f"{lost:+.2f}")
-        # Tip text -- wraps onto multiple lines within its column.
+                   signed_delta(lost, 2))
         tip = " · ".join(t.get("tips", [])) or "on pace"
-        p.setFont(self._font(h * 0.26))
+        p.setFont(tfont(h * 0.26, bold=False))
         p.setPen(self._col("muted"))
         tx = chip.right() + rect.width() * 0.02 + dt_w + rect.width() * 0.02
         tip_rect = QRectF(tx, rect.top(), rect.right() - tx, h)

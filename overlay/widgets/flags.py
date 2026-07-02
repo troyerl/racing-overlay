@@ -15,11 +15,15 @@ Expected data dict:
 from __future__ import annotations
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QLinearGradient, QPainter,
+from PyQt6.QtGui import (QColor, QFontMetricsF, QPainter,
                          QPainterPath, QPen)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from .chrome import col, draw_card, draw_dark_cell
+from .fonts import tfont
+
+_SECTION = "flags"
 
 # flag name -> (label, background color key, text color key).
 _SPEC = {
@@ -42,7 +46,6 @@ class FlagsWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.data: dict = {}
-        self._font_cache: dict = {}
         self.setMinimumSize(180, 80)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -57,40 +60,17 @@ class FlagsWidget(QWidget):
         return config.CFG["flags"]
 
     def _col(self, key: str) -> QColor:
-        return config.qcolor(self._cfg()["colors"].get(key, "#ff00ff"))
-
-    def _font(self, px: float, bold: bool = True) -> QFont:
-        fam = config.CFG.get("font_family", "Segoe UI")
-        pxi = max(6, int(round(px * config.text_scale_for("flags"))))
-        key = (fam, pxi, bold)
-        f = self._font_cache.get(key)
-        if f is None:
-            f = QFont(fam)
-            f.setStyleHint(QFont.StyleHint.SansSerif)
-            f.setPixelSize(pxi)
-            f.setBold(bold)
-            if len(self._font_cache) > 64:
-                self._font_cache.clear()
-            self._font_cache[key] = f
-        return f
+        return col(key, _SECTION)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         flag = (self.data or {}).get("flag")
-        # Nothing flying: stay invisible unless we're in layout-edit mode, where
-        # a placeholder keeps the panel findable and draggable.
         if flag is None and not (self.data or {}).get("edit"):
             return
+        config.use_section(_SECTION)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = float(self.width()), float(self.height())
-
-        radius = max(8.0, min(w, h) * 0.16)
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, self._col("bg_top"))
-        grad.setColorAt(1.0, self._col("bg_bottom"))
-        p.setBrush(grad)
-        p.setPen(QPen(self._col("panel_border"), 1.2))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+        draw_card(p, w, h, _SECTION)
 
         pad = max(6.0, min(w, h) * 0.12)
         self._draw_banner(p, QRectF(pad, pad, w - 2 * pad, h - 2 * pad), flag,
@@ -100,10 +80,8 @@ class FlagsWidget(QWidget):
         spec = _SPEC.get(flag)
         r = min(rect.height() * 0.34, 22.0)
         if spec is None:
-            p.setBrush(self._col("idle_bg"))
-            p.setPen(QPen(QColor(255, 255, 255, 26), 1))
-            p.drawRoundedRect(rect, r, r)
-            p.setFont(self._font(rect.height() * 0.26))
+            draw_dark_cell(p, rect, _SECTION, radius=r)
+            p.setFont(tfont(rect.height() * 0.26))
             p.setPen(self._col("idle_text"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter,
                        str(self._cfg().get("idle_text", "TRACK CLEAR")))
@@ -139,15 +117,15 @@ class FlagsWidget(QWidget):
         # Rounded plate behind the label so the texture frames it.
         context = str(context).strip() if context else ""
         if context:
-            title_font = self._font(rect.height() * 0.22, True)
-            sub_font = self._font(rect.height() * 0.15, False)
+            title_font = tfont(rect.height() * 0.22, True)
+            sub_font = tfont(rect.height() * 0.15, False)
             avail = rect.width() * 0.82
             tw = max(QFontMetricsF(title_font).horizontalAdvance(label),
                      QFontMetricsF(sub_font).horizontalAdvance(context))
             if tw > avail and tw > 0:
                 scale = avail / tw
-                title_font = self._font(rect.height() * 0.22 * scale, True)
-                sub_font = self._font(rect.height() * 0.15 * scale, False)
+                title_font = tfont(rect.height() * 0.22 * scale, True)
+                sub_font = tfont(rect.height() * 0.15 * scale, False)
                 tw = max(QFontMetricsF(title_font).horizontalAdvance(label),
                          QFontMetricsF(sub_font).horizontalAdvance(context))
             plate_pad = rect.height() * 0.24
@@ -175,11 +153,11 @@ class FlagsWidget(QWidget):
                        Qt.AlignmentFlag.AlignCenter, context)
             return
 
-        font = self._font(rect.height() * 0.30)
+        font = tfont(rect.height() * 0.30)
         avail = rect.width() * 0.82
         tw = QFontMetricsF(font).horizontalAdvance(label)
         if tw > avail and tw > 0:
-            font = self._font(rect.height() * 0.30 * avail / tw)
+            font = tfont(rect.height() * 0.30 * avail / tw)
             tw = QFontMetricsF(font).horizontalAdvance(label)
         plate_pad = rect.height() * 0.28
         plate_h = min(rect.height() * 0.62, font.pixelSize() * 1.9)

@@ -21,10 +21,11 @@ from PyQt6.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel,
 from .. import config
 from . import track_map
 
-# iRacing schematic legend colors (BGR order in OpenCV import; Qt uses RGB).
-_SCHEMATIC_RED = "#d94040"
-_SCHEMATIC_BLUE = "#3aa0ff"
 _SCHEMATIC_DASH = [6.0, 4.0]
+
+
+def _map_color(key: str, default: str) -> str:
+    return track_map._mcfg().get("colors", {}).get(key, default)
 
 
 def apply_schematic_meta(widget: track_map.TrackMapWidget, meta: dict) -> None:
@@ -197,13 +198,13 @@ class TrackMapWidgetV2(track_map.TrackMapWidget):
             else:
                 red_lane = path
             self._draw_schematic_lane(
-                p, tx, red_lane, _SCHEMATIC_RED, lane_w,
+                p, tx, red_lane, _map_color("pit_lane_in", "#d94040"), lane_w,
                 dashed=dashed, outline=True)
         if blends and self.pit_out and len(self.pit_out) >= 2:
             merge = self._pit_draw_path(self.pit_out)
             merge = self._trim_merge_colinear_prefix(merge)
             self._draw_schematic_lane(
-                p, tx, merge, _SCHEMATIC_BLUE, merge_w,
+                p, tx, merge, _map_color("pit_lane_out", "#3aa0ff"), merge_w,
                 dashed=dashed, outline=True)
 
     @staticmethod

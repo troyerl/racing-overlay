@@ -1504,7 +1504,7 @@ class AdvancedSimHUD:
                         if cols.get("irating") or cols.get("license") else ""),
             "irating_delta": self._row_irating_delta(idx, cols, "relative"),
             "pit": pit,
-            "gap": abs(delta) if cols.get("gap") else None,
+            "gap": delta if cols.get("gap") else None,
             "last_lap": self._lap_for(idx, self._car_last) if cols.get("last_lap") else "",
             "best_lap": self._lap_for(idx, self._car_best) if cols.get("best_lap") else "",
             "is_player": is_player,

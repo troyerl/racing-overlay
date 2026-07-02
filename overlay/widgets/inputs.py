@@ -23,11 +23,15 @@ from __future__ import annotations
 from collections import deque
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import (QColor, QFont, QLinearGradient, QPainter, QPainterPath,
+from PyQt6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath,
                          QPen)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from .chrome import col, draw_accent_bar, draw_card
+from .fonts import data_font_bold, tabfont, tfont
+
+_SECTION = "inputs"
 
 
 def _gear_str(g) -> str:
@@ -45,7 +49,6 @@ class InputTraceWidget(QWidget):
         self._hist: deque = deque()
         self._clock = QElapsedTimer()
         self._clock.start()
-        self._font_cache: dict = {}
         self.setMinimumSize(360, 120)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -74,23 +77,7 @@ class InputTraceWidget(QWidget):
         return config.CFG["inputs"]
 
     def _col(self, key: str) -> QColor:
-        cols = self._cfg()["colors"]
-        return config.qcolor(cols.get(key, "#ff00ff"))
-
-    def _font(self, px: float, bold: bool = True) -> QFont:
-        fam = config.CFG.get("font_family", "Segoe UI")
-        pxi = max(6, int(round(px * config.text_scale_for("inputs"))))
-        key = (fam, pxi, bold)
-        f = self._font_cache.get(key)
-        if f is None:
-            f = QFont(fam)
-            f.setStyleHint(QFont.StyleHint.SansSerif)
-            f.setPixelSize(pxi)
-            f.setBold(bold)
-            if len(self._font_cache) > 128:
-                self._font_cache.clear()
-            self._font_cache[key] = f
-        return f
+        return col(key, _SECTION)
 
     def _bar_channels(self, c) -> list:
         """[(data_index, color_key)] for the value bars (no steering bar)."""
@@ -118,19 +105,12 @@ class InputTraceWidget(QWidget):
 
     # -- paint -------------------------------------------------------------
     def paintEvent(self, event) -> None:  # noqa: N802
+        config.use_section(_SECTION)
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = float(self.width()), float(self.height())
         c = self._cfg()
-
-        # Panel card matching the other widgets.
-        radius = max(8.0, min(w, h) * 0.12)
-        grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0.0, self._col("bg_top"))
-        grad.setColorAt(1.0, self._col("bg_bottom"))
-        p.setBrush(grad)
-        p.setPen(QPen(self._col("panel_border"), 1.2))
-        p.drawRoundedRect(QRectF(0.5, 0.5, w - 1, h - 1), radius, radius)
+        draw_card(p, w, h, _SECTION)
 
         pad = max(6.0, h * 0.08)
         left = pad
@@ -159,11 +139,9 @@ class InputTraceWidget(QWidget):
     def _draw_label(self, p, x, pad, h, c) -> float:
         """Accent bar + rotated title; returns the x just past the label tab."""
         bar_w = max(3.0, h * 0.035)
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(self._col("accent"))
-        p.drawRoundedRect(QRectF(x, pad, bar_w, h - 2 * pad), bar_w / 2, bar_w / 2)
+        draw_accent_bar(p, QRectF(x, pad, bar_w, h - 2 * pad), _SECTION)
         text = str(c.get("label_text", "TELEMETRY"))
-        p.setFont(self._font(max(8.0, h * 0.12), bold=True))
+        p.setFont(tfont(max(8.0, h * 0.12), bold=True))
         p.setPen(self._col("label"))
         tab_w = max(14.0, h * 0.20)
         cx = x + bar_w + tab_w / 2
@@ -178,7 +156,7 @@ class InputTraceWidget(QWidget):
 
     def _draw_graph(self, p, rect: QRectF, c) -> None:
         # Backing well + faint gridlines at 0 / 50 / 100%.
-        p.setPen(Qt.PenStyle.NoPen)
+        p.setPen(QPen(col("cell_border", _SECTION), 1.0))
         p.setBrush(self._col("graph_bg"))
         p.drawRoundedRect(rect, 6, 6)
         p.setPen(QPen(self._col("grid"), 1.0))
@@ -251,7 +229,7 @@ class InputTraceWidget(QWidget):
         label_h = max(10.0, rect.height() * 0.16)
         track_top = rect.top() + label_h
         track_h = rect.height() - label_h
-        font = self._font(max(8.0, rect.height() * 0.14), bold=True)
+        font = tabfont(max(8.0, rect.height() * 0.14), bold=data_font_bold(_SECTION))
         x = rect.left()
         for di, colk in chans:
             val = max(0.0, min(1.0, latest[di]))
@@ -296,16 +274,16 @@ class InputTraceWidget(QWidget):
 
         # Gear (big), then unit + speed stacked below it.
         p.setPen(self._col("text"))
-        p.setFont(self._font(rad * 0.95, bold=True))
+        p.setFont(tfont(rad * 0.95, bold=True))
         p.drawText(QRectF(cx - rad, cy - rad * 0.78, rad * 2, rad * 1.15),
                    Qt.AlignmentFlag.AlignCenter, _gear_str(d.get("gear")))
         speed = config.conv_speed(d.get("speed_ms"))
-        p.setFont(self._font(rad * 0.26, bold=True))
+        p.setFont(tfont(rad * 0.26, bold=True))
         p.setPen(self._col("muted"))
         p.drawText(QRectF(cx - rad, cy + rad * 0.18, rad * 2, rad * 0.34),
                    Qt.AlignmentFlag.AlignCenter, config.speed_unit())
         p.setPen(self._col("text"))
-        p.setFont(self._font(rad * 0.34, bold=True))
+        p.setFont(tabfont(rad * 0.34, bold=data_font_bold(_SECTION)))
         p.drawText(QRectF(cx - rad, cy + rad * 0.46, rad * 2, rad * 0.40),
                    Qt.AlignmentFlag.AlignCenter,
                    f"{speed:.0f}" if speed is not None else "--")
