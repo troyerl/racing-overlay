@@ -63,7 +63,13 @@ def _tcfg() -> dict:
 
 def col(key: str) -> QColor:
     colors = _tcfg().get("colors", {})
-    return config.qcolor(colors[key])
+    raw = colors.get(key)
+    if raw is None:
+        for sec in ("relative", "standings"):
+            raw = config.DEFAULTS.get(sec, {}).get("colors", {}).get(key)
+            if raw is not None:
+                break
+    return config.qcolor(raw or "#ffffff")
 
 
 def license_color(letter: str) -> QColor:

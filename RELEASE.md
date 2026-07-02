@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.43.1 - 2026-07-02
+
+- **Fix overlay startup crash.** Starting the overlay in edit mode without iRacing
+  connected no longer crashes — demo telemetry seeding now uses the synthetic SDK
+  instead of the disconnected real one.
+- **Table color fallbacks.** Speaking-row colors fall back to defaults when an
+  older saved config is missing the new keys.
+
 ## 1.43.0 - 2026-07-02
 
 - **Smoother row and marker motion.** Relative/standings rows slide without

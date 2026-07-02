@@ -911,7 +911,9 @@ class AdvancedSimHUD:
         if not self._demo_active:
             self._demo_active = True
             self._load_demo_track()
-            self._seed_demo_laptimes()
+            # Seed from the synthetic SDK — self.ir may still be a disconnected
+            # real IRSDK until process_telemetry_tick assigns the return value.
+            self._seed_demo_laptimes(self._demo_ir)
         return self._demo_ir
 
     def process_telemetry_tick(self) -> None:
@@ -934,7 +936,7 @@ class AdvancedSimHUD:
         if connected:
             self._demo_active = False
         self.ir = self._demo_feed() if use_demo else self._sdk
-        if use_demo and hasattr(self.ir, "begin_tick"):
+        if hasattr(self.ir, "begin_tick"):
             self.ir.begin_tick()
 
         # Switch the garage vs on-track profile before anything else, so widget
@@ -1519,24 +1521,28 @@ class AdvancedSimHUD:
         t = config.conv_temp(c)
         return f"{t:.1f}{config.temp_unit()}" if t is not None else "\u2014"
 
-    def _seed_demo_laptimes(self) -> None:
+    def _seed_demo_laptimes(self, ir=None) -> None:
         """Prefill the log with recent oval laps and sync the lap counter."""
+        src = ir if ir is not None else self.ir
         try:
-            cur = int(self.ir["Lap"])
-        except (TypeError, ValueError):
+            cur = int(src["Lap"])
+        except (TypeError, ValueError, KeyError, AttributeError):
             cur = 1
         est = float(self._car_info.get("est_lap") or 0.0)
         if est <= 0:
             try:
-                est = float(self.ir["DriverInfo"]["DriverCarEstLapTime"])
-            except (TypeError, ValueError, KeyError):
+                est = float(src["DriverInfo"]["DriverCarEstLapTime"])
+            except (TypeError, ValueError, KeyError, AttributeError):
                 est = 32.0
         seed = []
         for lp in range(max(1, cur - 8), cur):
             jit = (((lp * 37) % 7) - 3) * 0.04
             seed.append((lp, est + jit))
-        self._ll_laps = [{"lap": lp, "secs": t,
-                          "temp_c": self.ir["TrackTemp"] or 27.0}
+        try:
+            temp_c = src["TrackTemp"] or 27.0
+        except (TypeError, ValueError, KeyError, AttributeError):
+            temp_c = 27.0
+        self._ll_laps = [{"lap": lp, "secs": t, "temp_c": temp_c}
                          for lp, t in seed]
         self._ll_prev_lap = cur
         self._fc_prev_lap = None
