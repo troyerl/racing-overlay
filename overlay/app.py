@@ -43,8 +43,7 @@ from . import track_store
 from . import version
 from .panel import PanelWindow
 from .widgets import track_map
-from .widgets.track_map import is_schematic_pit_source
-from .widgets.track_map_v2 import TrackMapWidgetV2
+from .widgets.track_map import TrackMapWidget, is_schematic_pit_source
 from .widgets.dash import DashWidget
 from .widgets.delta_bar import DeltaBarWidget
 from .widgets.flags import FlagsWidget
@@ -254,6 +253,7 @@ class AdvancedSimHUD:
         self._pit_exit_latch: dict[int, float] = {}
         # '' = telemetry-learned; 'schematic' = fixed geometry from image import.
         self._pit_source = ""
+        self._v2_loop_doc: dict | None = None
         # Multi-lap scan progress: the track map finalizes only after SCAN_LAPS
         # *complete* laps; the pit lane only after PIT_PASSES passes (and only
         # once the track scan is done). _scan_seen_lap is the lap we were on when
@@ -361,7 +361,7 @@ class AdvancedSimHUD:
         self.standings_widget = StandingsWidget()
         self.relative_widget = RelativeWidget()
         self.radar_widget = RadarWidget()
-        self.map_widget = TrackMapWidgetV2()
+        self.map_widget = TrackMapWidget()
         self.dash_widget = DashWidget()
         self.laptime_widget = LaptimeLogWidget()
         self.fuel_widget = FuelCalcWidget()
@@ -568,7 +568,7 @@ class AdvancedSimHUD:
         return None
 
     def reload_current_track_file(self) -> bool:
-        """Re-read tracks/<TrackID>.json into the map (after schematic import)."""
+        """Re-read tracks/<TrackID>.json into the map."""
         tid = self.effective_track_id()
         if tid is None:
             return False
@@ -591,99 +591,6 @@ class AdvancedSimHUD:
         except Exception:
             log.exception("reload track file failed")
             return False
-
-    def _apply_schematic_doc(self, doc: dict) -> None:
-        """Push traced schematic geometry onto the live overlay map."""
-        pts = [(float(p[0]), float(p[1]))
-               for p in doc.get("points", []) if len(p) >= 2]
-        if len(pts) < 3:
-            raise ValueError("Trace produced too few track points.")
-        sf = float(doc.get("start_finish", 0.0))
-        corners = [c for c in doc.get("corners", []) if isinstance(c, dict)]
-        self.map_widget.set_track(pts, sf, corners)
-        turns = _coerce_int(doc.get("num_turns"))
-        if turns:
-            self.map_widget.set_num_turns(self._track_turns or turns)
-            if not self._track_turns:
-                self._track_turns = turns
-        self._set_track_geom(pts)
-        meta = {key: doc[key] for key in (
-            "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
-            "pit_out_pct", "pit_speed", "pit_source", "schema", "num_turns",
-        ) if key in doc}
-        meta.setdefault("pit_source", "schematic")
-        po = doc.get("pit_out") or []
-        pp = doc.get("pit_path") or []
-        if po and pp:
-            xs = [p[0] for p in po]; ys = [p[1] for p in po]
-            out_span = max(max(xs) - min(xs), max(ys) - min(ys))
-            xs = [p[0] for p in pp]; ys = [p[1] for p in pp]
-            path_span = max(max(xs) - min(xs), max(ys) - min(ys))
-            if out_span < path_span * 0.12:
-                raise ValueError(
-                    "Merge lane geometry looks too short — re-import the "
-                    "iRacing schematic PNG (white/red/blue dashes).")
-        self._apply_pit_meta(meta)
-        self._track_loaded = True
-        self._scan_done = True
-        self._refresh_settings_authoring()
-        n_in = len(doc.get("pit_in") or [])
-        n_path = len(doc.get("pit_path") or [])
-        n_out = len(doc.get("pit_out") or [])
-        self.map_widget.flash_hint(
-            f"Schematic — entry {n_in}, road {n_path}, merge {n_out}")
-        self.map_widget.update()
-
-    def import_schematic_track(self, png_path: str | None = None,
-                               *, doc: dict | None = None) -> tuple[bool, str]:
-        """Write a schema-2 schematic track file for the current TrackID and reload."""
-        tid = self.effective_track_id()
-        if tid is None:
-            return False, "No TrackID — join a track in iRacing first."
-        try:
-            if doc is None:
-                if not png_path:
-                    return False, "No track map file selected."
-                ext = os.path.splitext(png_path)[1].lower()
-                if ext in (".png", ".jpg", ".jpeg"):
-                    try:
-                        from tools.schematic_to_track import import_schematic
-                    except ImportError:
-                        return False, (
-                            "Install opencv-python-headless and numpy for PNG import.")
-                    raw = import_schematic(
-                        png_path,
-                        num_corners=int(self._track_turns or 4) or 4)
-                else:
-                    from tools.svg_layers_to_track import import_track_source
-                    raw = import_track_source(
-                        png_path,
-                        num_corners=int(self._track_turns or 4) or 4)
-                doc = {k: v for k, v in raw.items()
-                       if not str(k).startswith("_")}
-            name = self._learn_name or (str(self._track_id) if self._track_id
-                                        else "Demo")
-            doc["track_id"] = tid
-            doc["name"] = name
-            doc.setdefault("schema", 2)
-            doc.setdefault("pit_source", "schematic")
-            if self._track_turns and not doc.get("num_turns"):
-                doc["num_turns"] = int(self._track_turns)
-            path = os.path.join(self.tracks_dir, f"{tid}.json")
-            os.makedirs(self.tracks_dir, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump(doc, fh, indent=2)
-            self._apply_schematic_doc(doc)
-            if track_store.can_write():
-                self._track_sync.upload_local_async(self.tracks_dir, tid)
-            n_in = len(doc.get("pit_in") or [])
-            n_path = len(doc.get("pit_path") or [])
-            n_out = len(doc.get("pit_out") or [])
-            return True, (f"Saved {path} — entry {n_in}, road {n_path}, "
-                          f"merge {n_out} pts (overlay updated)")
-        except Exception as exc:
-            log.exception("schematic import failed")
-            return False, str(exc)
 
     def _persist_track_meta(self, **fields) -> bool:
         """Write track metadata locally and push to the cloud when allowed."""
@@ -732,6 +639,8 @@ class AdvancedSimHUD:
 
     def set_corner_edit_mode(self, enabled: bool) -> None:
         """Toggle drag-to-move corner labels on the map widget."""
+        if enabled:
+            self.set_pit_edit_mode(False)
         self.map_widget.set_corner_edit(
             enabled, self._save_corners_authoring if enabled else None)
 
@@ -745,6 +654,166 @@ class AdvancedSimHUD:
         if not ok:
             self.map_widget.flash_hint("Could not save corner labels")
         return ok
+
+    def import_loop_v2(self, html_path: str) -> tuple[bool, str]:
+        """Import racing loop from members HTML (v2); pit drawn manually on map."""
+        tid = self.effective_track_id()
+        if tid is None:
+            return False, "No TrackID — join a track in iRacing first."
+        try:
+            from tools.svg_layers_to_track_v2 import import_track_source_v2
+        except ImportError:
+            return False, "Install beautifulsoup4 and svgpathtools (requirements-dev.txt)."
+        try:
+            doc = import_track_source_v2(
+                html_path,
+                num_corners=int(self._track_turns or 4) or 4,
+            )
+        except Exception as exc:
+            log.exception("v2 loop import failed")
+            return False, str(exc)
+        self._apply_loop_v2_doc(doc)
+        self._v2_loop_doc = doc
+        n = len(doc.get("points") or [])
+        return True, (f"Loop imported — {n} pts. Click pit road on the map, "
+                      f"then merge, then Save track.")
+
+    def _apply_loop_v2_doc(self, doc: dict) -> None:
+        """Load loop-only v2 import onto the map; clear pit for manual authoring."""
+        pts = [(float(p[0]), float(p[1]))
+               for p in doc.get("points", []) if len(p) >= 2]
+        if len(pts) < 3:
+            raise ValueError("Import produced too few track points.")
+        sf = float(doc.get("start_finish", 0.0))
+        corners = [c for c in doc.get("corners", []) if isinstance(c, dict)]
+        self.map_widget.set_track(pts, sf, corners)
+        turns = _coerce_int(doc.get("num_turns"))
+        if turns:
+            self.map_widget.set_num_turns(self._track_turns or turns)
+            if not self._track_turns:
+                self._track_turns = turns
+        self._set_track_geom(pts)
+        self._pit_source = "manual"
+        self.map_widget.set_pit_source("manual")
+        self._pit_span = None
+        self._pit_path = self._pit_in = self._pit_out = None
+        self._pit_in_pct = self._pit_out_pct = None
+        self.map_widget.clear_pit()
+        self.map_widget.clear_pit_edit()
+        self._track_loaded = True
+        self._scan_done = True
+        self._refresh_settings_authoring()
+        self.map_widget.flash_hint(
+            "Loop imported — draw pit road, then merge (Track Scan)")
+        self.map_widget.update()
+
+    def set_pit_edit_mode(self, enabled: bool, phase: str = "road") -> None:
+        """Toggle manual pit authoring clicks on the live map."""
+        if enabled:
+            self.set_corner_edit_mode(False)
+        self.map_widget.set_pit_edit(
+            enabled, self._save_pit_authoring if enabled else None)
+        if enabled:
+            self.map_widget.set_pit_edit_phase(phase)
+
+    def _save_pit_authoring(self) -> None:
+        """Refresh in-progress pit preview after a handle drag (no file write)."""
+        self.map_widget.update()
+
+    def save_manual_track_v2(self) -> tuple[bool, str]:
+        """Finalize manual pit geometry and write tracks/<TrackID>.json."""
+        tid = self.effective_track_id()
+        if tid is None:
+            return False, "No TrackID — join a track in iRacing first."
+        if not self.map_widget.path or len(self.map_widget.path) < 3:
+            return False, "No track loop loaded — import loop first."
+        road, merge = self.map_widget.pit_edit_snapshot()
+        if len(road) < 2:
+            return False, "Need at least 2 pit road points."
+        if len(merge) < 2:
+            return False, "Need at least 2 merge points."
+
+        from tools.schematic_to_track import (
+            _connect_blend_to_loop,
+            _pct_on_loop,
+            _pit_span_on_loop,
+            _resample_open,
+        )
+
+        loop = [(p[0], p[1]) for p in self.map_widget.path]
+        pit_path = _resample_open(road, 140)
+        pit_out_raw = _resample_open(merge, 41)
+        pit_in_seed = list(road[: min(8, len(road))])
+        pit_in = _connect_blend_to_loop(
+            pit_in_seed, loop, attach_end=False, n_loop=12, max_pts=24)
+        pit_out = _connect_blend_to_loop(
+            pit_out_raw, loop, attach_end=True, n_loop=20, pit_path=pit_path)
+        pit_in = _resample_open(pit_in, 24)
+        pit_out = _resample_open(pit_out, 41)
+
+        pit_in_pct = round(_pct_on_loop(loop, pit_in[0]), 5)
+        pit_out_pct = round(_pct_on_loop(loop, pit_out[-1]), 5)
+        lane_lo, lane_hi = _pit_span_on_loop(loop, pit_path)
+
+        doc: dict = {
+            "schema": 2,
+            "import_version": 2,
+            "pit_source": "manual",
+            "track_id": tid,
+            "name": self._learn_name or str(tid),
+            "start_finish": float(self.map_widget.start_finish),
+            "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
+            "corners": track_map.corners_to_json(
+                self.map_widget.display_corners()),
+            "pit_in": [[round(x, 7), round(y, 7)] for x, y in pit_in],
+            "pit_path": [[round(x, 7), round(y, 7)] for x, y in pit_path],
+            "pit_out": [[round(x, 7), round(y, 7)] for x, y in pit_out],
+            "pit_in_pct": pit_in_pct,
+            "pit_span": [round(lane_lo, 5), round(lane_hi, 5)],
+            "pit_out_pct": pit_out_pct,
+        }
+        if self._track_turns:
+            doc["num_turns"] = int(self._track_turns)
+        elif self.map_widget.num_turns:
+            doc["num_turns"] = int(self.map_widget.num_turns)
+        if self._pit_speed_ms > 0:
+            doc["pit_speed"] = round(self._pit_speed_ms, 3)
+        if self._v2_loop_doc:
+            for key in ("import_version",):
+                if key in self._v2_loop_doc:
+                    doc[key] = self._v2_loop_doc[key]
+
+        path = os.path.join(self.tracks_dir, f"{tid}.json")
+        os.makedirs(self.tracks_dir, exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+
+        meta = {k: doc[k] for k in (
+            "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
+            "pit_out_pct", "pit_speed", "pit_source",
+        ) if k in doc}
+        self._apply_pit_meta(meta)
+        if track_store.can_write():
+            self._track_sync.upload_local_async(self.tracks_dir, tid)
+        n_in = len(pit_in)
+        n_path = len(pit_path)
+        n_out = len(pit_out)
+        return True, (f"Saved {path} — entry {n_in}, road {n_path}, "
+                      f"merge {n_out} pts")
+
+    def pit_edit_state(self) -> dict:
+        """Snapshot for Track Scan v2 import panel."""
+        road, merge = self.map_widget.pit_edit_snapshot()
+        return {
+            "road_count": len(road),
+            "merge_count": len(merge),
+            "pit_edit_mode": self.map_widget.pit_edit_mode,
+            "pit_edit_phase": self.map_widget.pit_edit_phase,
+            "has_loop": bool(self.map_widget.path and len(self.map_widget.path) >= 3),
+        }
 
     def _pit_scan_active(self) -> bool:
         """True while the track is scanned but pit data still needs gathering."""

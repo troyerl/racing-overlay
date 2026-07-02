@@ -28,7 +28,7 @@ from .. import config
 from .. import svgpath
 from .chrome import draw_card, draw_dark_cell
 
-SCHEMATIC_PIT_SOURCES = frozenset({"schematic", "inactive", "dashes"})
+SCHEMATIC_PIT_SOURCES = frozenset({"schematic", "inactive", "dashes", "manual"})
 
 
 def is_schematic_pit_source(source: str | None) -> bool:
@@ -761,8 +761,18 @@ class TrackMapWidget(QWidget):
         self._drag_last: QPointF | None = None
         self._corner_hit: list[tuple[QRectF, int]] = []
         self._layout_scale = 1.0
+        self._layout_ox = 0.0
+        self._layout_oy = 0.0
         self._layout_mirror = False
         self._layout_rot = 0
+        # Manual pit authoring (Track Scan v2): road then merge segments.
+        self.pit_edit_mode = False
+        self.pit_edit_phase = "road"
+        self._pit_edit_road: list[tuple[float, float]] = []
+        self._pit_edit_merge: list[tuple[float, float]] = []
+        self._pit_drag_idx: tuple[str, int] | None = None
+        self._pit_edit_cb = None
+        self._pit_hit: list[tuple[QRectF, str, int]] = []
         self.setMouseTracking(True)
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -869,6 +879,44 @@ class TrackMapWidget(QWidget):
         self._drag_last = None
         self.setCursor(Qt.CursorShape.OpenHandCursor if enabled
                        else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_pit_edit(self, enabled: bool, callback=None) -> None:
+        """Toggle click-to-draw pit road / merge on the live map."""
+        self.pit_edit_mode = bool(enabled)
+        self._pit_edit_cb = callback if enabled else None
+        if not enabled:
+            self._pit_drag_idx = None
+        self.setCursor(Qt.CursorShape.CrossCursor if enabled
+                       else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_pit_edit_phase(self, phase: str) -> None:
+        phase = (phase or "road").strip().lower()
+        if phase not in ("road", "merge"):
+            phase = "road"
+        self.pit_edit_phase = phase
+        self.update()
+
+    def pit_edit_snapshot(self) -> tuple[list, list]:
+        return (list(self._pit_edit_road), list(self._pit_edit_merge))
+
+    def load_pit_edit(self, road, merge) -> None:
+        self._pit_edit_road = [(float(x), float(y)) for x, y in (road or [])]
+        self._pit_edit_merge = [(float(x), float(y)) for x, y in (merge or [])]
+        self.update()
+
+    def clear_pit_edit(self) -> None:
+        self._pit_edit_road = []
+        self._pit_edit_merge = []
+        self._pit_drag_idx = None
+        self.update()
+
+    def pop_last_pit_edit_point(self) -> None:
+        if self.pit_edit_phase == "merge" and self._pit_edit_merge:
+            self._pit_edit_merge.pop()
+        elif self._pit_edit_road:
+            self._pit_edit_road.pop()
         self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
@@ -1212,6 +1260,10 @@ class TrackMapWidget(QWidget):
             for seg in (self.pit_path, self.pit_in, self.pit_out):
                 if seg:
                     fit.extend(model(pt) for pt in seg)
+            if self.pit_edit_mode:
+                for seg in (self._pit_edit_road, self._pit_edit_merge):
+                    if seg:
+                        fit.extend(model(pt) for pt in seg)
             xs = [m[0] for m in fit]
             ys = [m[1] for m in fit]
             minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
@@ -1224,6 +1276,8 @@ class TrackMapWidget(QWidget):
             ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
             oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
             self._layout_scale = scale
+            self._layout_ox = ox
+            self._layout_oy = oy
             self._layout_mirror = mirror
             self._layout_rot = rot
 
@@ -1256,6 +1310,8 @@ class TrackMapWidget(QWidget):
                                              or self.pit_out
                                              or self.pit_span is not None):
                 self._draw_pit(p, tx)
+            if self.pit_edit_mode:
+                self._draw_pit_edit(p, tx)
             if mc.get("show_corners", True):
                 self._draw_corners(p, tx, self.display_corners())
             if mc.get("show_start_finish", True):
@@ -1514,6 +1570,68 @@ class TrackMapWidget(QWidget):
         p.setPen(_mcol("wind_text"))
         p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
 
+    def _draw_pit_edit(self, p: QPainter, tx) -> None:
+        """In-progress pit road (red) and merge (blue) polylines + handles."""
+        mc = _mcfg()
+        self._pit_hit = []
+        r = max(4.0, mc.get("asphalt_width", 11) * 0.35)
+
+        def _polyline(pts, color_key: str, width: float):
+            if len(pts) < 2:
+                return
+            path = QPainterPath()
+            path.moveTo(tx(pts[0]))
+            for pt in pts[1:]:
+                path.lineTo(tx(pt))
+            pen = QPen(_mcol(color_key), width)
+            pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+            p.setBrush(Qt.BrushStyle.NoBrush)
+            p.setPen(pen)
+            p.drawPath(path)
+
+        _polyline(self._pit_edit_road, "pit", max(3.0, mc.get("asphalt_width", 11) * 0.55))
+        _polyline(self._pit_edit_merge, "pit_blend_out",
+                  max(2.5, mc.get("asphalt_width", 11) * 0.45))
+
+        for phase, pts, col in (
+            ("road", self._pit_edit_road, QColor(255, 90, 90)),
+            ("merge", self._pit_edit_merge, QColor(90, 160, 255)),
+        ):
+            for idx, pt in enumerate(pts):
+                sp = tx(pt)
+                rect = QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r)
+                self._pit_hit.append((rect, phase, idx))
+                active = (self._pit_drag_idx == (phase, idx))
+                p.setPen(QPen(col.darker(120), 1.5))
+                p.setBrush(col if active else QColor(col.red(), col.green(),
+                                                     col.blue(), 200))
+                p.drawEllipse(rect)
+
+    def _screen_to_model(self, pos: QPointF) -> tuple[float, float]:
+        """Map widget pixel coords to normalized track model space."""
+        s = self._layout_scale or 1.0
+        mx = (pos.x() - self._layout_ox) / s
+        my = (pos.y() - self._layout_oy) / s
+        rot = self._layout_rot
+        if rot == 90:
+            x, y = -my, mx
+        elif rot == 180:
+            x, y = -mx, -my
+        elif rot == 270:
+            x, y = my, -mx
+        else:
+            x, y = mx, my
+        if self._layout_mirror:
+            x = -x
+        return x, y
+
+    def _pit_handle_at(self, pos: QPointF) -> tuple[str, int] | None:
+        for rect, phase, idx in self._pit_hit:
+            if rect.contains(pos):
+                return phase, idx
+        return None
+
     def _model_delta(self, dsx: float, dsy: float) -> tuple[float, float]:
         """Convert a screen-space drag delta to model-space offset."""
         s = self._layout_scale or 1.0
@@ -1551,6 +1669,29 @@ class TrackMapWidget(QWidget):
         return None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (self.pit_edit_mode and self.path
+                and event.button() == Qt.MouseButton.LeftButton):
+            hit = self._pit_handle_at(event.position())
+            if hit is not None:
+                self._pit_drag_idx = hit
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
+            x, y = self._screen_to_model(event.position())
+            if self.pit_edit_phase == "road":
+                self._pit_edit_road.append((x, y))
+            else:
+                if not self._pit_edit_merge and self._pit_edit_road:
+                    self._pit_edit_merge.append(self._pit_edit_road[-1])
+                self._pit_edit_merge.append((x, y))
+            self.update()
+            event.accept()
+            return
+        if (self.pit_edit_mode and self.path
+                and event.button() == Qt.MouseButton.RightButton):
+            self.pop_last_pit_edit_point()
+            event.accept()
+            return
         if (self.corner_edit_mode and self.path and event.button()
                 == Qt.MouseButton.LeftButton):
             idx = self._corner_at(event.position())
@@ -1563,6 +1704,20 @@ class TrackMapWidget(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._pit_drag_idx is not None:
+            phase, idx = self._pit_drag_idx
+            x, y = self._screen_to_model(event.position())
+            pts = (self._pit_edit_road if phase == "road"
+                   else self._pit_edit_merge)
+            if 0 <= idx < len(pts):
+                pts[idx] = (x, y)
+                self.update()
+            event.accept()
+            return
+        if self.pit_edit_mode and self.path:
+            hit = self._pit_handle_at(event.position())
+            self.setCursor(Qt.CursorShape.OpenHandCursor if hit is not None
+                           else Qt.CursorShape.CrossCursor)
         if self._drag_corner is not None and self._drag_last is not None:
             pos = event.position()
             dx = pos.x() - self._drag_last.x()
@@ -1584,6 +1739,14 @@ class TrackMapWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._pit_drag_idx is not None and event.button() == Qt.MouseButton.LeftButton:
+            self._pit_drag_idx = None
+            self.setCursor(Qt.CursorShape.CrossCursor if self.pit_edit_mode
+                           else Qt.CursorShape.ArrowCursor)
+            if self._pit_edit_cb:
+                self._pit_edit_cb()
+            event.accept()
+            return
         if self._drag_corner is not None and event.button() == Qt.MouseButton.LeftButton:
             self._drag_corner = None
             self._drag_last = None

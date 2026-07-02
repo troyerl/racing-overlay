@@ -6,3 +6,5 @@ psutil>=5.9
 # Shared track maps (MongoDB Atlas). The [srv] extra pulls dnspython for
 # mongodb+srv:// URIs. Imported lazily, so the app still runs without it.
 pymongo[srv]>=4.6
+# CA bundle for MongoDB Atlas TLS on macOS python.org builds (see track_store).
+certifi>=2024.2.2

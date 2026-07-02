@@ -711,9 +711,6 @@ DEFAULTS: dict = {
         # Opacity (0..1) of the drawn pit lane and its entry/exit blend lines.
         # Lower it to make the whole pit route fade back behind the track.
         "pit_lane_opacity": 1.0,
-        # Normalized push (fraction of track span) away from the racing line when
-        # drawing schematic pit lanes (red/blue dashes).
-        "pit_lane_inset": 0.04,
         # What each car dot shows: "number" (car number) or "position".
         "car_label": "number",
         # Opacity (0..1) of a car's dot while it's on pit road.
@@ -733,8 +730,6 @@ DEFAULTS: dict = {
             "corner_bg": "#0b0d11cc",
             "corner_border": "#ffffff20",
             "corner_text": "#d6dce2",
-            "pit_lane_in": "#d94040",
-            "pit_lane_out": "#3aa0ff",
             "scan_bg": "#000000c8",
             "hint_bg": "#ff9416e6",
             "hint_text": "#14161a",

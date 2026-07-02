@@ -239,12 +239,24 @@ python3 tools/schematic_to_track.py map.png <TrackID> "Track Name" --preview
 #    By default writes to the same GridGlance tracks dir the overlay loads at runtime
 #    (App Support on macOS). Pass an explicit output dir to write elsewhere (e.g. tests).
 python3 tools/svg_layers_to_track.py track-page.html <TrackID> "Track Name"
+
+# F) V2 loop-only import (active-config path only; pit drawn manually in Track Scan).
+#    Writes schema-2 JSON with loop + corners; pit_source is "manual" until you save
+#    pit road + merge from the overlay map (Track Scan tab, write access).
+#    Tool deps: pip install -r requirements-dev.txt  (beautifulsoup4, svgpathtools)
+python3 tools/svg_layers_to_track_v2.py track-page.html <TrackID> "Track Name" --force
 ```
 
-Schematic tracks set `"pit_source": "schematic"`. The overlay map uses **TrackMapWidgetV2**
-(iRacing legend colors: red pit road, blue safe merge) with a compact key in the
-corner. Authors can import from the **Track Scan → Schematic map (v2)** panel
-(choose HTML or PNG, preview, Import) or the CLI tools below.
+Schematic tracks set `"pit_source": "schematic"`. The map draws pit entry/exit
+blend lines and places cars on the authored pit polylines. Import with the CLI
+tools below (HTML or PNG); the JSON loads automatically when you join that track.
+
+**V2 manual pit (Track Scan):** `tools/svg_layers_to_track_v2.py` imports only the
+racing loop from the members `active-config` layer. In Settings → Track Scan (write
+access), choose the HTML, **Import loop**, then click **Pit road** and **Merge**
+points on the live overlay map; **Save track** auto-generates `pit_in` and writes
+`tracks/<TrackID>.json`. The v1 `svg_layers_to_track.py` CLI still auto-imports
+pit geometry from the HTML pit layer when you want a one-shot import.
 
 **Members HTML (recommended):** on [members.iracing.com](https://members.iracing.com),
 open the track page with Pit Road enabled, DevTools → copy/save the `#track-map-*`
@@ -273,7 +285,9 @@ Track JSON schema (schema 1 — outline only, or learned from GPS):
 
 Schema 2 adds schematic pit geometry (`pit_source`, `pit_in`, `pit_path`,
 `pit_out`, `pit_in_pct`, `pit_span`, `pit_out_pct`) from
-`tools/schematic_to_track.py` (PNG) or `tools/svg_layers_to_track.py` (members HTML/SVG).
+`tools/schematic_to_track.py` (PNG), `tools/svg_layers_to_track.py` (members HTML,
+auto pit), or `tools/svg_layers_to_track_v2.py` + Track Scan manual pit authoring
+(`pit_source`: `"manual"`).
 
 Add `corners` entries by hand to get on-map labels like the reference image. The
 overlay only ships `tracks/_demo.json`; iRacing's official map SVGs are not

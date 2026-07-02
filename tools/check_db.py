@@ -32,6 +32,16 @@ def _yn(v) -> str:
     return {True: "yes", False: "NO", None: "n/a"}[v]
 
 
+def _ssl_cert_hint(*errors: str) -> str | None:
+    """Return a fix hint when Atlas TLS fails due to missing CA bundle."""
+    joined = " ".join(e for e in errors if e)
+    if "CERTIFICATE_VERIFY_FAILED" not in joined:
+        return None
+    return ("SSL CA bundle missing — run: pip install -r requirements.txt "
+            "(certifi). On macOS python.org builds you can also run "
+            "Install Certificates.command from the Python folder.")
+
+
 def _local_ids() -> list:
     out = []
     try:
@@ -85,6 +95,9 @@ def main() -> int:
         print("\n! Write connection failed to ping -- see the error above "
               "(common causes: wrong password, or your IP isn't allowed under "
               "Atlas > Network Access).")
+    ssl_hint = _ssl_cert_hint(info.get("read_error", ""), info.get("write_error", ""))
+    if ssl_hint:
+        print(f"\n! {ssl_hint}")
 
     if args.upload_test:
         print("\n-- upload test --")

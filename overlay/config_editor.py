@@ -149,8 +149,6 @@ LABEL_OVERRIDES = {
     "panel_border": "Panel border",
     "row_alt": "Alternating row shading",
     "corner_border": "Corner label pill border",
-    "pit_lane_in": "Schematic pit lane (entry) color",
-    "pit_lane_out": "Schematic pit merge (exit) color",
     "scan_bg": "Track-scan badge background",
     "hint_bg": "Transient hint banner background",
     "hint_text": "Hint banner text color",
@@ -229,8 +227,6 @@ _WORD_FIXUPS = {
 }
 
 from .widgets.dash import METRIC_KEYS as _DASH_METRICS
-from .widgets.track_map_v2 import SchematicImportPanel
-
 # Items available for each table's header / footer sections. Every item works
 # in any slot; order_pill / title / count are standings-specific extras.
 _SLOT_COMMON = [
@@ -1613,10 +1609,11 @@ class ConfigEditor(QWidget):
             note.setWordWrap(True)
             v.addWidget(note)
             v.addWidget(self._scan_actions_card())
+            from .widgets.track_import_panel import TrackImportV2Panel
+            self._v2_import_panel = TrackImportV2Panel(self._overlay)
+            self._v2_import_panel.saved.connect(self._flash)
+            v.addWidget(self._v2_import_panel)
             v.addWidget(self._pit_tuning_card())
-            self._schematic_panel = SchematicImportPanel(self._overlay)
-            self._schematic_panel.imported.connect(self._flash)
-            v.addWidget(self._schematic_panel)
             v.addWidget(self._track_authoring_card())
             v.addStretch(1)
             return page
@@ -1829,10 +1826,6 @@ class ConfigEditor(QWidget):
         self._pit_speed_spin.blockSignals(False)
         self._num_turns_spin.blockSignals(False)
         self._sync_corner_edit_mode()
-        if hasattr(self, "_schematic_panel"):
-            self._schematic_panel.set_overlay(self._overlay)
-            self._schematic_panel.refresh()
-
     def _pit_speed_authoring_changed(self, value: float) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_speed_authoring"):
             return
@@ -2155,6 +2148,9 @@ class ConfigEditor(QWidget):
             self._refresh_overlay_btn()
             self._sync_edit_switch()
             self._refresh_track_authoring()
+            if hasattr(self, "_v2_import_panel"):
+                self._v2_import_panel.set_overlay(self._overlay)
+                self._v2_import_panel.refresh()
 
     def _rescan_track(self) -> None:
         if config.request_rescan():

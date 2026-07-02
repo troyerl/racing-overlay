@@ -109,6 +109,19 @@ _CLIENT_KW = dict(
     appname="GridGlance",
 )
 
+
+def _mongo_client_kwargs() -> dict:
+    """MongoClient kwargs with a CA bundle for Atlas TLS (macOS python.org)."""
+    kw = dict(_CLIENT_KW)
+    try:
+        import certifi
+
+        kw["tlsCAFile"] = certifi.where()
+    except ImportError:
+        pass
+    return kw
+
+
 _read_client = None
 _write_client = None
 _clients_lock = threading.Lock()
@@ -213,11 +226,11 @@ def _collection(write: bool):
         with _clients_lock:
             if write:
                 if _write_client is None:
-                    _write_client = MongoClient(uri, **_CLIENT_KW)
+                    _write_client = MongoClient(uri, **_mongo_client_kwargs())
                 client = _write_client
             else:
                 if _read_client is None:
-                    _read_client = MongoClient(uri, **_CLIENT_KW)
+                    _read_client = MongoClient(uri, **_mongo_client_kwargs())
                 client = _read_client
         return client[_DB_NAME][_COLLECTION]
     except Exception as exc:

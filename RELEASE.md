@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.29.0 - 2026-07-02
+
+- **V2 HTML loop import + manual pit editor.** New `tools/svg_layers_to_track_v2.py`
+  imports only the racing loop from members-site HTML (`active-config` layer).
+  Pit geometry is drawn by hand on the **live overlay map** in Track Scan (write
+  access): click **Pit road** points, then **Merge** points; **Save track** writes
+  `pit_path`, `pit_out`, auto-generated `pit_in`, and lap-% extents to
+  `tracks/<TrackID>.json`. The v1 `svg_layers_to_track.py` CLI still auto-imports
+  pit from HTML when you want a one-shot import.
+- **Track Scan v2 panel.** Choose HTML, **Import loop**, toggle draw mode, undo /
+  clear pit points, and save — all from Settings → Track Scan without leaving the
+  overlay.
+- **MongoDB Atlas TLS on macOS.** Cloud track upload/download now passes certifi's
+  CA bundle to PyMongo, fixing `CERTIFICATE_VERIFY_FAILED` on python.org macOS
+  builds. `tools/check_db.py` surfaces a fix hint when SSL trust fails.
+
 ## 1.28.0 - 2026-07-01
 
 - **Unified panel chrome across all widgets.** Every overlay panel (dash, lap log,
