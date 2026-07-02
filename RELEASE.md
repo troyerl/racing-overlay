@@ -5,6 +5,28 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.30.0 - 2026-07-03
+
+- **Schematic pit car mapping fix.** Cars on the authored pit route (entry, lane,
+  exit) now advance along the polylines using length-calibrated lap-% progress,
+  so dots no longer zip ahead of their real position on tracks like Indianapolis
+  where the pit lane is a shorter parallel offset of the racing line.
+- **HTML-only track authoring.** Removed GPS track learning (3-lap scan), GPS pit
+  learning (3 pit passes), **Rescan track**, **Rescan pits**, and session-only pit
+  blend sliders. Tracks are imported from members HTML in **Track Scan**, pit road
+  and merge are drawn on the map, then **Save track** writes `tracks/<TrackID>.json`.
+  If no file exists when you join a session, the map prompts you to import HTML.
+- **Start/finish editing on map.** Track Scan toggle drags the white start/finish
+  line along the racing loop; release saves `start_finish` to the track file.
+- **IMS / stripe S/F import.** V2 HTML import aligns the loop to the vertical
+  stripe in the `start-finish` layer (exact crossing snap) instead of the
+  direction-arrow tip.
+- **Demo track loading.** `--demo` prefers the most recently saved track in the
+  writable tracks folder (e.g. after saving IMS as TrackID 522); post-save hint
+  suggests `--demo-track <ID>` for an explicit reload.
+- **Removed `tools/record_track.py`.** One-lap GPS recording is superseded by the
+  HTML import workflow; README updated accordingly.
+
 ## 1.29.0 - 2026-07-02
 
 - **V2 HTML loop import + manual pit editor.** New `tools/svg_layers_to_track_v2.py`

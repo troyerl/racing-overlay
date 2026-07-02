@@ -1602,21 +1602,18 @@ class ConfigEditor(QWidget):
 
         if key == "__scan__":
             note = QLabel("Authoring tools \u2014 you see these because you have "
-                          "write access. On track in iRacing you can edit corner "
-                          "labels, pit road, and exit merge points; changes save "
-                          "to the track file and cloud. Re-scan overwrites learned "
-                          "geometry; pit blend sliders are session-only.")
+                          "write access. Import a members HTML track map, draw "
+                          "pit road and merge on the overlay, then save. Corner "
+                          "labels and start/finish can be edited on the map.")
             note.setObjectName("subtitle")
             note.setWordWrap(True)
             v.addWidget(note)
-            v.addWidget(self._scan_actions_card())
             from .widgets.track_import_panel import TrackImportV2Panel
             self._v2_import_panel = TrackImportV2Panel(self._overlay)
             self._v2_import_panel.saved.connect(self._flash)
             self._v2_import_panel.notified.connect(self._flash)
             v.addWidget(self._v2_import_panel)
             v.addWidget(self._track_authoring_card())
-            v.addWidget(self._pit_tuning_card())
             v.addStretch(1)
             return page
 
@@ -1671,58 +1668,6 @@ class ConfigEditor(QWidget):
 
         toggle.toggled.connect(on_toggle)
         return card, body
-
-    def _scan_actions_card(self) -> QFrame:
-        """Track Scan tab card: re-learn the current track or just its pits.
-
-        Re-scanning overwrites a track's saved shape, so it's an authoring action
-        gated to write-access users (the whole tab only exists for them).
-        """
-        card = QFrame()
-        card.setObjectName("enableCard")
-        v = QVBoxLayout(card)
-        v.setContentsMargins(15, 11, 15, 12)
-        v.setSpacing(8)
-        t = QLabel("Re-scan track")
-        t.setObjectName("enableTitle")
-        v.addWidget(t)
-
-        rescan = QPushButton("\u21BB  Rescan track now")
-        rescan.setObjectName("warn")
-        rescan.setCursor(Qt.CursorShape.PointingHandCursor)
-        rescan.clicked.connect(self._rescan_track)
-        v.addWidget(rescan)
-        hint = QLabel("Re-learns the current track from your driving and "
-                      "overwrites its saved scan (also clears the pit lane).")
-        hint.setObjectName("enableHint")
-        hint.setWordWrap(True)
-        v.addWidget(hint)
-
-        rescan_pits = QPushButton("\u21BB  Rescan pits only")
-        rescan_pits.setObjectName("warn")
-        rescan_pits.setCursor(Qt.CursorShape.PointingHandCursor)
-        rescan_pits.clicked.connect(self._rescan_pits)
-        v.addWidget(rescan_pits)
-        hint2 = QLabel("Forgets just the pit lane; complete three pit passes "
-                       "(the map shows PIT 1/3, 2/3, 3/3).")
-        hint2.setObjectName("enableHint")
-        hint2.setWordWrap(True)
-        v.addWidget(hint2)
-        return card
-
-    # Pit blend-length sliders: (kind, label, hint, min%, max%). Values are lap
-    # fractions shown/edited as whole percents; Reset uses track-type defaults.
-    _PIT_TUNERS = (
-        ("exit_extend", "Pit exit lane length",
-         "Extra length past iRacing's exit blend line (surface ApproachingPits "
-         "-> OnTrack). 0 ends at the blend line; defaults are 16% (oval) or "
-         "5% (road).",
-         0, 30),
-        ("entry_max", "Pit entry lane length",
-         "Extra length past iRacing's entry blend line (surface OnTrack -> "
-         "ApproachingPits). Defaults are 8% (oval) or 3% (road).",
-         0, 20),
-    )
 
     def _track_authoring_card(self) -> QFrame:
         """Track Scan tab: edit pit speed, corner count, and label positions."""
@@ -1934,98 +1879,6 @@ class ConfigEditor(QWidget):
                   and self._sf_edit_sw.isEnabled())
         self._overlay.set_sf_edit_mode(on)
 
-    def _pit_tuning_card(self) -> QFrame:
-        """Track Scan tab card: live, session-only pit blend-length sliders.
-
-        Changes are pushed straight to the running overlay and are NOT saved --
-        they reset to the constants.py defaults on the next launch.
-        """
-        card = QFrame()
-        card.setObjectName("enableCard")
-        v = QVBoxLayout(card)
-        v.setContentsMargins(15, 11, 15, 12)
-        v.setSpacing(8)
-        t = QLabel("Pit blend tuning (session only)")
-        t.setObjectName("enableTitle")
-        hint = QLabel("Nudge the drawn pit entry / exit lane lengths for the "
-                      "current session to dial in a track. Not saved \u2014 these "
-                      "reset to the defaults when you relaunch.")
-        hint.setObjectName("enableHint")
-        hint.setWordWrap(True)
-        v.addWidget(t)
-        v.addWidget(hint)
-
-        cur = self._overlay.pit_tuning() if (
-            self._overlay is not None and hasattr(self._overlay, "pit_tuning")
-        ) else None
-        if self._overlay is not None and hasattr(self._overlay, "pit_tuning_defaults"):
-            defaults = self._overlay.pit_tuning_defaults()
-        else:
-            defaults = constants.pit_blend_defaults(None)
-        for kind, label, row_hint, lo, hi in self._PIT_TUNERS:
-            default = defaults[1] if kind == "exit_extend" else defaults[0]
-            if cur is not None:
-                live = cur[1] if kind == "exit_extend" else cur[0]
-            else:
-                live = default
-            v.addLayout(self._pit_slider_row(kind, label, row_hint, lo, hi,
-                                             default, live))
-        return card
-
-    def _pit_slider_row(self, kind: str, label: str, hint: str, lo: int, hi: int,
-                        default: float, live: float):
-        """One labeled slider that pushes its value live to the overlay."""
-        box = QVBoxLayout()
-        box.setSpacing(3)
-        top = QHBoxLayout()
-        name = QLabel(label)
-        name.setObjectName("rowLabel")
-        val = QLabel(f"{live:.2f}")
-        val.setObjectName("enableHint")
-        val.setMinimumWidth(34)
-        val.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        reset = QPushButton(f"Reset ({default:.2f})")
-        reset.setObjectName("sectionReset")
-        reset.setCursor(Qt.CursorShape.PointingHandCursor)
-        top.addWidget(name)
-        top.addStretch(1)
-        top.addWidget(val)
-        top.addWidget(reset)
-        box.addLayout(top)
-
-        slider = QSlider(Qt.Orientation.Horizontal)
-        slider.setMinimum(lo)
-        slider.setMaximum(hi)
-        slider.setSingleStep(1)
-        slider.setValue(int(round(live * 100)))
-        slider.setCursor(Qt.CursorShape.PointingHandCursor)
-        box.addWidget(slider)
-
-        sub = QLabel(hint)
-        sub.setObjectName("enableHint")
-        sub.setWordWrap(True)
-        box.addWidget(sub)
-
-        def on_change(raw, k=kind, lbl=val):
-            value = raw / 100.0
-            lbl.setText(f"{value:.2f}")
-            self._apply_pit_tuning(k, value)
-
-        slider.valueChanged.connect(on_change)
-        reset.clicked.connect(lambda _=False, s=slider, d=default:
-                              s.setValue(int(round(d * 100))))
-        return box
-
-    def _apply_pit_tuning(self, kind: str, value: float) -> None:
-        """Push a session-only pit blend length to the live overlay."""
-        if self._overlay is None or not hasattr(self._overlay, "set_pit_tuning"):
-            self._flash("Start the overlay to tune the pit lane")
-            return
-        if kind == "exit_extend":
-            self._overlay.set_pit_tuning(exit_extend=value)
-        else:
-            self._overlay.set_pit_tuning(entry_max=value)
-
     # Nested groups that are usually long/secondary start collapsed.
     _COLLAPSED = {"colors", "license_colors", "widths", "sizes", "columns"}
 
@@ -2216,18 +2069,6 @@ class ConfigEditor(QWidget):
             if hasattr(self, "_v2_import_panel"):
                 self._v2_import_panel.set_overlay(self._overlay)
                 self._v2_import_panel.refresh()
-
-    def _rescan_track(self) -> None:
-        if config.request_rescan():
-            self._flash("Rescanning track\u2026 drive a lap")
-        else:
-            self._flash("Start the overlay first to rescan")
-
-    def _rescan_pits(self) -> None:
-        if config.request_rescan_pits():
-            self._flash("Rescanning pits\u2026 complete 3 passes (PIT 1/3 on map)")
-        else:
-            self._flash("Start the overlay first to rescan")
 
     def _flash(self, msg: str) -> None:
         self.status.setText(msg)

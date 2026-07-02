@@ -36,7 +36,7 @@ overlay/               # the application package
     dash.py  radar.py  relative.py  standings.py
     table.py  track_map.py  laptime_log.py  fuel_calc.py  icons.py
 tools/                 # standalone helper scripts (not imported by the app)
-  fetch_tracks.py  record_track.py  svg_to_track.py
+  fetch_tracks.py  svg_to_track.py
 assets/fonts/          # bundled Font Awesome TTF
 tracks/                # track shape files keyed by iRacing TrackID
 ```
@@ -162,32 +162,20 @@ colored dot per car, placed by `CarIdxLapDistPct`. Your car is the yellow dot.
 iRacing does not export live X/Y for other cars, so the track *shape* is resolved
 in this priority order:
 
-1. **Bundled per-track file** keyed by iRacing's `TrackID` in `tracks/<id>.json`
-   or `tracks/<id>.svg` (accurate, and can carry corner-name labels).
-2. **Live learning:** if no file exists for the current `TrackID`,
-   `TrackPathBuilder` learns the layout as you drive, sampled by lap %. It uses
-   the car's GPS (`Lat`/`Lon`) when the sim exposes it, and otherwise falls back
-   to **dead reckoning** from `Speed` + heading (`YawNorth`) so the map still
-   builds even without GPS. The map appears as a rough loop part-way through your
-   first lap and keeps sharpening; until then it shows a live "LEARNING TRACK…
-   NN%" readout. (The dead-reckoned shape may be rotated/mirrored vs. reality,
-   but the layout is correct.) **Once a full loop is learned it's saved to
-   `tracks/<id>.json` (marked `"learned": true`)**, so the next time you load that
-   track it's picked up by step 1 instantly &mdash; no re-learning lap. To force a
-   fresh scan, hit **Rescan track now** on the Map tab of the settings window
-   (or delete the file); the new scan overwrites the saved one when complete.
-3. **Demo mode:** loads `tracks/_demo.json` immediately.
+1. **Per-track file** keyed by iRacing's `TrackID` in `tracks/<id>.json`
+   (from HTML import via **Settings → Track Scan**, cloud download, or manual save).
+2. **Cloud library:** if no local file exists, the overlay may fetch one from the
+   shared track library when cloud tracks are enabled.
+3. If neither is available, import a members HTML track map in **Track Scan**.
+4. **Demo mode:** loads the most recently saved track or `tracks/_demo.json`.
 
 ### Pit lane
 
-With `map.show_pit` on (default), the map also learns **where the pit lane is**:
-the first time you drive through the pits it records the entry/exit points (from
-`OnPitRoad`) and highlights that stretch of track in amber. It also learns the
-**pit speed limit** from the pit limiter (`EngineWarnings`), so the highlight is
-labelled with the limit; while you're in the pits it shows your live speed and
-turns red if you're over the limit. The pit span and limit are saved into the
-track's `tracks/<id>.json` alongside the geometry, so they persist between
-sessions (and reset with **Rescan track now**).
+With `map.show_pit` on (default), pit road geometry comes from the track file
+(`pit_in`, `pit_path`, `pit_out` — drawn manually in **Track Scan** after HTML
+import, or from schematic import). Car dots follow the pit polylines while
+`OnPitRoad` is true. Pit speed limit can be set in Track Scan metadata or learned
+from the pit limiter while on pit road.
 
 ### Corner numbers
 
@@ -223,13 +211,10 @@ python3 tools/fetch_tracks.py --id 18           # one track  -> tracks/18.json
 python3 tools/fetch_tracks.py --id 18 145 266   # several
 python3 tools/fetch_tracks.py --all             # the whole library (~360 tracks)
 
-# B) Record from your own lap (run with iRacing on track, drive one clean lap):
-python3 tools/record_track.py        # -> tracks/<TrackID>.json
-
-# C) Convert an iRacing track-outline SVG (drawn in driving direction from S/F):
+# B) Convert an iRacing track-outline SVG (drawn in driving direction from S/F):
 python3 tools/svg_to_track.py track.svg <TrackID> "Track Name"   # -> tracks/<TrackID>.json
 
-# D) Import a full schematic from iRacing's in-sim map PNG (white loop + red pit
+# C) Import a full schematic from iRacing's in-sim map PNG (white loop + red pit
 #    road + blue safe merge). Writes schema-2 JSON with fixed pit geometry — no
 #    pit scan required. Tool-only deps: pip install opencv-python-headless numpy
 python3 tools/schematic_to_track.py map.png <TrackID> "Track Name" --preview

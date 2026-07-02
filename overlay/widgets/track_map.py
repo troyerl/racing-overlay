@@ -7,8 +7,8 @@ iRacing does NOT export live X/Y for other cars, so a 2D map is drawn by:
   2. Placing each car onto that path by its CarIdxLapDistPct (0.0 -> 1.0).
 
 Two ways to obtain the path:
-  * Live: TrackPathBuilder learns the shape from the player's own GPS (Lat/Lon)
-    over a single lap -- works on any track, no track database required.
+  * Authoring: import a members HTML track map (Track Scan) or load a saved
+    tracks/<TrackID>.json file (local cache or cloud).
   * Demo: build_demo_path() returns a built-in road-course curve so the map is
     visible immediately without iRacing.
 """
@@ -1054,6 +1054,44 @@ class TrackMapWidget(QWidget):
             acc += ln
         return parts[-1][-1]
 
+    def _pit_arc_length(self, segments) -> float:
+        """Total arc length of a pit segment chain."""
+        parts = [s for s in segments if s and len(s) >= 2]
+        return sum(_arc_length_chain(s) for s in parts)
+
+    def _loop_arc_between(self, lo: float, hi: float) -> float:
+        """Arc distance along the main loop between lap percentages lo and hi."""
+        from tools.schematic_to_track import _arc_length
+
+        if not self.path or len(self.path) < 2:
+            return 0.0
+        span_pct = (hi - lo) % 1.0
+        if span_pct <= 1e-9:
+            return 0.0
+        return span_pct * _arc_length(
+            [(float(p[0]), float(p[1])) for p in self.path], closed=True)
+
+    def _pit_progress_t(
+        self,
+        pct: float,
+        lo: float,
+        hi: float,
+        segments: list,
+    ) -> float | None:
+        """Length-calibrated arc fraction along pit segments for schematic tracks."""
+        span_pct = (hi - lo) % 1.0
+        if span_pct <= 1e-6:
+            return None
+        pit_arc = self._pit_arc_length(segments)
+        loop_arc = self._loop_arc_between(lo, hi)
+        d_pct = (pct - lo) % 1.0
+        if pit_arc <= 1e-9 or loop_arc <= 1e-9:
+            return min(1.0, max(0.0, d_pct / span_pct))
+        effective_span = span_pct * (loop_arc / pit_arc)
+        if effective_span <= 1e-9:
+            return None
+        return min(1.0, max(0.0, d_pct / effective_span))
+
     def _pos_for_schematic_route(self, idx: int, pct: float, on_route: bool,
                                  on_pit_road: bool):
         """Place a car on authored pit polylines (schematic tracks only)."""
@@ -1071,10 +1109,10 @@ class TrackMapWidget(QWidget):
         # Exit blend: lane end -> rejoin (even if OnPitRoad still true in demo).
         if (hi is not None and exit_pct is not None and self.pit_out
                 and self._pct_in_interval(pct, exit_pct, hi)):
-            span = (hi - exit_pct) % 1.0
-            if span > 1e-6:
-                t = ((pct - exit_pct) % 1.0) / span
-                return self._pos_on_polyline(self.pit_out, min(max(t, 0.0), 1.0))
+            segs = [self.pit_out]
+            t = self._pit_progress_t(pct, exit_pct, hi, segs)
+            if t is not None:
+                return self._pos_on_polyline(self.pit_out, t)
 
         # Entry blend + pit lane: route start -> lane end.
         if lo is not None and lane_hi is not None:
@@ -1084,11 +1122,9 @@ class TrackMapWidget(QWidget):
             if on_entry_lane:
                 segs = [s for s in (self.pit_in, self.pit_path) if s]
                 if segs:
-                    span = (lane_hi - lo) % 1.0
-                    if span > 1e-6:
-                        t = ((pct - lo) % 1.0) / span
-                        return self._pos_on_polyline_chain(
-                            segs, min(max(t, 0.0), 1.0))
+                    t = self._pit_progress_t(pct, lo, lane_hi, segs)
+                    if t is not None:
+                        return self._pos_on_polyline_chain(segs, t)
         return None
 
     def set_player_xy(self, xy) -> None:
