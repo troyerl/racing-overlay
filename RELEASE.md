@@ -5,6 +5,25 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.32.0 - 2026-07-05
+
+- **Pit editor zoom and pan.** Track Scan pit authoring now auto-frames the pit
+  road and merge handles, supports scroll-to-zoom (including macOS trackpads),
+  Shift-drag pan, and a **Reset view** button. The last pit-road point and first
+  merge point stay linked when you drag either handle.
+- **Per-track pit lane speed.** Tracks can store `pit_lane_speed_pct` so car dots
+  advance along the pit route at the correct rate when the drawn pit polyline is
+  longer or shorter than the matching loop arc. Track Scan exposes a speed % slider
+  when authoring.
+- **Oval pit placement fixes.** On ovals like Chicagoland, cars on pit road are
+  mapped along `pit_in_pct`→`pit_out_pct` instead of raw path projection, with
+  phase gating so entry/exit blends do not fight lane placement while `OnPitRoad`.
+  Turn labels on ovals renumber to 1–4 (counter-clockwise from S/F) at import and
+  on the map.
+- **Pit edit zoom fix (macOS).** Scroll zoom now reads trackpad `pixelDelta`
+  events and uses layout-space coordinates for zoom-to-cursor, so pit editing
+  zoom works reliably on macOS and with rotated/mirrored map presets.
+
 ## 1.31.0 - 2026-07-04
 
 - **Pit car placement (schematic tracks).** Length-calibrated progress now slows
