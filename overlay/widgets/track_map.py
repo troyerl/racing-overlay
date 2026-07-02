@@ -800,6 +800,7 @@ class TrackMapWidget(QWidget):
         self._drag_sf = False
         self._sf_hit: QRectF | None = None
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -2012,11 +2013,17 @@ class TrackMapWidget(QWidget):
                                                   jcol.blue(), 220))
             p.drawEllipse(rect)
 
+    def _screen_to_layout(self, pos: QPointF) -> tuple[float, float]:
+        """Map widget pixel coords to layout space (post mirror/rotate, pre raw undo)."""
+        s = self._layout_scale or 1.0
+        return (
+            (pos.x() - self._layout_ox) / s,
+            (pos.y() - self._layout_oy) / s,
+        )
+
     def _screen_to_model(self, pos: QPointF) -> tuple[float, float]:
         """Map widget pixel coords to normalized track model space."""
-        s = self._layout_scale or 1.0
-        mx = (pos.x() - self._layout_ox) / s
-        my = (pos.y() - self._layout_oy) / s
+        mx, my = self._screen_to_layout(pos)
         rot = self._layout_rot
         if rot == 90:
             x, y = -my, mx
@@ -2234,11 +2241,13 @@ class TrackMapWidget(QWidget):
             return
         delta = event.angleDelta().y()
         if delta == 0:
+            delta = event.pixelDelta().y()
+        if delta == 0:
             event.accept()
             return
         factor = 1.12 if delta > 0 else 1.0 / 1.12
         pos = event.position()
-        mx, my = self._screen_to_model(pos)
+        mx, my = self._screen_to_layout(pos)
         self._pit_edit_zoom = max(
             _PIT_EDIT_ZOOM_MIN,
             min(_PIT_EDIT_ZOOM_MAX, self._pit_edit_zoom * factor),

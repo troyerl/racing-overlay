@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import math
+
 import pytest
-from PyQt6.QtCore import QPointF, QRectF
+from PyQt6.QtCore import QPoint, QPointF, Qt, QRectF
+from PyQt6.QtGui import QWheelEvent
 from PyQt6.QtWidgets import QApplication
 
 from overlay.widgets.track_map import TrackMapWidget, _PIT_JOINT_EPS
@@ -22,6 +25,35 @@ def _widget():
     loop = [(x, 0.5) for x in [i / 10 for i in range(11)]]
     w.set_track(loop, start_finish=0.0, corners=[])
     return w
+
+
+def _pit_edit_ready(qapp):
+    w = _widget()
+    w.pit_edit_mode = True
+    w.resize(400, 300)
+    w.show()
+    qapp.processEvents()
+    w._layout_scale = 200.0
+    w._layout_ox = 50.0
+    w._layout_oy = 40.0
+    w._pit_edit_base_scale = 200.0
+    w._pit_edit_base_ox = 50.0
+    w._pit_edit_base_oy = 40.0
+    return w
+
+
+def _wheel_event(pos: QPointF, *, angle_delta_y: int = 0,
+                 pixel_delta_y: int = 0) -> QWheelEvent:
+    return QWheelEvent(
+        pos,
+        pos,
+        QPoint(0, pixel_delta_y),
+        QPoint(0, angle_delta_y),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.ScrollUpdate,
+        False,
+    )
 
 
 def test_sync_pit_joint_on_load(qapp):
@@ -92,3 +124,24 @@ def test_reset_pit_edit_view(qapp):
     w.reset_pit_edit_view()
     assert w._pit_edit_zoom == 1.0
     assert w._pit_edit_pan == (0.0, 0.0)
+
+
+def test_wheel_angle_delta_zooms(qapp):
+    w = _pit_edit_ready(qapp)
+    w.wheelEvent(_wheel_event(QPointF(200, 150), angle_delta_y=120))
+    assert w._pit_edit_zoom > 1.0
+
+
+def test_wheel_pixel_delta_zooms(qapp):
+    w = _pit_edit_ready(qapp)
+    w.wheelEvent(_wheel_event(QPointF(200, 150), pixel_delta_y=10))
+    assert w._pit_edit_zoom > 1.0
+
+
+def test_wheel_zoom_respects_layout_coords(qapp):
+    w = _pit_edit_ready(qapp)
+    w._layout_mirror = True
+    w._layout_rot = 90
+    w.wheelEvent(_wheel_event(QPointF(200, 150), angle_delta_y=120))
+    assert w._pit_edit_zoom > 1.0
+    assert all(math.isfinite(v) for v in w._pit_edit_pan)
