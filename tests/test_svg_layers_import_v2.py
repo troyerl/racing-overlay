@@ -182,6 +182,7 @@ def test_v2_indianapolis_sf_stripe_anchor():
         _sf_anchor_point,
         _sf_arrow_tip,
         _sf_stripe_centroid,
+        _sf_stripe_crossing,
         extract_layers_from_html,
     )
     from tools.svg_layers_to_track_v2 import (
@@ -199,6 +200,9 @@ def test_v2_indianapolis_sf_stripe_anchor():
     layers = extract_layers_from_html(html)
     sf_svg = layers["start_finish"]
     aligned = _align_loop_from_sf(raw, sf_svg)
+    crossing = _sf_stripe_crossing(aligned, sf_svg)
+    assert crossing is not None
+    assert crossing[0] == 0
     normalized, norm = _normalize_loop([[p[0], p[1]] for p in aligned])
     loop = [(p[0], p[1]) for p in normalized]
 
@@ -221,8 +225,8 @@ def test_v2_indianapolis_sf_stripe_anchor():
     stripe_norm = _to_norm(stripe)
     tip_norm = _to_norm(tip)
     assert loop_pt[0] < tip_norm[0]  # stripe is left of direction arrow
-    assert abs(loop_pt[0] - stripe_norm[0]) < 0.02
-    assert _dist(loop_pt, stripe_norm) < 0.06
+    assert abs(loop_pt[0] - stripe_norm[0]) < 0.01
+    assert _dist(loop_pt, stripe_norm) < 0.03
 
     sf_pct = _pct_on_loop(loop, stripe_norm)
     assert sf_pct < 0.05 or sf_pct > 0.95

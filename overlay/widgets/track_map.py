@@ -773,6 +773,11 @@ class TrackMapWidget(QWidget):
         self._pit_drag_idx: tuple[str, int] | None = None
         self._pit_edit_cb = None
         self._pit_hit: list[tuple[QRectF, str, int]] = []
+        # Start/finish authoring: drag the white tick along the racing line.
+        self.sf_edit_mode = False
+        self._sf_edit_cb = None
+        self._drag_sf = False
+        self._sf_hit: QRectF | None = None
         self.setMouseTracking(True)
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -877,6 +882,22 @@ class TrackMapWidget(QWidget):
         self._corner_edit_cb = callback if enabled else None
         self._drag_corner = None
         self._drag_last = None
+        if enabled:
+            self.set_sf_edit(False)
+        self.setCursor(Qt.CursorShape.OpenHandCursor if enabled
+                       else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_sf_edit(self, enabled: bool, callback=None) -> None:
+        """Enable dragging the start/finish line along the racing loop."""
+        self.sf_edit_mode = bool(enabled)
+        self._sf_edit_cb = callback if enabled else None
+        self._drag_sf = False
+        if enabled:
+            self.corner_edit_mode = False
+            self._drag_corner = None
+            self.pit_edit_mode = False
+            self._pit_drag_idx = None
         self.setCursor(Qt.CursorShape.OpenHandCursor if enabled
                        else Qt.CursorShape.ArrowCursor)
         self.update()
@@ -887,6 +908,8 @@ class TrackMapWidget(QWidget):
         self._pit_edit_cb = callback if enabled else None
         if not enabled:
             self._pit_drag_idx = None
+        if enabled:
+            self.set_sf_edit(False)
         self.setCursor(Qt.CursorShape.CrossCursor if enabled
                        else Qt.CursorShape.ArrowCursor)
         self.update()
@@ -1186,6 +1209,22 @@ class TrackMapWidget(QWidget):
         n = len(self.path)
         return int(((pct - self.start_finish) % 1.0) * n) % n
 
+    def _sf_loop_frac(self) -> float:
+        """Loop arc fraction (from path[0]) where the start/finish line sits."""
+        return (-self.start_finish) % 1.0
+
+    def _sf_model_point(self) -> tuple[float, float] | None:
+        if not self.path:
+            return None
+        from tools.schematic_to_track import _point_on_loop_at_frac
+        return _point_on_loop_at_frac(self.path, self._sf_loop_frac())
+
+    def _sf_screen_point(self, tx) -> QPointF | None:
+        pt = self._sf_model_point()
+        if pt is None:
+            return None
+        return tx(pt)
+
     def _draw_scan_overlays(self, p: QPainter, rect: QRectF) -> None:
         """Scan badge (top, e.g. 'LAP 2/3') and a transient hint banner (bottom)."""
         if self._scan_text:
@@ -1326,19 +1365,33 @@ class TrackMapWidget(QWidget):
         """Hook for subclasses to draw overlays in the same paint pass."""
 
     def _draw_start_finish(self, p: QPainter, tx) -> None:
-        sf_idx = self._index_for_pct(0.0)
-        a = self.path[sf_idx]
-        b = self.path[(sf_idx + 3) % len(self.path)]
+        from tools.schematic_to_track import _point_on_loop_at_frac
+
+        if not self.path:
+            return
+        n = len(self.path)
+        frac = self._sf_loop_frac()
+        a = _point_on_loop_at_frac(self.path, frac)
+        b = _point_on_loop_at_frac(self.path, (frac + 3.0 / max(n, 1)) % 1.0)
         ax, ay = tx(a).x(), tx(a).y()
         bx, by = tx(b).x(), tx(b).y()
         dx, dy = bx - ax, by - ay
         ln = math.hypot(dx, dy) or 1.0
         nx, ny = -dy / ln, dx / ln
-        p.setPen(QPen(QColor(255, 255, 255), 3))
+        tick = 9 if self.sf_edit_mode else 7
+        width = 4 if self.sf_edit_mode else 3
+        p.setPen(QPen(QColor(255, 255, 255), width))
         p.drawLine(
-            QPointF(ax - nx * 7, ay - ny * 7),
-            QPointF(ax + nx * 7, ay + ny * 7),
+            QPointF(ax - nx * tick, ay - ny * tick),
+            QPointF(ax + nx * tick, ay + ny * tick),
         )
+        if self.sf_edit_mode or self._drag_sf:
+            pad = 10
+            self._sf_hit = QRectF(
+                ax - tick - pad, ay - tick - pad,
+                2 * (tick + pad), 2 * (tick + pad))
+        else:
+            self._sf_hit = None
 
     def _draw_pit(self, p: QPainter, tx) -> None:
         # Prefer the real recorded pit-lane geometry; fall back to the inward
@@ -1661,7 +1714,24 @@ class TrackMapWidget(QWidget):
                 return idx
         return None
 
+    def _sf_at(self, pos: QPointF) -> bool:
+        return self._sf_hit is not None and self._sf_hit.contains(pos)
+
+    def _set_start_finish_at_model(self, x: float, y: float) -> None:
+        from tools.schematic_to_track import _pct_on_loop
+        if not self.path:
+            return
+        frac = _pct_on_loop(self.path, (x, y))
+        self.start_finish = (1.0 - frac) % 1.0
+
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if (self.sf_edit_mode and self.path
+                and event.button() == Qt.MouseButton.LeftButton):
+            if self._sf_at(event.position()):
+                self._drag_sf = True
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+                event.accept()
+                return
         if (self.pit_edit_mode and self.path
                 and event.button() == Qt.MouseButton.LeftButton):
             hit = self._pit_handle_at(event.position())
@@ -1697,6 +1767,12 @@ class TrackMapWidget(QWidget):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_sf:
+            x, y = self._screen_to_model(event.position())
+            self._set_start_finish_at_model(x, y)
+            self.update()
+            event.accept()
+            return
         if self._pit_drag_idx is not None:
             phase, idx = self._pit_drag_idx
             x, y = self._screen_to_model(event.position())
@@ -1725,6 +1801,10 @@ class TrackMapWidget(QWidget):
                 self.update()
             event.accept()
             return
+        if self.sf_edit_mode and self.path:
+            over = self._sf_at(event.position())
+            self.setCursor(Qt.CursorShape.OpenHandCursor if over
+                           else Qt.CursorShape.ArrowCursor)
         if self.corner_edit_mode and self.path:
             idx = self._corner_at(event.position())
             self.setCursor(Qt.CursorShape.OpenHandCursor if idx is not None
@@ -1732,6 +1812,14 @@ class TrackMapWidget(QWidget):
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if self._drag_sf and event.button() == Qt.MouseButton.LeftButton:
+            self._drag_sf = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self.sf_edit_mode
+                           else Qt.CursorShape.ArrowCursor)
+            if self._sf_edit_cb:
+                self._sf_edit_cb()
+            event.accept()
+            return
         if self._pit_drag_idx is not None and event.button() == Qt.MouseButton.LeftButton:
             self._pit_drag_idx = None
             self.setCursor(Qt.CursorShape.CrossCursor if self.pit_edit_mode

@@ -1783,6 +1783,23 @@ class ConfigEditor(QWidget):
         edit_row.addWidget(self._corner_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addLayout(edit_row)
 
+        sf_row = QHBoxLayout()
+        sf_texts = QVBoxLayout()
+        sf_texts.setSpacing(1)
+        sf_title = QLabel("Edit start/finish on map")
+        sf_title.setObjectName("rowLabel")
+        sf_hint = QLabel("Drag the white start/finish line along the track; "
+                          "release to save.")
+        sf_hint.setObjectName("enableHint")
+        sf_hint.setWordWrap(True)
+        sf_texts.addWidget(sf_title)
+        sf_texts.addWidget(sf_hint)
+        sf_row.addLayout(sf_texts, 1)
+        self._sf_edit_sw = ToggleSwitch(accent="#b84626")
+        self._sf_edit_sw.toggled.connect(self._sf_edit_toggled)
+        sf_row.addWidget(self._sf_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
+        v.addLayout(sf_row)
+
         self._authoring_status = QLabel("")
         self._authoring_status.setObjectName("enableHint")
         self._authoring_status.setWordWrap(True)
@@ -1795,15 +1812,18 @@ class ConfigEditor(QWidget):
         if not hasattr(self, "_pit_speed_spin"):
             return
         enabled = False
+        sf_enabled = False
         state = {}
         if self._overlay is not None and hasattr(self._overlay, "track_authoring_state"):
             state = self._overlay.track_authoring_state()
             enabled = bool(state.get("has_track"))
+            sf_enabled = bool(state.get("can_author_map"))
         self._pit_speed_spin.blockSignals(True)
         self._num_turns_spin.blockSignals(True)
         self._pit_speed_spin.setEnabled(enabled)
         self._num_turns_spin.setEnabled(enabled)
         self._corner_edit_sw.setEnabled(enabled)
+        self._sf_edit_sw.setEnabled(sf_enabled)
         if enabled:
             ms = float(state.get("pit_speed_ms") or 0.0)
             self._pit_speed_spin.setValue(config.conv_speed(ms) if ms else 0.0)
@@ -1827,9 +1847,11 @@ class ConfigEditor(QWidget):
                     "Join a session and load a track in the overlay to edit "
                     "metadata.")
             self._corner_edit_sw.setChecked(False)
+            self._sf_edit_sw.setChecked(False)
         self._pit_speed_spin.blockSignals(False)
         self._num_turns_spin.blockSignals(False)
         self._sync_corner_edit_mode()
+        self._sync_sf_edit_mode()
     def _pit_speed_authoring_changed(self, value: float) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_speed_authoring"):
             return
@@ -1864,10 +1886,31 @@ class ConfigEditor(QWidget):
                 self._v2_import_panel._pit_edit_sw.blockSignals(True)
                 self._v2_import_panel._pit_edit_sw.setChecked(False)
                 self._v2_import_panel._pit_edit_sw.blockSignals(False)
+        if on and hasattr(self, "_sf_edit_sw"):
+            self._sf_edit_sw.blockSignals(True)
+            self._sf_edit_sw.setChecked(False)
+            self._sf_edit_sw.blockSignals(False)
         self._sync_corner_edit_mode()
         if on:
             self._authoring_status.setText(
                 "Corner edit on \u2014 drag labels on the map.")
+
+    def _sf_edit_toggled(self, on: bool) -> None:
+        if on and self._overlay is not None and hasattr(
+                self._overlay, "set_pit_edit_mode"):
+            self._overlay.set_pit_edit_mode(False)
+            if hasattr(self, "_v2_import_panel"):
+                self._v2_import_panel._pit_edit_sw.blockSignals(True)
+                self._v2_import_panel._pit_edit_sw.setChecked(False)
+                self._v2_import_panel._pit_edit_sw.blockSignals(False)
+        if on and hasattr(self, "_corner_edit_sw"):
+            self._corner_edit_sw.blockSignals(True)
+            self._corner_edit_sw.setChecked(False)
+            self._corner_edit_sw.blockSignals(False)
+        self._sync_sf_edit_mode()
+        if on:
+            self._authoring_status.setText(
+                "Start/finish edit on \u2014 drag the white line on the map.")
 
     def _sync_corner_edit_mode(self) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_corner_edit_mode"):
@@ -1879,6 +1922,17 @@ class ConfigEditor(QWidget):
             on = (cur_key == "__scan__" and self._corner_edit_sw.isChecked()
                   and self._corner_edit_sw.isEnabled())
         self._overlay.set_corner_edit_mode(on)
+
+    def _sync_sf_edit_mode(self) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "set_sf_edit_mode"):
+            return
+        on = False
+        if hasattr(self, "_sf_edit_sw"):
+            cur_key = (self._sections[self._cur_index][0]
+                       if 0 <= self._cur_index < len(self._sections) else None)
+            on = (cur_key == "__scan__" and self._sf_edit_sw.isChecked()
+                  and self._sf_edit_sw.isEnabled())
+        self._overlay.set_sf_edit_mode(on)
 
     def _pit_tuning_card(self) -> QFrame:
         """Track Scan tab card: live, session-only pit blend-length sliders.

@@ -528,8 +528,10 @@ class AdvancedSimHUD:
         n = self._track_turns if self._track_turns else mw.num_turns
         has_geom = mw.path is not None and len(mw.path) >= 2
         in_sim = not self.demo and self._track_id is not None
+        can_author = bool(tid is not None and has_geom)
         return {
-            "has_track": bool(tid is not None and has_geom and not self.demo),
+            "has_track": can_author and not self.demo,
+            "can_author_map": can_author,
             "in_sim": in_sim,
             "demo": self.demo,
             "pit_speed_ms": self._pit_speed_ms,
@@ -662,8 +664,34 @@ class AdvancedSimHUD:
         """Toggle drag-to-move corner labels on the map widget."""
         if enabled:
             self.set_pit_edit_mode(False)
+            self.set_sf_edit_mode(False)
         self.map_widget.set_corner_edit(
             enabled, self._save_corners_authoring if enabled else None)
+
+    def _uncheck_sf_edit_toggle(self) -> None:
+        w = self._settings_window
+        if w is not None and hasattr(w, "_sf_edit_sw"):
+            w._sf_edit_sw.blockSignals(True)
+            w._sf_edit_sw.setChecked(False)
+            w._sf_edit_sw.blockSignals(False)
+
+    def set_sf_edit_mode(self, enabled: bool) -> None:
+        """Toggle drag-to-move start/finish along the racing loop."""
+        if enabled:
+            self.set_pit_edit_mode(False)
+            self.set_corner_edit_mode(False)
+            self.map_widget.flash_hint(
+                "Drag the white start/finish line along the track")
+        self.map_widget.set_sf_edit(
+            enabled, self._save_sf_authoring if enabled else None)
+
+    def _save_sf_authoring(self) -> bool:
+        """Persist manually placed start/finish lap fraction."""
+        sf = round(float(self.map_widget.start_finish), 5)
+        ok = self._persist_track_meta(start_finish=sf)
+        if not ok:
+            self.map_widget.flash_hint("Could not save start/finish position")
+        return ok
 
     def _save_corners_authoring(self) -> bool:
         """Persist manually placed corner labels."""
@@ -782,12 +810,14 @@ class AdvancedSimHUD:
         """Toggle manual pit authoring clicks on the live map."""
         if enabled:
             self.set_corner_edit_mode(False)
+            self.set_sf_edit_mode(False)
             self.load_pit_into_editor()
             w = self._settings_window
             if w is not None and hasattr(w, "_corner_edit_sw"):
                 w._corner_edit_sw.blockSignals(True)
                 w._corner_edit_sw.setChecked(False)
                 w._corner_edit_sw.blockSignals(False)
+            self._uncheck_sf_edit_toggle()
         self.map_widget.set_pit_edit(
             enabled, self._save_pit_authoring if enabled else None)
         if enabled:
@@ -879,8 +909,11 @@ class AdvancedSimHUD:
         n_in = len(pit_in)
         n_path = len(pit_path)
         n_out = len(pit_out)
-        return True, (f"Saved {path} — entry {n_in}, road {n_path}, "
-                      f"merge {n_out} pts")
+        msg = (f"Saved {path} — entry {n_in}, road {n_path}, "
+               f"merge {n_out} pts")
+        if self.demo:
+            msg += f". Restart with: python3 run.py --demo --demo-track {tid}"
+        return True, msg
 
     def pit_edit_state(self) -> dict:
         """Snapshot for Track Scan v2 import panel."""
@@ -1943,15 +1976,47 @@ class AdvancedSimHUD:
         secs = int(secs) % 86400
         return f"{secs // 3600:02d}:{(secs % 3600) // 60:02d}"
 
+    def _resolve_demo_track_id(self) -> str:
+        """Pick which track file to load in demo mode."""
+        if self._demo_track_id:
+            return self._demo_track_id
+        if self._v2_authoring_track_id is not None:
+            return str(self._v2_authoring_track_id)
+        tracks_dir = self.tracks_dir or ""
+        try:
+            best_mtime = 0.0
+            best_tid: str | None = None
+            for name in os.listdir(tracks_dir):
+                if not name.endswith(".json") or name.startswith("_"):
+                    continue
+                tid = name[:-5]
+                path = os.path.join(tracks_dir, name)
+                mtime = os.path.getmtime(path)
+                if mtime > best_mtime:
+                    best_mtime = mtime
+                    best_tid = tid
+            if best_tid is not None:
+                return best_tid
+        except OSError:
+            pass
+        return "_demo"
+
     def _load_demo_track(self) -> None:
         pts = None
         file_meta = None
-        tid = self._demo_track_id or "_demo"
+        tid = self._resolve_demo_track_id()
         path = track_map.find_track_file(tid, self.tracks_dir)
         if path:
             try:
-                pts, sf, corners, _, file_meta = track_map.load_track(path)
+                pts, sf, corners, name, file_meta = track_map.load_track(path)
                 self.map_widget.set_track(pts, sf, corners)
+                if tid not in ("_demo", "demo"):
+                    try:
+                        self._v2_authoring_track_id = int(tid)
+                    except (TypeError, ValueError):
+                        pass
+                    if name:
+                        self._v2_authoring_name = name
             except Exception:
                 pts = None
                 file_meta = None

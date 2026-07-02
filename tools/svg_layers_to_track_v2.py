@@ -37,6 +37,7 @@ from tools.svg_layers_to_track import (
     _sf_anchor_point,
     _sf_paths_sorted,
     _sf_stripe_centroid,
+    _sf_stripe_crossing,
     extract_layers_from_html,
 )
 
@@ -144,7 +145,12 @@ def _align_loop_from_sf(
         ln = math.hypot(dx, dy) or 1.0
         if (dx / ln) * arrow[0] + (dy / ln) * arrow[1] < 0:
             loop = [loop[0]] + list(reversed(loop[1:]))
-    return _ensure_ccw(loop)
+    loop = _ensure_ccw(loop)
+    crossing = _sf_stripe_crossing(loop, sf_svg)
+    if crossing is not None:
+        _, pt = crossing
+        loop[0] = pt
+    return loop
 
 
 def _find_class_element(soup, class_token: str):

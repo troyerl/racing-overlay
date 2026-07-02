@@ -1556,10 +1556,55 @@ def _sf_anchor_point(sf_svg: str | None) -> tuple[float, float] | None:
     return _sf_stripe_centroid(sf_svg)
 
 
+def _sf_stripe_crossing(
+    loop: list[tuple[float, float]],
+    sf_svg: str | None,
+) -> tuple[int, tuple[float, float]] | None:
+    """Loop index and exact point where the vertical stripe crosses the loop."""
+    paths = _sf_paths_sorted(sf_svg)
+    if not paths or len(loop) < 2:
+        return None
+    stripe = paths[0]
+    stripe_x = sum(p[0] for p in stripe) / len(stripe)
+    ys = [p[1] for p in stripe]
+    y_mid = (min(ys) + max(ys)) / 2.0
+    y_band = max(max(ys) - min(ys), 40.0) * 2.5
+
+    best: tuple[float, int, tuple[float, float]] | None = None
+    n = len(loop)
+    for i in range(n):
+        a, b = loop[i], loop[(i + 1) % n]
+        xmin, xmax = min(a[0], b[0]), max(a[0], b[0])
+        if stripe_x < xmin - 1e-6 or stripe_x > xmax + 1e-6:
+            continue
+        dx = b[0] - a[0]
+        if abs(dx) < 1e-9:
+            continue
+        t = max(0.0, min(1.0, (stripe_x - a[0]) / dx))
+        cy = a[1] + t * (b[1] - a[1])
+        if abs(cy - y_mid) > y_band:
+            continue
+        score = abs(cy - y_mid)
+        if best is None or score < best[0]:
+            best = (score, i, (stripe_x, cy))
+
+    if best is not None:
+        return best[1], best[2]
+
+    pt = _sf_stripe_centroid(sf_svg)
+    if pt is None:
+        return None
+    pct = _pct_on_loop(loop, pt)
+    return int(pct * n) % n, pt
+
+
 def _detect_sf_svg(
     loop: list[tuple[float, float]],
     sf_svg: str | None,
 ) -> int:
+    crossing = _sf_stripe_crossing(loop, sf_svg)
+    if crossing is not None:
+        return crossing[0]
     pt = _sf_anchor_point(sf_svg)
     if pt is not None and loop:
         pct = _pct_on_loop(loop, pt)

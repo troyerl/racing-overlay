@@ -185,6 +185,33 @@ def _pct_on_loop(loop: list[tuple[float, float]], pt: tuple[float, float]) -> fl
     return pos / total
 
 
+def _point_on_loop_at_frac(
+    loop: list[tuple[float, float]], frac: float,
+) -> tuple[float, float]:
+    """Point at arc-length fraction ``frac`` along a closed loop (0 = path[0])."""
+    n = len(loop)
+    if n < 1:
+        return (0.0, 0.0)
+    if n == 1:
+        return loop[0]
+    frac = frac % 1.0
+    cum = [0.0]
+    for i in range(n):
+        a, b = loop[i], loop[(i + 1) % n]
+        cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
+    total = cum[-1]
+    if total <= 0:
+        return loop[0]
+    target = frac * total
+    for i in range(n):
+        if cum[i + 1] >= target:
+            seg = cum[i + 1] - cum[i]
+            t = 0.0 if seg < 1e-12 else (target - cum[i]) / seg
+            a, b = loop[i], loop[(i + 1) % n]
+            return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+    return loop[-1]
+
+
 def _reorder_loop(loop: list[tuple[float, float]], sf_idx: int) -> list[tuple[float, float]]:
     if not loop:
         return loop
