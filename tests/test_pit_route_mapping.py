@@ -182,9 +182,10 @@ def test_entry_phase_uses_pit_in_segment(qapp):
 def test_lane_phase_uses_pit_path_segment(qapp):
     """Mid-lane lap-% maps through pit_path only."""
     w = _make_chicagoland_like_widget()
-    lane_lo, lane_hi = w.pit_span
-    pct = (lane_lo + (lane_hi - lane_lo) * 0.5) % 1.0
-    raw = w._pit_phase_pos(pct, lane_lo, lane_hi, [w.pit_path])
+    route_lo, route_hi = w.pit_in_pct, w.pit_out_pct
+    span = (route_hi - route_lo) % 1.0
+    pct = (route_lo + span * 0.5) % 1.0
+    raw = w._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
     routed = w._pos_for_schematic_route(0, pct, on_route=True, on_pit_road=True)
     assert raw is not None and routed is not None
     assert routed == raw

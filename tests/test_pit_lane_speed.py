@@ -113,8 +113,8 @@ def test_mid_pit_stays_on_path_not_exit_blend(qapp):
     exit_pct = lane_hi
     assert w._pct_in_interval(pct, lane_lo, lane_hi)
     assert w._pct_in_interval(pct, exit_pct, w.pit_out_pct)
-    on_path = w._pit_phase_pos(
-        pct, *w._pit_lane_mapping_interval(), [w.pit_path])
+    route_lo, route_hi = w._pit_route_mapping_interval()
+    on_path = w._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
     routed = w._pos_for_schematic_route(
         0, pct, on_route=True, on_pit_road=True)
     exit_pos = w._pit_phase_pos(
@@ -126,12 +126,46 @@ def test_mid_pit_stays_on_path_not_exit_blend(qapp):
     assert routed != loop_pt
 
 
-def test_wide_span_maps_without_early_clamp(qapp):
-    """Wide pit_span uses path projection so some mid-lap pcts are not pinned at pit end."""
+def _make_chicagoland_manual_pit_widget():
+    """Chicagoland geometry with manual-save-like pit route extents."""
     w = _make_chicagoland_wide_span_widget()
-    map_lo, map_hi = w._pit_lane_mapping_interval()
-    assert (map_hi - map_lo) % 1.0 < 0.9
-    pct = 0.3
+    w.pit_in_pct = 0.84
+    w.pit_out_pct = 0.35
+    w.pit_span = (0.86, 0.95)
+    return w
+
+
+def test_stall_lap_pct_maps_to_pit_entry_not_exit(qapp):
+    """Pit-stall lap-% near entry must not pin dot at pit_path exit."""
+    w = _make_chicagoland_manual_pit_widget()
+    pct = 0.88
+    routed = w._pos_for_schematic_route(
+        0, pct, on_route=True, on_pit_road=True)
+    start = w._pos_on_polyline_chain([w.pit_path], 0.0)
+    end = w._pos_on_polyline_chain([w.pit_path], 1.0)
+    assert routed is not None
+    ds = math.hypot(routed[0] - start[0], routed[1] - start[1])
+    de = math.hypot(routed[0] - end[0], routed[1] - end[1])
+    assert ds < de
+
+
+def test_pit_path_direction_flip(qapp):
+    """Reversed pit_path polyline still maps entry lap-% toward pit entry."""
+    w = _make_chicagoland_manual_pit_widget()
+    forward = w._pos_for_schematic_route(
+        0, 0.88, on_route=True, on_pit_road=True)
+    w.pit_path = list(reversed(w.pit_path))
+    reversed_pos = w._pos_for_schematic_route(
+        0, 0.88, on_route=True, on_pit_road=True)
+    assert forward is not None and reversed_pos is not None
+    assert math.hypot(
+        forward[0] - reversed_pos[0], forward[1] - reversed_pos[1]) < 0.12
+
+
+def test_wide_span_maps_without_early_clamp(qapp):
+    """Route mapping at stall lap-% is not pinned at pit_path exit."""
+    w = _make_chicagoland_manual_pit_widget()
+    pct = 0.88
     pos = w._pos_for_schematic_route(
         0, pct, on_route=True, on_pit_road=True)
     end = w._pos_on_polyline_chain([w.pit_path], 1.0)

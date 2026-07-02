@@ -1226,6 +1226,61 @@ class TrackMapWidget(QWidget):
             return path_lo, path_hi
         return lane_lo, lane_hi
 
+    def _pit_route_mapping_interval(self) -> tuple[float | None, float | None]:
+        """Lap-% extent for mapping OnPitRoad cars: pit_in_pct → pit_out_pct."""
+        lo, hi = self.pit_in_pct, self.pit_out_pct
+        if lo is not None and hi is not None:
+            return lo, hi
+        return self._pit_lane_mapping_interval()
+
+    def _pit_path_handoff_point(self) -> tuple[float, float] | None:
+        """Pit-road entry point where pit_in meets pit_path."""
+        if self.pit_in and len(self.pit_in) >= 1:
+            p = self.pit_in[-1]
+            return (float(p[0]), float(p[1]))
+        if self.pit_path and len(self.pit_path) >= 1:
+            p = self.pit_path[0]
+            return (float(p[0]), float(p[1]))
+        return None
+
+    def _pit_path_needs_reverse(self) -> bool:
+        """True when pit_path[-1] is closer to the entry handoff than pit_path[0]."""
+        if not self.pit_path or len(self.pit_path) < 2:
+            return False
+        handoff = self._pit_path_handoff_point()
+        if handoff is None:
+            return False
+        from tools.schematic_to_track import _dist
+
+        p0 = (float(self.pit_path[0][0]), float(self.pit_path[0][1]))
+        p1 = (float(self.pit_path[-1][0]), float(self.pit_path[-1][1]))
+        return _dist(p1, handoff) < _dist(p0, handoff)
+
+    def _pit_path_pos_for_route_pct(
+        self,
+        pct: float,
+        lo: float,
+        hi: float,
+    ) -> tuple[float, float] | None:
+        """Place on pit_path using route lap-% order (pit_in → pit_out)."""
+        if not self.pit_path or len(self.pit_path) < 2:
+            return None
+        span_pct = (hi - lo) % 1.0
+        if span_pct <= 1e-6:
+            return None
+        linear = ((pct - lo) % 1.0) / span_pct
+        segments = [self.pit_path]
+        pit_arc = self._pit_arc_length(segments)
+        loop_arc = self._loop_arc_between(lo, hi)
+        scale = self.pit_lane_speed_pct
+        if pit_arc > 1e-9 and loop_arc > 1e-9:
+            t = min(1.0, max(0.0, linear * (loop_arc / pit_arc) * scale))
+        else:
+            t = min(1.0, max(0.0, linear * scale))
+        if self._pit_path_needs_reverse():
+            t = 1.0 - t
+        return self._pos_on_polyline_chain(segments, t)
+
     def _loop_pct_at(self, pt) -> float | None:
         """Lap fraction of the nearest point on the main loop."""
         if not self.path or pt is None:
@@ -1328,20 +1383,23 @@ class TrackMapWidget(QWidget):
         lane_lo = lane[0] if lane else None
         lane_hi = lane[1] if lane else None
         path_lo, path_hi = self._pit_lane_bounds()
-        map_lo, map_hi = self._pit_lane_mapping_interval()
+        route_lo, route_hi = self._pit_route_mapping_interval()
         entry_end = lane_lo if lane_lo is not None else path_lo
         exit_pct = self._schematic_exit_pcts.get(idx)
         if exit_pct is None:
             exit_pct = lane_hi if lane_hi is not None else path_hi
 
         # Pit lane: pit_path while OnPitRoad (before exit/entry blends).
-        memb_lo = lane_lo if lane_lo is not None else map_lo
-        memb_hi = lane_hi if lane_hi is not None else map_hi
-        if (map_lo is not None and map_hi is not None and memb_lo is not None
-                and memb_hi is not None and self.pit_path
-                and len(self.pit_path) >= 2 and on_pit_road
-                and self._pct_in_interval(pct, memb_lo, memb_hi)):
-            pos = self._pit_phase_pos(pct, map_lo, map_hi, [self.pit_path])
+        memb_lo = lane_lo if lane_lo is not None else route_lo
+        memb_hi = lane_hi if lane_hi is not None else route_hi
+        on_lane = False
+        if memb_lo is not None and memb_hi is not None:
+            on_lane = self._pct_in_interval(pct, memb_lo, memb_hi)
+        if (not on_lane and route_lo is not None and route_hi is not None):
+            on_lane = self._pct_in_interval(pct, route_lo, route_hi)
+        if (route_lo is not None and route_hi is not None and on_lane
+                and self.pit_path and len(self.pit_path) >= 2 and on_pit_road):
+            pos = self._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
             if pos is not None:
                 return pos
 
