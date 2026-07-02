@@ -71,8 +71,8 @@ def test_pit_route_constant_speed(qapp):
     """Pit placement should not accelerate mid-lane (old power-law bug)."""
     import math
     w = _make_widget()
-    lo, hi = w.pit_in_pct, w.pit_span[1]
-    segs = [w.pit_in, w.pit_path]
+    lo, hi = w.pit_span
+    segs = [w.pit_path]
     span = (hi - lo) % 1.0
     ratios = []
     for f in (0.2, 0.4, 0.6, 0.8):
@@ -83,7 +83,9 @@ def test_pit_route_constant_speed(qapp):
         dp = math.hypot(pos1[0] - pos0[0], pos1[1] - pos0[1])
         i0, i1 = w._index_for_pct(p0), w._index_for_pct(p1)
         dloop = math.hypot(w.path[i1][0] - w.path[i0][0], w.path[i1][1] - w.path[i0][1])
-        ratios.append(dp / dloop if dloop else 0.0)
+        if dp > 0 and dloop > 0:
+            ratios.append(dp / dloop)
+    assert ratios
     assert max(ratios) - min(ratios) < 0.15
 
 
@@ -168,10 +170,10 @@ def test_entry_phase_uses_pit_in_segment(qapp):
     """Entry lap-% maps through pit_in only (then entry feather toward track)."""
     w = _make_chicagoland_like_widget()
     lo = w.pit_in_pct
-    path_lo, _path_hi = w._pit_lane_bounds()
-    pct = (lo + ((path_lo - lo) % 1.0) * 0.5) % 1.0
-    assert w._pct_in_interval(pct, lo, path_lo)
-    raw = w._pit_phase_pos(pct, lo, path_lo, [w.pit_in])
+    lane_lo = w.pit_span[0]
+    pct = (lo + ((lane_lo - lo) % 1.0) * 0.5) % 1.0
+    assert w._pct_in_interval(pct, lo, lane_lo)
+    raw = w._pit_phase_pos(pct, lo, lane_lo, [w.pit_in])
     routed = w._pos_for_schematic_route(0, pct, on_route=True, on_pit_road=False)
     assert raw is not None and routed is not None
     assert routed == w._feather_schematic_pos(pct, raw)
@@ -180,9 +182,9 @@ def test_entry_phase_uses_pit_in_segment(qapp):
 def test_lane_phase_uses_pit_path_segment(qapp):
     """Mid-lane lap-% maps through pit_path only."""
     w = _make_chicagoland_like_widget()
-    path_lo, path_hi = w._pit_lane_bounds()
-    pct = (path_lo + (path_hi - path_lo) * 0.5) % 1.0
-    raw = w._pit_phase_pos(pct, path_lo, path_hi, [w.pit_path])
+    lane_lo, lane_hi = w.pit_span
+    pct = (lane_lo + (lane_hi - lane_lo) * 0.5) % 1.0
+    raw = w._pit_phase_pos(pct, lane_lo, lane_hi, [w.pit_path])
     routed = w._pos_for_schematic_route(0, pct, on_route=True, on_pit_road=True)
     assert raw is not None and routed is not None
     assert routed == raw

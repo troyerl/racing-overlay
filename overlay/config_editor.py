@@ -1699,6 +1699,21 @@ class ConfigEditor(QWidget):
         pit_row.addWidget(self._pit_speed_spin)
         v.addLayout(pit_row)
 
+        pit_lane_row = QHBoxLayout()
+        pit_lane_lbl = QLabel("Pit lane speed (%)")
+        pit_lane_lbl.setObjectName("rowLabel")
+        self._pit_lane_speed_spin = QDoubleSpinBox()
+        self._pit_lane_speed_spin.setRange(25.0, 300.0)
+        self._pit_lane_speed_spin.setDecimals(0)
+        self._pit_lane_speed_spin.setSingleStep(5.0)
+        self._pit_lane_speed_spin.setSuffix(" %")
+        self._pit_lane_speed_spin.valueChanged.connect(
+            self._pit_lane_speed_authoring_changed)
+        pit_lane_row.addWidget(pit_lane_lbl)
+        pit_lane_row.addStretch(1)
+        pit_lane_row.addWidget(self._pit_lane_speed_spin)
+        v.addLayout(pit_lane_row)
+
         turn_row = QHBoxLayout()
         turn_lbl = QLabel("Number of corners")
         turn_lbl.setObjectName("rowLabel")
@@ -1764,14 +1779,18 @@ class ConfigEditor(QWidget):
             enabled = bool(state.get("has_track"))
             sf_enabled = bool(state.get("can_author_map"))
         self._pit_speed_spin.blockSignals(True)
+        self._pit_lane_speed_spin.blockSignals(True)
         self._num_turns_spin.blockSignals(True)
         self._pit_speed_spin.setEnabled(enabled)
+        self._pit_lane_speed_spin.setEnabled(enabled)
         self._num_turns_spin.setEnabled(enabled)
         self._corner_edit_sw.setEnabled(enabled)
         self._sf_edit_sw.setEnabled(sf_enabled)
         if enabled:
             ms = float(state.get("pit_speed_ms") or 0.0)
             self._pit_speed_spin.setValue(config.conv_speed(ms) if ms else 0.0)
+            lane_pct = float(state.get("pit_lane_speed_pct") or 1.0)
+            self._pit_lane_speed_spin.setValue(lane_pct * 100.0)
             n = state.get("num_turns")
             self._num_turns_spin.setValue(int(n) if n else 0)
             cnt = state.get("corner_count", 0)
@@ -1782,6 +1801,7 @@ class ConfigEditor(QWidget):
                 if cnt else f"No corner labels yet{tid_txt}.")
         else:
             self._pit_speed_spin.setValue(0.0)
+            self._pit_lane_speed_spin.setValue(100.0)
             self._num_turns_spin.setValue(0)
             if state.get("demo"):
                 self._authoring_status.setText(
@@ -1794,6 +1814,7 @@ class ConfigEditor(QWidget):
             self._corner_edit_sw.setChecked(False)
             self._sf_edit_sw.setChecked(False)
         self._pit_speed_spin.blockSignals(False)
+        self._pit_lane_speed_spin.blockSignals(False)
         self._num_turns_spin.blockSignals(False)
         self._sync_corner_edit_mode()
         self._sync_sf_edit_mode()
@@ -1808,6 +1829,19 @@ class ConfigEditor(QWidget):
         else:
             self._authoring_status.setText(
                 "Could not save pit speed (no local track file).")
+            self._flash("Save failed")
+
+    def _pit_lane_speed_authoring_changed(self, value: float) -> None:
+        if self._overlay is None or not hasattr(
+                self._overlay, "set_pit_lane_speed_authoring"):
+            return
+        if self._overlay.set_pit_lane_speed_authoring(value / 100.0):
+            self._authoring_status.setText(
+                f"Pit lane speed saved ({value:.0f}%).")
+            self._flash("Pit lane speed saved")
+        else:
+            self._authoring_status.setText(
+                "Could not save pit lane speed (no local track file).")
             self._flash("Save failed")
 
     def _num_turns_authoring_changed(self, value: int) -> None:

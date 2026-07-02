@@ -458,7 +458,7 @@ def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
                       pit_span=None, pit_speed: float = 0.0,
                       num_turns=None, pit_path=None, pit_in=None,
                       pit_out=None, pit_in_pct=None, pit_out_pct=None,
-                      learned: bool = False) -> bool:
+                      pit_lane_speed_pct=None, learned: bool = False) -> bool:
     """Create tracks/<id>.json from in-memory state when no local file exists.
 
     Authoring edits patch the on-disk file; this ensures one exists when the
@@ -482,6 +482,8 @@ def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
         data["pit_span"] = [round(float(pit_span[0]), 5), round(float(pit_span[1]), 5)]
     if pit_speed:
         data["pit_speed"] = round(float(pit_speed), 3)
+    if pit_lane_speed_pct is not None and float(pit_lane_speed_pct) != 1.0:
+        data["pit_lane_speed_pct"] = round(float(pit_lane_speed_pct), 4)
     if num_turns:
         data["num_turns"] = int(num_turns)
     for key, seg in (("pit_path", pit_path), ("pit_in", pit_in), ("pit_out", pit_out)):
@@ -554,6 +556,8 @@ def load_track(path: str, n: int = 720):
         meta["pit_span"] = (float(data["pit_span"][0]), float(data["pit_span"][1]))
     if data.get("pit_speed"):
         meta["pit_speed"] = float(data["pit_speed"])
+    if data.get("pit_lane_speed_pct") is not None:
+        meta["pit_lane_speed_pct"] = float(data["pit_lane_speed_pct"])
     for key in ("pit_path", "pit_in", "pit_out"):
         seg = data.get(key)
         if isinstance(seg, list) and len(seg) >= 2:
@@ -719,6 +723,8 @@ class TrackMapWidget(QWidget):
         # and the learned speed limit (m/s), shown as a static badge.
         self.pit_span: tuple[float, float] | None = None
         self.pit_speed_ms: float = 0.0
+        # Per-track multiplier for pit dot speed along polylines (1.0 = 100%).
+        self.pit_lane_speed_pct: float = 1.0
         # The real pit-lane geometry (model-space points, same frame as path),
         # from where you leave the track to where you rejoin. When present it's
         # drawn instead of the inward-offset approximation of pit_span.
@@ -1198,13 +1204,21 @@ class TrackMapWidget(QWidget):
         """Place a car along pit segments for a lap-% interval.
 
         Lap-% advances at constant rate through the interval; pit dots move at
-        ``pit_arc / loop_arc`` of racing-line speed (no ease-in acceleration).
+        ``pit_arc / loop_arc`` of racing-line speed, scaled by
+        ``pit_lane_speed_pct`` (no ease-in acceleration).
         """
         span_pct = (hi - lo) % 1.0
         if span_pct <= 1e-6:
             return None
         linear = ((pct - lo) % 1.0) / span_pct
-        return self._pos_on_polyline_chain(segments, linear)
+        pit_arc = self._pit_arc_length(segments)
+        loop_arc = self._loop_arc_between(lo, hi)
+        scale = self.pit_lane_speed_pct
+        if pit_arc > 1e-9 and loop_arc > 1e-9:
+            t = min(1.0, max(0.0, linear * (loop_arc / pit_arc) * scale))
+        else:
+            t = min(1.0, max(0.0, linear * scale))
+        return self._pos_on_polyline_chain(segments, t)
 
     def _pit_progress_t(
         self,
@@ -1268,12 +1282,15 @@ class TrackMapWidget(QWidget):
         lo = self.pit_in_pct
         hi = self.pit_out_pct
         lane = self.pit_span
-        lane_lo = lane[0] if lane else lo
-        lane_hi = lane[1] if lane else hi
+        lane_lo = lane[0] if lane else None
+        lane_hi = lane[1] if lane else None
         path_lo, path_hi = self._pit_lane_bounds()
+        entry_end = lane_lo if lane_lo is not None else path_lo
+        lane_start = lane_lo if lane_lo is not None else path_lo
+        lane_end = lane_hi if lane_hi is not None else path_hi
         exit_pct = self._schematic_exit_pcts.get(idx)
         if exit_pct is None:
-            exit_pct = path_hi if path_hi is not None else lane_hi
+            exit_pct = lane_hi if lane_hi is not None else path_hi
 
         # Exit blend: pit lane end -> rejoin (off pit road, latched in demo).
         if (hi is not None and exit_pct is not None and self.pit_out
@@ -1283,19 +1300,19 @@ class TrackMapWidget(QWidget):
             if pos is not None:
                 return self._feather_schematic_pos(pct, pos)
 
-        # Pit lane: pit_path endpoints only while OnPitRoad is true.
-        if (path_lo is not None and path_hi is not None and self.pit_path
+        # Pit lane: pit_span extent on pit_path while OnPitRoad is true.
+        if (lane_start is not None and lane_end is not None and self.pit_path
                 and len(self.pit_path) >= 2 and on_pit_road
-                and self._pct_in_interval(pct, path_lo, path_hi)):
-            pos = self._pit_phase_pos(pct, path_lo, path_hi, [self.pit_path])
+                and self._pct_in_interval(pct, lane_start, lane_end)):
+            pos = self._pit_phase_pos(pct, lane_start, lane_end, [self.pit_path])
             if pos is not None:
                 return self._feather_schematic_pos(pct, pos)
 
-        # Entry blend: pit_in_pct -> pit_path start on pit_in only.
-        if (lo is not None and path_lo is not None and self.pit_in
+        # Entry blend: pit_in_pct -> pit lane start on pit_in only.
+        if (lo is not None and entry_end is not None and self.pit_in
                 and len(self.pit_in) >= 2
-                and self._pct_in_interval(pct, lo, path_lo)):
-            pos = self._pit_phase_pos(pct, lo, path_lo, [self.pit_in])
+                and self._pct_in_interval(pct, lo, entry_end)):
+            pos = self._pit_phase_pos(pct, lo, entry_end, [self.pit_in])
             if pos is not None:
                 return self._feather_schematic_pos(pct, pos)
         return None

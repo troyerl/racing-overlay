@@ -138,7 +138,9 @@ class AdvancedSimHUD:
         self._learn_name = ""             # display name for saved tracks
         self._no_track_hint = False       # throttle "import HTML" flash
         self._pit_speed_ms = 0.0
-        self._pit_s0 = None  # speed/time samples for steady-cruise detection
+        self._pit_lane_speed_pct = 1.0
+        self._pit_latch_seed_pending = False
+        self._pit_s0 = None
         self._pit_t0 = None
         self._pit_span = None
         self._pit_path = None
@@ -399,6 +401,7 @@ class AdvancedSimHUD:
             "in_sim": in_sim,
             "demo": self.demo,
             "pit_speed_ms": self._pit_speed_ms,
+            "pit_lane_speed_pct": self._pit_lane_speed_pct,
             "num_turns": n,
             "corner_count": len(mw.display_corners()),
             "has_pit_geometry": bool(
@@ -437,6 +440,7 @@ class AdvancedSimHUD:
             pit_out=self._pit_out,
             pit_in_pct=self._pit_in_pct,
             pit_out_pct=self._pit_out_pct,
+            pit_lane_speed_pct=self._pit_lane_speed_pct,
             learned=False)
 
     def effective_track_id(self):
@@ -505,6 +509,15 @@ class AdvancedSimHUD:
             self.map_widget.update()
         return self._persist_track_meta(
             pit_speed=round(speed_ms, 3) if speed_ms else None)
+
+    def set_pit_lane_speed_authoring(self, pct: float) -> bool:
+        """Override per-track pit lane dot speed (1.0 = 100%) and save."""
+        pct = max(0.25, min(3.0, float(pct)))
+        self._pit_lane_speed_pct = pct
+        self.map_widget.pit_lane_speed_pct = pct
+        self.map_widget.update()
+        return self._persist_track_meta(
+            pit_lane_speed_pct=round(pct, 4))
 
     def set_num_turns_authoring(self, n: int) -> bool:
         """Set the official corner count, re-detect labels, and save."""
@@ -746,6 +759,8 @@ class AdvancedSimHUD:
             doc["num_turns"] = int(self.map_widget.num_turns)
         if self._pit_speed_ms > 0:
             doc["pit_speed"] = round(self._pit_speed_ms, 3)
+        if self._pit_lane_speed_pct != 1.0:
+            doc["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
         if self._v2_loop_doc:
             for key in ("import_version",):
                 if key in self._v2_loop_doc:
@@ -761,7 +776,7 @@ class AdvancedSimHUD:
 
         meta = {k: doc[k] for k in (
             "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
-            "pit_out_pct", "pit_speed", "pit_source",
+            "pit_out_pct", "pit_speed", "pit_source", "pit_lane_speed_pct",
         ) if k in doc}
         self._apply_pit_meta(meta)
         if track_store.can_write():
@@ -1933,6 +1948,7 @@ class AdvancedSimHUD:
             "pit_out": span_pts(lane_hi, out_pct, 14, 1.0, 0.0),
             "pit_in_pct": in_pct,
             "pit_out_pct": out_pct,
+            "pit_lane_speed_pct": 0.38,
         }
 
     def _ensure_track(self, player, lap_pct) -> None:
@@ -2025,13 +2041,32 @@ class AdvancedSimHUD:
 
     def _reset_pit_state(self) -> None:
         """Clear pit-route runtime state (latches, not saved geometry)."""
-        self._pit_speed_ms = 0.0
         self._pit_s0 = self._pit_t0 = None
         self._player_on_route = False
         self._player_route_ticks = 0
         self._pit_route_latch.clear()
         self._pit_prev_on.clear()
         self._pit_exit_latch.clear()
+
+    def _seed_pit_latches(self, lap_pct, on_pit_arr, player) -> None:
+        """Latch cars already on the pit route when a track loads mid-session."""
+        if not is_schematic_pit_source(self._pit_source):
+            return
+        route = self._route_interval()
+        if not route:
+            return
+        lo, hi = route
+        for idx, pct in enumerate(lap_pct or []):
+            if pct is None or pct < 0:
+                continue
+            on_pit = (bool(on_pit_arr[idx])
+                      if on_pit_arr and idx < len(on_pit_arr) else False)
+            if on_pit or self._pct_in_interval(pct, lo, hi):
+                self._pit_route_latch[idx] = True
+        if (player is not None and on_pit_arr
+                and player < len(on_pit_arr) and on_pit_arr[player]):
+            self._player_on_route = True
+            self._player_route_ticks = PIT_COMMIT_HOLD
 
     def _dead_reckon(self, pct):
         """Integrate speed + heading into an (x, y) when GPS is unavailable.
@@ -2068,8 +2103,13 @@ class AdvancedSimHUD:
         extent) from a track file into both our state and the map widget. A meta
         with no pit data fully clears any previous pit lane (e.g. when leaving
         the demo or switching to a track that hasn't been scanned)."""
+        self._reset_pit_state()
+        self._pit_latch_seed_pending = True
         self._pit_source = (meta.get("pit_source") or "").strip().lower()
         self.map_widget.set_pit_source(self._pit_source or None)
+        pct = meta.get("pit_lane_speed_pct")
+        self._pit_lane_speed_pct = float(pct) if pct is not None else 1.0
+        self.map_widget.pit_lane_speed_pct = self._pit_lane_speed_pct
         if meta.get("pit_speed"):
             self._pit_speed_ms = float(meta["pit_speed"])
 
@@ -2142,6 +2182,9 @@ class AdvancedSimHUD:
             self.map_widget.set_wind(None, 0.0)
 
         on_pit_arr = self.ir["CarIdxOnPitRoad"]
+        if self._pit_latch_seed_pending:
+            self._seed_pit_latches(lap_pct, on_pit_arr, player)
+            self._pit_latch_seed_pending = False
         pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
         use_pos = config.CFG["map"].get("car_label", "number") == "position"
         if use_pos and positions is None:

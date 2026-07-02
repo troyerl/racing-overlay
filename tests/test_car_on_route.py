@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from overlay.app import AdvancedSimHUD
+from overlay.app import AdvancedSimHUD, PIT_COMMIT_HOLD
 
 
 def _chicagoland_hud():
@@ -45,6 +45,29 @@ def test_opponent_exit_hold_after_pit():
     hud._pit_route_latch[3] = True
     assert hud._car_on_route(
         3, 0.02, False, is_player=False, route=route, approaching=False)
+
+
+def test_seed_pit_latches_exit_hold():
+    hud = _chicagoland_hud()
+    hud._pit_source = "manual"
+    route = (hud._pit_in_pct, hud._pit_out_pct)
+    lap_pct = [None] * 4
+    lap_pct[2] = 0.02
+    on_pit = [False, False, False, False]
+    hud._seed_pit_latches(lap_pct, on_pit, player=0)
+    assert hud._pit_route_latch[2]
+    assert hud._car_on_route(
+        2, 0.02, False, is_player=False, route=route, approaching=False)
+
+
+def test_seed_pit_latches_player_on_pit():
+    hud = _chicagoland_hud()
+    hud._pit_source = "manual"
+    lap_pct = [0.90] + [None] * 3
+    on_pit = [True, False, False, False]
+    hud._seed_pit_latches(lap_pct, on_pit, player=0)
+    assert hud._player_on_route
+    assert hud._player_route_ticks == PIT_COMMIT_HOLD
 
 
 def test_demo_pit_car_entry_blend():
