@@ -231,6 +231,9 @@ DEFAULTS: dict = {
         # Row text size (multiple of row height) and the header size on top of it.
         "font_scale": 0.42,
         "header_font_scale": 1.0,
+        # Fixed row height in pixels (0 = scale rows to fill the panel).
+        "row_height_px": 0,
+        "max_row_height_frac": 0.14,
         # Show a thermometer icon before the track temperature column.
         "temp_icon": True,
         # What DELTA compares each lap against: "previous" (the lap before it) or
@@ -272,6 +275,9 @@ DEFAULTS: dict = {
         "show_strip": True,      # PIT lap-timeline strip
         "show_time": True,       # TIME UNTIL EMPTY box
         "show_laps": True,       # LAPS UNTIL EMPTY box
+        # Stats grid row height (0 = scale to fit the stats block).
+        "row_height_px": 0,
+        "max_row_height_frac": 0.14,
         "colors": {
             **_WIDGET_CHROME_COLORS,
             # Vertical gradient card matching the dash/tables.
@@ -625,6 +631,9 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         # Max number of corner rows listed (worst-first).
         "max_turns": 6,
+        # Fixed row height for corner rows (0 = scale to fit).
+        "row_height_px": 0,
+        "max_row_height_frac": 0.14,
         # Only list corners where you gained/lost at least this many seconds.
         "min_time_loss": 0.03,
         # Show the big live delta-to-best (vs the last completed lap's delta).

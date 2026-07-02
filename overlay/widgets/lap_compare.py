@@ -24,7 +24,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config, lap_compare_store
 from .chrome import col, draw_card, draw_dark_cell, draw_edge_band
-from .chrome import draw_row_divider
+from .chrome import draw_row_divider, resolve_row_height
 from .fonts import data_font_bold, tabfont, tfont
 from .formats import clock, signed_delta
 
@@ -646,7 +646,7 @@ class LapCompareWidget(QWidget):
                        f"\u00b1{spread / 2:.2f}s / {d.get('laps', 0)} laps")
 
         self._draw_turns(p, QRectF(x0, y, iw, h - pad - foot - y),
-                         d.get("turns") or [], c)
+                         d.get("turns") or [], c, panel_h=h)
 
     def _draw_graph(self, p, rect: QRectF, pts) -> None:
         draw_dark_cell(p, rect, _SECTION, radius=5)
@@ -665,7 +665,7 @@ class LapCompareWidget(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
 
-    def _draw_turns(self, p, rect: QRectF, turns, c) -> None:
+    def _draw_turns(self, p, rect: QRectF, turns, c, *, panel_h: float) -> None:
         thresh = float(c.get("min_time_loss", 0.03) or 0.0)
         shown = [t for t in turns if abs(t.get("t_lost", 0.0)) >= thresh] or turns
         # `turns` is worst-first, so slice keeps the costliest corners, then we
@@ -678,7 +678,12 @@ class LapCompareWidget(QWidget):
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter,
                        "Matching your best lap -- nice and tidy.")
             return
-        rh = min(rect.height() / len(shown), rect.height() * 0.34)
+        fixed_rh = float(c.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            rh = fixed_rh
+        else:
+            rh = resolve_row_height(body_h=rect.height(), row_count=len(shown),
+                                    panel_h=panel_h, cfg=c)
         rh = max(rh, 1.0)
         y = rect.top()
         for i, t in enumerate(shown):

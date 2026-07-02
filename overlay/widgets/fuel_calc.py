@@ -33,7 +33,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 from .. import config
 from .chrome import col as _chrome_col
 from .chrome import draw_accent_bar, draw_card, draw_dark_cell, draw_edge_band
-from .chrome import draw_row_divider
+from .chrome import draw_row_divider, resolve_row_height
 from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "fuel_calc"
@@ -267,8 +267,16 @@ class FuelCalcWidget(QWidget):
         rows = d.get("rows") or {}
         label_w = w * 0.13
         col_w = (w - label_w) / len(_STAT_COLS)
-        head_h = h * 0.22
-        row_h = (h - head_h) / len(_STAT_ROWS)
+        cfg = _cfg()
+        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            row_h = fixed_rh
+            head_h = round(fixed_rh * 1.1)
+        else:
+            head_h = h * 0.22
+            row_h = resolve_row_height(
+                body_h=h - head_h, row_count=len(_STAT_ROWS),
+                panel_h=self.height(), cfg=cfg)
         data_bold = data_font_bold(_SECTION)
 
         band = QRectF(x, y, w, head_h)
@@ -279,7 +287,6 @@ class FuelCalcWidget(QWidget):
             cx = x + label_w + i * col_w
             p.drawText(QRectF(cx, y, col_w, head_h), _CENTER, _STAT_HEADERS[k])
 
-        cfg = _cfg()
         for r, rk in enumerate(_STAT_ROWS):
             ry = y + head_h + r * row_h
             if r % 2 == 1:

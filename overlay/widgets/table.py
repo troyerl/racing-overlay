@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import QWidget
 
 from .. import config
 from . import icons
-from .chrome import contrast_text, draw_edge_band
+from .chrome import contrast_text, draw_edge_band, resolve_row_height
 from .chrome import draw_row_divider as _draw_row_divider_chrome
 from .chrome import soften_color as _soften_color
 from .fonts import data_font_bold as _data_font_bold, tabfont, tfont
@@ -329,12 +329,8 @@ class BaseTable(QWidget):
             footer_h = (max(24.0, h * 0.11) * fscale) if self.has_footer() else 0.0
             body_top = card.top() + pad + header_h
             body_h = h - body_top - footer_h - pad
-            row_h = body_h / n
-            # With only a few rows, don't let them stretch (and the text balloon)
-            # to fill the panel: cap row height and leave the extra space empty.
-            max_rh_frac = tc.get("max_row_height_frac", 0.0) or 0.0
-            if max_rh_frac > 0:
-                row_h = min(row_h, h * max_rh_frac)
+            row_h = resolve_row_height(body_h=body_h, row_count=n,
+                                       panel_h=h, cfg=tc)
 
         self.draw_header(p, card, radius, pad, header_h)
 

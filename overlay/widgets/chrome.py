@@ -164,3 +164,18 @@ def draw_accent_bar(p: QPainter, rect: QRectF, section: str | None = None) -> No
     p.setPen(Qt.PenStyle.NoPen)
     p.setBrush(col("accent", section, "#e23b3b"))
     p.drawRoundedRect(rect, h / 2, h / 2)
+
+
+def resolve_row_height(*, body_h: float, row_count: int, panel_h: float,
+                       cfg: dict) -> float:
+    """Scale-to-fit row height, optionally capped by max_row_height_frac.
+
+    When ``row_height_px`` > 0 the caller should use that fixed value instead;
+    this helper is for the ``row_height_px == 0`` path shared by all tables.
+    """
+    n = max(1, int(row_count))
+    row_h = body_h / n
+    max_rh_frac = float(cfg.get("max_row_height_frac", 0) or 0)
+    if max_rh_frac > 0:
+        row_h = min(row_h, panel_h * max_rh_frac)
+    return row_h

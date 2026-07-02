@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
 from . import icons
-from .chrome import col, draw_card, draw_dark_cell, draw_edge_band, draw_row_divider
+from .chrome import col, draw_card, draw_dark_cell, draw_edge_band, draw_row_divider, resolve_row_height
 from .fonts import data_font_bold, tabfont, tfont
 
 _VC_LEFT = Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
@@ -57,11 +57,20 @@ class LaptimeLogWidget(QWidget):
         rows = (self.data or {}).get("rows", [])
         pad = max(8.0, h * 0.03)
         show_header = cfg.get("show_header", True)
-        header_h = max(22.0, h * 0.12) if show_header else 0.0
+        hscale = max(0.3, cfg.get("header_font_scale", 1.0) or 1.0)
+        n = max(1, cfg.get("rows", 8))
+        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            row_h = fixed_rh
+            header_h = round(fixed_rh * 1.1 * hscale) if show_header else 0.0
+        else:
+            header_h = max(22.0, h * 0.12) if show_header else 0.0
+            body_top_est = card.top() + pad + header_h
+            est_body_h = h - body_top_est - pad
+            row_h = resolve_row_height(body_h=est_body_h, row_count=n,
+                                       panel_h=h, cfg=cfg)
         body_top = card.top() + pad + header_h
         body_h = h - body_top - pad
-        n = max(1, cfg.get("rows", 8))
-        row_h = body_h / n
         inner_w = card.width() - 2 * pad
         inner_x = card.left() + pad
 

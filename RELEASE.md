@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.33.0 - 2026-07-06
+
+- **Configurable row height on every table.** Relative, Standings, Laptime Log,
+  Fuel Calc (usage stats grid), and Lap Compare (corner rows) now expose
+  **Fixed row height (px)** and **Max row height (panel fraction)** in Settings.
+  Set a fixed pixel height to keep rows and text from growing when you resize the
+  panel, or leave it at 0 to scale rows to fit (capped by the fraction).
+
 ## 1.32.0 - 2026-07-05
 
 - **Pit editor zoom and pan.** Track Scan pit authoring now auto-frames the pit
