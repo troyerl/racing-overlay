@@ -715,6 +715,9 @@ DEFAULTS: dict = {
         "car_label": "number",
         # Opacity (0..1) of a car's dot while it's on pit road.
         "pit_dot_opacity": 0.45,
+        # Lap-distance window (fraction of a lap) for red "lapping you" tint on
+        # the map when a car is ~one lap ahead but not yet a full lap clear.
+        "lap_proximity_pct": 0.04,
         # Show a small wind compass (arrow + speed) in the map's corner.
         "show_wind": True,
         # Draw a rounded card behind the whole map. Off by default so only the
@@ -727,6 +730,9 @@ DEFAULTS: dict = {
             "outline": "#8b93a1",
             "infield": "#0f1216c8",
             "player": "#46df7a",
+            "competitor": "#3aa0ff",
+            "lapped": "#4a8cff",
+            "lapping": "#ff5050",
             "corner_bg": "#0b0d11cc",
             "corner_border": "#ffffff20",
             "corner_text": "#d6dce2",

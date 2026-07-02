@@ -5,6 +5,25 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.31.0 - 2026-07-04
+
+- **Pit car placement (schematic tracks).** Length-calibrated progress now slows
+  dots when the drawn pit polyline is longer than the matching loop arc (short
+  ovals like Chicagoland) and speeds correctly when it is shorter. Entry, lane,
+  and exit are mapped as separate phases so lap-% no longer races through the
+  whole pit chain at once.
+- **No false pit on the racing line.** Cars are only drawn on the pit route when
+  `OnPitRoad`, approaching pits, or in the exit blend after a stop — not for the
+  entire wrapping `pit_in`→`pit_out` lap-% arc on ovals.
+- **Smoother pit entry on the map.** The player icon eases from the racing line
+  onto the entry blend instead of jumping when `OnPitRoad` flips.
+- **Map competitor colors.** All rivals use one default color; cars a lap down
+  show blue and cars lapping you show red only when they are close on track or
+  a full lap ahead (no brief red/blue flash at the start/finish line).
+- **Speaking indicator on the map.** When a driver is on the radio, their dot
+  shows the speaker icon instead of car number or position (same telemetry as the
+  relative/standings badge).
+
 ## 1.30.0 - 2026-07-03
 
 - **Schematic pit car mapping fix.** Cars on the authored pit route (entry, lane,

@@ -948,7 +948,7 @@ class AdvancedSimHUD:
         est_time = (self.ir["CarIdxEstTime"]
                     if (en["relative"] or en["standings"]) else None)
         car_left_right = self.ir["CarLeftRight"] if en["radar"] else None
-        car_lap = self.ir["CarIdxLap"] if need_order else None
+        car_lap = self.ir["CarIdxLap"] if (need_order or en["map"]) else None
         # CarIdxF2Time only feeds the standings gap column.
         car_f2 = (self.ir["CarIdxF2Time"]
                   if (en["standings"] and config.has_column("standings", "gap"))
@@ -975,7 +975,8 @@ class AdvancedSimHUD:
 
         radio_speaker = None
         if ((en["relative"] and config.has_column("relative", "badge"))
-                or (en["standings"] and config.has_column("standings", "badge"))):
+                or (en["standings"] and config.has_column("standings", "badge"))
+                or en["map"]):
             try:
                 idx = int(self.ir["RadioTransmitCarIdx"])
                 if idx >= 0:
@@ -1011,7 +1012,8 @@ class AdvancedSimHUD:
             self._update_relative(player, est_time, surface, drivers, positions,
                                   car_lap, lap_est, sess_time, radio_speaker)
         if en["map"]:
-            self._update_map(player, lap_pct, surface, drivers, positions)
+            self._update_map(player, lap_pct, surface, drivers, positions,
+                             car_lap, radio_speaker)
         if en["dash"]:
             self._update_dash(player, positions, car_lap)
         if en["laptime_log"]:
@@ -2121,7 +2123,8 @@ class AdvancedSimHUD:
         self.map_widget.update()
 
     def _update_map(self, player, lap_pct, surface, drivers,
-                    positions=None) -> None:
+                    positions=None, car_lap=None,
+                    radio_speaker=None) -> None:
         if player is None or not lap_pct or not surface:
             return
 
@@ -2148,7 +2151,6 @@ class AdvancedSimHUD:
         blends_on = config.CFG["map"].get("show_pit_blends", True)
         if self.demo and is_schematic_pit_source(self._pit_source):
             self._update_schematic_pit_latches(lap_pct, on_pit_arr)
-        palette = track_map.car_palette()
         player_color = config.CFG["map"]["colors"]["player"]
         cars = []
         for idx, pct in enumerate(lap_pct):
@@ -2157,18 +2159,26 @@ class AdvancedSimHUD:
             is_player = idx == player
             on_pit = (bool(on_pit_arr[idx]) if on_pit_arr and idx < len(on_pit_arr)
                       else surface[idx] in pit_surf)
+            approaching = (surface is not None and idx < len(surface)
+                           and surface[idx] == oc.TRK_APPROACHING_PITS)
             # Show cars that are on track or on pit road; skip garage/off-world.
             if surface[idx] != oc.TRK_ON_TRACK and not on_pit and not is_player:
                 continue
             on_route = self._car_on_route(idx, pct, on_pit, is_player, route,
-                                          blends_on)
+                                          blends_on, approaching=approaching)
             d = drivers.get(idx)
             if use_pos and positions and idx < len(positions) and positions[idx]:
                 num = str(positions[idx])
             else:
                 num = str(d.get("CarNumber", "?")) if d else "?"
-            color = player_color if is_player else palette[idx % len(palette)]
-            cars.append((idx, pct, num, color, is_player, on_route, on_pit))
+            if is_player:
+                color = player_color
+            else:
+                color = self._map_car_color(
+                    idx, player, car_lap, lap_pct)
+            speaking = radio_speaker is not None and idx == radio_speaker
+            cars.append((idx, pct, num, color, is_player, on_route, on_pit,
+                           speaking))
         self.map_widget.set_schematic_exit_pcts(self._pit_exit_latch)
         self.map_widget.set_cars(cars)
 
@@ -2197,37 +2207,102 @@ class AdvancedSimHUD:
         pit_cars = getattr(self.ir, "_pit_cars", None)
         return pit_cars is not None and idx in pit_cars
 
+    def _pit_route_phases(self, pct: float):
+        """(entry, lane_span, exit) lap-% intervals for schematic pit phases."""
+        pit_in = self._pit_in_pct
+        pit_out = self._pit_out_pct
+        lane = self._pit_span
+        lane_lo = lane[0] if lane else None
+        lane_hi = lane[1] if lane else None
+        in_entry = (pit_in is not None and lane_lo is not None
+                    and self._pct_in_interval(pct, pit_in, lane_lo))
+        in_lane_span = (lane_lo is not None and lane_hi is not None
+                        and self._pct_in_interval(pct, lane_lo, lane_hi))
+        in_exit = (lane_hi is not None and pit_out is not None
+                   and self._pct_in_interval(pct, lane_hi, pit_out))
+        return in_entry, in_lane_span, in_exit
+
+    def _close_on_track(self, player, idx, lap_pct) -> bool:
+        """Whether a car is within the map's lap-distance proximity window."""
+        if (player is None or lap_pct is None or idx >= len(lap_pct)
+                or player >= len(lap_pct)):
+            return False
+        me = lap_pct[player]
+        them = lap_pct[idx]
+        if me is None or them is None or me < 0 or them < 0:
+            return False
+        delta = them - me
+        if delta > 0.5:
+            delta -= 1.0
+        elif delta < -0.5:
+            delta += 1.0
+        prox = config.CFG["map"].get("lap_proximity_pct", 0.04)
+        return abs(delta) <= prox
+
+    def _map_car_color(self, idx, player, car_lap, lap_pct) -> str:
+        """Map dot color: default competitor, blue if lapped, red if lapping."""
+        colors = config.CFG["map"]["colors"]
+        base = colors.get("competitor", colors.get("player", "#3aa0ff"))
+        lapping, lap_ahead = self._lap_tint(idx, player, car_lap, False)
+        if not lapping:
+            return base
+        if not lap_ahead:
+            return colors.get("lapped", "#4a8cff")
+        me = self._laps_done(player, car_lap)
+        them = self._laps_done(idx, car_lap)
+        if me is None or them is None:
+            return base
+        diff = them - me
+        if diff >= 1.5:
+            return colors.get("lapping", "#ff5050")
+        if self._close_on_track(player, idx, lap_pct):
+            return colors.get("lapping", "#ff5050")
+        return base
+
     def _car_on_route(self, idx, pct, on_pit, is_player, route,
-                      blends_on=True) -> bool:
+                      blends_on=True, approaching=False) -> bool:
         """Decide whether a car should be drawn on the pit route this tick.
 
-        On schematic tracks, cars ride the full authored route (entry blend ->
-        lane -> exit blend) whenever their lap % lies inside the route extent,
-        so the icon peels off the racing line smoothly instead of jumping when
-        OnPitRoad flips. Opponents latch the same way; the player also keeps a
-        short hold after leaving pit road until lap % passes the rejoin point.
-
-        When the pit blends are hidden (``blends_on`` False) there's no entry/exit
-        lane to ride, so a car simply shows in the pits while it's actually on
-        pit road and snaps back to the track the moment it leaves.
+        On schematic tracks, route membership is phased (entry / lane / exit)
+        and gated by pit telemetry so cars on the racing line are not drawn in
+        the pits just because lap % falls inside a wrapping pit_in..pit_out arc.
         """
         if not blends_on:
             return on_pit
         schematic = is_schematic_pit_source(self._pit_source)
-        in_route = (schematic and route is not None
-                    and self._pct_in_interval(pct, route[0], route[1]))
+        if not schematic:
+            if is_player:
+                return on_pit or self._player_on_route
+            latched = self._pit_route_latch.get(idx, False)
+            if on_pit:
+                latched = True
+            elif latched and route is not None:
+                if not self._pct_in_interval(pct, route[0], route[1]):
+                    latched = False
+            elif latched and route is None:
+                latched = False
+            self._pit_route_latch[idx] = latched
+            return on_pit or latched
+
+        in_entry, _, in_exit = self._pit_route_phases(pct)
+
         if is_player:
-            return in_route or on_pit or self._player_on_route
+            if on_pit or self._player_on_route:
+                return True
+            return in_entry and approaching
+
         latched = self._pit_route_latch.get(idx, False)
-        if on_pit or in_route:
-            latched = True
-        elif latched and route is not None:
-            if not self._pct_in_interval(pct, route[0], route[1]):
-                latched = False  # past the rejoin point -> back on track
-        elif latched and route is None:
-            latched = False
-        self._pit_route_latch[idx] = latched
-        return on_pit or latched
+        if on_pit:
+            self._pit_route_latch[idx] = True
+            return True
+        if self.demo and self._is_demo_pit_car(idx) and in_entry:
+            self._pit_route_latch[idx] = True
+            return True
+        if latched and in_exit:
+            return True
+        if latched:
+            self._pit_route_latch[idx] = False
+        return False
 
     # iRacing EngineWarnings bitfield: pit speed limiter engaged.
     _PIT_LIMITER_BIT = 0x10

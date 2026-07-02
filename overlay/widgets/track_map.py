@@ -25,6 +25,7 @@ from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QMouseEvent, QPainter,
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from . import icons
 from .. import svgpath
 from .chrome import draw_card, draw_dark_cell
 
@@ -743,8 +744,9 @@ class TrackMapWidget(QWidget):
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
         self.wind_speed_ms: float = 0.0
-        # Each car: (idx, lap_pct, label, color_hex, is_player, on_route, on_pit).
-        self.cars: list[tuple[int, float, str, str, bool, bool, bool]] = []
+        # Each car: (idx, lap_pct, label, color_hex, is_player, on_route,
+        # on_pit, speaking).
+        self.cars: list[tuple] = []
         self.placeholder = "LEARNING TRACK\u2026  drive a lap"
         self._progress_pct = -1
         # Multi-lap scan UI: a persistent badge while scanning ('LAP n/3' or
@@ -1080,11 +1082,10 @@ class TrackMapWidget(QWidget):
     ) -> float | None:
         """Length-calibrated arc fraction along pit segments for schematic tracks.
 
-        Lap-% span is measured on the main loop; inward-offset pit polylines are
-        often shorter, which makes linear ``t`` outrun the car. When the pit chain
-        is shorter than the matching loop arc we ease progress (``t = f^ratio``)
-        while still reaching ``t = 1`` at ``hi``. When the pit chain is longer,
-        linear mapping is used so progress does not clamp early at the polyline end.
+        Lap-% span is measured on the main loop. When the pit chain is shorter
+        than the matching loop arc we ease with ``t = f^r``; when it is longer
+        we ease with ``t = f^(1/r)``. Both preserve ``t = 0`` at ``lo`` and
+        ``t = 1`` at ``hi``.
         """
         span_pct = (hi - lo) % 1.0
         if span_pct <= 1e-6:
@@ -1095,10 +1096,10 @@ class TrackMapWidget(QWidget):
         linear_t = d_pct / span_pct
         if pit_arc <= 1e-9 or loop_arc <= 1e-9:
             return min(1.0, max(0.0, linear_t))
-        ratio = loop_arc / pit_arc
-        if ratio > 1.0:
-            return min(1.0, max(0.0, linear_t ** ratio))
-        return min(1.0, max(0.0, linear_t))
+        r = loop_arc / pit_arc
+        if r > 1.0:
+            return min(1.0, max(0.0, linear_t ** r))
+        return min(1.0, max(0.0, linear_t ** (1.0 / r)))
 
     def _loop_point_at_pct(self, pct: float) -> tuple[float, float] | None:
         """Interpolated model-space point on the main loop at lap percentage."""
@@ -1164,19 +1165,25 @@ class TrackMapWidget(QWidget):
                 if pos is not None:
                     return self._feather_schematic_pos(pct, pos)
 
-        # Entry blend + pit lane: route start -> lane end.
-        if lo is not None and lane_hi is not None:
-            on_entry_lane = on_pit_road or (
-                lane_lo is not None
-                and self._pct_in_interval(pct, lo, lane_hi))
-            if on_entry_lane:
-                segs = [s for s in (self.pit_in, self.pit_path) if s]
-                if segs:
-                    t = self._pit_progress_t(pct, lo, lane_hi, segs)
-                    if t is not None:
-                        pos = self._pos_on_polyline_chain(segs, t)
-                        if pos is not None:
-                            return self._feather_schematic_pos(pct, pos)
+        # Pit lane: lane_lo -> lane_hi on pit_path only.
+        if (lane_lo is not None and lane_hi is not None and self.pit_path
+                and len(self.pit_path) >= 2 and on_pit_road):
+            t = self._pit_progress_t(
+                pct, lane_lo, lane_hi, [self.pit_path])
+            if t is not None:
+                pos = self._pos_on_polyline(self.pit_path, t)
+                if pos is not None:
+                    return self._feather_schematic_pos(pct, pos)
+
+        # Entry blend: pit_in_pct -> lane_lo on pit_in only.
+        if (lo is not None and lane_lo is not None and self.pit_in
+                and len(self.pit_in) >= 2
+                and self._pct_in_interval(pct, lo, lane_lo)):
+            t = self._pit_progress_t(pct, lo, lane_lo, [self.pit_in])
+            if t is not None:
+                pos = self._pos_on_polyline(self.pit_in, t)
+                if pos is not None:
+                    return self._feather_schematic_pos(pct, pos)
         return None
 
     def set_player_xy(self, xy) -> None:
@@ -1985,7 +1992,10 @@ class TrackMapWidget(QWidget):
         # Draw the player last so it sits on top of traffic.
         schematic = is_schematic_pit_source(self.pit_source)
         for car in sorted(self.cars, key=lambda c: c[4]):
-            if len(car) >= 7:
+            speaking = False
+            if len(car) >= 8:
+                idx, pct, label, color, is_player, on_route, on_pit, speaking = car
+            elif len(car) >= 7:
                 idx, pct, label, color, is_player, on_route, on_pit = car
             else:
                 idx, pct, label, color, is_player = car[:5]
@@ -2036,9 +2046,11 @@ class TrackMapWidget(QWidget):
                 p.setPen(QPen(QColor(0, 0, 0), 1))
                 p.drawEllipse(c, r, r)
             p.setPen(QColor(20, 20, 20) if is_player else QColor(255, 255, 255))
-            p.drawText(
-                QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r),
-                Qt.AlignmentFlag.AlignCenter,
-                label,
-            )
+            text_rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
+            if speaking and icons.has("speaking"):
+                p.setFont(icons.icon_font(r * 1.55))
+                p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter,
+                           icons.glyph("speaking"))
+            else:
+                p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, label)
             p.setOpacity(1.0)
