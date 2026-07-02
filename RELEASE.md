@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.40.0 - 2026-07-01
+
+- **Standings pin podium.** Optional setting keeps P1–P3 in the first three rows
+  while the remaining rows show your usual centered window (same total height).
+- **Grouped widget settings.** Each widget's settings page is organized into
+  purpose-based sections (Content, Typography, Colors, etc.) instead of one flat list.
+
 ## 1.39.0 - 2026-07-01
 
 - **Smaller wind compass near the track.** The wind dial is reduced in size and

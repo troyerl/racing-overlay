@@ -43,6 +43,7 @@ from . import version
 from .map_markers import (
     fresh_hold_states, resolve_traffic_markers, select_marker_candidates,
 )
+from .standings_rows import standings_row_list
 from .panel import PanelWindow
 from .widgets import track_map
 from .widgets.track_map import TrackMapWidget, is_schematic_pit_source
@@ -1287,22 +1288,17 @@ class AdvancedSimHUD:
                                              radio_speaker)
 
         center = scfg.get("center_on_player", True) and player in ranked
-        if center:
-            # A window of rows_ahead + player + rows_behind, padded with blank
-            # rows near the ends so the player stays in the middle slot.
-            above = scfg.get("rows_ahead", 4)
-            below = scfg.get("rows_behind", 5)
-            window = above + 1 + below
-            pidx = ranked.index(player)
-            start = pidx - above
-            rows = []
-            for slot in range(start, start + window):
-                if 0 <= slot < total:
-                    rows.append(build(ranked[slot]))
-                else:
-                    rows.append(self._empty_row(f"std{slot}"))
-        else:
-            rows = [build(idx) for idx in ranked[:n]]
+        rows = standings_row_list(
+            ranked,
+            player=player,
+            center_on_player=center,
+            pin_podium=bool(scfg.get("pin_podium", False)),
+            rows=n,
+            rows_ahead=scfg.get("rows_ahead", 4),
+            rows_behind=scfg.get("rows_behind", 5),
+            build=build,
+            empty=self._empty_row,
+        )
 
         shown = sum(1 for r in rows if not r.get("empty"))
         self.standings_widget.set_data({

@@ -195,6 +195,9 @@ DEFAULTS: dict = {
         # When true, show a window of the running order centered on the player
         # instead of the top N positions.
         "center_on_player": True,
+        # When center_on_player is on, pin P1–P3 in the first three rows and
+        # show the player-centered window in the remaining rows (same total height).
+        "pin_podium": False,
         "show_footer": True,
         "title": "Standings",
         "pit_mode": "laps_since",

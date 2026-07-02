@@ -201,6 +201,14 @@ LABEL_OVERRIDES = {
     "dot_radius_frac": "Car dot size",
     "pit_blend": "Pit entry line",
     "pit_blend_out": "Pit exit line",
+    "standings.pin_podium": "Always show P1–P3 in first 3 rows",
+    "standings.center_on_player": "Center on player (vs top N)",
+    "standings.rows": "Rows to show (top N mode)",
+    "standings.rows_ahead": "Rows above player",
+    "standings.rows_behind": "Rows below player",
+    "relative.rows_ahead": "Rows above player",
+    "relative.rows_behind": "Rows below player",
+    "relative.center_on_player": "Center on player",
 }
 
 # Rows that only make sense when another toggle is on: maps a leaf's dotted path
@@ -211,6 +219,12 @@ ROW_DEPENDENCIES = {
     "map.show_pit_speed": ("map.show_pit", True),
     "map.show_pit_blends": ("map.show_pit", True),
     "map.pit_lane_opacity": ("map.show_pit", True),
+    "standings.pin_podium": ("standings.center_on_player", True),
+    "standings.rows_ahead": ("standings.center_on_player", True),
+    "standings.rows_behind": ("standings.center_on_player", True),
+    "standings.rows": ("standings.center_on_player", False),
+    "relative.rows_ahead": ("relative.center_on_player", True),
+    "relative.rows_behind": ("relative.center_on_player", True),
 }
 _DEP_CONTROLLERS = {ctrl for ctrl, _ in ROW_DEPENDENCIES.values()}
 
@@ -292,6 +306,159 @@ TAB_COLORS = {
 # is the write-access-only track/pit authoring tab (added at build time only when
 # the user can write, so it stays absent for read-only users).
 SETTINGS_SECTION_KEYS = {"__general__", "__app__", "__scan__"}
+
+# Purpose-based setting groups for widget pages (top-level DEFAULTS dict keys).
+# Keys not listed fall through ungrouped at the bottom of the page.
+_TABLE_SETTING_GROUPS = [
+    ("Content", [
+        "title", "center_on_player", "pin_podium", "rows", "rows_ahead",
+        "rows_behind", "show_footer", "pit_mode", "text_scale",
+    ]),
+    ("Typography", [
+        "font_scale", "gap_font_scale", "header_font_scale", "footer_font_scale",
+        "name_font_bold", "data_font_bold", "irating_abbreviate",
+        "show_irating_projection", "irating_show_icon",
+    ]),
+    ("Row layout", [
+        "row_height_px", "max_row_height_frac", "row_dividers", "alt_row_shading",
+        "corner_radius_frac", "row_ease_tau", "fade_ease_tau",
+    ]),
+    ("Header & footer", ["header", "footer", "header_icons", "footer_icons"]),
+    ("Columns", ["column_order", "columns"]),
+    ("Sizing", ["widths"]),
+    ("Colors", ["colors", "license_colors"]),
+]
+
+SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
+    "relative": [
+        ("Content", [
+            "center_on_player", "rows_ahead", "rows_behind", "show_footer",
+            "pit_mode", "text_scale",
+        ]),
+        *_TABLE_SETTING_GROUPS[1:],
+    ],
+    "standings": _TABLE_SETTING_GROUPS,
+    "laptime_log": [
+        ("Content", [
+            "rows", "delta_mode", "show_header", "temp_icon", "text_scale",
+        ]),
+        ("Typography", ["font_scale", "header_font_scale", "row_dividers",
+                        "data_font_bold"]),
+        ("Row layout", [
+            "row_height_px", "max_row_height_frac", "alt_row_shading",
+            "corner_radius_frac",
+        ]),
+        ("Colors", ["colors"]),
+    ],
+    "fuel_calc": [
+        ("Visibility", [
+            "show_title", "show_pill", "show_add", "show_gauge", "show_stats",
+            "show_strip", "show_time", "show_laps",
+        ]),
+        ("Content", ["title", "history_laps", "text_scale"]),
+        ("Row layout", [
+            "row_height_px", "max_row_height_frac", "corner_radius_frac",
+            "row_dividers", "data_font_bold",
+        ]),
+        ("Colors", ["colors"]),
+    ],
+    "radar": [
+        ("Behavior", [
+            "range_pct", "show_front", "show_rear", "side_span_pct",
+            "side_proximity_color", "ease_side_tau", "ease_glow_tau",
+        ]),
+        ("Display", ["show_nose", "show_axis", "show_panel", "text_scale"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold", "sizes"]),
+        ("Colors", ["colors"]),
+    ],
+    "dash": [
+        ("Layout", [
+            "corner_radius_frac", "shift_segments", "shift_red_frac",
+            "shift_yellow_frac", "ring_segments", "text_scale", "row_dividers",
+            "data_font_bold",
+        ]),
+        ("Shift bar", [
+            "show_shift_bar", "shift_blink", "shift_blink_hz", "shift_blink_pct",
+        ]),
+        ("Center medallion", [
+            "center_mode", "show_ring", "show_throttle", "show_brake",
+            "show_clutch",
+        ]),
+        ("Flags", [
+            "show_flags", "flag_green_seconds", "flag_pulse",
+            "flag_pulse_seconds", "flag_blink_hz",
+        ]),
+        ("Delta bar", ["show_delta_bar", "delta_bar_range"]),
+        ("Metrics & slots", [
+            "show_position", "top_right", "primary_left", "primary_right",
+            "stat_left", "stat_right", "strip_left", "strip_center",
+            "strip_right",
+        ]),
+        ("iRating", ["irating_abbreviate", "show_irating_projection"]),
+        ("Colors", ["colors"]),
+    ],
+    "inputs": [
+        ("Visibility", [
+            "show_label", "show_graph", "show_bars", "show_gauge", "label_text",
+        ]),
+        ("Trace", [
+            "history_seconds", "show_throttle", "show_brake", "show_clutch",
+            "show_steering", "show_brake_threshold", "brake_threshold",
+            "line_width",
+        ]),
+        ("Typography", ["text_scale", "row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "delta_bar": [
+        ("Behavior", ["mode", "range", "show_value", "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "flags": [
+        ("Content", ["idle_text", "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "lap_compare": [
+        ("Content", [
+            "max_turns", "min_time_loss", "show_live_delta", "show_graph",
+            "text_scale",
+        ]),
+        ("Row layout", [
+            "row_height_px", "max_row_height_frac", "alt_row_shading",
+        ]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "sector_timing": [
+        ("Content", ["sectors", "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "map": [
+        ("Display", [
+            "show_infield", "show_corners", "auto_corners", "show_start_finish",
+            "show_wind", "show_panel", "show_pace_car", "show_sector_boundaries",
+            "show_traffic_markers",
+        ]),
+        ("Traffic & markers", [
+            "lap_proximity_pct", "marker_hold_seconds", "car_label",
+            "dot_radius_frac",
+        ]),
+        ("Pit lane", [
+            "show_pit", "show_pit_blends", "show_pit_speed", "pit_lane_opacity",
+            "pit_dot_opacity",
+        ]),
+        ("Layout", [
+            "rotation", "mirror", "asphalt_width", "outline_width",
+            "corner_radius_frac", "text_scale", "row_dividers", "data_font_bold",
+        ]),
+        ("Colors", ["colors", "palette"]),
+    ],
+}
+
+# Group accordions that start collapsed (secondary / long sections).
+_GROUP_COLLAPSED = {"Colors", "Sizing"}
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
@@ -1926,39 +2093,72 @@ class ConfigEditor(QWidget):
 
     def _populate(self, lay, schema: dict, path: list, color: str,
                   chain: list, skip=()) -> None:
-        # Simple leaves first, then palette / order editors, then sub-groups.
-        for key, default_val in schema.items():
-            if key in skip or isinstance(default_val, dict):
-                continue
-            if isinstance(default_val, list) and key in ("palette", "column_order"):
-                continue
-            cur = path + [key]
-            lay.addWidget(self._leaf_row(cur, default_val,
-                                         _get_at(self.working, cur), color, chain))
+        if len(path) == 1 and path[0] in SETTING_GROUPS:
+            self._populate_grouped(lay, schema, path, color, chain, skip)
+            return
+        self._populate_flat(lay, schema, path, color, chain, skip)
 
+    def _populate_grouped(self, lay, schema: dict, path: list, color: str,
+                          chain: list, skip=()) -> None:
+        section = path[0]
+        grouped: set[str] = set()
+        for title, keys in SETTING_GROUPS[section]:
+            group_keys = [k for k in keys if k in schema and k not in skip]
+            if not group_keys:
+                continue
+            grouped.update(group_keys)
+            acc = self._accordion(
+                title, path, color,
+                expanded=title not in _GROUP_COLLAPSED,
+            )
+            gchain = chain + [acc]
+            for key in group_keys:
+                self._render_schema_key(
+                    acc.body_layout(), key, schema[key], path, color, gchain, skip,
+                )
+            lay.addWidget(acc)
+        for key, default_val in schema.items():
+            if key in skip or key in grouped:
+                continue
+            self._render_schema_key(lay, key, default_val, path, color, chain, skip)
+
+    def _populate_flat(self, lay, schema: dict, path: list, color: str,
+                       chain: list, skip=()) -> None:
         for key, default_val in schema.items():
             if key in skip:
                 continue
-            cur = path + [key]
-            if key == "palette" and isinstance(default_val, list):
-                acc = self._accordion("Palette", cur, color, expanded=False)
-                acc.body_layout().addWidget(
-                    PaletteEditor(_get_at(self.working, cur),
-                                  lambda x, p=cur: self._set(p, x)))
-                lay.addWidget(acc)
-            elif key == "column_order" and isinstance(default_val, list):
-                acc = self._accordion("Column order", cur, color, expanded=True)
-                acc.body_layout().addWidget(
-                    OrderEditor(_get_at(self.working, cur), COLUMN_LABELS,
-                                config.TABLE_COLUMNS,
-                                lambda x, p=cur: self._set(p, x)))
-                lay.addWidget(acc)
-            elif isinstance(default_val, dict):
-                expanded = key not in self._COLLAPSED
-                acc = self._accordion(_pretty(key), cur, color, expanded=expanded)
-                self._populate(acc.body_layout(), default_val, cur, color,
-                               chain + [acc])
-                lay.addWidget(acc)
+            self._render_schema_key(lay, key, default_val, path, color, chain, skip)
+
+    def _render_schema_key(self, lay, key: str, default_val, path: list,
+                           color: str, chain: list, skip=()) -> None:
+        if key in skip:
+            return
+        cur = path + [key]
+        if key == "palette" and isinstance(default_val, list):
+            acc = self._accordion("Palette", cur, color, expanded=False)
+            acc.body_layout().addWidget(
+                PaletteEditor(_get_at(self.working, cur),
+                              lambda x, p=cur: self._set(p, x)))
+            lay.addWidget(acc)
+        elif key == "column_order" and isinstance(default_val, list):
+            acc = self._accordion("Column order", cur, color, expanded=True)
+            acc.body_layout().addWidget(
+                OrderEditor(_get_at(self.working, cur), COLUMN_LABELS,
+                            config.TABLE_COLUMNS,
+                            lambda x, p=cur: self._set(p, x)))
+            lay.addWidget(acc)
+        elif isinstance(default_val, dict):
+            expanded = key not in self._COLLAPSED
+            acc = self._accordion(_pretty(key), cur, color, expanded=expanded)
+            self._populate_flat(acc.body_layout(), default_val, cur, color,
+                                chain + [acc])
+            lay.addWidget(acc)
+        elif isinstance(default_val, list):
+            lay.addWidget(self._leaf_row(cur, default_val,
+                                         _get_at(self.working, cur), color, chain))
+        else:
+            lay.addWidget(self._leaf_row(cur, default_val,
+                                         _get_at(self.working, cur), color, chain))
 
     def _accordion(self, title: str, path: list, color: str,
                    expanded: bool = True) -> CollapsibleSection:
