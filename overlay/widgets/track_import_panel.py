@@ -50,8 +50,10 @@ class TrackImportV2Panel(QFrame):
 
         hint = QLabel(
             "While on track in iRacing, draw or adjust the pit road (red) and "
-            "exit merge line (blue) on the overlay map. Corner labels are edited "
-            "in Track metadata below. Save writes tracks/<TrackID>.json.")
+            "exit merge line (blue) on the overlay map. Scroll to zoom, "
+            "Shift-drag to pan; pit end and merge start stay linked. "
+            "Corner labels are edited in Track metadata below. "
+            "Save writes tracks/<TrackID>.json.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -82,6 +84,9 @@ class TrackImportV2Panel(QFrame):
         undo = QPushButton("Undo last point")
         undo.setCursor(Qt.CursorShape.PointingHandCursor)
         undo.clicked.connect(self._undo_point)
+        reset_view = QPushButton("Reset view")
+        reset_view.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset_view.clicked.connect(self._reset_pit_view)
         clear = QPushButton("Clear pit")
         clear.setObjectName("warn")
         clear.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -91,6 +96,7 @@ class TrackImportV2Panel(QFrame):
         save.clicked.connect(self._save_track)
         btn_row.addWidget(self._load_pit_btn)
         btn_row.addWidget(undo)
+        btn_row.addWidget(reset_view)
         btn_row.addWidget(clear)
         btn_row.addStretch(1)
         btn_row.addWidget(save)
@@ -243,6 +249,11 @@ class TrackImportV2Panel(QFrame):
             return
         self._overlay.map_widget.pop_last_pit_edit_point()
         self._sync_from_overlay()
+
+    def _reset_pit_view(self) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "map_widget"):
+            return
+        self._overlay.map_widget.reset_pit_edit_view()
 
     def _clear_pit(self) -> None:
         if self._overlay is None or not hasattr(self._overlay, "map_widget"):

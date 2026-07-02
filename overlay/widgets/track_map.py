@@ -21,7 +21,7 @@ import os
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QMouseEvent, QPainter,
-                         QPainterPath, QPen)
+                         QPainterPath, QPen, QWheelEvent)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
@@ -30,6 +30,10 @@ from .. import svgpath
 from .chrome import draw_card, draw_dark_cell
 
 SCHEMATIC_PIT_SOURCES = frozenset({"schematic", "inactive", "dashes", "manual"})
+
+_PIT_JOINT_EPS = 1e-5
+_PIT_EDIT_ZOOM_MIN = 0.5
+_PIT_EDIT_ZOOM_MAX = 12.0
 
 
 def is_schematic_pit_source(source: str | None) -> bool:
@@ -775,6 +779,14 @@ class TrackMapWidget(QWidget):
         self._pit_drag_idx: tuple[str, int] | None = None
         self._pit_edit_cb = None
         self._pit_hit: list[tuple[QRectF, str, int]] = []
+        self._pit_edit_zoom = 1.0
+        self._pit_edit_pan = (0.0, 0.0)
+        self._pit_edit_base_scale = 1.0
+        self._pit_edit_base_ox = 0.0
+        self._pit_edit_base_oy = 0.0
+        self._pit_pan_active = False
+        self._pit_pan_origin: QPointF | None = None
+        self._pit_pan_start = (0.0, 0.0)
         # Start/finish authoring: drag the white tick along the racing line.
         self.sf_edit_mode = False
         self._sf_edit_cb = None
@@ -910,11 +922,83 @@ class TrackMapWidget(QWidget):
         self._pit_edit_cb = callback if enabled else None
         if not enabled:
             self._pit_drag_idx = None
+            self._pit_pan_active = False
+            self._pit_pan_origin = None
         if enabled:
             self.set_sf_edit(False)
+            self.reset_pit_edit_view()
         self.setCursor(Qt.CursorShape.CrossCursor if enabled
                        else Qt.CursorShape.ArrowCursor)
         self.update()
+
+    def reset_pit_edit_view(self) -> None:
+        """Reset pit-edit zoom and pan to the auto-focused default."""
+        self._pit_edit_zoom = 1.0
+        self._pit_edit_pan = (0.0, 0.0)
+        self.update()
+
+    @staticmethod
+    def _pit_points_coincide(a: tuple[float, float],
+                             b: tuple[float, float]) -> bool:
+        return (math.hypot(a[0] - b[0], a[1] - b[1])
+                <= _PIT_JOINT_EPS)
+
+    def _pit_has_joint(self) -> bool:
+        return (len(self._pit_edit_road) >= 1 and len(self._pit_edit_merge) >= 1
+                and self._pit_points_coincide(self._pit_edit_road[-1],
+                                              self._pit_edit_merge[0]))
+
+    def _sync_pit_joint(self) -> None:
+        """Keep merge start tied to pit-road end."""
+        if self._pit_edit_road and self._pit_edit_merge:
+            self._pit_edit_merge[0] = self._pit_edit_road[-1]
+
+    def _set_pit_edit_point(self, phase: str, idx: int,
+                            x: float, y: float) -> None:
+        """Move one pit-edit handle; joint endpoints stay linked."""
+        if phase == "joint":
+            if self._pit_edit_road:
+                self._pit_edit_road[-1] = (x, y)
+            if self._pit_edit_merge:
+                self._pit_edit_merge[0] = (x, y)
+            return
+        pts = (self._pit_edit_road if phase == "road"
+               else self._pit_edit_merge)
+        if not (0 <= idx < len(pts)):
+            return
+        pts[idx] = (x, y)
+        if phase == "road" and idx == len(self._pit_edit_road) - 1:
+            if self._pit_edit_merge:
+                self._pit_edit_merge[0] = (x, y)
+        elif phase == "merge" and idx == 0 and self._pit_edit_road:
+            self._pit_edit_road[-1] = (x, y)
+
+    def _pit_edit_fit_points(self, model) -> list[tuple[float, float]]:
+        """Model-space points to frame while pit editing (after mirror/rotate)."""
+        pts: list[tuple[float, float]] = []
+        for seg in (self._pit_edit_road, self._pit_edit_merge):
+            pts.extend(model(pt) for pt in seg)
+        if not pts:
+            return []
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        pad_x = max(0.02, (max(xs) - min(xs)) * 0.08)
+        pad_y = max(0.02, (max(ys) - min(ys)) * 0.08)
+        lo_x, hi_x = min(xs) - pad_x, max(xs) + pad_x
+        lo_y, hi_y = min(ys) - pad_y, max(ys) + pad_y
+        if self.path:
+            expand = 0.15
+            ex = (hi_x - lo_x) * expand
+            ey = (hi_y - lo_y) * expand
+            lo_x -= ex
+            hi_x += ex
+            lo_y -= ey
+            hi_y += ey
+            for pt in self.path:
+                mx, my = model(pt)
+                if lo_x <= mx <= hi_x and lo_y <= my <= hi_y:
+                    pts.append((mx, my))
+        return pts
 
     def set_pit_edit_phase(self, phase: str) -> None:
         phase = (phase or "road").strip().lower()
@@ -929,6 +1013,7 @@ class TrackMapWidget(QWidget):
     def load_pit_edit(self, road, merge) -> None:
         self._pit_edit_road = [(float(x), float(y)) for x, y in (road or [])]
         self._pit_edit_merge = [(float(x), float(y)) for x, y in (merge or [])]
+        self._sync_pit_joint()
         self.update()
 
     def clear_pit_edit(self) -> None:
@@ -942,6 +1027,7 @@ class TrackMapWidget(QWidget):
             self._pit_edit_merge.pop()
         elif self._pit_edit_road:
             self._pit_edit_road.pop()
+            self._sync_pit_joint()
         self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
@@ -1073,6 +1159,53 @@ class TrackMapWidget(QWidget):
         return span_pct * _arc_length(
             [(float(p[0]), float(p[1])) for p in self.path], closed=True)
 
+    def _pit_lane_bounds(self) -> tuple[float | None, float | None]:
+        """Lap-% extent of the pit lane polyline, preferring authored ``pit_span``."""
+        if not self.pit_path or len(self.pit_path) < 2:
+            lane = self.pit_span
+            return (lane[0], lane[1]) if lane else (None, None)
+        path_lo = self._loop_pct_at(self.pit_path[0])
+        path_hi = self._loop_pct_at(self.pit_path[-1])
+        lane = self.pit_span
+        if lane and path_lo is not None and path_hi is not None:
+            lane_lo, lane_hi = lane
+            if lane_lo is not None and self._pct_in_interval(
+                    lane_lo, path_lo, path_hi):
+                path_lo = lane_lo
+            if lane_hi is not None and self._pct_in_interval(
+                    lane_hi, path_lo, path_hi):
+                path_hi = lane_hi
+        return path_lo, path_hi
+
+    def _loop_pct_at(self, pt) -> float | None:
+        """Lap fraction of the nearest point on the main loop."""
+        if not self.path or pt is None:
+            return None
+        from tools.schematic_to_track import _pct_on_loop
+
+        return _pct_on_loop(
+            [(float(p[0]), float(p[1])) for p in self.path],
+            (float(pt[0]), float(pt[1])),
+        )
+
+    def _pit_phase_pos(
+        self,
+        pct: float,
+        lo: float,
+        hi: float,
+        segments: list,
+    ) -> tuple[float, float] | None:
+        """Place a car along pit segments for a lap-% interval.
+
+        Lap-% advances at constant rate through the interval; pit dots move at
+        ``pit_arc / loop_arc`` of racing-line speed (no ease-in acceleration).
+        """
+        span_pct = (hi - lo) % 1.0
+        if span_pct <= 1e-6:
+            return None
+        linear = ((pct - lo) % 1.0) / span_pct
+        return self._pos_on_polyline_chain(segments, linear)
+
     def _pit_progress_t(
         self,
         pct: float,
@@ -1080,26 +1213,12 @@ class TrackMapWidget(QWidget):
         hi: float,
         segments: list,
     ) -> float | None:
-        """Length-calibrated arc fraction along pit segments for schematic tracks.
-
-        Lap-% span is measured on the main loop. When the pit chain is shorter
-        than the matching loop arc we ease with ``t = f^r``; when it is longer
-        we ease with ``t = f^(1/r)``. Both preserve ``t = 0`` at ``lo`` and
-        ``t = 1`` at ``hi``.
-        """
+        """Lap-% fraction through a pit phase (0 at ``lo``, 1 at ``hi``)."""
         span_pct = (hi - lo) % 1.0
         if span_pct <= 1e-6:
             return None
-        pit_arc = self._pit_arc_length(segments)
-        loop_arc = self._loop_arc_between(lo, hi)
         d_pct = (pct - lo) % 1.0
-        linear_t = d_pct / span_pct
-        if pit_arc <= 1e-9 or loop_arc <= 1e-9:
-            return min(1.0, max(0.0, linear_t))
-        r = loop_arc / pit_arc
-        if r > 1.0:
-            return min(1.0, max(0.0, linear_t ** r))
-        return min(1.0, max(0.0, linear_t ** (1.0 / r)))
+        return min(1.0, max(0.0, d_pct / span_pct))
 
     def _loop_point_at_pct(self, pct: float) -> tuple[float, float] | None:
         """Interpolated model-space point on the main loop at lap percentage."""
@@ -1151,39 +1270,34 @@ class TrackMapWidget(QWidget):
         lane = self.pit_span
         lane_lo = lane[0] if lane else lo
         lane_hi = lane[1] if lane else hi
+        path_lo, path_hi = self._pit_lane_bounds()
         exit_pct = self._schematic_exit_pcts.get(idx)
         if exit_pct is None:
-            exit_pct = lane_hi
+            exit_pct = path_hi if path_hi is not None else lane_hi
 
-        # Exit blend: lane end -> rejoin (even if OnPitRoad still true in demo).
+        # Exit blend: pit lane end -> rejoin (off pit road, latched in demo).
         if (hi is not None and exit_pct is not None and self.pit_out
+                and len(self.pit_out) >= 2
                 and self._pct_in_interval(pct, exit_pct, hi)):
-            segs = [self.pit_out]
-            t = self._pit_progress_t(pct, exit_pct, hi, segs)
-            if t is not None:
-                pos = self._pos_on_polyline(self.pit_out, t)
-                if pos is not None:
-                    return self._feather_schematic_pos(pct, pos)
+            pos = self._pit_phase_pos(pct, exit_pct, hi, [self.pit_out])
+            if pos is not None:
+                return self._feather_schematic_pos(pct, pos)
 
-        # Pit lane: lane_lo -> lane_hi on pit_path only.
-        if (lane_lo is not None and lane_hi is not None and self.pit_path
-                and len(self.pit_path) >= 2 and on_pit_road):
-            t = self._pit_progress_t(
-                pct, lane_lo, lane_hi, [self.pit_path])
-            if t is not None:
-                pos = self._pos_on_polyline(self.pit_path, t)
-                if pos is not None:
-                    return self._feather_schematic_pos(pct, pos)
+        # Pit lane: pit_path endpoints only while OnPitRoad is true.
+        if (path_lo is not None and path_hi is not None and self.pit_path
+                and len(self.pit_path) >= 2 and on_pit_road
+                and self._pct_in_interval(pct, path_lo, path_hi)):
+            pos = self._pit_phase_pos(pct, path_lo, path_hi, [self.pit_path])
+            if pos is not None:
+                return self._feather_schematic_pos(pct, pos)
 
-        # Entry blend: pit_in_pct -> lane_lo on pit_in only.
-        if (lo is not None and lane_lo is not None and self.pit_in
+        # Entry blend: pit_in_pct -> pit_path start on pit_in only.
+        if (lo is not None and path_lo is not None and self.pit_in
                 and len(self.pit_in) >= 2
-                and self._pct_in_interval(pct, lo, lane_lo)):
-            t = self._pit_progress_t(pct, lo, lane_lo, [self.pit_in])
-            if t is not None:
-                pos = self._pos_on_polyline(self.pit_in, t)
-                if pos is not None:
-                    return self._feather_schematic_pos(pct, pos)
+                and self._pct_in_interval(pct, lo, path_lo)):
+            pos = self._pit_phase_pos(pct, lo, path_lo, [self.pit_in])
+            if pos is not None:
+                return self._feather_schematic_pos(pct, pos)
         return None
 
     def set_player_xy(self, xy) -> None:
@@ -1388,9 +1502,13 @@ class TrackMapWidget(QWidget):
                 if seg:
                     fit.extend(model(pt) for pt in seg)
             if self.pit_edit_mode:
-                for seg in (self._pit_edit_road, self._pit_edit_merge):
-                    if seg:
-                        fit.extend(model(pt) for pt in seg)
+                pit_fit = self._pit_edit_fit_points(model)
+                if pit_fit:
+                    fit = pit_fit
+                else:
+                    for seg in (self._pit_edit_road, self._pit_edit_merge):
+                        if seg:
+                            fit.extend(model(pt) for pt in seg)
             xs = [m[0] for m in fit]
             ys = [m[1] for m in fit]
             minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
@@ -1402,6 +1520,13 @@ class TrackMapWidget(QWidget):
             scale = min(avail_w / span_x, avail_h / span_y)
             ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
             oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
+            self._pit_edit_base_scale = scale
+            self._pit_edit_base_ox = ox
+            self._pit_edit_base_oy = oy
+            if self.pit_edit_mode:
+                scale *= self._pit_edit_zoom
+                ox += self._pit_edit_pan[0]
+                oy += self._pit_edit_pan[1]
             self._layout_scale = scale
             self._layout_ox = ox
             self._layout_oy = oy
@@ -1735,11 +1860,18 @@ class TrackMapWidget(QWidget):
         _polyline(self._pit_edit_merge, "pit_blend_out",
                   max(2.5, mc.get("asphalt_width", 11) * 0.45))
 
+        joint = self._pit_has_joint()
+        joint_pt = (self._pit_edit_road[-1] if joint else None)
+
         for phase, pts, col in (
             ("road", self._pit_edit_road, QColor(255, 90, 90)),
             ("merge", self._pit_edit_merge, QColor(90, 160, 255)),
         ):
             for idx, pt in enumerate(pts):
+                if (joint and joint_pt is not None
+                        and ((phase == "road" and idx == len(pts) - 1)
+                             or (phase == "merge" and idx == 0))):
+                    continue
                 sp = tx(pt)
                 rect = QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r)
                 self._pit_hit.append((rect, phase, idx))
@@ -1748,6 +1880,17 @@ class TrackMapWidget(QWidget):
                 p.setBrush(col if active else QColor(col.red(), col.green(),
                                                      col.blue(), 200))
                 p.drawEllipse(rect)
+
+        if joint and joint_pt is not None:
+            jcol = QColor(255, 170, 50)
+            sp = tx(joint_pt)
+            rect = QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r)
+            self._pit_hit.append((rect, "joint", 0))
+            active = self._pit_drag_idx == ("joint", 0)
+            p.setPen(QPen(jcol.darker(120), 1.5))
+            p.setBrush(jcol if active else QColor(jcol.red(), jcol.green(),
+                                                  jcol.blue(), 220))
+            p.drawEllipse(rect)
 
     def _screen_to_model(self, pos: QPointF) -> tuple[float, float]:
         """Map widget pixel coords to normalized track model space."""
@@ -1828,6 +1971,16 @@ class TrackMapWidget(QWidget):
                 event.accept()
                 return
         if (self.pit_edit_mode and self.path
+                and event.button() == Qt.MouseButton.LeftButton
+                and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
+                and self._pit_drag_idx is None):
+            self._pit_pan_active = True
+            self._pit_pan_origin = event.position()
+            self._pit_pan_start = self._pit_edit_pan
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
+        if (self.pit_edit_mode and self.path
                 and event.button() == Qt.MouseButton.LeftButton):
             hit = self._pit_handle_at(event.position())
             if hit is not None:
@@ -1838,6 +1991,8 @@ class TrackMapWidget(QWidget):
             x, y = self._screen_to_model(event.position())
             if self.pit_edit_phase == "road":
                 self._pit_edit_road.append((x, y))
+                if self._pit_edit_merge:
+                    self._sync_pit_joint()
             else:
                 if not self._pit_edit_merge and self._pit_edit_road:
                     self._pit_edit_merge.append(self._pit_edit_road[-1])
@@ -1871,17 +2026,29 @@ class TrackMapWidget(QWidget):
         if self._pit_drag_idx is not None:
             phase, idx = self._pit_drag_idx
             x, y = self._screen_to_model(event.position())
-            pts = (self._pit_edit_road if phase == "road"
-                   else self._pit_edit_merge)
-            if 0 <= idx < len(pts):
-                pts[idx] = (x, y)
-                self.update()
+            self._set_pit_edit_point(phase, idx, x, y)
+            self.update()
+            event.accept()
+            return
+        if self._pit_pan_active and self._pit_pan_origin is not None:
+            pos = event.position()
+            dx = pos.x() - self._pit_pan_origin.x()
+            dy = pos.y() - self._pit_pan_origin.y()
+            self._pit_edit_pan = (
+                self._pit_pan_start[0] + dx,
+                self._pit_pan_start[1] + dy,
+            )
+            self.update()
             event.accept()
             return
         if self.pit_edit_mode and self.path:
             hit = self._pit_handle_at(event.position())
-            self.setCursor(Qt.CursorShape.OpenHandCursor if hit is not None
-                           else Qt.CursorShape.CrossCursor)
+            if hit is not None:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            elif event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            else:
+                self.setCursor(Qt.CursorShape.CrossCursor)
         if self._drag_corner is not None and self._drag_last is not None:
             pos = event.position()
             dx = pos.x() - self._drag_last.x()
@@ -1923,6 +2090,13 @@ class TrackMapWidget(QWidget):
                 self._pit_edit_cb()
             event.accept()
             return
+        if self._pit_pan_active and event.button() == Qt.MouseButton.LeftButton:
+            self._pit_pan_active = False
+            self._pit_pan_origin = None
+            self.setCursor(Qt.CursorShape.CrossCursor if self.pit_edit_mode
+                           else Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
         if self._drag_corner is not None and event.button() == Qt.MouseButton.LeftButton:
             self._drag_corner = None
             self._drag_last = None
@@ -1933,6 +2107,29 @@ class TrackMapWidget(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:  # noqa: N802
+        if not (self.pit_edit_mode and self.path):
+            super().wheelEvent(event)
+            return
+        delta = event.angleDelta().y()
+        if delta == 0:
+            event.accept()
+            return
+        factor = 1.12 if delta > 0 else 1.0 / 1.12
+        pos = event.position()
+        mx, my = self._screen_to_model(pos)
+        self._pit_edit_zoom = max(
+            _PIT_EDIT_ZOOM_MIN,
+            min(_PIT_EDIT_ZOOM_MAX, self._pit_edit_zoom * factor),
+        )
+        new_scale = self._pit_edit_base_scale * self._pit_edit_zoom
+        self._pit_edit_pan = (
+            pos.x() - mx * new_scale - self._pit_edit_base_ox,
+            pos.y() - my * new_scale - self._pit_edit_base_oy,
+        )
+        self.update()
+        event.accept()
 
     def _draw_corners(self, p: QPainter, tx, corners=None) -> None:
         corners = self.display_corners() if corners is None else corners
@@ -1974,7 +2171,9 @@ class TrackMapWidget(QWidget):
 
     def _draw_cars(self, p: QPainter, tx) -> None:
         sz = max(5, round(8 * config.text_scale_for("map")))
-        p.setFont(QFont(config.CFG.get("font_family", "Arial"), sz, QFont.Weight.Bold))
+        label_font = QFont(config.CFG.get("font_family", "Arial"), sz,
+                           QFont.Weight.Bold)
+        p.setFont(label_font)
         cc = tx(self._centroid)
         mc = _mcfg()
         off = mc.get("asphalt_width", 11) * 0.85 + 3.0
@@ -2048,9 +2247,10 @@ class TrackMapWidget(QWidget):
             p.setPen(QColor(20, 20, 20) if is_player else QColor(255, 255, 255))
             text_rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
             if speaking and icons.has("speaking"):
-                p.setFont(icons.icon_font(r * 1.55))
+                p.setFont(icons.icon_font(sz * 1.05))
                 p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter,
                            icons.glyph("speaking"))
             else:
+                p.setFont(label_font)
                 p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, label)
             p.setOpacity(1.0)

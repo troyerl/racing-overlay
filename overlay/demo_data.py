@@ -44,6 +44,17 @@ DEMO_PIT_LANE_LO = 0.95
 DEMO_PIT_LANE_HI = 0.06
 # Number of cars (never the player) that make a pit stop every lap in the demo.
 DEMO_PIT_CARS = 3
+# Lap-% rate on the pit route vs racing line (pit speed limit ~40% of race pace).
+_DEMO_PIT_PACE = 0.38
+# Map dot color showcase: idx -> (lap offset from player, lap-% offset from player).
+# Player (idx 4) is green; these four stay on track with fixed lap gaps so
+# competitor / lapped / lapping colors are visible at once.
+_MAP_SHOWCASE = {
+    5: (0, 0.32),    # same lap — default competitor blue
+    6: (-1, 0.18),   # one lap down — lapped blue
+    7: (1, 0.025),   # one lap ahead, alongside — lapping red
+    8: (2, 0.55),    # two laps ahead — lapping red (full lap clear)
+}
 
 
 def _in_demo_pit(frac: float) -> bool:
@@ -89,7 +100,7 @@ class FakeIRSDK:
         # lane). They're spread around the lap, so they reach the pits at
         # different times rather than nose-to-tail.
         others = [i for i in range(self.num_cars) if i != self.player_idx]
-        self._pit_cars = frozenset(others[:DEMO_PIT_CARS])
+        self._pit_cars = frozenset(others[-DEMO_PIT_CARS:])
 
         for i in range(self.num_cars):
             if abs(i - self.player_idx) <= 2:
@@ -128,8 +139,58 @@ class FakeIRSDK:
             for i in range(self.num_cars)
         ]
 
+    def _pit_adjusted_tot(self, i: int, tot: float) -> float:
+        """Stretch time on the demo pit route so lap-% matches pit speed."""
+        if i not in self._pit_cars:
+            return tot
+        in_pt = DEMO_PIT_IN_PCT
+        out_pt = DEMO_PIT_OUT_PCT
+        span = (out_pt - in_pt) % 1.0
+        if span <= 1e-6:
+            return tot
+        pace = _DEMO_PIT_PACE
+        track_frac = 1.0 - span
+        lap = int(tot)
+        frac = tot % 1.0
+        whole = lap * (span * pace + track_frac)
+        pit_pos = (frac - in_pt) % 1.0
+        if pit_pos <= span:
+            whole += pit_pos * pace
+        else:
+            whole += span * pace + (frac - out_pt) % 1.0
+        return whole
+
+    def _lap_frac(self, i: int) -> float:
+        return self._pit_adjusted_tot(i, self._total_laps()[i]) % 1.0
+
     def _lap_pct(self) -> list[float]:
-        return [d % 1.0 for d in self._total_laps()]
+        pcts = [self._lap_frac(i) for i in range(self.num_cars)]
+        return self._apply_map_showcase(pcts, lap_key=False)
+
+    def _lap_counts(self) -> list[int]:
+        laps = [int(d) + 1 for d in self._total_laps()]
+        if self.player_idx < len(laps) and laps[self.player_idx] < 2:
+            laps = [lap + 1 for lap in laps]
+        return self._apply_map_showcase(laps, lap_key=True)
+
+    def _apply_map_showcase(self, values: list, *, lap_key: bool) -> list:
+        """Pin showcase cars' lap counts / lap-% for map color demo."""
+        if self.player_idx >= len(values):
+            return values
+        out = list(values)
+        if lap_key:
+            player_lap = out[self.player_idx]
+            for idx, (lap_off, _pct_off) in _MAP_SHOWCASE.items():
+                if idx >= len(out) or idx == self.player_idx:
+                    continue
+                out[idx] = max(1, player_lap + lap_off)
+        else:
+            player_pct = out[self.player_idx]
+            for idx, (_lap_off, pct_off) in _MAP_SHOWCASE.items():
+                if idx >= len(out) or idx == self.player_idx:
+                    continue
+                out[idx] = (player_pct + pct_off) % 1.0
+        return out
 
     def _on_pit_list(self) -> list[bool]:
         """Which cars are on pit road this tick.
@@ -138,16 +199,15 @@ class FakeIRSDK:
         across the entry -> exit span); the rest only duck onto pit road
         occasionally (staggered, ~6% of a lap) for variety.
         """
-        totals = self._total_laps()
         out = []
-        for i, tot in enumerate(totals):
-            frac = tot % 1.0
+        for i in range(self.num_cars):
+            frac = self._lap_frac(i)
             if i in self._pit_cars:
                 # Full route extent for latch/on_route; lane-only for OnPitRoad so
                 # exit-blend positioning kicks in after the car leaves pit road.
                 out.append(_on_demo_pit_lane(frac))
             else:
-                lap = int(tot) + 1
+                lap = int(self._total_laps()[i]) + 1
                 out.append(((lap + i * 3) % 8 == 0) and frac < 0.06)
         return out
 
@@ -252,7 +312,7 @@ class FakeIRSDK:
             return positions
 
         if key == "CarIdxLap":
-            return [int(d) + 1 for d in self._total_laps()]
+            return self._lap_counts()
 
         if key == "CarIdxF2Time":
             totals = self._total_laps()
