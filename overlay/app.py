@@ -2201,10 +2201,11 @@ class AdvancedSimHUD:
                       blends_on=True) -> bool:
         """Decide whether a car should be drawn on the pit route this tick.
 
-        The player uses lap-% routing on schematic tracks; we trust on-pit-road or
-        being off the racing line. Opponents have no GPS, so we latch them onto
-        the route once seen on pit road and hold them (through the exit blend)
-        until their lap pct leaves the route extent -- they rejoin the track.
+        On schematic tracks, cars ride the full authored route (entry blend ->
+        lane -> exit blend) whenever their lap % lies inside the route extent,
+        so the icon peels off the racing line smoothly instead of jumping when
+        OnPitRoad flips. Opponents latch the same way; the player also keeps a
+        short hold after leaving pit road until lap % passes the rejoin point.
 
         When the pit blends are hidden (``blends_on`` False) there's no entry/exit
         lane to ride, so a car simply shows in the pits while it's actually on
@@ -2212,23 +2213,19 @@ class AdvancedSimHUD:
         """
         if not blends_on:
             return on_pit
+        schematic = is_schematic_pit_source(self._pit_source)
+        in_route = (schematic and route is not None
+                    and self._pct_in_interval(pct, route[0], route[1]))
         if is_player:
-            return on_pit or self._player_on_route
+            return in_route or on_pit or self._player_on_route
         latched = self._pit_route_latch.get(idx, False)
-        if on_pit:
+        if on_pit or in_route:
             latched = True
         elif latched and route is not None:
             if not self._pct_in_interval(pct, route[0], route[1]):
                 latched = False  # past the rejoin point -> back on track
         elif latched and route is None:
             latched = False
-        elif (self.demo and route is not None
-              and is_schematic_pit_source(self._pit_source)
-              and self._is_demo_pit_car(idx)
-              and self._pct_in_interval(pct, route[0], route[1])):
-            # Demo pit cars ride the full authored route every lap (entry blend
-            # before OnPitRoad turns true).
-            latched = True
         self._pit_route_latch[idx] = latched
         return on_pit or latched
 

@@ -1078,19 +1078,67 @@ class TrackMapWidget(QWidget):
         hi: float,
         segments: list,
     ) -> float | None:
-        """Length-calibrated arc fraction along pit segments for schematic tracks."""
+        """Length-calibrated arc fraction along pit segments for schematic tracks.
+
+        Lap-% span is measured on the main loop; inward-offset pit polylines are
+        often shorter, which makes linear ``t`` outrun the car. When the pit chain
+        is shorter than the matching loop arc we ease progress (``t = f^ratio``)
+        while still reaching ``t = 1`` at ``hi``. When the pit chain is longer,
+        linear mapping is used so progress does not clamp early at the polyline end.
+        """
         span_pct = (hi - lo) % 1.0
         if span_pct <= 1e-6:
             return None
         pit_arc = self._pit_arc_length(segments)
         loop_arc = self._loop_arc_between(lo, hi)
         d_pct = (pct - lo) % 1.0
+        linear_t = d_pct / span_pct
         if pit_arc <= 1e-9 or loop_arc <= 1e-9:
-            return min(1.0, max(0.0, d_pct / span_pct))
-        effective_span = span_pct * (loop_arc / pit_arc)
-        if effective_span <= 1e-9:
+            return min(1.0, max(0.0, linear_t))
+        ratio = loop_arc / pit_arc
+        if ratio > 1.0:
+            return min(1.0, max(0.0, linear_t ** ratio))
+        return min(1.0, max(0.0, linear_t))
+
+    def _loop_point_at_pct(self, pct: float) -> tuple[float, float] | None:
+        """Interpolated model-space point on the main loop at lap percentage."""
+        if not self.path or len(self.path) < 2:
             return None
-        return min(1.0, max(0.0, d_pct / effective_span))
+        from tools.schematic_to_track import _point_on_loop_at_frac
+
+        frac = (pct - self.start_finish) % 1.0
+        return _point_on_loop_at_frac(
+            [(float(p[0]), float(p[1])) for p in self.path], frac)
+
+    @staticmethod
+    def _blend_xy(a: tuple[float, float], b: tuple[float, float],
+                  w: float) -> tuple[float, float]:
+        w = min(1.0, max(0.0, w))
+        return (a[0] + (b[0] - a[0]) * w, a[1] + (b[1] - a[1]) * w)
+
+    def _feather_schematic_pos(
+        self,
+        pct: float,
+        route_pos: tuple[float, float],
+    ) -> tuple[float, float]:
+        """Ease between the racing line and pit route near entry/exit handoffs."""
+        lo, hi = self.pit_in_pct, self.pit_out_pct
+        track = self._loop_point_at_pct(pct)
+        if lo is None or hi is None or track is None:
+            return route_pos
+        span = (hi - lo) % 1.0
+        if span <= 1e-6:
+            return route_pos
+        feather = min(max(span * 0.12, 0.012), span * 0.35)
+        d_entry = (pct - lo) % 1.0
+        if d_entry < feather:
+            w = d_entry / feather
+            return self._blend_xy(track, route_pos, w)
+        d_exit = (hi - pct) % 1.0
+        if d_exit < feather:
+            w = 1.0 - d_exit / feather
+            return self._blend_xy(route_pos, track, w)
+        return route_pos
 
     def _pos_for_schematic_route(self, idx: int, pct: float, on_route: bool,
                                  on_pit_road: bool):
@@ -1112,7 +1160,9 @@ class TrackMapWidget(QWidget):
             segs = [self.pit_out]
             t = self._pit_progress_t(pct, exit_pct, hi, segs)
             if t is not None:
-                return self._pos_on_polyline(self.pit_out, t)
+                pos = self._pos_on_polyline(self.pit_out, t)
+                if pos is not None:
+                    return self._feather_schematic_pos(pct, pos)
 
         # Entry blend + pit lane: route start -> lane end.
         if lo is not None and lane_hi is not None:
@@ -1124,7 +1174,9 @@ class TrackMapWidget(QWidget):
                 if segs:
                     t = self._pit_progress_t(pct, lo, lane_hi, segs)
                     if t is not None:
-                        return self._pos_on_polyline_chain(segs, t)
+                        pos = self._pos_on_polyline_chain(segs, t)
+                        if pos is not None:
+                            return self._feather_schematic_pos(pct, pos)
         return None
 
     def set_player_xy(self, xy) -> None:
