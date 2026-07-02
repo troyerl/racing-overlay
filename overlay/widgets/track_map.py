@@ -1917,11 +1917,9 @@ class TrackMapWidget(QWidget):
             if mc.get("show_traffic_markers", True):
                 self._draw_traffic_markers(p, tx)
             if mc.get("show_wind", True) and self.wind_dir is not None:
-                # Drop the compass in whichever corner the track intrudes on least,
-                # so it stops sitting on top of the layout (e.g. road-course ends).
                 step = max(1, len(self.path) // 180)
                 scr = [tx(pt) for pt in self.path[::step]]
-                self._draw_wind(p, rect, self._best_wind_corner(scr, rect))
+                self._draw_wind(p, rect, scr)
             self._draw_scan_overlays(p, rect)
             self._paint_extras(p, rect)
         finally:
@@ -2096,66 +2094,67 @@ class TrackMapWidget(QWidget):
         p.setPen(_mcol("pit_text"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
-    @staticmethod
-    def _wind_footprint(rect: QRectF) -> tuple[float, float]:
-        """(width, height) the compass + its labels occupy in a corner."""
-        r = max(13.0, min(rect.width(), rect.height()) * 0.06)
-        return (2 * r + 40.0, 2 * r + 52.0)
+    def _wind_radius(self, rect: QRectF) -> float:
+        return max(8.0, min(rect.width(), rect.height()) * 0.034)
 
-    def _best_wind_corner(self, screen_pts, rect: QRectF) -> str:
-        """Pick the widget corner the track covers least, so the compass doesn't
-        sit on the layout. Ties prefer the original top-right, then top-left."""
-        w, h = self._wind_footprint(rect)
-        boxes = {
-            "tr": QRectF(rect.right() - w, rect.top(), w, h),
-            "tl": QRectF(rect.left(), rect.top(), w, h),
-            "br": QRectF(rect.right() - w, rect.bottom() - h, w, h),
-            "bl": QRectF(rect.left(), rect.bottom() - h, w, h),
+    def _wind_center(self, screen_pts, rect: QRectF) -> tuple[QPointF, float]:
+        """Place the compass just outside a track-bbox corner (whichever overlaps
+        the fewest track points), clamped to stay inside the widget."""
+        r = self._wind_radius(rect)
+        label_h = r + 14.0
+        total_h = r + label_h + 6.0
+        total_w = 2 * r + 4.0
+        gap = 4.0
+        if not screen_pts:
+            return QPointF(rect.right() - gap - r, rect.top() + gap + r + 6), r
+        xs = [q.x() for q in screen_pts]
+        ys = [q.y() for q in screen_pts]
+        minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+        candidates = {
+            "tr": (maxx + gap + r, miny + r + gap),
+            "tl": (minx - gap - r, miny + r + gap),
+            "br": (maxx + gap + r, maxy - r - gap),
+            "bl": (minx - gap - r, maxy - r - gap),
         }
-        counts = {k: sum(1 for q in screen_pts if box.contains(q))
-                  for k, box in boxes.items()}
-        order = ["tr", "tl", "br", "bl"]  # tie-break preference
-        return min(order, key=lambda k: (counts[k], order.index(k)))
 
-    def _draw_wind(self, p: QPainter, rect: QRectF, corner: str = "tr") -> None:
-        """A small north-up compass in a corner: a ring with an 'N' tick and an
-        arrow pointing the way the wind blows, plus the speed. ``corner`` is one
-        of tr/tl/br/bl, chosen to avoid overlapping the track."""
-        mc = _mcfg()
-        r = max(13.0, min(rect.width(), rect.height()) * 0.06)
-        mx = r + 30.0          # horizontal margin from the chosen side
-        top_m = r + 28.0       # room for the dial + 'N' tick above center
-        bot_m = r + 40.0       # room for the dial + speed badge below center
-        cx = (rect.right() - mx) if corner in ("tr", "br") else (rect.left() + mx)
-        cy = (rect.top() + top_m) if corner in ("tr", "tl") \
-            else (rect.bottom() - bot_m)
-        center = QPointF(cx, cy)
+        def hits(cx: float, cy: float) -> int:
+            box = QRectF(cx - total_w / 2, cy - r - 6, total_w, total_h)
+            return sum(1 for q in screen_pts if box.contains(q))
+
+        order = ("tr", "tl", "br", "bl")
+        corner = min(order, key=lambda k: (hits(*candidates[k]), order.index(k)))
+        cx, cy = candidates[corner]
+        cx = max(rect.left() + gap + r, min(rect.right() - gap - r, cx))
+        cy = max(rect.top() + gap + r + 6,
+                 min(rect.bottom() - gap - label_h, cy))
+        return QPointF(cx, cy), r
+
+    def _draw_wind(self, p: QPainter, rect: QRectF, screen_pts) -> None:
+        """Small north-up compass hugging the track bbox: ring, N tick, wind arrow,
+        and speed readout."""
+        center, r = self._wind_center(screen_pts, rect)
+        cx, cy = center.x(), center.y()
         col = _mcol("wind")
 
-        # Dial.
         p.setBrush(QColor(10, 13, 17, 190))
         p.setPen(QPen(QColor(255, 255, 255, 40), 1))
         p.drawEllipse(center, r, r)
 
-        # North tick at the top.
         fam = config.CFG.get("font_family", "Arial")
-        nsz = max(6, round(7 * config.text_scale_for("map")))
+        nsz = max(5, round(6 * config.text_scale_for("map")))
         p.setFont(QFont(fam, nsz, QFont.Weight.Bold))
         p.setPen(QColor(170, 178, 188))
         p.drawText(QRectF(cx - r, cy - r - nsz - 1, 2 * r, nsz + 2),
                    Qt.AlignmentFlag.AlignCenter, "N")
 
-        # Arrow points downwind (the way the wind pushes): bearing + pi. Screen
-        # is north-up, so a bearing b maps to (sin b, -cos b).
         b = self.wind_dir + math.pi
         ux, uy = math.sin(b), -math.cos(b)
-        px, py = -uy, ux  # perpendicular, for the arrow head
+        px, py = -uy, ux
         tip = QPointF(cx + ux * r * 0.78, cy + uy * r * 0.78)
         tail = QPointF(cx - ux * r * 0.70, cy - uy * r * 0.70)
-        p.setPen(QPen(col, max(2.0, r * 0.16), Qt.PenStyle.SolidLine,
+        p.setPen(QPen(col, max(1.5, r * 0.14), Qt.PenStyle.SolidLine,
                       Qt.PenCapStyle.RoundCap))
         p.drawLine(tail, tip)
-        # Arrow head.
         hl = r * 0.42
         hw = r * 0.26
         base = QPointF(tip.x() - ux * hl, tip.y() - uy * hl)
@@ -2168,18 +2167,17 @@ class TrackMapWidget(QWidget):
         p.setPen(Qt.PenStyle.NoPen)
         p.drawPath(head)
 
-        # Speed label under the dial.
         spd = round(config.conv_speed(self.wind_speed_ms))
         text = f"{spd} {config.speed_unit()}"
-        ssz = max(6, round(8 * config.text_scale_for("map")))
+        ssz = max(5, round(6 * config.text_scale_for("map")))
         p.setFont(QFont(fam, ssz, QFont.Weight.Bold))
         fm = p.fontMetrics()
-        tw = fm.horizontalAdvance(text) + 8
+        tw = fm.horizontalAdvance(text) + 6
         th = fm.height() + 2
-        lr = QRectF(cx - tw / 2, cy + r + 2, tw, th)
+        lr = QRectF(cx - tw / 2, cy + r + 1, tw, th)
         p.setBrush(QColor(10, 13, 17, 190))
         p.setPen(Qt.PenStyle.NoPen)
-        p.drawRoundedRect(lr, 3, 3)
+        p.drawRoundedRect(lr, 2, 2)
         p.setPen(_mcol("wind_text"))
         p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
 
