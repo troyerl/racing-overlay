@@ -85,3 +85,55 @@ def test_lane_uses_pit_span_not_narrow_path_bounds(qapp):
     assert routed is not None
     on_loop = w._loop_point_at_pct(pct)
     assert routed != on_loop
+
+
+def _make_chicagoland_wide_span_widget():
+    """Chicagoland-like oval: pit_span wraps most of the lap."""
+    from tools.svg_layers_to_track import import_svg_layers
+
+    v1 = import_svg_layers(
+        html_path="tracks-html/Oval/Chicagoland.html", num_corners=4)
+    w = TrackMapWidget()
+    w.set_track([(p[0], p[1]) for p in v1["points"]], 0.0, v1["corners"])
+    w.set_pit_source(v1["pit_source"])
+    w.pit_in_pct = v1["pit_in_pct"]
+    w.pit_out_pct = v1["pit_out_pct"]
+    w.pit_span = tuple(v1["pit_span"])
+    w.pit_in = [tuple(p) for p in v1["pit_in"]]
+    w.pit_path = [tuple(p) for p in v1["pit_path"]]
+    w.pit_out = [tuple(p) for p in v1["pit_out"]]
+    return w
+
+
+def test_mid_pit_stays_on_path_not_exit_blend(qapp):
+    """OnPitRoad mid-lane must use pit_path, not pit_out exit feather."""
+    w = _make_chicagoland_wide_span_widget()
+    pct = 0.5
+    lane_lo, lane_hi = w.pit_span
+    exit_pct = lane_hi
+    assert w._pct_in_interval(pct, lane_lo, lane_hi)
+    assert w._pct_in_interval(pct, exit_pct, w.pit_out_pct)
+    on_path = w._pit_phase_pos(
+        pct, *w._pit_lane_mapping_interval(), [w.pit_path])
+    routed = w._pos_for_schematic_route(
+        0, pct, on_route=True, on_pit_road=True)
+    exit_pos = w._pit_phase_pos(
+        pct, exit_pct, w.pit_out_pct, [w.pit_out])
+    assert routed is not None and on_path is not None and exit_pos is not None
+    assert routed == on_path
+    assert routed != exit_pos
+    loop_pt = w._loop_point_at_pct(pct)
+    assert routed != loop_pt
+
+
+def test_wide_span_maps_without_early_clamp(qapp):
+    """Wide pit_span uses path projection so some mid-lap pcts are not pinned at pit end."""
+    w = _make_chicagoland_wide_span_widget()
+    map_lo, map_hi = w._pit_lane_mapping_interval()
+    assert (map_hi - map_lo) % 1.0 < 0.9
+    pct = 0.3
+    pos = w._pos_for_schematic_route(
+        0, pct, on_route=True, on_pit_road=True)
+    end = w._pos_on_polyline_chain([w.pit_path], 1.0)
+    assert pos is not None
+    assert math.hypot(pos[0] - end[0], pos[1] - end[1]) > 0.05

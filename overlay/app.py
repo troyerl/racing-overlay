@@ -645,6 +645,7 @@ class AdvancedSimHUD:
             self.map_widget.set_num_turns(self._track_turns or turns)
             if not self._track_turns:
                 self._track_turns = turns
+        self.map_widget.set_track_is_oval(self._track_is_oval)
         self._pit_source = "manual"
         self.map_widget.set_pit_source("manual")
         self._pit_span = None
@@ -1967,6 +1968,7 @@ class AdvancedSimHUD:
             self._track_turns = _coerce_int(weekend.get("TrackNumTurns"))
             self.map_widget.set_num_turns(self._track_turns)
             self._track_is_oval = constants.is_oval_track(weekend)
+            self.map_widget.set_track_is_oval(self._track_is_oval)
             track_file = track_map.find_track_file(
                 self._track_id, self.tracks_dir)
             if not track_file and config.cloud_tracks() \
@@ -2250,18 +2252,18 @@ class AdvancedSimHUD:
         pit_cars = getattr(self.ir, "_pit_cars", None)
         return pit_cars is not None and idx in pit_cars
 
-    def _pit_route_phases(self, pct: float):
+    def _pit_route_phases(self, pct: float, *, on_pit: bool = False):
         """(entry, lane_span, exit) lap-% intervals for schematic pit phases."""
         pit_in = self._pit_in_pct
         pit_out = self._pit_out_pct
         lane = self._pit_span
         lane_lo = lane[0] if lane else None
         lane_hi = lane[1] if lane else None
-        in_entry = (pit_in is not None and lane_lo is not None
+        in_entry = (not on_pit and pit_in is not None and lane_lo is not None
                     and self._pct_in_interval(pct, pit_in, lane_lo))
         in_lane_span = (lane_lo is not None and lane_hi is not None
                         and self._pct_in_interval(pct, lane_lo, lane_hi))
-        in_exit = (lane_hi is not None and pit_out is not None
+        in_exit = (not on_pit and lane_hi is not None and pit_out is not None
                    and self._pct_in_interval(pct, lane_hi, pit_out))
         return in_entry, in_lane_span, in_exit
 
@@ -2327,7 +2329,7 @@ class AdvancedSimHUD:
             self._pit_route_latch[idx] = latched
             return on_pit or latched
 
-        in_entry, _, in_exit = self._pit_route_phases(pct)
+        in_entry, _, in_exit = self._pit_route_phases(pct, on_pit=on_pit)
 
         if is_player:
             if on_pit or self._player_on_route:

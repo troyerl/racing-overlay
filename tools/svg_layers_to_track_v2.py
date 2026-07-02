@@ -291,6 +291,15 @@ def import_loop_from_html(
         from tools.schematic_to_track import _oval_corners
         corners = _oval_corners(loop, num_corners)
 
+    n_turns = len(corners) if corners else (num_corners or None)
+    if corners and n_turns and n_turns >= 2:
+        from overlay.widgets.track_map import TrackMapWidget
+        corners = [
+            {**c, "label": TrackMapWidget._iracing_oval_label(c["label"], n_turns)}
+            for c in corners
+            if c.get("label") is not None
+        ]
+
     return {
         "schema": 2,
         "import_version": 2,
@@ -298,7 +307,7 @@ def import_loop_from_html(
         "start_finish": 0.0,
         "points": normalized,
         "corners": corners,
-        "num_turns": len(corners) if corners else (num_corners or None),
+        "num_turns": n_turns,
     }
 
 

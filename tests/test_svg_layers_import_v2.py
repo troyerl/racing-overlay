@@ -154,8 +154,8 @@ def test_v2_chicagoland_sf_direction_and_turn_labels():
     assert doc["start_finish"] == 0.0
     assert len(doc["corners"]) == 4
     assert {c["label"] for c in doc["corners"]} == {"1", "2", "3", "4"}
-    # Members ovals: turn 4 sits just after S/F when following the arrow (same as v1).
-    assert [c["label"] for c in doc["corners"]] == ["4", "3", "2", "1"]
+    # iRacing oval numbering: T1 first after S/F along lap direction.
+    assert [c["label"] for c in doc["corners"]] == ["1", "2", "3", "4"]
 
     sf_svg = layers["start_finish"]
     anchor = _sf_anchor_point(sf_svg)

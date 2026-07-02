@@ -718,6 +718,7 @@ class TrackMapWidget(QWidget):
         # force the auto-detector to that exact count.
         self._auto_corners: list[tuple[float, str]] = []
         self.num_turns: int | None = None
+        self._track_is_oval = False
         self._centroid = (0.0, 0.0)
         # Pit lane: the (entry_pct, exit_pct) stretch the pit road runs alongside
         # and the learned speed limit (m/s), shown as a static badge.
@@ -877,6 +878,28 @@ class TrackMapWidget(QWidget):
                                                 target=self.num_turns)
             self.update()
 
+    def set_track_is_oval(self, is_oval: bool) -> None:
+        """Whether the current session track is an oval (affects corner labels)."""
+        self._track_is_oval = bool(is_oval)
+        self.update()
+
+    @staticmethod
+    def _iracing_oval_label(label: str, num_turns: int) -> str:
+        """Members SVG ovals label 4,3,2,1 along lap %; iRacing uses 1,2,3,4."""
+        try:
+            n = int(label)
+        except (TypeError, ValueError):
+            return label
+        if 1 <= n <= num_turns:
+            return str(num_turns + 1 - n)
+        return label
+
+    def _display_corner_label(self, label: str) -> str:
+        n = self.num_turns
+        if self._track_is_oval and n and n >= 2:
+            return self._iracing_oval_label(label, n)
+        return label
+
     def set_corners(self, corners) -> None:
         """Replace the displayed corner list (manual authoring)."""
         self.corners = [_parse_corner(c) for c in (corners or [])]
@@ -893,8 +916,10 @@ class TrackMapWidget(QWidget):
     def display_corners(self) -> list[tuple[float, str, float, float]]:
         """Corners to draw: saved manual list, else auto-detected."""
         if self.corners:
-            return list(self.corners)
-        return [(p, l, 0.0, 0.0) for p, l in self._auto_corners]
+            return [(p, self._display_corner_label(l), ox, oy)
+                    for p, l, ox, oy in self.corners]
+        return [(p, self._display_corner_label(l), 0.0, 0.0)
+                for p, l in self._auto_corners]
 
     def set_corner_edit(self, enabled: bool, callback=None) -> None:
         """Enable dragging corner labels on the map (write-access authoring)."""
@@ -1183,6 +1208,24 @@ class TrackMapWidget(QWidget):
                 path_hi = lane_hi
         return path_lo, path_hi
 
+    def _pit_lane_mapping_interval(self) -> tuple[float | None, float | None]:
+        """Lap-% extent for mapping ``OnPitRoad`` cars along ``pit_path``.
+
+        Ovals often store a ``pit_span`` that wraps most of the lap; using it for
+        placement clamps ``t`` early. Prefer raw path projection when the span is
+        wide; otherwise use ``pit_span`` (narrow span, wide projection case).
+        """
+        lane = self.pit_span
+        lane_lo = lane[0] if lane else None
+        lane_hi = lane[1] if lane else None
+        path_lo, path_hi = self._pit_lane_bounds()
+        if lane_lo is None or lane_hi is None:
+            return path_lo, path_hi
+        span = (lane_hi - lane_lo) % 1.0
+        if span > 0.5 and path_lo is not None and path_hi is not None:
+            return path_lo, path_hi
+        return lane_lo, lane_hi
+
     def _loop_pct_at(self, pt) -> float | None:
         """Lap fraction of the nearest point on the main loop."""
         if not self.path or pt is None:
@@ -1285,32 +1328,34 @@ class TrackMapWidget(QWidget):
         lane_lo = lane[0] if lane else None
         lane_hi = lane[1] if lane else None
         path_lo, path_hi = self._pit_lane_bounds()
+        map_lo, map_hi = self._pit_lane_mapping_interval()
         entry_end = lane_lo if lane_lo is not None else path_lo
-        lane_start = lane_lo if lane_lo is not None else path_lo
-        lane_end = lane_hi if lane_hi is not None else path_hi
         exit_pct = self._schematic_exit_pcts.get(idx)
         if exit_pct is None:
             exit_pct = lane_hi if lane_hi is not None else path_hi
 
+        # Pit lane: pit_path while OnPitRoad (before exit/entry blends).
+        memb_lo = lane_lo if lane_lo is not None else map_lo
+        memb_hi = lane_hi if lane_hi is not None else map_hi
+        if (map_lo is not None and map_hi is not None and memb_lo is not None
+                and memb_hi is not None and self.pit_path
+                and len(self.pit_path) >= 2 and on_pit_road
+                and self._pct_in_interval(pct, memb_lo, memb_hi)):
+            pos = self._pit_phase_pos(pct, map_lo, map_hi, [self.pit_path])
+            if pos is not None:
+                return pos
+
         # Exit blend: pit lane end -> rejoin (off pit road, latched in demo).
-        if (hi is not None and exit_pct is not None and self.pit_out
-                and len(self.pit_out) >= 2
+        if (not on_pit_road and hi is not None and exit_pct is not None
+                and self.pit_out and len(self.pit_out) >= 2
                 and self._pct_in_interval(pct, exit_pct, hi)):
             pos = self._pit_phase_pos(pct, exit_pct, hi, [self.pit_out])
             if pos is not None:
                 return self._feather_schematic_pos(pct, pos)
 
-        # Pit lane: pit_span extent on pit_path while OnPitRoad is true.
-        if (lane_start is not None and lane_end is not None and self.pit_path
-                and len(self.pit_path) >= 2 and on_pit_road
-                and self._pct_in_interval(pct, lane_start, lane_end)):
-            pos = self._pit_phase_pos(pct, lane_start, lane_end, [self.pit_path])
-            if pos is not None:
-                return self._feather_schematic_pos(pct, pos)
-
         # Entry blend: pit_in_pct -> pit lane start on pit_in only.
-        if (lo is not None and entry_end is not None and self.pit_in
-                and len(self.pit_in) >= 2
+        if (not on_pit_road and lo is not None and entry_end is not None
+                and self.pit_in and len(self.pit_in) >= 2
                 and self._pct_in_interval(pct, lo, entry_end)):
             pos = self._pit_phase_pos(pct, lo, entry_end, [self.pit_in])
             if pos is not None:
