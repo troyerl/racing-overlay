@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
 from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_section_header,
-                     draw_status_chip, panel_pad)
+                     draw_status_chip, panel_pad, resolve_row_height)
 from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "pit_board"
@@ -50,21 +50,28 @@ class PitBoardWidget(QWidget):
         pad = panel_pad(h)
         y = card.top() + pad
         data_bold = data_font_bold(_SECTION)
-        if d.get("pit_active"):
+        if d.get("pit_active") and cfg.get("show_pit_banner", True):
             banner_h = max(22.0, h * 0.12)
             draw_status_chip(p, QRectF(card.left() + pad, y,
                                        card.width() - 2 * pad, banner_h),
-                             "PIT STOP ACTIVE", _SECTION, active=True)
+                             str(cfg.get("pit_banner_text", "PIT STOP ACTIVE")),
+                             _SECTION, active=True)
             y += banner_h + pad * 0.4
         if cfg.get("show_title", True):
             hh = max(20.0, h * 0.10)
             hdr = QRectF(card.left() + pad, y, card.width() - 2 * pad, hh)
-            draw_section_header(p, hdr, "PIT SERVICES", _SECTION,
+            draw_section_header(p, hdr, str(cfg.get("title", "PIT SERVICES")), _SECTION,
                                 radius_top=radius if not d.get("pit_active") else 0)
             y += hh + pad * 0.25
         n = max(1, len(services))
         extras_h = h * 0.14
-        row_h = max(18.0, (card.bottom() - pad - y - extras_h) / n)
+        body_h = max(card.bottom() - pad - y - extras_h, float(n) * 18.0)
+        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            row_h = fixed_rh
+        else:
+            row_h = resolve_row_height(body_h=body_h, row_count=n, panel_h=h, cfg=cfg)
+        row_h = max(18.0, row_h)
         rad = cell_radius(row_h)
         mark_w = max(18.0, row_h * 0.45)
         for svc in services:

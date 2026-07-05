@@ -7,7 +7,8 @@ from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import cell_radius, col, draw_card, draw_dark_cell, panel_pad
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_section_header,
+                     panel_pad)
 from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "tire_panel"
@@ -40,9 +41,17 @@ class TirePanelWidget(QWidget):
         edit = d.get("edit")
         if not corners and not edit:
             return
-        card, _radius = draw_card(p, w, h, _SECTION)
+        card, radius = draw_card(p, w, h, _SECTION)
         pad = panel_pad(h)
-        iw, ih = card.width() - 2 * pad, card.height() - 2 * pad
+        y = card.top() + pad
+        if cfg.get("show_title", True):
+            hh = max(20.0, h * 0.10)
+            hdr = QRectF(card.left() + pad, y, card.width() - 2 * pad, hh)
+            draw_section_header(p, hdr, str(cfg.get("title", "TIRES")), _SECTION,
+                                radius_top=radius)
+            y += hh + pad * 0.25
+        grid_top = y
+        iw, ih = card.width() - 2 * pad, card.bottom() - pad - y
         gap = max(4.0, iw * 0.04)
         cw = (iw - gap) / 2
         ch = (ih - gap) / 2
@@ -52,18 +61,18 @@ class TirePanelWidget(QWidget):
         for i, (lbl, key) in enumerate(_CORNERS):
             col_i, row_i = i % 2, i // 2
             x = card.left() + pad + col_i * (cw + gap)
-            y = card.top() + pad + row_i * (ch + gap)
-            rect = QRectF(x, y, cw, ch)
+            cy = grid_top + row_i * (ch + gap)
+            rect = QRectF(x, cy, cw, ch)
             draw_dark_cell(p, rect, _SECTION, radius=rad)
             cdata = corners.get(key) or {}
             p.setFont(tfont(ch * 0.22, bold=True))
             p.setPen(col("header", _SECTION))
-            p.drawText(QRectF(x + 6, y + 4, cw - 12, ch * 0.22),
+            p.drawText(QRectF(x + 6, cy + 4, cw - 12, ch * 0.22),
                        Qt.AlignmentFlag.AlignLeft, lbl)
-            ty = y + ch * 0.26
+            ty = cy + ch * 0.26
             if cfg.get("show_wear", True):
                 wear = cdata.get("wear")
-                bar = QRectF(x + 8, y + ch - ch * 0.22, cw - 16, ch * 0.14)
+                bar = QRectF(x + 8, cy + ch - ch * 0.22, cw - 16, ch * 0.14)
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(col("bar_bg", _SECTION))
                 p.drawRoundedRect(bar, 3, 3)

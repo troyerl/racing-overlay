@@ -5,6 +5,15 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.46.0 - 2026-07-05
+
+- **Weak widget customization.** Tire panel, pit board, weather panel,
+  leaderboard strip, ERS/hybrid, delta bar, and sector timing now match the
+  richer widgets: customizable titles, corner radius, row height, and
+  section toggles in Settings. Pit board banner text, ERS/hybrid labels, and
+  the hybrid no-data message are editable; leaderboard position and gap columns
+  can be hidden independently.
+
 ## 1.45.0 - 2026-07-05
 
 - **Widget UI polish.** Shared panel chrome (dark cells, section headers, metric

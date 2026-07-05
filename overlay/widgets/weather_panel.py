@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
 from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_metric_row,
-                     draw_section_header, panel_pad)
+                     draw_section_header, panel_pad, resolve_row_height)
 from .fonts import data_font_bold, tfont
 
 _SECTION = "weather_panel"
@@ -46,7 +46,8 @@ class WeatherPanelWidget(QWidget):
         if cfg.get("show_title", True):
             hh = max(22.0, h * 0.12)
             hdr = QRectF(card.left() + pad, y, card.width() - 2 * pad, hh)
-            draw_section_header(p, hdr, "WEATHER", _SECTION, radius_top=radius)
+            draw_section_header(p, hdr, str(cfg.get("title", "WEATHER")), _SECTION,
+                                radius_top=radius)
             y += hh + pad * 0.35
 
         lines: list[tuple[str, str, str]] = []
@@ -96,7 +97,13 @@ class WeatherPanelWidget(QWidget):
             lines = [(lbl, "\u2014", "") for lbl in _PREVIEW[:4]]
 
         body_h = max(card.bottom() - pad - y, 40.0)
-        row_h = body_h / max(1, len(lines))
+        n = max(1, len(lines))
+        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            row_h = fixed_rh
+        else:
+            row_h = resolve_row_height(body_h=body_h, row_count=n, panel_h=h, cfg=cfg)
+        row_h = max(18.0, row_h)
         rad = cell_radius(row_h)
         for label, val, sub in lines[:5]:
             rect = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h - 3)

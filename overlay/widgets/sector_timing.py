@@ -202,7 +202,16 @@ class SectorTimingWidget(QWidget):
                        f"Pred {clock(d.get('predicted_lap'))}")
 
         sub_top = card.top() + pad + (h * 0.34 if cfg.get("show_predicted_lap") else h * 0.30)
-        sub = QRectF(card.left() + pad, sub_top, iw, h * 0.18)
+        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            sub_h = fixed_rh
+        else:
+            sub_h = h * 0.18
+            max_frac = float(cfg.get("max_row_height_frac", 0) or 0)
+            if max_frac > 0:
+                sub_h = min(sub_h, h * max_frac)
+        sub_h = max(18.0, sub_h)
+        sub = QRectF(card.left() + pad, sub_top, iw, sub_h)
         draw_edge_band(p, sub, "header_bg", _SECTION, bottom_line=True)
         half = sub.width() / 2
         self._pair(p, QRectF(sub.left(), sub.top(), half, sub.height()),

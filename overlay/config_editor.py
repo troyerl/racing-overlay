@@ -197,6 +197,25 @@ LABEL_OVERRIDES = {
     "delta_bar.show_value": "Show numeric delta",
     "flags.idle_text": "Text when no flag is flying",
     "sector_timing.sectors": "Sector count (fallback)",
+    "sector_timing.row_height_px": "LAST/BEST row height (px, 0 = auto)",
+    "tire_panel.show_title": "Show title bar",
+    "tire_panel.title": "Title text",
+    "pit_board.title": "Title text",
+    "pit_board.show_pit_banner": "Show active pit banner",
+    "pit_board.pit_banner_text": "Active pit banner text",
+    "weather_panel.show_title": "Show title bar",
+    "weather_panel.title": "Title text",
+    "leaderboard_strip.show_position": "Show position (P1, P2, …)",
+    "leaderboard_strip.show_gap": "Show gap column",
+    "ers_hybrid.show_title": "Show title bar",
+    "ers_hybrid.title": "Title text",
+    "ers_hybrid.label_battery": "Battery row label",
+    "ers_hybrid.label_lap": "Lap energy row label",
+    "ers_hybrid.label_boost": "Boost chip label",
+    "ers_hybrid.label_p2p": "Push-to-pass chip label",
+    "ers_hybrid.empty_text": "No-data message",
+    "delta_bar.corner_radius_frac": "Panel corner roundness",
+    "corner_radius_frac": "Panel corner roundness",
     "lap_compare.max_turns": "Max corners listed",
     "lap_compare.min_time_loss": "Min time delta to list a corner (s)",
     "lap_compare.show_live_delta": "Show live delta to best",
@@ -471,7 +490,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     ],
     "delta_bar": [
         ("Behavior", ["mode", "range", "show_value", "text_scale"]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "flags": [
@@ -501,37 +520,52 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "sectors", "show_sector_delta", "show_predicted_lap",
             "highlight_active_sector_on_map", "text_scale",
         ]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Row layout", ["row_height_px", "max_row_height_frac"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "tire_panel": [
-        ("Display", ["show_wear", "show_temp", "show_pressure", "warn_wear_pct",
-                     "text_scale"]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Content", [
+            "show_title", "title", "show_wear", "show_temp", "show_pressure",
+            "warn_wear_pct", "text_scale",
+        ]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "pit_board": [
-        ("Content", ["show_title", "show_pressures", "show_fast_repairs",
-                     "show_compound", "text_scale"]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Content", [
+            "show_title", "title", "show_pit_banner", "pit_banner_text",
+            "show_pressures", "show_fast_repairs", "show_compound", "text_scale",
+        ]),
+        ("Row layout", ["row_height_px", "max_row_height_frac"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "weather_panel": [
-        ("Display", ["show_skies", "show_rain", "show_temps", "show_wind",
-                     "show_trend", "trend_window_seconds", "text_scale"]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Content", [
+            "show_title", "title", "show_skies", "show_rain", "show_temps",
+            "show_wind", "show_trend", "trend_window_seconds", "text_scale",
+        ]),
+        ("Row layout", ["row_height_px", "max_row_height_frac"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "leaderboard_strip": [
-        ("Content", ["rows", "show_name", "show_car_number", "show_class_color",
-                     "highlight_player", "text_scale"]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Content", [
+            "rows", "show_position", "show_name", "show_car_number", "show_gap",
+            "show_class_color", "highlight_player", "text_scale",
+        ]),
+        ("Row layout", ["row_height_px", "max_row_height_frac"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "ers_hybrid": [
-        ("Display", ["show_battery", "show_lap_energy", "show_boost", "show_p2p",
-                     "text_scale"]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Content", [
+            "show_title", "title", "label_battery", "label_lap", "label_boost",
+            "label_p2p", "empty_text", "show_battery", "show_lap_energy",
+            "show_boost", "show_p2p", "text_scale",
+        ]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "map": [
@@ -558,7 +592,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
 }
 
 # Group accordions that start collapsed (secondary / long sections).
-_GROUP_COLLAPSED = {"Colors", "Sizing"}
+_GROUP_COLLAPSED = {"Colors", "Sizing", "Row layout"}
 
 STYLE = f"""
 QWidget {{ color: #d7dae0; font-family: 'Segoe UI', 'SF Pro Text', Arial; font-size: 12px; }}
