@@ -325,6 +325,28 @@ TAB_COLORS = {
     "Weather Panel": "#5aa9ff", # blue
     "Leaderboard Strip": "#a98bff",
     "Ers Hybrid": "#46df7a",
+    "Track Scan": "#b84626",
+}
+
+# One-line description shown under each widget page title in Settings.
+_WIDGET_HINTS = {
+    "dash": "Gear, RPM, pedals, and configurable stat slots.",
+    "relative": "Cars ahead and behind with gaps and optional columns.",
+    "standings": "Race order tower with configurable columns and footer.",
+    "laptime_log": "Recent laps with deltas, sectors, fuel, and tags.",
+    "fuel_calc": "Fuel level, pit window, usage scenarios, and margins.",
+    "radar": "Blind-spot and proximity warnings beside your car.",
+    "inputs": "Scrolling throttle, brake, clutch, and steering trace.",
+    "delta_bar": "Live delta vs session best, best lap, or optimal.",
+    "flags": "Session flag banner with context and warnings.",
+    "lap_compare": "Corner-by-corner coaching vs your best lap.",
+    "sector_timing": "Live sector splits and session-best tracking.",
+    "map": "Track map, traffic, pit route, and weather compass.",
+    "tire_panel": "Four-corner wear, temperature, and pressure.",
+    "pit_board": "Requested pit services and repair status.",
+    "weather_panel": "Skies, rain, temps, trend, and wind.",
+    "leaderboard_strip": "Compact top-N leaderboard with gaps.",
+    "ers_hybrid": "Hybrid battery and boost / push-to-pass state.",
 }
 
 # Section keys shown under the "Settings" top tab (global, non-widget config).
@@ -580,6 +602,10 @@ QWidget#accordionBody {{
     border-left: 1px solid #20242c; border-right: 1px solid #20242c;
     border-bottom: 1px solid #20242c;
     border-bottom-left-radius: 11px; border-bottom-right-radius: 11px;
+}}
+
+QFrame#cardSep {{
+    background: #262b34; max-height: 1px; min-height: 1px; border: none;
 }}
 
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
@@ -988,6 +1014,7 @@ class CollapsibleSection(QWidget):
     def __init__(self, title: str, accent: str = ACCENT, expanded: bool = True):
         super().__init__()
         self._title = title
+        self._accent = accent or ACCENT
         self._default_expanded = expanded
         self._search = title.lower()
 
@@ -1010,6 +1037,25 @@ class CollapsibleSection(QWidget):
         self._body_lay.setSpacing(7)
         v.addWidget(self.body)
         self.body.setVisible(expanded)
+        self._apply_header_style()
+
+    def _apply_header_style(self) -> None:
+        ac = self._accent
+        self.header.setStyleSheet(
+            f"QPushButton#accordion {{"
+            f"background: rgba(20,23,29,0.85); border: 1px solid #262b34;"
+            f"border-radius: 11px; padding: 10px 14px; color: #cfd5de;"
+            f"text-align: left; font-size: 11px; font-weight: 800;"
+            f"letter-spacing: 0.6px; border-left: 3px solid transparent; }}"
+            f"QPushButton#accordion:hover {{ border-color: {ac}; color: #f4f6f8; }}"
+            f"QPushButton#accordion:checked {{ color: #f4f6f8;"
+            f"border-left: 3px solid {ac}; }}")
+        self.body.setStyleSheet(
+            f"QWidget#accordionBody {{"
+            f"background: rgba(13,16,20,0.55);"
+            f"border-left: 2px solid {ac}33; border-right: 1px solid #20242c;"
+            f"border-bottom: 1px solid #20242c;"
+            f"border-bottom-left-radius: 11px; border-bottom-right-radius: 11px; }}")
 
     def _fmt(self, expanded: bool) -> str:
         return ("\u25BE   " if expanded else "\u25B8   ") + self._title.upper()
@@ -1387,7 +1433,7 @@ class ConfigEditor(QWidget):
 
         self.search = QLineEdit()
         self.search.setObjectName("search")
-        self.search.setPlaceholderText("\U0001F50D  Search settings\u2026")
+        self.search.setPlaceholderText("Search settings\u2026")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         root.addWidget(self.search)
@@ -1518,9 +1564,9 @@ class ConfigEditor(QWidget):
         h.setSpacing(7)
         sw = ToggleSwitch(checked=checked, accent=ACCENT)
         lbl = QLabel(text)
-        lbl.setStyleSheet("background: transparent; color: #aab2bf;")
-        h.addWidget(sw)
-        h.addWidget(lbl)
+        lbl.setObjectName("rowLabel")
+        h.addWidget(lbl, 1)
+        h.addWidget(sw, 0)
         return w, sw
 
     # --- updates ------------------------------------------------------------
@@ -1850,6 +1896,12 @@ class ConfigEditor(QWidget):
                 lambda _=False, k=key, t=title: self._reset_section(k, t))
             head_row.addWidget(reset_btn)
         v.addLayout(head_row)
+        hint = _WIDGET_HINTS.get(key)
+        if hint:
+            ph = QLabel(hint)
+            ph.setObjectName("pageHint")
+            ph.setWordWrap(True)
+            v.addWidget(ph)
 
         if key == "__app__":
             # Preset-independent (global) settings: updates + preset auto-switch.
@@ -2013,7 +2065,7 @@ class ConfigEditor(QWidget):
         edit_texts.addWidget(edit_title)
         edit_texts.addWidget(edit_hint)
         edit_row.addLayout(edit_texts, 1)
-        self._corner_edit_sw = ToggleSwitch(accent="#b84626")
+        self._corner_edit_sw = ToggleSwitch(accent=TAB_COLORS["Track Scan"])
         self._corner_edit_sw.toggled.connect(self._corner_edit_toggled)
         edit_row.addWidget(self._corner_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addLayout(edit_row)
@@ -2030,7 +2082,7 @@ class ConfigEditor(QWidget):
         sf_texts.addWidget(sf_title)
         sf_texts.addWidget(sf_hint)
         sf_row.addLayout(sf_texts, 1)
-        self._sf_edit_sw = ToggleSwitch(accent="#b84626")
+        self._sf_edit_sw = ToggleSwitch(accent=TAB_COLORS["Track Scan"])
         self._sf_edit_sw.toggled.connect(self._sf_edit_toggled)
         sf_row.addWidget(self._sf_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addLayout(sf_row)
@@ -2343,7 +2395,12 @@ class ConfigEditor(QWidget):
         if isinstance(default_val, bool):
             sw = ToggleSwitch(checked=bool(value), accent=accent)
             sw.toggled.connect(lambda v, p=path: self._set(p, bool(v)))
-            return sw
+            wrap = QWidget()
+            wh = QHBoxLayout(wrap)
+            wh.setContentsMargins(0, 0, 0, 0)
+            wh.addStretch(1)
+            wh.addWidget(sw, 0)
+            return wrap
         if isinstance(default_val, (int, float)):
             return NumberControl(path, default_val, value,
                                  lambda v, p=path: self._set(p, v), accent=accent)

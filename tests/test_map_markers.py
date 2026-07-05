@@ -144,3 +144,40 @@ def test_outward_point_farther_than_track(qapp):
     out = w._outward_point(tx, 0.25, 30.0)
     assert math.hypot(out.x() - cc.x(), out.y() - cc.y()) > math.hypot(
         track.x() - cc.x(), track.y() - cc.y())
+
+
+def test_car_screen_points_ease_toward_target(qapp):
+    w = TrackMapWidget()
+    loop = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8), (0.2, 0.2)]
+    w.set_track(loop, start_finish=0.0, corners=[])
+    w.resize(400, 300)
+    w.show()
+    qapp.processEvents()
+    w._layout_scale = 200.0
+    w._layout_ox = 50.0
+    w._layout_oy = 40.0
+
+    def tx(pt):
+        return QPointF(pt[0] * 200 + 50, pt[1] * 200 + 40)
+
+    mc = {"asphalt_width": 11}
+    car = (1, 0.30, "7", "#3aa0ff", False, False, False)
+    w.cars = [car]
+    targets = w._build_car_screen_points(tx, mc)
+    pts1, anim1 = w._build_smooth_car_screen_points(tx, mc)
+    assert anim1 is False
+    assert pts1[1] == targets[1]
+
+    w.cars = [(1, 0.32, "7", "#3aa0ff", False, False, False)]
+    targets2 = w._build_car_screen_points(tx, mc)
+    w._last_ms = w._clock.elapsed() - 16
+    pts2, anim2 = w._build_smooth_car_screen_points(tx, mc)
+    assert anim2 is True
+    assert pts2[1] != targets2[1]
+
+    for _ in range(80):
+        w._last_ms = w._clock.elapsed() - 16
+        pts2, anim2 = w._build_smooth_car_screen_points(tx, mc)
+    assert anim2 is False
+    assert math.hypot(pts2[1].x() - targets2[1].x(),
+                      pts2[1].y() - targets2[1].y()) < 1.0

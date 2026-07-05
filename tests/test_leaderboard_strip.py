@@ -38,3 +38,15 @@ def test_fmt_leader_gap_seconds():
     assert tr.fmt_leader_gap(2.5, 2, 32.0) == "+2.5"
     assert tr.fmt_leader_gap(0.0, 1, 32.0) == "\u2014"
     assert tr.fmt_leader_gap(35.0, 2, 32.0) == "-1L"
+
+
+def test_leaderboard_edit_preview_without_positions():
+    hud = _hud(
+        ir=type("IR", (), {"__getitem__": lambda s, k: None})(),
+    )
+    hud.leaderboard_strip_widget = type(
+        "W", (), {"set_data": lambda s, d: setattr(s, "d", d)})()
+    hud.edit_mode_enabled = lambda: True
+    hud._update_leaderboard_strip(None, {}, None, 32.0, player=0)
+    payload = hud.leaderboard_strip_widget.d
+    assert payload.get("edit") is True

@@ -25,9 +25,11 @@ from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QMouseEvent, QPainter,
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from ..map_markers import wrap_lap_delta
 from . import icons
 from .. import svgpath
-from .chrome import draw_card, draw_dark_cell, ease
+from .chrome import col, draw_card, draw_dark_cell, ease
+from .fonts import tabfont, tfont
 
 SCHEMATIC_PIT_SOURCES = frozenset({"schematic", "inactive", "dashes", "manual"})
 
@@ -780,8 +782,8 @@ class TrackMapWidget(QWidget):
         self.traffic_markers: dict[str, dict | None] = {
             "ahead": None, "behind": None, "leader": None,
         }
-        self._marker_anim: dict[str, dict] = {}
-        self._marker_animating = False
+        self._car_anim: dict[int, dict] = {}
+        self._car_animating = False
         self._clock = QElapsedTimer()
         self._clock.start()
         self._last_ms = 0
@@ -1611,7 +1613,7 @@ class TrackMapWidget(QWidget):
         self.update()
 
     def set_cars(self, cars) -> None:
-        if cars == self.cars:  # nothing moved -> no repaint needed
+        if cars == self.cars and not self._car_animating:
             return
         self.cars = cars
         self.update()
@@ -1660,7 +1662,7 @@ class TrackMapWidget(QWidget):
         return None
 
     def _resolve_car_point(self, tx, car, cc: QPointF, off: float,
-                           schematic: bool) -> QPointF | None:
+                           schematic: bool, *, pct_override: float | None = None) -> QPointF | None:
         """Screen position of a car dot (shared by car draw + traffic markers)."""
         if len(car) >= 10:
             idx, pct, _label, _color, is_player, on_route, on_pit, _speaking, _is_pace, _sk = car
@@ -1671,6 +1673,8 @@ class TrackMapWidget(QWidget):
         else:
             idx, pct, _label, _color, is_player = car[:5]
             on_route = on_pit = False
+        if pct_override is not None:
+            pct = pct_override
         c = None
         if on_route:
             if schematic:
@@ -1686,12 +1690,87 @@ class TrackMapWidget(QWidget):
                     if pos is not None:
                         c = tx(pos)
         if c is None:
-            c = tx(self.path[self._index_for_pct(pct)])
+            from tools.schematic_to_track import _point_on_loop_at_frac
+            frac = self._loop_frac_for_pct(pct)
+            c = tx(_point_on_loop_at_frac(self.path, frac))
             if on_pit:
                 dx, dy = c.x() - cc.x(), c.y() - cc.y()
                 ln = math.hypot(dx, dy) or 1.0
                 c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
         return c
+
+    def _car_motion_key(self, car, schematic: bool) -> tuple:
+        is_player = car[4]
+        on_route = car[5] if len(car) > 5 else False
+        on_pit = car[6] if len(car) > 6 else False
+        if (is_player and on_route and self.player_xy is not None
+                and not schematic):
+            return ("player_xy", on_route, on_pit)
+        if on_route:
+            return ("route", on_route, on_pit)
+        return ("pct", on_route, on_pit)
+
+    def _build_smooth_car_screen_points(self, tx, mc: dict) -> tuple[dict[int, QPointF], bool]:
+        """Ease car dots toward telemetry targets for smoother map motion."""
+        cc = tx(self._centroid)
+        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        schematic = is_schematic_pit_source(self.pit_source)
+        targets = self._build_car_screen_points(tx, mc)
+        dt = self._dt()
+        tau = 0.09
+        animating = False
+        seen: set[int] = set()
+        pts: dict[int, QPointF] = {}
+
+        for car in self.cars:
+            idx = car[0]
+            seen.add(idx)
+            target = targets.get(idx)
+            if target is None:
+                continue
+            pct = float(car[1])
+            key = self._car_motion_key(car, schematic)
+            st = self._car_anim.get(idx)
+            if st is None or st.get("key") != key:
+                st = {"key": key, "pct": pct, "pt": QPointF(target), "xy": None}
+                if key[0] == "player_xy" and self.player_xy is not None:
+                    st["xy"] = self.player_xy
+                self._car_anim[idx] = st
+                pts[idx] = target
+                continue
+
+            if key[0] == "player_xy" and self.player_xy is not None:
+                ox, oy = st["xy"] or self.player_xy
+                tx_, ty = self.player_xy
+                nx = ease(ox, tx_, dt, tau)
+                ny = ease(oy, ty, dt, tau)
+                st["xy"] = (nx, ny)
+                pt = tx((nx, ny))
+                moving = abs(nx - tx_) > 1e-5 or abs(ny - ty) > 1e-5
+            elif key[0] == "pct":
+                delta = wrap_lap_delta(pct, st["pct"])
+                if abs(delta) > 0.35:
+                    st["pct"] = pct
+                else:
+                    st["pct"] = (st["pct"] + ease(0.0, delta, dt, tau)) % 1.0
+                pt = self._resolve_car_point(
+                    tx, car, cc, off, schematic, pct_override=st["pct"])
+                if pt is None:
+                    pt = target
+                moving = (abs(wrap_lap_delta(pct, st["pct"])) > 1e-5
+                          or math.hypot(pt.x() - target.x(), pt.y() - target.y()) > 0.35)
+            else:
+                pt, moving = self._smooth_marker_point(
+                    st["pt"], target, dt, tau=tau, snap=120.0)
+                st["pt"] = pt
+
+            pts[idx] = pt
+            if moving:
+                animating = True
+
+        for dead in [k for k in self._car_anim if k not in seen]:
+            del self._car_anim[dead]
+        return pts, animating
 
     def _build_car_screen_points(self, tx, mc: dict) -> dict[int, QPointF]:
         cc = tx(self._centroid)
@@ -1742,9 +1821,13 @@ class TrackMapWidget(QWidget):
     def _outward_point(self, tx, pct: float, extra: float) -> QPointF:
         s = tx(self.path[self._index_for_pct(pct)])
         cc = tx(self._centroid)
-        dx, dy = s.x() - cc.x(), s.y() - cc.y()
+        return self._outward_from_point(s, cc, extra)
+
+    @staticmethod
+    def _outward_from_point(pt: QPointF, cc: QPointF, extra: float) -> QPointF:
+        dx, dy = pt.x() - cc.x(), pt.y() - cc.y()
         ln = math.hypot(dx, dy) or 1.0
-        return QPointF(s.x() + dx / ln * extra, s.y() + dy / ln * extra)
+        return QPointF(pt.x() + dx / ln * extra, pt.y() + dy / ln * extra)
 
     def _track_point(self, tx, pct: float) -> QPointF:
         return tx(self.path[self._index_for_pct(pct)])
@@ -1828,38 +1911,18 @@ class TrackMapWidget(QWidget):
             ("ahead", "car_ahead", "marker_ahead"),
             ("behind", "car_behind", "marker_behind"),
         )
-        dt = self._dt()
-        animating = False
-        slots_now: set[str] = set()
+        cc = tx(self._centroid)
         for slot, glyph, col_key in specs:
             m = self.traffic_markers.get(slot)
             if not m or m.get("pct") is None:
                 continue
-            slots_now.add(slot)
             pct = m["pct"]
             idx = m.get("idx")
             label = m.get("label") or ""
-            target_car = car_pts.get(idx) if idx is not None else None
-            if target_car is None:
-                target_car = self._track_point(tx, pct)
-            target_icon = self._outward_point(tx, pct, icon_off)
-
-            st = self._marker_anim.get(slot)
-            if st is None or st.get("idx") != idx:
-                st = {"idx": idx, "car": target_car, "icon": target_icon}
-                self._marker_anim[slot] = st
-            else:
-                car_pt, car_move = self._smooth_marker_point(
-                    st["car"], target_car, dt)
-                icon_pt, icon_move = self._smooth_marker_point(
-                    st["icon"], target_icon, dt)
-                st["car"] = car_pt
-                st["icon"] = icon_pt
-                if car_move or icon_move:
-                    animating = True
-
-            car_pt = st["car"]
-            icon_pt = st["icon"]
+            car_pt = car_pts.get(idx) if idx is not None else None
+            if car_pt is None:
+                car_pt = self._track_point(tx, pct)
+            icon_pt = self._outward_from_point(car_pt, cc, icon_off)
             line_col = _mcol_def(col_key, "#ffffff")
             p.setPen(QPen(line_col, 2.0))
             p.drawLine(car_pt, icon_pt)
@@ -1884,10 +1947,6 @@ class TrackMapWidget(QWidget):
                 p.drawRoundedRect(pill, 3, 3)
                 p.setPen(QColor(20, 20, 20))
                 p.drawText(pill, Qt.AlignmentFlag.AlignCenter, label)
-
-        for dead in [k for k in self._marker_anim if k not in slots_now]:
-            del self._marker_anim[dead]
-        self._marker_animating = animating
 
     def _draw_car_speaking(self, p: QPainter, c: QPointF, r: float) -> None:
         """Green ring + outward mic badge so radio traffic stands out on the map."""
@@ -1971,7 +2030,8 @@ class TrackMapWidget(QWidget):
                 draw_card(p, rect.width(), rect.height(), "map")
 
             if not self.path:
-                p.setPen(QColor(220, 220, 220))
+                p.setFont(tfont(min(rect.width(), rect.height()) * 0.06, bold=False))
+                p.setPen(col("muted", "map"))
                 p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.placeholder)
                 self._draw_scan_overlays(p, rect)
                 self._paint_extras(p, rect)
@@ -2074,7 +2134,7 @@ class TrackMapWidget(QWidget):
                 self._draw_corners(p, tx, corners)
             if mc.get("show_start_finish", True):
                 self._draw_start_finish(p, tx)
-            car_pts = self._build_car_screen_points(tx, mc)
+            car_pts, self._car_animating = self._build_smooth_car_screen_points(tx, mc)
             self._draw_cars(p, tx, mc, car_pts)
             if mc.get("show_traffic_markers", True):
                 self._draw_traffic_markers(p, tx, mc, car_pts)
@@ -2087,7 +2147,7 @@ class TrackMapWidget(QWidget):
         finally:
             if p.isActive():
                 p.end()
-        if self._marker_animating:
+        if self._car_animating:
             self.update()
 
     def _paint_extras(self, p: QPainter, rect: QRectF) -> None:
@@ -2448,6 +2508,44 @@ class TrackMapWidget(QWidget):
             p.drawText(QRectF(bx - br, by - br, 2 * br, 2 * br),
                        Qt.AlignmentFlag.AlignCenter, glyph)
 
+    @staticmethod
+    def _draw_stroked_center_text(p: QPainter, rect: QRectF, text: str, *,
+                                  fill: QColor, stroke: QColor,
+                                  stroke_w: float = 1.0) -> None:
+        """Bold centered label readable on any dot color."""
+        align = Qt.AlignmentFlag.AlignCenter
+        w = max(0.5, stroke_w)
+        for ox, oy in ((-w, -w), (-w, w), (w, -w), (w, w),
+                       (-w, 0), (w, 0), (0, -w), (0, w)):
+            p.setPen(stroke)
+            p.drawText(rect.translated(ox, oy), align, text)
+        p.setPen(fill)
+        p.drawText(rect, align, text)
+
+    def _draw_car_number_label(self, p: QPainter, c: QPointF, label: str, *,
+                               r: float, is_player: bool, is_pace: bool,
+                               show: bool) -> None:
+        """Compact on-dot number; skip when a traffic marker already labels it."""
+        if not show:
+            return
+        draw_label = "PC" if is_pace else label
+        if not draw_label:
+            return
+        base = 9.0 if is_player else 7.5
+        sz = max(6, round(base * config.text_scale_for("map")))
+        p.setFont(tabfont(sz, bold=True))
+        pad = max(2.0, r * 0.15)
+        rect = QRectF(c.x() - r - pad, c.y() - r - pad, 2 * (r + pad), 2 * (r + pad))
+        if is_pace:
+            fill = _mcol_def("pace_car_text", "#ffffff")
+            stroke = QColor(0, 0, 0, 160)
+        else:
+            fill = QColor(255, 255, 255)
+            stroke = QColor(0, 0, 0, 220)
+        self._draw_stroked_center_text(
+            p, rect, draw_label, fill=fill, stroke=stroke,
+            stroke_w=1.2 if is_player else 1.0)
+
     def _draw_pit_edit(self, p: QPainter, tx) -> None:
         """In-progress pit road (red) and merge (blue) polylines + handles."""
         mc = _mcfg()
@@ -2791,10 +2889,7 @@ class TrackMapWidget(QWidget):
 
     def _draw_cars(self, p: QPainter, tx, mc: dict,
                    car_pts: dict[int, QPointF]) -> None:
-        sz = max(5, round(8 * config.text_scale_for("map")))
-        label_font = QFont(config.CFG.get("font_family", "Arial"), sz,
-                           QFont.Weight.Bold)
-        p.setFont(label_font)
+        cc = tx(self._centroid)
         off = mc.get("asphalt_width", 11) * 0.85 + 3.0
         # Pit-car styling is the same for every car -- resolve it once.
         pit_opacity = max(0.05, min(1.0, mc.get("pit_dot_opacity", 0.45)))
@@ -2864,10 +2959,9 @@ class TrackMapWidget(QWidget):
                 self._draw_car_speaking(p, c, r)
             if show_status and status_kind and not is_pace:
                 self._draw_car_status_badge(p, c, r, status_kind)
-            p.setPen(_mcol_def("pace_car_text", "#ffffff") if is_pace
-                       else (QColor(20, 20, 20) if is_player else QColor(255, 255, 255)))
-            text_rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
-            p.setFont(label_font)
-            draw_label = "PC" if is_pace else label
-            p.drawText(text_rect, Qt.AlignmentFlag.AlignCenter, draw_label)
+            show_label = is_player or is_pace or not slot
+            self._draw_car_number_label(
+                p, c, label, r=r,
+                is_player=is_player and not on_route and not on_pit,
+                is_pace=is_pace, show=show_label)
             p.setOpacity(1.0)

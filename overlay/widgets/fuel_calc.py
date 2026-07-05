@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 from .. import config
 from .chrome import col as _chrome_col
 from .chrome import draw_accent_bar, draw_card, draw_dark_cell, draw_edge_band
+from .chrome import draw_section_header
 from .chrome import draw_row_divider, resolve_row_height
 from .fonts import data_font_bold, tabfont, tfont
 
@@ -139,13 +140,10 @@ class FuelCalcWidget(QWidget):
             bh = avail * wt / sumw
             if key == "title":
                 title_h = bh
-                band = QRectF(card.left(), cy, card.width(), title_h)
-                draw_edge_band(p, band, "header_bg", _SECTION, bottom_line=True,
-                               radius_top=0)
-                p.setFont(tfont(bh * 0.62, True))
-                p.setPen(_col("title"))
-                p.drawText(QRectF(m, cy, inner, bh), _CENTER,
-                           str(cfg.get("title", "FUEL CALCULATOR")))
+                band = QRectF(card.left() + m, cy, inner, title_h)
+                draw_section_header(
+                    p, band, str(cfg.get("title", "FUEL CALCULATOR")),
+                    _SECTION, radius_top=radius)
             elif key == "top":
                 self._draw_top(p, d, m, cy, inner, bh,
                                show_pill, show_add, show_gauge)

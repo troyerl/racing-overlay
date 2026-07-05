@@ -7,10 +7,16 @@ from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import col, draw_card, draw_dark_cell
-from .fonts import data_font_bold, tfont
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_section_header,
+                     draw_status_chip, panel_pad)
+from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "pit_board"
+_PREVIEW_SERVICES = (
+    {"key": "lf_tire", "label": "LF tire", "checked": True},
+    {"key": "fuel", "label": "Fuel", "checked": True},
+    {"key": "rf_tire", "label": "RF tire", "checked": False},
+)
 
 
 class PitBoardWidget(QWidget):
@@ -36,40 +42,43 @@ class PitBoardWidget(QWidget):
         d = self.data or {}
         cfg = config.CFG.get(_SECTION, {})
         services = d.get("services") or []
+        if not services and d.get("edit"):
+            services = _PREVIEW_SERVICES
         if not services and not d.get("edit") and not d.get("pit_active"):
             return
-        draw_card(p, w, h, _SECTION)
-        pad = max(6.0, h * 0.08)
-        y = pad
+        card, radius = draw_card(p, w, h, _SECTION)
+        pad = panel_pad(h)
+        y = card.top() + pad
         data_bold = data_font_bold(_SECTION)
         if d.get("pit_active"):
-            banner_h = h * 0.14
-            rect = QRectF(pad, y, w - 2 * pad, banner_h)
-            p.fillRect(rect, col("active_bg", _SECTION))
-            p.setFont(tfont(banner_h * 0.55, bold=True))
-            p.setPen(col("active_text", _SECTION))
-            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, "PIT STOP ACTIVE")
-            y += banner_h + pad * 0.5
+            banner_h = max(22.0, h * 0.12)
+            draw_status_chip(p, QRectF(card.left() + pad, y,
+                                       card.width() - 2 * pad, banner_h),
+                             "PIT STOP ACTIVE", _SECTION, active=True)
+            y += banner_h + pad * 0.4
         if cfg.get("show_title", True):
-            p.setFont(tfont(h * 0.12, bold=True))
-            p.setPen(col("title", _SECTION))
-            p.drawText(QRectF(pad, y, w - 2 * pad, h * 0.10),
-                       Qt.AlignmentFlag.AlignLeft, "PIT SERVICES")
-            y += h * 0.11
+            hh = max(20.0, h * 0.10)
+            hdr = QRectF(card.left() + pad, y, card.width() - 2 * pad, hh)
+            draw_section_header(p, hdr, "PIT SERVICES", _SECTION,
+                                radius_top=radius if not d.get("pit_active") else 0)
+            y += hh + pad * 0.25
         n = max(1, len(services))
-        row_h = max(16.0, (h - y - pad) / (n + 1))
+        extras_h = h * 0.14
+        row_h = max(18.0, (card.bottom() - pad - y - extras_h) / n)
+        rad = cell_radius(row_h)
+        mark_w = max(18.0, row_h * 0.45)
         for svc in services:
-            rect = QRectF(pad, y, w - 2 * pad, row_h * 0.85)
-            draw_dark_cell(p, rect, _SECTION, radius=6.0)
+            rect = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h - 2)
+            draw_dark_cell(p, rect, _SECTION, radius=rad)
             checked = svc.get("checked")
             mark = "\u2713" if checked else "\u2013"
             p.setFont(tfont(row_h * 0.42, bold=data_bold))
             p.setPen(col("checked", _SECTION) if checked else col("muted", _SECTION))
-            p.drawText(QRectF(rect.left() + 6, rect.top(), 20, rect.height()),
+            p.drawText(QRectF(rect.left() + 8, rect.top(), mark_w, rect.height()),
                        Qt.AlignmentFlag.AlignVCenter, mark)
             p.setPen(col("text", _SECTION) if checked else col("muted", _SECTION))
-            p.drawText(QRectF(rect.left() + 24, rect.top(), rect.width() - 30,
-                              rect.height()),
+            p.drawText(QRectF(rect.left() + mark_w + 4, rect.top(),
+                              rect.width() - mark_w - 8, rect.height()),
                        Qt.AlignmentFlag.AlignVCenter, svc.get("label", ""))
             y += row_h
         extras = []
@@ -89,7 +98,8 @@ class PitBoardWidget(QWidget):
             if parts:
                 extras.append(" ".join(parts))
         if extras:
-            p.setFont(tfont(row_h * 0.38, bold=False))
+            p.setFont(tabfont(row_h * 0.38, bold=False))
             p.setPen(col("muted", _SECTION))
-            p.drawText(QRectF(pad, y, w - 2 * pad, row_h),
-                       Qt.AlignmentFlag.AlignLeft, "  \u2022  ".join(extras))
+            p.drawText(QRectF(card.left() + pad, y, card.width() - 2 * pad, extras_h),
+                       Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                       "  \u2022  ".join(extras))

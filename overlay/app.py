@@ -4194,9 +4194,15 @@ class AdvancedSimHUD:
 
     def _update_leaderboard_strip(self, positions, drivers, car_f2,
                                   lap_est, player) -> None:
-        if not positions:
-            return
         cfg = config.CFG.get("leaderboard_strip", {})
+        if not positions:
+            if self.edit_mode_enabled():
+                n = max(1, min(5, int(cfg.get("rows", 3) or 3)))
+                self.leaderboard_strip_widget.set_data({
+                    "rows": [],
+                    "edit": True,
+                })
+            return
         n = max(1, min(5, int(cfg.get("rows", 3) or 3)))
         ranked = sorted(
             (idx for idx, pos in enumerate(positions)

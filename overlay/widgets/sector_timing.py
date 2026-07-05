@@ -20,7 +20,8 @@ from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import col, draw_card, draw_dark_cell, draw_edge_band
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_edge_band,
+                     draw_metric_row, panel_pad)
 from .fonts import data_font_bold, tabfont, tfont
 from .formats import clock, sec, signed_delta
 
@@ -182,25 +183,26 @@ class SectorTimingWidget(QWidget):
         w, h = float(self.width()), float(self.height())
         d = self.data or {}
         cfg = config.CFG.get(_SECTION, {})
-        card, _radius = draw_card(p, w, h, _SECTION)
+        card, radius = draw_card(p, w, h, _SECTION)
         data_bold = data_font_bold(_SECTION)
 
-        pad = max(6.0, h * 0.08)
-        iw = w - 2 * pad
+        pad = panel_pad(h)
+        iw = card.width() - 2 * pad
         cur_h = h * 0.26 if cfg.get("show_predicted_lap") else h * 0.30
         p.setFont(tabfont(cur_h, bold=data_bold))
         p.setPen(col("text", _SECTION))
-        p.drawText(QRectF(pad, pad, iw, cur_h),
+        p.drawText(QRectF(card.left() + pad, card.top() + pad, iw, cur_h),
                    Qt.AlignmentFlag.AlignCenter, clock(d.get("cur_lap")))
         if cfg.get("show_predicted_lap") and d.get("predicted_lap"):
             p.setFont(tfont(h * 0.11, bold=False))
             p.setPen(col("muted", _SECTION))
-            p.drawText(QRectF(pad, pad + cur_h * 0.85, iw, h * 0.08),
+            p.drawText(QRectF(card.left() + pad, card.top() + pad + cur_h * 0.85,
+                              iw, h * 0.08),
                        Qt.AlignmentFlag.AlignCenter,
                        f"Pred {clock(d.get('predicted_lap'))}")
 
-        sub_top = pad + (h * 0.34 if cfg.get("show_predicted_lap") else h * 0.30)
-        sub = QRectF(pad, sub_top, iw, h * 0.18)
+        sub_top = card.top() + pad + (h * 0.34 if cfg.get("show_predicted_lap") else h * 0.30)
+        sub = QRectF(card.left() + pad, sub_top, iw, h * 0.18)
         draw_edge_band(p, sub, "header_bg", _SECTION, bottom_line=True)
         half = sub.width() / 2
         self._pair(p, QRectF(sub.left(), sub.top(), half, sub.height()),
@@ -211,10 +213,10 @@ class SectorTimingWidget(QWidget):
         sectors = d.get("sectors") or []
         if sectors:
             top = sub.bottom() + h * 0.04
-            ch = h - pad - top
+            ch = card.bottom() - pad - top
             gap = iw * 0.03
             cw = (iw - gap * (len(sectors) - 1)) / len(sectors)
-            x = pad
+            x = card.left() + pad
             show_delta = cfg.get("show_sector_delta", False)
             for i, s in enumerate(sectors):
                 self._cell(p, QRectF(x, top, cw, ch), i + 1, s, data_bold,
@@ -222,27 +224,25 @@ class SectorTimingWidget(QWidget):
                 x += cw + gap
 
     def _pair(self, p, rect, label, value, data_bold) -> None:
-        p.setFont(tfont(rect.height() * 0.62, bold=False))
-        p.setPen(col("muted", _SECTION))
-        p.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   f"  {label}")
-        p.setFont(tabfont(rect.height() * 0.62, bold=data_bold))
-        p.setPen(col("text", _SECTION))
-        p.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
-                   value + "  ")
+        draw_metric_row(p, rect.adjusted(10, 0, -10, 0), label, value, _SECTION,
+                        data_bold=data_bold)
 
     def _cell(self, p, rect, num, s, data_bold, *, show_delta=False) -> None:
         status = s.get("status")
         bg_key = {"best": "sec_best", "running": "sec_running",
                   "done": "sec_done"}.get(status, "sec_idle")
         inner = rect.adjusted(1, 1, -1, -1)
-        p.setPen(QPen(col("cell_border", _SECTION), 1))
-        p.setBrush(col(bg_key, _SECTION))
-        p.drawRoundedRect(inner, 6, 6)
+        rad = cell_radius(rect.height())
+        if status in (None, "idle"):
+            draw_dark_cell(p, inner, _SECTION, radius=rad)
+        else:
+            p.setPen(QPen(col("cell_border", _SECTION), 1))
+            p.setBrush(col(bg_key, _SECTION))
+            p.drawRoundedRect(inner, rad, rad)
         if s.get("active"):
             p.setPen(QPen(col("sec_running_edge", _SECTION), 1.6))
             p.setBrush(Qt.BrushStyle.NoBrush)
-            p.drawRoundedRect(inner, 6, 6)
+            p.drawRoundedRect(inner, rad, rad)
         p.setFont(tfont(rect.height() * 0.26, bold=False))
         p.setPen(col("sec_text", _SECTION))
         p.drawText(QRectF(rect.left(), rect.top() + rect.height() * 0.08,

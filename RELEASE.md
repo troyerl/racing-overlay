@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.45.0 - 2026-07-05
+
+- **Widget UI polish.** Shared panel chrome (dark cells, section headers, metric
+  rows, status chips) across weather, pit board, leaderboard strip, ERS/hybrid,
+  and tire panels; consistency pass on sector timing, tables, delta bar, fuel
+  calc, and the track map placeholder. Edit-mode preview skeletons when panels
+  have no live data.
+- **Settings UX.** Widget list scrolls when the sidebar overflows; accordion
+  accents, row toggle alignment, per-page hints, and search placeholder polish.
+  Fixes a crash opening Settings from the CollapsibleSection init order.
+- **Map car labels and motion.** Car numbers use bold stroked on-dot text for
+  quick reading without extra pill chrome; leader/ahead/behind skip duplicate
+  numbers since their marker icons already label those cars. Car dots ease
+  smoothly along the track (lap-% interpolation with start/finish wrap); traffic
+  marker lines and icons stay pinned to the smoothed dot positions.
+
 ## 1.44.0 - 2026-07-05
 
 - **Telemetry expansion (widgets 6–12).** Lap log, fuel calc, sector timing, lap

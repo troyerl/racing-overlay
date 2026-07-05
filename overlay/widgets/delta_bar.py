@@ -19,7 +19,7 @@ from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import col, draw_card
+from .chrome import col, draw_card, panel_pad
 from .fonts import data_font_bold, tabfont
 from .formats import signed_delta
 
@@ -71,7 +71,7 @@ class DeltaBarWidget(QWidget):
         if self._animating:
             self.update()
 
-        pad = max(6.0, h * 0.12)
+        pad = panel_pad(h)
         show_val = c.get("show_value", True)
         data_bold = data_font_bold(_SECTION)
         if show_val:
@@ -106,5 +106,4 @@ class DeltaBarWidget(QWidget):
 
         from PyQt6.QtGui import QPen
         p.setPen(QPen(col("center", _SECTION), max(1.5, h * 0.02)))
-        p.drawLine(QPointF(cx, bar.top() - h * 0.03),
-                   QPointF(cx, bar.bottom() + h * 0.03))
+        p.drawLine(QPointF(cx, bar.top()), QPointF(cx, bar.bottom()))

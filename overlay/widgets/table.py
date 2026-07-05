@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import QWidget
 
 from .. import config
 from . import icons
-from .chrome import contrast_text, draw_edge_band, ease, resolve_row_height
+from .chrome import contrast_text, draw_card, draw_edge_band, ease, resolve_row_height
 from .chrome import draw_row_divider as _draw_row_divider_chrome
 from .chrome import soften_color as _soften_color
 from .fonts import data_font_bold as _data_font_bold, tabfont, tfont
@@ -300,20 +300,7 @@ class BaseTable(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = self.width(), self.height()
         tc = _tcfg()
-        radius = max(10.0, h * tc["corner_radius_frac"])
-
-        # Vertical gradient card to match the dash (falls back to flat "bg").
-        cols = tc["colors"]
-        if "bg_top" in cols and "bg_bottom" in cols:
-            grad = QLinearGradient(0, 0, 0, h)
-            grad.setColorAt(0.0, col("bg_top"))
-            grad.setColorAt(1.0, col("bg_bottom"))
-            p.setBrush(grad)
-        else:
-            p.setBrush(col("bg"))
-        card = QRectF(0.5, 0.5, w - 1, h - 1)
-        p.setPen(QPen(col("border"), 1))
-        p.drawRoundedRect(card, radius, radius)
+        card, radius = draw_card(p, float(w), float(h), self.section)
 
         rows = (self.data or {}).get("rows", [])
         n = max(1, len(rows))

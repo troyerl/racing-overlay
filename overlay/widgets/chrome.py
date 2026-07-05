@@ -8,6 +8,7 @@ from PyQt6.QtCore import QRectF, Qt
 from PyQt6.QtGui import (QColor, QLinearGradient, QPainter, QPainterPath, QPen)
 
 from .. import config
+from .fonts import data_font_bold, tabfont, tfont
 
 _BORDER_ALIASES = {"border": "panel_border", "panel_border": "border"}
 
@@ -188,3 +189,91 @@ def ease(current: float, target: float, dt: float, tau: float = 0.12) -> float:
     if tau <= 0:
         return target
     return current + (target - current) * (1.0 - math.exp(-dt / tau))
+
+
+def panel_pad(h: float) -> float:
+    """Standard inner padding for card panels."""
+    return max(8.0, h * 0.08)
+
+
+def cell_radius(row_h: float) -> float:
+    """Standard corner radius for dark cells."""
+    return min(8.0, max(4.0, row_h * 0.22))
+
+
+def draw_section_header(p: QPainter, rect: QRectF, title: str,
+                        section: str | None = None, *,
+                        radius_top: float = 0.0) -> None:
+    """Title band clipped to card top corners."""
+    draw_edge_band(p, rect, "header_bg", section,
+                   top_line=True, bottom_line=True,
+                   radius_top=radius_top, opaque=True)
+    p.setFont(tfont(rect.height() * 0.55, bold=True))
+    p.setPen(col("title", section))
+    p.drawText(rect.adjusted(10, 0, -8, 0),
+               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+               title)
+
+
+def draw_metric_row(p: QPainter, rect: QRectF, label: str, value: str,
+                    section: str | None = None, *,
+                    sub: str = "", data_bold: bool = False) -> None:
+    """Label + tabular value + optional muted sub-column inside a row rect."""
+    lh = rect.height()
+    lw = rect.width()
+    p.setFont(tfont(lh * 0.38, bold=True))
+    p.setPen(col("header", section))
+    p.drawText(QRectF(rect.left(), rect.top(), lw * 0.22, lh),
+               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+               label)
+    sub_w = lw * 0.18 if sub else 0.0
+    p.setFont(tabfont(lh * 0.42, bold=data_bold))
+    p.setPen(col("text", section))
+    p.drawText(QRectF(rect.left() + lw * 0.22, rect.top(),
+                      lw * 0.60 - sub_w, lh),
+               Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+               value)
+    if sub:
+        p.setFont(tfont(lh * 0.34, bold=False))
+        p.setPen(col("muted", section))
+        p.drawText(QRectF(rect.right() - sub_w, rect.top(), sub_w, lh),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                   sub)
+
+
+def draw_status_chip(p: QPainter, rect: QRectF, text: str,
+                     section: str | None = None, *, active: bool = True) -> None:
+    """Rounded status pill (e.g. PIT STOP ACTIVE, BOOST)."""
+    r = min(rect.height() * 0.35, 10.0)
+    bg = col("active_bg" if active else "cell_dark", section)
+    fg = col("active_text" if active else "muted", section)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(bg)
+    p.drawRoundedRect(rect, r, r)
+    p.setFont(tfont(rect.height() * 0.48, bold=True))
+    p.setPen(fg)
+    p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+
+def draw_player_tint(p: QPainter, rect: QRectF,
+                     section: str | None = None) -> None:
+    """Semi-transparent player-row highlight under a cell."""
+    tint = col("player_row", section)
+    tint.setAlpha(min(180, max(60, tint.alpha())))
+    p.fillRect(rect, tint)
+
+
+def draw_edit_preview_rows(p: QPainter, rect: QRectF, section: str | None,
+                           labels: list[str], *, row_count: int | None = None) -> None:
+    """Skeleton metric rows for layout-edit preview."""
+    n = row_count if row_count is not None else len(labels)
+    n = max(1, n)
+    row_h = rect.height() / n
+    rad = cell_radius(row_h)
+    for i in range(n):
+        row_rect = QRectF(rect.left(), rect.top() + i * row_h,
+                          rect.width(), row_h - 2)
+        draw_dark_cell(p, row_rect, section, radius=rad)
+        lbl = labels[i] if i < len(labels) else labels[-1]
+        draw_metric_row(p, row_rect.adjusted(8, 0, -8, 0), lbl, "\u2014",
+                        section, sub="")

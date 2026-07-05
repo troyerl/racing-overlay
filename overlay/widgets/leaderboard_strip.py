@@ -7,10 +7,19 @@ from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import col, draw_card, draw_dark_cell, draw_row_divider
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_player_tint,
+                     draw_row_divider, panel_pad)
 from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "leaderboard_strip"
+_PREVIEW_ROWS = (
+    {"position": 1, "car_number": "42", "name": "Preview Leader",
+     "class_color": "#888888", "gap": "+0.0", "is_player": False},
+    {"position": 2, "car_number": "07", "name": "Preview P2",
+     "class_color": "#888888", "gap": "+1.2", "is_player": False},
+    {"position": 3, "car_number": "12", "name": "You",
+     "class_color": "#888888", "gap": "+2.4", "is_player": True},
+)
 
 
 class LeaderboardStripWidget(QWidget):
@@ -36,18 +45,21 @@ class LeaderboardStripWidget(QWidget):
         d = self.data or {}
         cfg = config.CFG.get(_SECTION, {})
         rows = d.get("rows") or []
-        if not rows and not d.get("edit"):
+        if not rows and d.get("edit"):
+            rows = _PREVIEW_ROWS
+        if not rows:
             return
-        draw_card(p, w, h, _SECTION)
-        pad = max(6.0, h * 0.08)
-        y = pad
-        row_h = max(18.0, (h - 2 * pad) / max(1, len(rows) or 1))
+        card, _radius = draw_card(p, w, h, _SECTION)
+        pad = panel_pad(h)
+        y = card.top() + pad
+        row_h = max(18.0, (card.height() - 2 * pad) / max(1, len(rows)))
+        rad = cell_radius(row_h)
         data_bold = data_font_bold(_SECTION)
         for i, row in enumerate(rows):
-            rect = QRectF(pad, y, w - 2 * pad, row_h)
+            rect = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h - 2)
             if row.get("is_player") and cfg.get("highlight_player", True):
-                p.fillRect(rect, col("player_row", _SECTION))
-            draw_dark_cell(p, rect, _SECTION, radius=min(row_h * 0.2, 8.0))
+                draw_player_tint(p, rect, _SECTION)
+            draw_dark_cell(p, rect, _SECTION, radius=rad)
             stripe_w = max(3.0, row_h * 0.12)
             if cfg.get("show_class_color", True) and row.get("class_color"):
                 c = QColor(str(row["class_color"]))
@@ -69,11 +81,16 @@ class LeaderboardStripWidget(QWidget):
             if cfg.get("show_name", True):
                 p.setFont(tfont(row_h * 0.36, bold=False))
                 p.setPen(col("text", _SECTION))
-                name = str(row.get("name", ""))[:14]
+                name = str(row.get("name", ""))
                 gap_w = row_h * 2.2
-                p.drawText(QRectF(x, rect.top(), rect.width() - (x - rect.left()) - gap_w,
-                                  rect.height()),
-                           Qt.AlignmentFlag.AlignVCenter, name)
+                name_rect = QRectF(x, rect.top(),
+                                   rect.width() - (x - rect.left()) - gap_w,
+                                   rect.height())
+                p.drawText(name_rect,
+                           Qt.AlignmentFlag.AlignVCenter | Qt.TextFlag.TextSingleLine,
+                           p.fontMetrics().elidedText(
+                               name, Qt.TextElideMode.ElideRight,
+                               int(name_rect.width())))
             p.setFont(tabfont(row_h * 0.40, bold=data_bold))
             gap = row.get("gap", "\u2014")
             gcol = col("muted", _SECTION)
@@ -85,5 +102,6 @@ class LeaderboardStripWidget(QWidget):
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                        str(gap))
             if i + 1 < len(rows):
-                draw_row_divider(p, pad, y + row_h, w - 2 * pad, _SECTION)
+                draw_row_divider(p, card.left() + pad, y + row_h,
+                                 card.width() - 2 * pad, _SECTION)
             y += row_h

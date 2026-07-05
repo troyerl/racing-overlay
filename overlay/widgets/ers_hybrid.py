@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
 from .. import hybrid as hy
-from .chrome import col, draw_card, draw_dark_cell
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_metric_row,
+                     draw_status_chip, panel_pad)
 from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "ers_hybrid"
@@ -36,21 +37,25 @@ class ErsHybridWidget(QWidget):
         w, h = float(self.width()), float(self.height())
         d = self.data or {}
         cfg = config.CFG.get(_SECTION, {})
-        draw_card(p, w, h, _SECTION)
-        pad = max(6.0, h * 0.10)
-        if not d.get("have_hybrid") and not d.get("edit"):
+        card, _radius = draw_card(p, w, h, _SECTION)
+        pad = panel_pad(h)
+        edit = d.get("edit")
+        if not d.get("have_hybrid") and not edit:
             p.setFont(tfont(h * 0.22, bold=False))
             p.setPen(col("muted", _SECTION))
             p.drawText(QRectF(pad, pad, w - 2 * pad, h - 2 * pad),
                        Qt.AlignmentFlag.AlignCenter, "No hybrid data")
             return
         data_bold = data_font_bold(_SECTION)
-        y = pad
+        y = card.top() + pad
         if cfg.get("show_battery", True):
-            pct = d.get("battery_pct")
-            bar = QRectF(pad, y, w - 2 * pad, h * 0.28)
-            draw_dark_cell(p, bar, _SECTION, radius=8.0)
-            inner = bar.adjusted(4, 4, -4, -4)
+            pct = d.get("battery_pct") if d.get("have_hybrid") else None
+            if edit and pct is None:
+                pct = 62.0
+            bar_h = max(28.0, h * 0.28)
+            bar = QRectF(card.left() + pad, y, card.width() - 2 * pad, bar_h)
+            draw_dark_cell(p, bar, _SECTION, radius=cell_radius(bar_h))
+            inner = bar.adjusted(6, 6, -6, -6)
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(col("gauge_bg", _SECTION))
             p.drawRoundedRect(inner, 4, 4)
@@ -59,13 +64,12 @@ class ErsHybridWidget(QWidget):
                 p.setBrush(col("gauge_fill", _SECTION))
                 p.drawRoundedRect(QRectF(inner.left(), inner.top(), fw, inner.height()),
                                   4, 4)
-            p.setFont(tabfont(h * 0.22, bold=data_bold))
-            p.setPen(col("text", _SECTION))
-            lbl = hy.fmt_kj(d.get("battery_j"))
+            lbl = hy.fmt_kj(d.get("battery_j")) if d.get("have_hybrid") else "-- kJ"
             if isinstance(pct, (int, float)):
                 lbl = f"{pct:.0f}%  {lbl}"
-            p.drawText(bar, Qt.AlignmentFlag.AlignCenter, lbl)
-            y += bar.height() + pad * 0.5
+            draw_metric_row(p, bar.adjusted(8, 0, -8, 0), "ERS", lbl, _SECTION,
+                            data_bold=data_bold)
+            y += bar_h + pad * 0.4
         if cfg.get("show_lap_energy", True):
             used = d.get("used_lap")
             budget = d.get("budget_lap")
@@ -74,18 +78,22 @@ class ErsHybridWidget(QWidget):
                 line = f"{hy.fmt_kj(used)} / {hy.fmt_kj(budget)} lap"
             elif isinstance(used, (int, float)):
                 line = f"{hy.fmt_kj(used)} this lap"
-            p.setFont(tfont(h * 0.18, bold=False))
-            p.setPen(col("muted", _SECTION))
-            p.drawText(QRectF(pad, y, w - 2 * pad, h * 0.14),
-                       Qt.AlignmentFlag.AlignCenter, line)
-            y += h * 0.15
-        pills = []
-        if cfg.get("show_boost", True) and d.get("boost_active"):
-            pills.append("BOOST")
-        if cfg.get("show_p2p", True) and d.get("p2p_active"):
-            pills.append("P2P")
-        if pills:
-            p.setFont(tfont(h * 0.16, bold=True))
-            p.setPen(col("pill", _SECTION))
-            p.drawText(QRectF(pad, y, w - 2 * pad, h * 0.12),
-                       Qt.AlignmentFlag.AlignCenter, "  ".join(pills))
+            elif edit:
+                line = "-- / -- lap"
+            row_h = max(20.0, h * 0.14)
+            row = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h)
+            draw_dark_cell(p, row, _SECTION, radius=cell_radius(row_h))
+            draw_metric_row(p, row.adjusted(8, 0, -8, 0), "LAP", line, _SECTION)
+            y += row_h + pad * 0.35
+        chip_h = max(18.0, h * 0.12)
+        chip_w = (card.width() - 2 * pad - pad * 0.5) / 2
+        x = card.left() + pad
+        if cfg.get("show_boost", True):
+            active = bool(d.get("boost_active"))
+            draw_status_chip(p, QRectF(x, y, chip_w, chip_h), "BOOST", _SECTION,
+                             active=active)
+            x += chip_w + pad * 0.5
+        if cfg.get("show_p2p", True):
+            active = bool(d.get("p2p_active"))
+            draw_status_chip(p, QRectF(x, y, chip_w, chip_h), "P2P", _SECTION,
+                             active=active)

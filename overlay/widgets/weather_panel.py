@@ -9,10 +9,12 @@ from PyQt6.QtGui import QPainter, QPen
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import col, draw_card
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_metric_row,
+                     draw_section_header, panel_pad)
 from .fonts import data_font_bold, tfont
 
 _SECTION = "weather_panel"
+_PREVIEW = ("SKY", "WET", "TEMP", "WIND")
 
 
 class WeatherPanelWidget(QWidget):
@@ -37,13 +39,16 @@ class WeatherPanelWidget(QWidget):
         w, h = float(self.width()), float(self.height())
         d = self.data or {}
         cfg = config.CFG.get(_SECTION, {})
-        if not d and not d.get("edit"):
-            pass
-        draw_card(p, w, h, _SECTION)
-        pad = max(6.0, h * 0.08)
-        y = pad
-        lh = (h - 2 * pad) / 5.0
+        card, radius = draw_card(p, w, h, _SECTION)
+        pad = panel_pad(h)
+        y = card.top() + pad
         data_bold = data_font_bold(_SECTION)
+        if cfg.get("show_title", True):
+            hh = max(22.0, h * 0.12)
+            hdr = QRectF(card.left() + pad, y, card.width() - 2 * pad, hh)
+            draw_section_header(p, hdr, "WEATHER", _SECTION, radius_top=radius)
+            y += hh + pad * 0.35
+
         lines: list[tuple[str, str, str]] = []
         if cfg.get("show_skies", True):
             skies = d.get("skies") or "\u2014"
@@ -54,8 +59,7 @@ class WeatherPanelWidget(QWidget):
                 extra.append(f"{int(hum)}% RH")
             if fog is not None:
                 extra.append(f"Fog {float(fog):.0f}%")
-            sub = "  ".join(extra) if extra else ""
-            lines.append(("SKY", str(skies), sub))
+            lines.append(("SKY", str(skies), "  ".join(extra) if extra else ""))
         if cfg.get("show_rain", True):
             wet = d.get("track_wetness")
             rain = d.get("rain_intensity")
@@ -82,32 +86,29 @@ class WeatherPanelWidget(QWidget):
                 sub = f"{arrow} {abs(trend):.1f}\u00b0"
             lines.append(("TEMP", "  ".join(ts) if ts else "\u2014", sub))
         if cfg.get("show_wind", False):
-            wd = d.get("wind_dir")
             wv = d.get("wind_vel")
             ws = "\u2014"
             if isinstance(wv, (int, float)):
                 ws = f"{config.conv_speed(wv):.0f} {config.speed_unit()}"
             lines.append(("WIND", ws, ""))
 
+        if not lines and d.get("edit"):
+            lines = [(lbl, "\u2014", "") for lbl in _PREVIEW[:4]]
+
+        body_h = max(card.bottom() - pad - y, 40.0)
+        row_h = body_h / max(1, len(lines))
+        rad = cell_radius(row_h)
         for label, val, sub in lines[:5]:
-            p.setFont(tfont(lh * 0.32, bold=True))
-            p.setPen(col("header", _SECTION))
-            p.drawText(QRectF(pad, y, w * 0.22, lh), Qt.AlignmentFlag.AlignLeft, label)
-            p.setFont(tfont(lh * 0.34, bold=data_bold))
-            p.setPen(col("text", _SECTION))
-            p.drawText(QRectF(pad + w * 0.22, y, w * 0.55, lh),
-                       Qt.AlignmentFlag.AlignLeft, val)
-            if sub:
-                p.setFont(tfont(lh * 0.30, bold=False))
-                p.setPen(col("muted", _SECTION))
-                p.drawText(QRectF(w - pad - w * 0.18, y, w * 0.16, lh),
-                           Qt.AlignmentFlag.AlignRight, sub)
-            y += lh
+            rect = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h - 3)
+            draw_dark_cell(p, rect, _SECTION, radius=rad)
+            draw_metric_row(p, rect.adjusted(8, 0, -8, 0), label, val, _SECTION,
+                            sub=sub, data_bold=data_bold)
+            y += row_h
 
         if cfg.get("show_wind", False) and d.get("wind_dir") is not None:
-            cx = w - pad - lh * 0.6
-            cy = pad + lh * 0.5
-            r = lh * 0.35
+            cx = card.right() - pad - row_h * 0.4
+            cy = card.top() + pad + row_h * 0.55
+            r = row_h * 0.25
             wd = float(d["wind_dir"])
             ang = math.radians(wd)
             p.setPen(QPen(col("wind", _SECTION), 1.5))
