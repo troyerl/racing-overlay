@@ -48,6 +48,7 @@ from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QP
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
+from .. import traffic as tr
 from . import icons
 from .chrome import col, draw_dark_cell, draw_panel_rect, draw_row_divider
 from .fonts import data_font_bold, tabfont, tfont
@@ -146,6 +147,118 @@ def _f_tires(d):
     return [("L", ls), ("R", rs)]
 
 
+def _f_tires_4(d):
+    keys = (("FL", "tire_lf"), ("FR", "tire_rf"),
+            ("RL", "tire_lr"), ("RR", "tire_rr"))
+    rows = []
+    for lbl, k in keys:
+        v = _num(d, k)
+        rows.append((lbl, f"{v * 100:.0f}%" if v is not None else "--"))
+    return rows
+
+
+def _f_tire_temp(d):
+    v = _num(d, "tire_temp_max")
+    if v is not None:
+        t = config.conv_temp(v)
+        return f"{t:.0f}\u00b0" if t is not None else "--"
+    keys = (("FL", "tire_temp_lf"), ("FR", "tire_temp_rf"),
+            ("RL", "tire_temp_lr"), ("RR", "tire_temp_rr"))
+    rows = []
+    for lbl, k in keys:
+        tv = _num(d, k)
+        if tv is not None:
+            t = config.conv_temp(tv)
+            rows.append((lbl, f"{t:.0f}\u00b0" if t is not None else "--"))
+        else:
+            rows.append((lbl, "--"))
+    if rows and all(r[1] == "--" for r in rows):
+        return "--"
+    return rows
+
+
+def _f_fuel_pct(d):
+    v = _num(d, "fuel_pct")
+    return f"{v * 100:.0f}%" if v is not None else "--"
+
+
+def _f_fuel_burn(d):
+    v = _num(d, "fuel_burn")
+    if v is None:
+        return "--"
+    cv = config.conv_fuel(v)
+    return f"{cv:.1f} {config.fuel_unit()}/h" if cv is not None else "--"
+
+
+def _f_delta_key(key):
+    def fmt(d):
+        v = _num(d, key)
+        return signed_delta(v, places=2) if v is not None else "--"
+    return fmt
+
+
+def _f_time_remain(d):
+    v = _num(d, "time_remain")
+    return clock(v) if v is not None else "--"
+
+
+def _f_class_pos(d):
+    pos, total = _num(d, "class_pos"), _num(d, "class_total")
+    if pos is not None and total and total > 0:
+        return f"P{int(pos)}/{int(total)}"
+    return f"P{int(pos)}" if pos is not None else "--"
+
+
+def _f_inc_team(d):
+    v = _num(d, "incidents_team")
+    return f"{int(v)}x" if v is not None else "--"
+
+
+def _f_inc_limit(d):
+    count = _num(d, "incidents")
+    limit = _num(d, "incident_limit")
+    if count is not None and limit is not None and limit > 0:
+        return f"{int(count)}/{int(limit)}x"
+    if count is not None:
+        return f"{int(count)}x"
+    return "--"
+
+
+def _f_dc(key, suffix=""):
+    def fmt(d):
+        v = _num(d, key)
+        if v is None:
+            return "--"
+        if suffix == "%":
+            return f"{v:.0f}%"
+        return f"{v:.0f}"
+    return fmt
+
+
+def _f_engine_warn(d):
+    w = d.get("engine_warnings")
+    return tr.engine_warning_text(w)
+
+
+def _f_voltage(d):
+    v = _num(d, "voltage")
+    return f"{v:.1f}V" if v is not None else "--"
+
+
+def _f_gap_ahead(d):
+    v = _num(d, "gap_ahead")
+    return f"+{v:.1f}" if v is not None else "--"
+
+
+def _f_gap_behind(d):
+    v = _num(d, "gap_behind")
+    return f"+{v:.1f}" if v is not None else "--"
+
+
+def _f_lap_corners(d):
+    return str(d.get("lap_corners") or "--")
+
+
 def _f_inc(d):
     v = _num(d, "incidents")
     return f"{int(v)}x" if v is not None else "--"
@@ -218,6 +331,28 @@ METRICS: dict = {
     "irating": ("iR", _f_irating),
     "air_temp": ("A", _f_temp("air_temp")),
     "track_temp": ("T", _f_temp("track_temp")),
+    "tires_4": ("TIRE", _f_tires_4),
+    "tire_temp": ("TEMP", _f_tire_temp),
+    "fuel_pct": ("FUEL%", _f_fuel_pct),
+    "fuel_burn": ("BURN", _f_fuel_burn),
+    "delta_best": ("BEST", _f_delta_key("delta_best")),
+    "delta_optimal": ("OPT", _f_delta_key("delta_optimal")),
+    "time_remain": ("TGO", _f_time_remain),
+    "class_pos": ("CPOS", _f_class_pos),
+    "incidents_team": ("TEAM", _f_inc_team),
+    "incidents_limit": ("INC", _f_inc_limit),
+    "dc_brake_bias": ("BB", _f_dc("dc_brake_bias", "%")),
+    "dc_tc": ("TC", _f_dc("dc_traction_control")),
+    "dc_abs": ("ABS", _f_dc("dc_abs")),
+    "dc_fuel_mix": ("MIX", _f_dc("dc_fuel_mixture")),
+    "dc_tire_set": ("SET", _f_dc("dc_tire_set")),
+    "engine_warn": ("ENG", _f_engine_warn),
+    "oil_temp": ("OIL", _f_temp("oil_temp")),
+    "water_temp": ("H2O", _f_temp("water_temp")),
+    "voltage": ("V", _f_voltage),
+    "gap_ahead": ("AHD", _f_gap_ahead),
+    "gap_behind": ("BHD", _f_gap_behind),
+    "lap_corners": ("COR", _f_lap_corners),
 }
 
 # Order used to populate dropdowns in the settings editor.

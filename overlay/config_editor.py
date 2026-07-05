@@ -77,8 +77,9 @@ ENUMS = {
     "units": ["metric", "imperial"],
     "center_mode": ["ring", "pedals"],
     "car_label": ["number", "position"],
-    "delta_mode": ["previous", "best"],
-    "mode": ["session_best", "best_lap", "optimal"],
+    "delta_mode": ["previous", "best", "personal_best"],
+    "mode": ["session_best", "best_lap", "optimal", "last_lap", "leader_last"],
+    "reference_mode": ["best", "last_lap"],
     "rotation": [0, 90, 180, 270],
     "font_family": FONT_CHOICES,
     "tabular_font_family": [""] + FONT_CHOICES,
@@ -119,8 +120,11 @@ OPTION_LABELS = {
     "number": "Car number",
     # laptime log delta baseline
     "previous": "Previous lap", "best": "Session best lap",
+    "personal_best": "Personal best lap",
     # delta bar reference lap (session_best reuses the label above)
     "best_lap": "My best lap", "optimal": "Optimal lap",
+    "last_lap": "Last completed lap", "leader_last": "Leader last lap",
+    "last_lap_ref": "Last lap (stint)", "best_ref": "Personal best lap",
     # map rotation (degrees clockwise)
     0: "0\u00b0 (default)", 90: "90\u00b0 clockwise",
     180: "180\u00b0", 270: "270\u00b0 clockwise",
@@ -162,6 +166,11 @@ LABEL_OVERRIDES = {
     "radar.show_rear": "Rear sensing",
     "radar.side_span_pct": "Side marker travel (lap fraction)",
     "radar.side_proximity_color": "Fade side marker yellow\u2192red by overlap",
+    "radar.show_side_labels": "Car # on side markers",
+    "radar.closing_rate_color": "Tint side markers by closing speed",
+    "radar.closing_rate_full": "Closing speed for full red tint (m/s)",
+    "radar.show_clear_timer": "Show blind-spot clear timer",
+    "radar.alongside_zone_pct": "Alongside lap-% window for side car",
     "inputs.history_seconds": "Trace length (seconds)",
     "inputs.label_text": "Title text",
     "inputs.show_label": "Show title tab",
@@ -254,6 +263,8 @@ _SLOT_COMMON = [
     "session_time", "race_time", "lap", "incidents", "track_name",
     "track_temp", "air_temp", "best_lap", "session_best",
     "local_time", "sim_time", "cpu", "mem",
+    "laps_remain", "incident_limit", "fast_repairs",
+    "weather", "track_wetness", "session_type",
 ]
 _SLOT_STANDINGS = _SLOT_COMMON + ["order_pill", "title", "count"]
 SECTION_ITEMS = {
@@ -274,6 +285,15 @@ COLUMN_LABELS = {
     "badge": "Status badge", "position": "Position", "car_number": "Car number",
     "name": "Driver name", "license": "License", "irating": "iRating",
     "pit": "Pit", "gap": "Gap", "last_lap": "Last lap", "best_lap": "Best lap",
+    "class_pos": "Class position", "status": "Track status",
+    "car_flag": "Car flag", "laps": "Lap count",
+    "gap_ahead": "Interval ahead", "gap_leader": "Gap to leader",
+    "closing": "Closing rate", "qual_pos": "Qual position",
+    "qual_best": "Qual best lap", "gap_pole": "Gap to pole",
+    "team": "Team name", "nickname": "Nickname",
+    "lap": "Lap number", "time": "Lap time", "delta": "Delta",
+    "temp": "Track temp", "sectors": "Sector splits", "fuel": "Fuel used",
+    "tires": "Tire set", "incidents": "Incidents", "tag": "Lap tag",
 }
 
 ACCENT = "#46df7a"        # neon green (matches the dash)
@@ -300,6 +320,11 @@ TAB_COLORS = {
     "Lap Compare": "#ffb43a",   # amber
     "Sector Timing": "#e07bff", # magenta
     "Map": "#5aa9ff",           # blue
+    "Tire Panel": "#ff9416",    # orange
+    "Pit Board": "#ffd23a",     # yellow
+    "Weather Panel": "#5aa9ff", # blue
+    "Leaderboard Strip": "#a98bff",
+    "Ers Hybrid": "#46df7a",
 }
 
 # Section keys shown under the "Settings" top tab (global, non-widget config).
@@ -342,7 +367,8 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     "standings": _TABLE_SETTING_GROUPS,
     "laptime_log": [
         ("Content", [
-            "rows", "delta_mode", "show_header", "temp_icon", "text_scale",
+            "rows", "delta_mode", "column_order", "show_header", "temp_icon",
+            "text_scale",
         ]),
         ("Typography", ["font_scale", "header_font_scale", "row_dividers",
                         "data_font_bold"]),
@@ -355,9 +381,15 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     "fuel_calc": [
         ("Visibility", [
             "show_title", "show_pill", "show_add", "show_gauge", "show_stats",
-            "show_strip", "show_time", "show_laps",
+            "show_strip", "show_time", "show_laps", "show_live_burn",
+            "show_tank_pct", "show_stints", "show_low_fuel_alert",
+            "show_pit_compare",
         ]),
-        ("Content", ["title", "history_laps", "text_scale"]),
+        ("Content", [
+            "title", "history_laps", "pit_loss_seconds", "stint_laps",
+            "legal_fuel_buffer_l", "low_fuel_laps_threshold",
+            "low_fuel_time_threshold", "text_scale",
+        ]),
         ("Row layout", [
             "row_height_px", "max_row_height_frac", "stats_header_font_scale",
             "stats_row_font_scale", "corner_radius_frac", "row_dividers",
@@ -368,7 +400,9 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     "radar": [
         ("Behavior", [
             "range_pct", "show_front", "show_rear", "side_span_pct",
-            "side_proximity_color", "ease_side_tau", "ease_glow_tau",
+            "side_proximity_color", "show_side_labels", "closing_rate_color",
+            "closing_rate_full", "show_clear_timer", "alongside_zone_pct",
+            "ease_side_tau", "ease_glow_tau",
         ]),
         ("Display", ["show_nose", "show_axis", "show_panel", "text_scale"]),
         ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold", "sizes"]),
@@ -406,8 +440,9 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Trace", [
             "history_seconds", "show_throttle", "show_brake", "show_clutch",
-            "show_steering", "show_brake_threshold", "brake_threshold",
-            "line_width",
+            "show_steering", "show_handbrake", "show_steering_torque",
+            "show_tc_abs", "show_shift_markers", "show_brake_threshold",
+            "brake_threshold", "line_width",
         ]),
         ("Typography", ["text_scale", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
@@ -418,13 +453,19 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ("Colors", ["colors"]),
     ],
     "flags": [
-        ("Content", ["idle_text", "text_scale"]),
+        ("Content", [
+            "idle_text", "show_incident_warning", "incident_warn_pct",
+            "show_blue_detail", "show_pit_limiter", "show_finish_position",
+            "text_scale",
+        ]),
         ("Layout", ["row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "lap_compare": [
         ("Content", [
-            "max_turns", "min_time_loss", "show_live_delta", "show_graph",
+            "reference_mode", "max_turns", "min_time_loss", "show_live_delta",
+            "show_graph", "show_brake_markers", "show_lift_markers",
+            "show_gear_rpm", "exclude_wet_laps", "wetness_delta_threshold",
             "text_scale",
         ]),
         ("Row layout", [
@@ -434,15 +475,49 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ("Colors", ["colors"]),
     ],
     "sector_timing": [
-        ("Content", ["sectors", "text_scale"]),
+        ("Content", [
+            "sectors", "show_sector_delta", "show_predicted_lap",
+            "highlight_active_sector_on_map", "text_scale",
+        ]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "tire_panel": [
+        ("Display", ["show_wear", "show_temp", "show_pressure", "warn_wear_pct",
+                     "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "pit_board": [
+        ("Content", ["show_title", "show_pressures", "show_fast_repairs",
+                     "show_compound", "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "weather_panel": [
+        ("Display", ["show_skies", "show_rain", "show_temps", "show_wind",
+                     "show_trend", "trend_window_seconds", "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "leaderboard_strip": [
+        ("Content", ["rows", "show_name", "show_car_number", "show_class_color",
+                     "highlight_player", "text_scale"]),
+        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "ers_hybrid": [
+        ("Display", ["show_battery", "show_lap_energy", "show_boost", "show_p2p",
+                     "text_scale"]),
         ("Layout", ["row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "map": [
         ("Display", [
             "show_infield", "show_corners", "auto_corners", "show_start_finish",
-            "show_wind", "show_panel", "show_pace_car", "show_sector_boundaries",
-            "show_traffic_markers",
+            "show_wind", "show_expanded_weather", "show_car_status",
+            "show_drs_zones", "show_p2p_zones", "show_panel", "show_pace_car",
+            "show_sector_boundaries", "show_traffic_markers",
         ]),
         ("Traffic & markers", [
             "lap_proximity_pct", "marker_hold_seconds", "car_label",
@@ -1341,9 +1416,26 @@ class ConfigEditor(QWidget):
         self.nav_rail = QWidget()
         self.nav_rail.setObjectName("navRail")
         self.nav_rail.setFixedWidth(196)
-        self.nav_lay = QVBoxLayout(self.nav_rail)
+        nav_rail_outer = QVBoxLayout(self.nav_rail)
+        nav_rail_outer.setContentsMargins(0, 0, 0, 0)
+        nav_rail_outer.setSpacing(0)
+        self.nav_scroll = QScrollArea()
+        self.nav_scroll.setObjectName("navScroll")
+        self.nav_scroll.setWidgetResizable(True)
+        self.nav_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.nav_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.nav_scroll.viewport().setObjectName("navScrollViewport")
+        self.nav_scroll.setStyleSheet(
+            "QScrollArea#navScroll { background: transparent; border: none; }"
+            " QWidget#navScrollViewport { background: transparent; }")
+        self.nav_inner = QWidget()
+        self.nav_inner.setObjectName("navInner")
+        self.nav_lay = QVBoxLayout(self.nav_inner)
         self.nav_lay.setContentsMargins(8, 12, 8, 12)
         self.nav_lay.setSpacing(2)
+        self.nav_scroll.setWidget(self.nav_inner)
+        nav_rail_outer.addWidget(self.nav_scroll)
         self.stack = QStackedWidget()
         body.addWidget(self.nav_rail)
         body.addWidget(self.stack, 1)
@@ -1710,10 +1802,15 @@ class ConfigEditor(QWidget):
     def _select(self, index: int) -> None:
         self._cur_index = index
         self.stack.setCurrentIndex(index)
+        active_nav = None
         for idx, (key, _t) in enumerate(self._sections):
             nav = self._nav_items.get(key)
             if nav:
                 nav.setSelected(idx == index)
+                if idx == index:
+                    active_nav = nav
+        if active_nav is not None:
+            self.nav_scroll.ensureWidgetVisible(active_nav)
         self._sync_corner_edit_mode()
         if (0 <= index < len(self._sections)
                 and self._sections[index][0] == "__scan__"):
@@ -2145,9 +2242,15 @@ class ConfigEditor(QWidget):
             lay.addWidget(acc)
         elif key == "column_order" and isinstance(default_val, list):
             acc = self._accordion("Column order", cur, color, expanded=True)
+            if len(path) >= 1 and path[-1] == "laptime_log" or (
+                    len(cur) >= 2 and cur[-2] == "laptime_log"):
+                cols = config.LAPTIME_LOG_COLUMNS
+                labels = COLUMN_LABELS
+            else:
+                cols = config.TABLE_COLUMNS
+                labels = COLUMN_LABELS
             acc.body_layout().addWidget(
-                OrderEditor(_get_at(self.working, cur), COLUMN_LABELS,
-                            config.TABLE_COLUMNS,
+                OrderEditor(_get_at(self.working, cur), labels, cols,
                             lambda x, p=cur: self._set(p, x)))
             lay.addWidget(acc)
         elif isinstance(default_val, dict):

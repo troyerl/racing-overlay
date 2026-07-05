@@ -5,6 +5,33 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.44.0 - 2026-07-05
+
+- **Telemetry expansion (widgets 6–12).** Lap log, fuel calc, sector timing, lap
+  compare, delta bar, inputs, and flags gained optional columns, metrics, and
+  display modes (sector splits per lap, fuel/incident/tag columns, personal-best
+  deltas, live burn and pit-window hints, sector deltas and map highlight,
+  handbrake/torque/TC traces, incident-limit and pit-limiter warnings, and more).
+- **Five new widgets (off by default).** Tire panel (4-corner wear/temp/pressure),
+  pit board (requested services, compound, fuel, fast repairs, optional pressures),
+  weather panel (skies, rain, temps with trend, wind), leaderboard strip (top-N
+  with gaps), and ERS/hybrid readout for supported series.
+- **Richer dash and tables.** Dash slots now include four-tire wear/temps, fuel
+  %, burn rate, optimal/best deltas, time remaining, class position, team/limit
+  incidents, in-car adjustments, engine/oil/water/voltage, gap ahead/behind,
+  and a compact corner-loss strip. Relative and standings tables add class
+  position, on-track status, car flags, lap count, gap-to-leader/ahead, and
+  closing-rate columns; radar can show car numbers, closing tint, and a clear
+  timer.
+- **Lower CPU, same animations.** Telemetry reads and widget updates are gated
+  on what you actually show — hidden widgets and unused columns do no work.
+  Redundant repaints are skipped where safe; dash pedal easing, delta-bar
+  deflection, inputs scroll, and radar glow are unchanged.
+- **Correctness fixes.** Sector timing advances when only the lap log sectors
+  column is on; fuel-per-lap tracking runs for the lap log fuel column even when
+  the fuel widget is hidden; lap compare data stays fresh for the dash corner
+  strip when the full lap compare panel is off.
+
 ## 1.43.1 - 2026-07-02
 
 - **Fix overlay startup crash.** Starting the overlay in edit mode without iRacing

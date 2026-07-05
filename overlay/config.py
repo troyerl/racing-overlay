@@ -33,7 +33,14 @@ CONFIG_FILE = paths.data_file("overlay_config.json")
 # from the settings editor). "stripe" is not a column -- it's a sub-toggle of the
 # position cell -- so it lives in the table's "columns" dict instead.
 TABLE_COLUMNS = ["badge", "position", "car_number", "name", "license",
-                 "irating", "pit", "gap", "last_lap", "best_lap"]
+                 "irating", "pit", "gap", "last_lap", "best_lap",
+                 "class_pos", "status", "car_flag", "laps",
+                 "gap_ahead", "gap_leader", "closing",
+                 "qual_pos", "qual_best", "gap_pole",
+                 "team", "nickname"]
+
+LAPTIME_LOG_COLUMNS = ("lap", "time", "delta", "temp", "sectors", "fuel",
+                       "tires", "incidents", "tag")
 
 # Shared styling defaults for the timing tables. Each table (Relative, Standings)
 # gets its *own* copy of these so they can be themed and sized independently from
@@ -78,6 +85,18 @@ _TABLE_STYLE: dict = {
         "pit": 2.10,
         "last_lap": 2.90,
         "best_lap": 2.90,
+        "class_pos": 1.35,
+        "status": 1.50,
+        "car_flag": 1.35,
+        "laps": 1.35,
+        "gap_ahead": 1.70,
+        "gap_leader": 1.70,
+        "closing": 1.80,
+        "qual_pos": 1.35,
+        "qual_best": 2.90,
+        "gap_pole": 1.70,
+        "team": 2.20,
+        "nickname": 2.20,
         "gutter": 0.18,
     },
     "colors": {
@@ -114,6 +133,14 @@ _TABLE_STYLE: dict = {
         "badge_speaking_border": "#ffffffcc",
         "badge_empty_border": "#ffffff28",
         "badge_empty_fill": "#00000078",
+        "flag_black": "#1a1a1acc",
+        "flag_black_text": "#ffffff",
+        "flag_meatball": "#ff9416cc",
+        "flag_meatball_text": "#141414",
+        "flag_dq": "#ff5050cc",
+        "flag_dq_text": "#ffffff",
+        "flag_furled": "#ffd23acc",
+        "flag_furled_text": "#141414",
     },
     "license_colors": {
         "R": "#d34a3c",
@@ -179,7 +206,8 @@ DEFAULTS: dict = {
         # pick which item goes in each (or "none"). Any item works in any slot:
         #   sof, class_sof, position, class_position, session_time, race_time,
         #   lap, incidents, track_name, track_temp, air_temp, best_lap,
-        #   session_best, local_time, sim_time, cpu, mem.
+        #   session_best, local_time, sim_time, cpu, mem, laps_remain,
+        #   incident_limit, fast_repairs, weather, track_wetness, session_type.
         "header": {"left": "sof", "center": "none", "right": "position"},
         "footer": {"left": "race_time", "center": "lap", "right": "incidents"},
         # Per-section: show a Font Awesome icon instead of the text label.
@@ -243,9 +271,11 @@ DEFAULTS: dict = {
         "max_row_height_frac": 0.14,
         # Show a thermometer icon before the track temperature column.
         "temp_icon": True,
-        # What DELTA compares each lap against: "previous" (the lap before it) or
-        # "best" (your best lap so far this session).
+        # What DELTA compares each lap against: "previous" (the lap before it),
+        # "best" (session best in log), or "personal_best" (LapBestLapTime).
         "delta_mode": "previous",
+        # Visible columns in order (optional extras default off).
+        "column_order": ["lap", "time", "delta", "temp"],
         "colors": {
             **_WIDGET_CHROME_COLORS,
             # Vertical gradient card matching the dash/tables.
@@ -282,6 +312,16 @@ DEFAULTS: dict = {
         "show_strip": True,      # PIT lap-timeline strip
         "show_time": True,       # TIME UNTIL EMPTY box
         "show_laps": True,       # LAPS UNTIL EMPTY box
+        "show_live_burn": False,
+        "show_tank_pct": False,
+        "show_stints": False,
+        "show_low_fuel_alert": True,
+        "show_pit_compare": False,
+        "pit_loss_seconds": 25.0,
+        "stint_laps": 15,
+        "legal_fuel_buffer_l": 2.0,
+        "low_fuel_laps_threshold": 2.0,
+        "low_fuel_time_threshold": 120.0,
         # Stats grid row height (0 = scale to fit the stats block).
         "row_height_px": 0,
         "max_row_height_frac": 0.14,
@@ -343,6 +383,16 @@ DEFAULTS: dict = {
         # bumper. This is an approximation (iRacing gives no true sideways
         # distance), so it's off by default -- the marker is plain red otherwise.
         "side_proximity_color": False,
+        # Car number on the side marker (uses EstTime + lap-% alongside zone).
+        "show_side_labels": False,
+        # Tint side markers by EstTime closing rate (yellow -> red).
+        "closing_rate_color": False,
+        # Closing rate (m/s) that maps to full red tint.
+        "closing_rate_full": 1.5,
+        # Show seconds since blind spot last cleared (CarLeftRight clear).
+        "show_clear_timer": False,
+        # Lap-% window treated as "alongside" for side car correlation.
+        "alongside_zone_pct": 0.004,
         "show_nose": True,
         "show_axis": True,
         # Draw a rounded card behind the radar (matches the dash panels).
@@ -519,6 +569,10 @@ DEFAULTS: dict = {
         "show_brake": True,
         "show_clutch": False,
         "show_steering": False,
+        "show_handbrake": False,
+        "show_steering_torque": False,
+        "show_tc_abs": False,
+        "show_shift_markers": False,
         # A horizontal "trail-braking" reference line. When the brake trace climbs
         # above brake_threshold percent (0..100), that part turns the over color.
         "show_brake_threshold": False,
@@ -569,8 +623,7 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        # Reference lap the delta is measured against: "session_best" (overall),
-        # "best_lap" (your own best) or "optimal" (iRacing's best-sectors lap).
+        # Reference lap: session_best, best_lap, optimal, last_lap, leader_last.
         "mode": "session_best",
         # Seconds of delta at full bar deflection (smaller = more sensitive).
         "range": 1.0,
@@ -597,6 +650,11 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         # Text shown when no flag is flying.
         "idle_text": "TRACK CLEAR",
+        "show_incident_warning": True,
+        "incident_warn_pct": 0.75,
+        "show_blue_detail": True,
+        "show_pit_limiter": True,
+        "show_finish_position": True,
         "colors": {
             **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
@@ -650,6 +708,12 @@ DEFAULTS: dict = {
         "show_live_delta": True,
         # Show the delta-over-distance sparkline.
         "show_graph": True,
+        "reference_mode": "best",
+        "show_brake_markers": False,
+        "show_lift_markers": False,
+        "show_gear_rpm": False,
+        "exclude_wet_laps": True,
+        "wetness_delta_threshold": 5.0,
         "colors": {
             **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
@@ -675,6 +739,9 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         # Fallback sector count when the session provides no sector layout.
         "sectors": 3,
+        "show_sector_delta": False,
+        "show_predicted_lap": False,
+        "highlight_active_sector_on_map": False,
         "colors": {
             **_WIDGET_CHROME_COLORS,
             "bg_top": "#1b1f26",
@@ -690,6 +757,8 @@ DEFAULTS: dict = {
             "sec_running_edge": "#46df7a",
             "sec_idle": "#161a20",
             "sec_text": "#dfe3ea",
+            "faster": "#46df7a",
+            "slower": "#e23b3b",
         },
     },
     "map": {
@@ -739,6 +808,13 @@ DEFAULTS: dict = {
         "lap_proximity_pct": 0.04,
         # Show a small wind compass (arrow + speed) in the map's corner.
         "show_wind": True,
+        # Rain / track wetness readout under the wind compass.
+        "show_expanded_weather": False,
+        # Small status badge on car dots (pit / off / flags).
+        "show_car_status": True,
+        # Optional DRS / push-to-pass zone highlights (track JSON drs_zones / p2p_zones).
+        "show_drs_zones": False,
+        "show_p2p_zones": False,
         # Pace car dot (CarIsPaceCar) and sector / traffic marker overlays.
         "show_pace_car": True,
         "show_sector_boundaries": True,
@@ -792,6 +868,16 @@ DEFAULTS: dict = {
             "speaking_glow": "#46df7a55",
             "speaking_badge_bg": "#22c55e",
             "speaking_badge_text": "#ffffff",
+            "status_pit": "#ffd23a",
+            "status_off": "#ff5050",
+            "status_garage": "#8b93a1",
+            "status_black": "#1a1a1a",
+            "status_meatball": "#ff9416",
+            "status_dq": "#ff5050",
+            "status_furled": "#ffd23a",
+            "drs_zone": "#46df7a88",
+            "p2p_zone": "#3aa0ff88",
+            "active_sector": "#ffd23a66",
             # Card background gradient + border, matching the dash style.
             "bg_top": "#1b1f26f2",
             "bg_bottom": "#0f1216f2",
@@ -802,6 +888,111 @@ DEFAULTS: dict = {
             "#ff5b5b", "#36d6d6", "#d6d636", "#7a8cff", "#ff8cce",
             "#5be0a0", "#c0c0c0",
         ],
+    },
+    "tire_panel": {
+        **_WIDGET_CHROME,
+        "show": False,
+        "text_scale": 1.0,
+        "show_wear": True,
+        "show_temp": True,
+        "show_pressure": False,
+        "warn_wear_pct": 30.0,
+        "colors": {
+            **_WIDGET_CHROME_COLORS,
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff28",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "header": "#ffd23a",
+            "wear": "#46df7a",
+            "warn": "#e23b3b",
+            "bar_bg": "#0b0e12",
+        },
+    },
+    "pit_board": {
+        **_WIDGET_CHROME,
+        "show": False,
+        "text_scale": 1.0,
+        "show_title": True,
+        "show_pressures": False,
+        "show_fast_repairs": True,
+        "show_compound": True,
+        "colors": {
+            **_WIDGET_CHROME_COLORS,
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff28",
+            "title": "#f4f6f8",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "checked": "#46df7a",
+            "active_bg": "#ffd23a",
+            "active_text": "#141414",
+        },
+    },
+    "weather_panel": {
+        **_WIDGET_CHROME,
+        "show": False,
+        "text_scale": 1.0,
+        "show_skies": True,
+        "show_rain": True,
+        "show_temps": True,
+        "show_wind": False,
+        "show_trend": True,
+        "trend_window_seconds": 300.0,
+        "colors": {
+            **_WIDGET_CHROME_COLORS,
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff28",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "header": "#9fd0ff",
+            "wind": "#9fd0ff",
+        },
+    },
+    "leaderboard_strip": {
+        **_WIDGET_CHROME,
+        "show": False,
+        "text_scale": 1.0,
+        "rows": 3,
+        "show_name": True,
+        "show_car_number": True,
+        "show_class_color": True,
+        "highlight_player": True,
+        "colors": {
+            **_WIDGET_CHROME_COLORS,
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff28",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "pos": "#ffd23a",
+            "player_row": "#ff941658",
+            "faster": "#46df7a",
+            "slower": "#e23b3b",
+        },
+    },
+    "ers_hybrid": {
+        **_WIDGET_CHROME,
+        "show": False,
+        "text_scale": 1.0,
+        "show_battery": True,
+        "show_lap_energy": True,
+        "show_boost": True,
+        "show_p2p": True,
+        "colors": {
+            **_WIDGET_CHROME_COLORS,
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff28",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "gauge_fill": "#46df7a",
+            "gauge_bg": "#0b0e12",
+            "pill": "#ffd23a",
+        },
     },
 }
 
@@ -1588,6 +1779,22 @@ def _clear_column_caches() -> None:
     _col_order_sig.clear()
 
 
+def laptime_log_column_order() -> list:
+    """Visible laptime-log columns in display order."""
+    order = CFG.get("laptime_log", {}).get("column_order")
+    if not order:
+        return ["lap", "time", "delta", "temp"]
+    result = []
+    for k in order:
+        if k in LAPTIME_LOG_COLUMNS and k not in result:
+            result.append(k)
+    return result or ["lap", "time", "delta", "temp"]
+
+
+def laptime_log_has_column(key: str) -> bool:
+    return key in laptime_log_column_order()
+
+
 def table_column_order(section: str) -> list:
     """Normalized list of visible columns (in order) for a table section.
 
@@ -1615,6 +1822,29 @@ def table_column_order(section: str) -> list:
 def has_column(section: str, key: str) -> bool:
     """True if the given column is currently visible in a table section."""
     return key in table_column_order(section)
+
+
+def any_table_column(*keys: str, sections=("relative", "standings")) -> bool:
+    """True if any listed column is visible in relative or standings."""
+    return any(has_column(s, k) for s in sections for k in keys)
+
+
+def dash_active_slots() -> set:
+    """Dash content slot metric keys currently in use."""
+    dc = CFG.get("dash", {})
+    return {dc.get(k) for k in (
+        "top_right", "primary_left", "primary_right",
+        "stat_left", "stat_right",
+        "strip_left", "strip_center", "strip_right")}
+
+
+def dash_metric_in_use(key: str) -> bool:
+    """True if a dash content slot is set to the given metric key."""
+    return key in dash_active_slots()
+
+
+def dash_uses_any(*keys: str) -> bool:
+    return any(dash_metric_in_use(k) for k in keys)
 
 
 def table_slot_items(section: str) -> set:

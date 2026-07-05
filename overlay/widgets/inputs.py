@@ -61,11 +61,24 @@ class InputTraceWidget(QWidget):
             v = self.data.get(key)
             return max(0.0, min(1.0, float(v))) if isinstance(v, (int, float)) else default
 
-        # Sample: (t, throttle, brake, clutch, steering, abs). Steering is already
-        # normalized 0..1 (0.5 = centered); abs is 1.0 while ABS is engaged.
+        # Sample: (t, throttle, brake, clutch, steering, abs, handbrake, torque, gear)
         abs_on = 1.0 if self.data.get("abs_active") else 0.0
-        self._hist.append((t, frac("throttle"), frac("brake"), frac("clutch"),
-                           frac("steer", 0.5), abs_on))
+        icfg = self._cfg()
+        hb = frac("handbrake") if icfg.get("show_handbrake") else 0.0
+        st = self.data.get("steer_torque")
+        if icfg.get("show_steering_torque") and isinstance(st, (int, float)):
+            torque = max(0.0, min(1.0, (float(st) + 1.0) / 2.0))
+        else:
+            torque = 0.0
+        sample_vals = (frac("throttle"), frac("brake"), frac("clutch"),
+                       frac("steer", 0.5))
+        gear = self.data.get("gear")
+        last = self._hist[-1] if self._hist else None
+        if last is not None and last[1:5] == sample_vals and last[8] == gear:
+            self.update()
+            return
+        self._hist.append((t, sample_vals[0], sample_vals[1], sample_vals[2],
+                           sample_vals[3], abs_on, hb, torque, gear))
         window = float(self._cfg().get("history_seconds", 6.0) or 6.0)
         cutoff = t - window
         while len(self._hist) > 2 and self._hist[0][0] < cutoff:
@@ -183,6 +196,10 @@ class InputTraceWidget(QWidget):
             self._line(p, 3, self._col("clutch"), to_pt, lw)
         if c.get("show_steering", False):
             self._line(p, 4, self._col("steering"), to_pt, lw)
+        if c.get("show_handbrake", False):
+            self._line(p, 6, self._col("muted"), to_pt, lw)
+        if c.get("show_steering_torque", False):
+            self._line(p, 7, self._col("steering"), to_pt, lw)
 
         thr = self._brake_threshold(c)
         if thr > 0:
@@ -194,6 +211,16 @@ class InputTraceWidget(QWidget):
 
         if c.get("show_brake", True):
             self._brake_line(p, to_pt, lw, thr, c)
+        if c.get("show_shift_markers") and len(self._hist) >= 2:
+            p.setPen(QPen(self._col("text"), 1.2))
+            prev_g = None
+            for entry in self._hist:
+                g = entry[8] if len(entry) > 8 else None
+                if prev_g is not None and g is not None and g != prev_g:
+                    pt = to_pt(entry[0], 0.5)
+                    p.drawLine(QPointF(pt.x(), rect.top() + 2),
+                               QPointF(pt.x(), rect.bottom() - 2))
+                prev_g = g
         p.setClipping(False)
 
     def _line(self, p, di, color, to_pt, lw) -> None:

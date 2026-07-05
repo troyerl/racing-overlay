@@ -9,8 +9,8 @@ last/best laps, and a row of sector cells colored purple when you've just matche
 your best for that sector.
 
 Widget data dict (built by SectorTimer.snapshot()):
-    cur_lap, last_lap, best_lap   lap times (seconds)
-    sectors   list of {"time", "status", "active"} per sector
+    cur_lap, last_lap, best_lap, predicted_lap
+    sectors   list of {"time", "status", "active", "delta"} per sector
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 from .. import config
 from .chrome import col, draw_card, draw_dark_cell, draw_edge_band
 from .fonts import data_font_bold, tabfont, tfont
-from .formats import clock, sec
+from .formats import clock, sec, signed_delta
 
 _SECTION = "sector_timing"
 
@@ -34,7 +34,8 @@ class SectorTimer:
         self.starts: list[float] | None = None
         self.cur: list = []          # completed splits for the in-progress lap
         self.last: list = []         # previous lap's splits
-        self.best: list = []         # best split seen per sector
+        self.best: list = []         # best split seen per sector (personal)
+        self.session_best: list = []  # fastest sector this session
         self.idx = 0                 # current sector index
         self._seg_start_t = 0.0      # lap time when the current sector began
         self._cur_lap_t = 0.0
@@ -49,6 +50,9 @@ class SectorTimer:
         if s != self.starts:
             self.starts = s
             self.cur, self.idx, self._seg_start_t, self._prev_pct = [], 0, 0.0, None
+
+    def reset_session(self) -> None:
+        self.session_best = []
 
     def update(self, pct, cur_lap_time, last_lap_time) -> None:
         if self.starts is None:
@@ -88,25 +92,73 @@ class SectorTimer:
             self.best.append(None)
         if self.best[i] is None or t < self.best[i]:
             self.best[i] = t
+        while len(self.session_best) <= i:
+            self.session_best.append(None)
+        if self.session_best[i] is None or t < self.session_best[i]:
+            self.session_best[i] = t
 
-    def snapshot(self, cur_lap, last_lap, best_lap) -> dict:
+    def predicted_lap(self) -> float | None:
+        """Sum of best sectors + current sector pace."""
+        n = len(self.starts or [])
+        if n <= 0:
+            return None
+        total = 0.0
+        have = False
+        for i in range(n):
+            if i < len(self.cur):
+                t = self.cur[i]
+                if isinstance(t, (int, float)) and t > 0:
+                    total += t
+                    have = True
+            elif i == self.idx:
+                running = max(0.0, (self._cur_lap_t or 0.0) - self._seg_start_t)
+                if running > 0:
+                    total += running
+                    have = True
+            else:
+                ref = None
+                if i < len(self.session_best) and self.session_best[i]:
+                    ref = self.session_best[i]
+                elif i < len(self.best) and self.best[i]:
+                    ref = self.best[i]
+                if isinstance(ref, (int, float)) and ref > 0:
+                    total += ref
+                    have = True
+        return total if have else None
+
+    def snapshot(self, cur_lap, last_lap, best_lap, *, show_delta=False) -> dict:
         n = len(self.starts or [0, 0, 0])
         sectors = []
         for i in range(n):
+            delta = None
             if i < len(self.cur):
                 t = self.cur[i]
                 best = self.best[i] if i < len(self.best) else None
                 status = ("best" if (t is not None and best is not None
                                      and t <= best + 1e-6) else "done")
-                sectors.append({"time": t, "status": status, "active": False})
+                if show_delta and t is not None and best is not None:
+                    delta = t - best
+                sectors.append({"time": t, "status": status, "active": False,
+                                "delta": delta})
             elif i == self.idx:
                 running = max(0.0, (self._cur_lap_t or 0.0) - self._seg_start_t)
-                sectors.append({"time": running, "status": "running", "active": True})
+                best = self.best[i] if i < len(self.best) else None
+                if show_delta and best is not None and running > 0:
+                    delta = running - best
+                sectors.append({"time": running, "status": "running",
+                                "active": True, "delta": delta})
             else:
                 last = self.last[i] if i < len(self.last) else None
-                sectors.append({"time": last, "status": "idle", "active": False})
-        return {"cur_lap": cur_lap, "last_lap": last_lap, "best_lap": best_lap,
-                "sectors": sectors}
+                sectors.append({"time": last, "status": "idle", "active": False,
+                                "delta": None})
+        return {
+            "cur_lap": cur_lap,
+            "last_lap": last_lap,
+            "best_lap": best_lap,
+            "predicted_lap": self.predicted_lap(),
+            "sectors": sectors,
+            "active_idx": self.idx,
+        }
 
 
 class SectorTimingWidget(QWidget):
@@ -129,17 +181,26 @@ class SectorTimingWidget(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         w, h = float(self.width()), float(self.height())
         d = self.data or {}
+        cfg = config.CFG.get(_SECTION, {})
         card, _radius = draw_card(p, w, h, _SECTION)
         data_bold = data_font_bold(_SECTION)
 
         pad = max(6.0, h * 0.08)
         iw = w - 2 * pad
-        p.setFont(tabfont(h * 0.30, bold=data_bold))
+        cur_h = h * 0.26 if cfg.get("show_predicted_lap") else h * 0.30
+        p.setFont(tabfont(cur_h, bold=data_bold))
         p.setPen(col("text", _SECTION))
-        p.drawText(QRectF(pad, pad, iw, h * 0.30),
+        p.drawText(QRectF(pad, pad, iw, cur_h),
                    Qt.AlignmentFlag.AlignCenter, clock(d.get("cur_lap")))
+        if cfg.get("show_predicted_lap") and d.get("predicted_lap"):
+            p.setFont(tfont(h * 0.11, bold=False))
+            p.setPen(col("muted", _SECTION))
+            p.drawText(QRectF(pad, pad + cur_h * 0.85, iw, h * 0.08),
+                       Qt.AlignmentFlag.AlignCenter,
+                       f"Pred {clock(d.get('predicted_lap'))}")
 
-        sub = QRectF(pad, pad + h * 0.30, iw, h * 0.18)
+        sub_top = pad + (h * 0.34 if cfg.get("show_predicted_lap") else h * 0.30)
+        sub = QRectF(pad, sub_top, iw, h * 0.18)
         draw_edge_band(p, sub, "header_bg", _SECTION, bottom_line=True)
         half = sub.width() / 2
         self._pair(p, QRectF(sub.left(), sub.top(), half, sub.height()),
@@ -149,13 +210,15 @@ class SectorTimingWidget(QWidget):
 
         sectors = d.get("sectors") or []
         if sectors:
-            top = pad + h * 0.52
+            top = sub.bottom() + h * 0.04
             ch = h - pad - top
             gap = iw * 0.03
             cw = (iw - gap * (len(sectors) - 1)) / len(sectors)
             x = pad
+            show_delta = cfg.get("show_sector_delta", False)
             for i, s in enumerate(sectors):
-                self._cell(p, QRectF(x, top, cw, ch), i + 1, s, data_bold)
+                self._cell(p, QRectF(x, top, cw, ch), i + 1, s, data_bold,
+                           show_delta=show_delta)
                 x += cw + gap
 
     def _pair(self, p, rect, label, value, data_bold) -> None:
@@ -168,7 +231,7 @@ class SectorTimingWidget(QWidget):
         p.drawText(rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                    value + "  ")
 
-    def _cell(self, p, rect, num, s, data_bold) -> None:
+    def _cell(self, p, rect, num, s, data_bold, *, show_delta=False) -> None:
         status = s.get("status")
         bg_key = {"best": "sec_best", "running": "sec_running",
                   "done": "sec_done"}.get(status, "sec_idle")
@@ -186,6 +249,15 @@ class SectorTimingWidget(QWidget):
                           rect.width(), rect.height() * 0.40),
                    Qt.AlignmentFlag.AlignCenter, f"S{num}")
         p.setFont(tabfont(rect.height() * 0.34, bold=data_bold))
-        p.drawText(QRectF(rect.left(), rect.center().y(),
-                          rect.width(), rect.height() * 0.45),
+        p.drawText(QRectF(rect.left(), rect.center().y() - rect.height() * 0.05,
+                          rect.width(), rect.height() * 0.40),
                    Qt.AlignmentFlag.AlignCenter, sec(s.get("time")))
+        if show_delta:
+            delta = s.get("delta")
+            if isinstance(delta, (int, float)) and abs(delta) >= 0.005:
+                p.setFont(tfont(rect.height() * 0.22, bold=False))
+                dc = col("slower", _SECTION) if delta > 0 else col("faster", _SECTION)
+                p.setPen(dc)
+                p.drawText(QRectF(rect.left(), rect.bottom() - rect.height() * 0.32,
+                                  rect.width(), rect.height() * 0.28),
+                           Qt.AlignmentFlag.AlignCenter, signed_delta(delta, 2))

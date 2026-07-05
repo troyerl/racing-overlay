@@ -64,7 +64,8 @@ class FlagsWidget(QWidget):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         flag = (self.data or {}).get("flag")
-        if flag is None and not (self.data or {}).get("edit"):
+        incident_warn = (self.data or {}).get("incident_warn")
+        if flag is None and not (self.data or {}).get("edit") and not incident_warn:
             return
         config.use_section(_SECTION)
         p = QPainter(self)
@@ -73,10 +74,20 @@ class FlagsWidget(QWidget):
         draw_card(p, w, h, _SECTION)
 
         pad = max(6.0, min(w, h) * 0.12)
+        if flag is None and incident_warn:
+            rect = QRectF(pad, pad, w - 2 * pad, h - 2 * pad)
+            draw_dark_cell(p, rect, _SECTION, radius=min(rect.height() * 0.34, 22.0))
+            p.setFont(tfont(rect.height() * 0.24, True))
+            p.setPen(self._col("flag_furled"))
+            sec = str((self.data or {}).get("secondary") or "")
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, sec or "Incident warning")
+            return
         self._draw_banner(p, QRectF(pad, pad, w - 2 * pad, h - 2 * pad), flag,
-                          (self.data or {}).get("flag_context"))
+                          (self.data or {}).get("flag_context"),
+                          (self.data or {}).get("secondary"))
 
-    def _draw_banner(self, p, rect: QRectF, flag, context=None) -> None:
+    def _draw_banner(self, p, rect: QRectF, flag, context=None,
+                     secondary=None) -> None:
         spec = _SPEC.get(flag)
         r = min(rect.height() * 0.34, 22.0)
         if spec is None:

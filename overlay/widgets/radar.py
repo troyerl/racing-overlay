@@ -20,7 +20,7 @@ All colors, sizes, easing and toggles come from config.CFG["radar"].
 from __future__ import annotations
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
@@ -53,7 +53,10 @@ class RadarWidget(QWidget):
         super().__init__(parent)
         self.data = {"left": False, "right": False, "left2": False,
                      "right2": False, "left_pos": 0.0, "right_pos": 0.0,
-                     "ahead": None, "behind": None}
+                     "ahead": None, "behind": None,
+                     "left_label": "", "right_label": "",
+                     "left_closing": None, "right_closing": None,
+                     "clear_secs": None}
         self._a = {"left": 0.0, "right": 0.0, "ahead": 0.0, "behind": 0.0,
                    "left_pos": 0.0, "right_pos": 0.0}
         self._clock = QElapsedTimer()
@@ -146,15 +149,35 @@ class RadarWidget(QWidget):
             p.setOpacity(a["left"])
             self._side_marker(p, w * 0.07, cx - inner, cy - a["left_pos"] * travel,
                               marker_h, strong=d.get("left2"), to_left=True,
-                              closeness=(1.0 - abs(a["left_pos"])) if prox else None)
+                              closeness=(1.0 - abs(a["left_pos"])) if prox else None,
+                              closing=d.get("left_closing"),
+                              label=str(d.get("left_label") or ""))
             p.restore()
         if a["right"] > 0.01:
             p.save()
             p.setOpacity(a["right"])
             self._side_marker(p, cx + inner, w * 0.93, cy - a["right_pos"] * travel,
                               marker_h, strong=d.get("right2"), to_left=False,
-                              closeness=(1.0 - abs(a["right_pos"])) if prox else None)
+                              closeness=(1.0 - abs(a["right_pos"])) if prox else None,
+                              closing=d.get("right_closing"),
+                              label=str(d.get("right_label") or ""))
             p.restore()
+
+        clear_secs = d.get("clear_secs")
+        if rc.get("show_clear_timer") and clear_secs is not None and clear_secs >= 0:
+            txt = f"Clear {clear_secs:.0f}s"
+            csz = max(6, round(7 * config.text_scale_for("radar")))
+            p.setFont(QFont(config.CFG.get("font_family", "Arial"), csz,
+                            QFont.Weight.Bold))
+            fm = p.fontMetrics()
+            tw = fm.horizontalAdvance(txt) + 8
+            th = fm.height() + 4
+            rect = QRectF(cx - tw / 2, h * 0.92 - th, tw, th)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(10, 13, 17, 170))
+            p.drawRoundedRect(rect, 3, 3)
+            p.setPen(_rcol("nose"))
+            p.drawText(rect, Qt.AlignmentFlag.AlignCenter, txt)
 
         if rc.get("show_axis", True):
             p.setPen(QPen(_rcol("axis"), max(1.0, w * 0.006)))
@@ -185,19 +208,32 @@ class RadarWidget(QWidget):
         pp.fillRect(0, 0, w, h, m)
 
     def _side_marker(self, p, x0, x1, yc, marker_h, strong, to_left,
-                     closeness=None):
+                     closeness=None, closing=None, label=""):
         left, right = min(x0, x1), max(x0, x1)
         w = max(1, int(round(right - left)))
         h = max(1, int(round(marker_h)))
         alpha = 235 if strong else 195
         c_bucket = -1 if closeness is None else int(max(0.0, min(1.0, closeness)) * 20)
-        key = ("side", w, h, to_left, alpha, c_bucket)
+        close_bucket = -1 if closing is None else int(max(0.0, min(1.0, closing)) * 20)
+        key = ("side", w, h, to_left, alpha, c_bucket, close_bucket)
         pm = self._cached_pixmap(key, lambda: self._build_side_pixmap(
-            w, h, to_left, alpha, closeness))
+            w, h, to_left, alpha, closeness, closing))
         p.drawPixmap(int(round(left)), int(round(yc - marker_h / 2.0)), pm)
+        if label:
+            lsz = max(6, round(min(w, h) * 0.38))
+            p.setFont(QFont(config.CFG.get("font_family", "Arial"), lsz,
+                            QFont.Weight.Bold))
+            p.setPen(QColor(255, 255, 255))
+            p.drawText(QRectF(left, yc - marker_h / 2.0, w, marker_h),
+                       Qt.AlignmentFlag.AlignCenter, label)
 
-    def _build_side_pixmap(self, w, h, to_left, alpha, closeness):
-        base = _rcol("red") if closeness is None else _prox_color(closeness, 255)
+    def _build_side_pixmap(self, w, h, to_left, alpha, closeness, closing=None):
+        if closing is not None and closing > 0:
+            base = _prox_color(closing, 255)
+        elif closeness is not None:
+            base = _prox_color(closeness, 255)
+        else:
+            base = _rcol("red")
         pm = QPixmap(w, h)
         pm.fill(Qt.GlobalColor.transparent)
         pp = QPainter(pm)

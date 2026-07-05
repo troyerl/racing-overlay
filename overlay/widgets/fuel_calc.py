@@ -254,9 +254,27 @@ class FuelCalcWidget(QWidget):
         p.setPen(_col("muted"))
         p.drawText(QRectF(x, bar.bottom() + 1, w * 0.3, h * 0.4), _VC_LEFT, "E")
         cur = config.conv_fuel(level)
-        p.setPen(_col("text"))
+        pct = d.get("fuel_pct")
         cur_txt = f"{cur:.1f} {config.fuel_unit()}" if cur is not None else "\u2014"
+        if isinstance(pct, (int, float)):
+            cur_txt = f"{cur_txt} ({pct:.0f}%)"
         p.drawText(QRectF(x, bar.bottom() + 1, w, h * 0.4), _CENTER, cur_txt)
+        if d.get("alert"):
+            p.setPen(_col("box_warn"))
+            p.setFont(tfont(h * 0.22, True))
+            p.drawText(QRectF(x, bar.bottom() + h * 0.38, w, h * 0.22),
+                       _CENTER, "LOW FUEL")
+        elif d.get("pit_hint"):
+            p.setPen(_col("muted"))
+            p.setFont(tfont(h * 0.20, False))
+            p.drawText(QRectF(x, bar.bottom() + h * 0.38, w, h * 0.22),
+                       _CENTER, str(d.get("pit_hint")))
+        elif isinstance(d.get("live_burn"), (int, float)):
+            p.setPen(_col("muted"))
+            p.setFont(tfont(h * 0.20, False))
+            burn = config.conv_fuel(d["live_burn"])
+            p.drawText(QRectF(x, bar.bottom() + h * 0.38, w, h * 0.22),
+                       _CENTER, f"{burn:.2f}{config.fuel_unit()}/lap")
         capc = config.conv_fuel(cap)
         p.setPen(_col("muted"))
         cap_txt = f"{capc:.0f}{config.fuel_unit()}" if capc is not None else "\u2014"

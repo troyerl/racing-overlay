@@ -78,6 +78,13 @@ class LapCompareEngine:
         self._redline = 0.0
         self._ident = None          # car+track key for persistence
         self._laps = deque(maxlen=12)  # recent valid lap times (consistency)
+        self._last_stint_ref = None
+        self._last_stint_time = None
+        self._wetness_start: float | None = None
+
+    def clear_stint_ref(self) -> None:
+        self._last_stint_ref = None
+        self._last_stint_time = None
 
     @staticmethod
     def _blank() -> dict:
@@ -114,7 +121,8 @@ class LapCompareEngine:
     def update(self, pct, on_pit, throttle, brake, steer, speed, laptime,
                last_lap_time, lat=None, lon=None, gear=None, rpm=None,
                off_track=False, incidents=None, corner_pcts=None,
-               track_len=0.0) -> None:
+               track_len=0.0, track_wetness=None, exclude_wet=False,
+               wet_threshold=5.0) -> None:
         if corner_pcts:
             self._corner_pcts = corner_pcts
         if track_len:
@@ -127,15 +135,24 @@ class LapCompareEngine:
         if self._prev_pct is not None and pct + 0.5 < self._prev_pct:
             self._finish_lap(last_lap_time)
             self._reset_cur()
-            self._lap_started = True  # timing now runs from the start/finish line
+            self._wetness_start = (float(track_wetness)
+                                   if isinstance(track_wetness, (int, float))
+                                   else None)
+            self._lap_started = True
             self._prev_pct = pct
         self._prev_pct = pct
 
         # Clean-lap tracking: off-track or a fresh incident makes the lap dirty.
         if on_pit:
             self._cur_pit = True
+            self.clear_stint_ref()
         if off_track:
             self._cur_dirty = True
+        if exclude_wet and isinstance(track_wetness, (int, float)):
+            if self._wetness_start is None:
+                self._wetness_start = float(track_wetness)
+            elif float(track_wetness) - self._wetness_start >= wet_threshold:
+                self._cur_dirty = True
         if isinstance(incidents, (int, float)):
             if self._lap_start_inc is None:
                 self._lap_start_inc = incidents
@@ -162,6 +179,8 @@ class LapCompareEngine:
             return
         self._laps.append(last_lap_time)  # clean lap -> consistency sample
         lap = {k: _ffill(self._cur[k]) for k in self.CH}
+        self._last_stint_ref = lap
+        self._last_stint_time = last_lap_time
         if self._ref is None or last_lap_time < self._ref_time:
             self._ref = lap
             self._ref_time = last_lap_time
@@ -174,6 +193,35 @@ class LapCompareEngine:
             self._analysis = self._analyze(lap, self._ref, self._turns)
             self._last_delta = last_lap_time - self._ref_time
             self._is_new_best = False
+
+    def _active_ref(self):
+        mode = config.CFG.get("lap_compare", {}).get("reference_mode", "best")
+        if mode == "last_lap" and self._last_stint_ref is not None:
+            turns = self._detect_turns(self._last_stint_ref)
+            return self._last_stint_ref, self._last_stint_time, turns
+        return self._ref, self._ref_time, self._turns
+
+    def _graph_markers(self, cur, ref) -> list[dict]:
+        lcfg = config.CFG.get("lap_compare", {})
+        markers: list[dict] = []
+        if not lcfg.get("show_brake_markers") and not lcfg.get("show_lift_markers"):
+            return markers
+        step = max(1, N_BINS // 120)
+        upto = self._cur_bin if self._last_delta is None else N_BINS - 1
+        prev_brk = prev_thr = None
+        for i in range(0, upto + 1, step):
+            cb = cur["brk"][i] if cur else None
+            tb = cur["thr"][i] if cur else None
+            if lcfg.get("show_brake_markers") and cb is not None:
+                if (prev_brk is not None and prev_brk < 0.15
+                        and cb >= 0.15):
+                    markers.append({"pct": i / N_BINS, "kind": "brake"})
+            if lcfg.get("show_lift_markers") and tb is not None and cb is not None:
+                if prev_thr is not None and prev_thr > 0.5 and tb < 0.3 and cb < 0.1:
+                    markers.append({"pct": i / N_BINS, "kind": "lift"})
+            prev_brk = cb if cb is not None else prev_brk
+            prev_thr = tb if tb is not None else prev_thr
+        return markers
 
     # -- persistence (best lap per car+track) -------------------------------
     def _save_ref(self) -> None:
@@ -306,8 +354,10 @@ class LapCompareEngine:
             s, e, apex = tn["s"], tn["e"], tn["apex"]
             t_lost = ((cur["t"][e] - cur["t"][s]) - (ref["t"][e] - ref["t"][s]))
             tips = self._tips(cur, ref, s, e, apex)
+            gear_a = cur["gear"][apex] if apex < len(cur["gear"]) else None
+            rpm_a = cur["rpm"][apex] if apex < len(cur["rpm"]) else None
             out.append({"label": tn["label"], "t_lost": t_lost, "tips": tips,
-                        "order": s})
+                        "order": s, "gear_apex": gear_a, "rpm_apex": rpm_a})
         out.sort(key=lambda d: d["t_lost"], reverse=True)
         return out
 
@@ -507,34 +557,44 @@ class LapCompareEngine:
 
     # -- snapshot for the widget --------------------------------------------
     def snapshot(self) -> dict:
+        ref, ref_time, turns = self._active_ref()
+        mode = config.CFG.get("lap_compare", {}).get("reference_mode", "best")
         live = None
-        if self._ref is not None and self._lap_started:
+        if ref is not None and self._lap_started:
             b = self._cur_bin
             ct = self._cur["t"][b]
-            rt = self._ref["t"][b]
+            rt = ref["t"][b]
             if isinstance(ct, (int, float)) and isinstance(rt, (int, float)):
                 live = ct - rt
         graph = None
-        if self._ref is not None and self._lap_started:
+        if ref is not None and self._lap_started:
             graph = []
             step = max(1, N_BINS // 120)
             upto = self._cur_bin if self._last_delta is None else N_BINS - 1
             for i in range(0, upto + 1, step):
                 ct = self._cur["t"][i]
-                rt = self._ref["t"][i]
+                rt = ref["t"][i]
                 if isinstance(ct, (int, float)) and isinstance(rt, (int, float)):
                     graph.append((i / N_BINS, ct - rt))
+        markers = self._graph_markers(self._cur, ref) if ref else []
+        if ref and self._lap_started:
+            cur_ff = {k: _ffill(self._cur[k]) for k in self.CH}
+            turns_out = self._analyze(cur_ff, ref, turns)
+        else:
+            turns_out = self._analysis
         spread = None
         if len(self._laps) >= 3:
             spread = max(self._laps) - min(self._laps)
         return {
-            "have_ref": self._ref is not None,
-            "ref_time": self._ref_time,
+            "have_ref": ref is not None,
+            "ref_time": ref_time,
+            "ref_mode": mode,
             "live_delta": live,
             "last_delta": self._last_delta,
             "is_new_best": self._is_new_best,
-            "turns": self._analysis,
+            "turns": turns_out,
             "graph": graph,
+            "markers": markers,
             "consistency": spread,
             "laps": len(self._laps),
         }
@@ -596,7 +656,7 @@ class LapCompareWidget(QWidget):
         p.setPen(self._col("accent"))
         p.drawText(QRectF(x0, y, iw * 0.5, hh),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   "VS BEST")
+                   "VS LAST" if d.get("ref_mode") == "last_lap" else "VS BEST")
         p.setFont(tabfont(hh * 0.52, bold=data_bold))
         p.setPen(self._col("muted"))
         p.drawText(QRectF(x0 + iw * 0.4, y, iw * 0.6, hh),
@@ -622,7 +682,8 @@ class LapCompareWidget(QWidget):
 
         if c.get("show_graph", True) and d.get("graph"):
             gh = h * 0.16
-            self._draw_graph(p, QRectF(x0, y, iw, gh), d["graph"])
+            self._draw_graph(p, QRectF(x0, y, iw, gh), d["graph"],
+                             d.get("markers") or [])
             y += gh + pad * 0.4
 
         foot = 0.0
@@ -648,7 +709,7 @@ class LapCompareWidget(QWidget):
         self._draw_turns(p, QRectF(x0, y, iw, h - pad - foot - y),
                          d.get("turns") or [], c, panel_h=h)
 
-    def _draw_graph(self, p, rect: QRectF, pts) -> None:
+    def _draw_graph(self, p, rect: QRectF, pts, markers=None) -> None:
         draw_dark_cell(p, rect, _SECTION, radius=5)
         mid = rect.center().y()
         p.setPen(QPen(self._col("grid"), 1))
@@ -664,6 +725,15 @@ class LapCompareWidget(QWidget):
         p.setPen(QPen(self._col("graph_line"), 1.8))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPath(path)
+        for m in (markers or []):
+            pct = m.get("pct")
+            if not isinstance(pct, (int, float)):
+                continue
+            x = rect.left() + pct * rect.width()
+            col = (self._col("slower") if m.get("kind") == "brake"
+                   else self._col("faster"))
+            p.setPen(QPen(col, 2))
+            p.drawLine(QPointF(x, rect.top() + 2), QPointF(x, rect.bottom() - 2))
 
     def _draw_turns(self, p, rect: QRectF, turns, c, *, panel_h: float) -> None:
         thresh = float(c.get("min_time_loss", 0.03) or 0.0)
@@ -714,6 +784,15 @@ class LapCompareWidget(QWidget):
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                    signed_delta(lost, 2))
         tip = " · ".join(t.get("tips", [])) or "on pace"
+        if config.CFG.get("lap_compare", {}).get("show_gear_rpm"):
+            ga, ra = t.get("gear_apex"), t.get("rpm_apex")
+            extra = []
+            if isinstance(ga, (int, float)):
+                extra.append(f"G{int(ga)}")
+            if isinstance(ra, (int, float)):
+                extra.append(f"{int(ra)} rpm")
+            if extra:
+                tip = f"{' '.join(extra)} · {tip}"
         p.setFont(tfont(h * 0.26, bold=False))
         p.setPen(self._col("muted"))
         tx = chip.right() + rect.width() * 0.02 + dt_w + rect.width() * 0.02

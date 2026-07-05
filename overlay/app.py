@@ -27,6 +27,7 @@ import math
 import os
 import sys
 import time
+from collections import deque
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
@@ -39,9 +40,12 @@ from . import paths
 from . import irating_calc
 from . import sysstats
 from . import track_store
+from . import traffic as tr
+from . import telemetry as tele
 from . import version
 from .map_markers import (
     fresh_hold_states, resolve_traffic_markers, select_marker_candidates,
+    wrap_lap_delta,
 )
 from .standings_rows import standings_row_list
 from .panel import PanelWindow
@@ -50,14 +54,21 @@ from .widgets.track_map import TrackMapWidget, is_schematic_pit_source
 from .widgets.dash import DashWidget
 from .widgets.delta_bar import DeltaBarWidget
 from .widgets.flags import FlagsWidget
+from .widgets.ers_hybrid import ErsHybridWidget
 from .widgets.fuel_calc import FuelCalcWidget
 from .widgets.inputs import InputTraceWidget
 from .widgets.lap_compare import LapCompareEngine, LapCompareWidget
 from .widgets.laptime_log import LaptimeLogWidget
+from .widgets.leaderboard_strip import LeaderboardStripWidget
+from .widgets.pit_board import PitBoardWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
 from .widgets.sector_timing import SectorTimer, SectorTimingWidget
 from .widgets.standings import StandingsWidget
+from .widgets.tire_panel import TirePanelWidget
+from .widgets.weather_panel import WeatherPanelWidget
+from . import hybrid as hy
+from . import pit_service as ps
 
 log = logging.getLogger("gridglance.app")
 
@@ -75,7 +86,20 @@ DEFAULT_GEOMS = {
     "flags": (820, 60, 320, 150),
     "sector_timing": (380, 200, 360, 170),
     "lap_compare": (40, 60, 380, 320),
+    "tire_panel": (920, 500, 220, 180),
+    "pit_board": (920, 700, 240, 200),
+    "weather_panel": (40, 840, 260, 150),
+    "leaderboard_strip": (320, 840, 280, 120),
+    "ers_hybrid": (620, 840, 220, 110),
 }
+
+_WIDGET_KEYS = (
+    "standings", "relative", "radar", "map", "dash",
+    "laptime_log", "fuel_calc", "inputs", "delta_bar",
+    "flags", "sector_timing", "lap_compare",
+    "tire_panel", "pit_board", "weather_panel",
+    "leaderboard_strip", "ers_hybrid",
+)
 
 # Pit route latch: consecutive ticks on pit road before drawing player on route.
 PIT_COMMIT_HOLD = 15
@@ -186,6 +210,10 @@ class AdvancedSimHUD:
         # lap number so we can detect a lap rollover.
         self._ll_prev_lap = None
         self._ll_laps: list[dict] = []
+        self._ll_lap_start_incidents = None
+        self._ll_lap_on_pit = False
+        self._ll_lap_tag: str | None = None
+        self._ll_personal_best: float | None = None
         # Fuel calculator: per-lap fuel burned (litres, newest first), the lap
         # we last saw and the fuel level at the start of the current lap.
         self._fc_prev_lap = None
@@ -196,6 +224,26 @@ class AdvancedSimHUD:
         self._grid_positions_cache: list[int] | None = None
         self._grid_class_positions_cache: list[int] | None = None
         self._class_positions: list[int] | None = None
+        # EstTime delta history for the closing-rate column.
+        self._closing_state: dict = {}
+        self._closing_session_uid: int | None = None
+        self._radar_closing_state: dict = {}
+        self._radar_clear_since: float | None = None
+        self._need_weekend_info = False
+        self._track_zones: dict = {}
+        self._delta_last_lap_time: float | None = None
+        self._delta_prev_lap: int | None = None
+        self._lap_wetness_start: float | None = None
+        self._weather_track_hist: deque | None = None
+        self._weather_sample_counter = 0
+        self._ll_laps_version = 0
+        self._ll_render_version = -1
+        self._fuel_payload_key = None
+        self._lap_compare_snap_key = None
+        self._visible_widgets: dict[str, bool] = {}
+        # Throttled WeekendInfo cache for header/footer slots.
+        self._weekend_cache: dict = {}
+        self._weekend_counter = 0
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -268,6 +316,11 @@ class AdvancedSimHUD:
         self.flags_widget = FlagsWidget()
         self.sector_widget = SectorTimingWidget()
         self.lap_compare_widget = LapCompareWidget()
+        self.tire_panel_widget = TirePanelWidget()
+        self.pit_board_widget = PitBoardWidget()
+        self.weather_panel_widget = WeatherPanelWidget()
+        self.leaderboard_strip_widget = LeaderboardStripWidget()
+        self.ers_hybrid_widget = ErsHybridWidget()
         if self.demo:
             self._load_demo_track()
             self._seed_demo_laptimes()
@@ -285,10 +338,56 @@ class AdvancedSimHUD:
         self._wrap("flags", self.flags_widget)
         self._wrap("sector_timing", self.sector_widget)
         self._wrap("lap_compare", self.lap_compare_widget)
+        self._wrap("tire_panel", self.tire_panel_widget)
+        self._wrap("pit_board", self.pit_board_widget)
+        self._wrap("weather_panel", self.weather_panel_widget)
+        self._wrap("leaderboard_strip", self.leaderboard_strip_widget)
+        self._wrap("ers_hybrid", self.ers_hybrid_widget)
+        self._refresh_visible_widgets()
 
     @staticmethod
     def _is_shown(key: str) -> bool:
         return bool(config.CFG.get(key, {}).get("show", True))
+
+    def _refresh_visible_widgets(self) -> None:
+        self._visible_widgets = {k: self._is_shown(k) for k in _WIDGET_KEYS}
+        if not self._visible_widgets.get("weather_panel"):
+            self._clear_weather_hist()
+
+    @staticmethod
+    def _needs_sector_timer(en: dict) -> bool:
+        scfg = config.CFG.get("sector_timing", {})
+        return (
+            en.get("sector_timing")
+            or (en.get("laptime_log") and config.laptime_log_has_column("sectors"))
+            or (en.get("map") and scfg.get("highlight_active_sector_on_map"))
+        )
+
+    @staticmethod
+    def _needs_lap_engine(en: dict) -> bool:
+        return en.get("lap_compare") or (
+            en.get("dash") and config.dash_metric_in_use("lap_corners"))
+
+    @staticmethod
+    def _needs_fuel_lap_tracking(en: dict) -> bool:
+        return en.get("fuel_calc") or (
+            en.get("laptime_log") and config.laptime_log_has_column("fuel"))
+
+    def _clear_weather_hist(self) -> None:
+        if self._weather_track_hist is not None:
+            self._weather_track_hist.clear()
+        self._weather_sample_counter = 0
+
+    def _ensure_weather_hist(self) -> deque:
+        wcfg = config.CFG.get("weather_panel", {})
+        window = int(float(wcfg.get("trend_window_seconds", 300.0) or 300.0))
+        maxlen = max(60, window + 10)
+        if self._weather_track_hist is None:
+            self._weather_track_hist = deque(maxlen=maxlen)
+        elif self._weather_track_hist.maxlen != maxlen:
+            self._weather_track_hist = deque(
+                self._weather_track_hist, maxlen=maxlen)
+        return self._weather_track_hist
 
     def show(self) -> None:
         self._apply_visibility()
@@ -349,6 +448,7 @@ class AdvancedSimHUD:
                 win.hide()
 
     def _on_config_change(self, _cfg) -> None:
+        self._refresh_visible_widgets()
         self._apply_visibility()
         self._repaint_all()
 
@@ -361,6 +461,7 @@ class AdvancedSimHUD:
             if geom:
                 win.setGeometry(int(geom[0]), int(geom[1]),
                                 int(geom[2]), int(geom[3]))
+        self._refresh_visible_widgets()
         self._apply_visibility()
         self._repaint_all()
 
@@ -838,7 +939,10 @@ class AdvancedSimHUD:
                   self.radar_widget, self.map_widget, self.dash_widget,
                   self.laptime_widget, self.fuel_widget, self.inputs_widget,
                   self.delta_bar_widget, self.flags_widget,
-                  self.sector_widget, self.lap_compare_widget):
+                  self.sector_widget, self.lap_compare_widget,
+                  self.tire_panel_widget, self.pit_board_widget,
+                  self.weather_panel_widget, self.leaderboard_strip_widget,
+                  self.ers_hybrid_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -946,19 +1050,18 @@ class AdvancedSimHUD:
         self._session_info_counter += 1
 
         # Which widgets are visible: a hidden widget does no reads and no work.
-        en = {k: self._is_shown(k)
-              for k in ("standings", "relative", "radar", "map", "dash",
-                        "laptime_log", "fuel_calc", "inputs", "delta_bar",
-                        "flags", "sector_timing", "lap_compare")}
+        en = self._visible_widgets
         if not any(en.values()):
             return
 
         player = self.ir["PlayerCarIdx"]
-        need_order = en["standings"] or en["relative"] or en["dash"]
-        need_drivers = en["standings"] or en["relative"] or en["map"] or en["dash"]
+        need_order = (en["standings"] or en["relative"] or en["dash"]
+                      or en["leaderboard_strip"])
+        need_drivers = (en["standings"] or en["relative"] or en["map"] or en["dash"]
+                        or en["leaderboard_strip"])
         map_use_pos = (en["map"]
                        and config.CFG["map"].get("car_label", "number") == "position")
-        need_pos = need_order or map_use_pos
+        need_pos = need_order or map_use_pos or en["leaderboard_strip"]
         # Each array is only read if some visible widget consumes it.
         positions = None
         self._class_positions = None
@@ -966,23 +1069,67 @@ class AdvancedSimHUD:
             live_pos = self.ir["CarIdxPosition"]
             positions, self._class_positions = self._resolve_positions(
                 live_pos, player)
-        lap_pct = (self.ir["CarIdxLapDistPct"]
-                   if (en["radar"] or en["map"] or en["standings"]
-                       or en["relative"] or en["sector_timing"]
-                       or en["lap_compare"]) else None)
+        need_lap_pct = (
+            en["radar"] or en["map"] or en["standings"]
+            or en["relative"] or self._needs_lap_engine(en)
+            or self._needs_sector_timer(en))
+        lap_pct = self.ir["CarIdxLapDistPct"] if need_lap_pct else None
         # Used by the tables to tell genuine lapped traffic from same-lap cars.
         self._lap_pct = lap_pct
         surface = (self.ir["CarIdxTrackSurface"]
                    if (en["radar"] or en["standings"] or en["relative"]
                        or en["map"]) else None)
-        est_time = (self.ir["CarIdxEstTime"]
-                    if (en["relative"] or en["standings"]) else None)
+        need_est = (
+            en["relative"]
+            or (en["standings"] and config.any_table_column(
+                "gap_ahead", "closing", sections=("standings",)))
+            or (en["dash"] and config.dash_uses_any("gap_ahead", "gap_behind"))
+            or (en["radar"] and (
+                config.CFG["radar"].get("show_side_labels")
+                or config.CFG["radar"].get("closing_rate_color")))
+            or (en["flags"] and config.CFG["flags"].get("show_blue_detail"))
+        )
+        est_time = self.ir["CarIdxEstTime"] if need_est else None
         car_left_right = self.ir["CarLeftRight"] if en["radar"] else None
-        car_lap = self.ir["CarIdxLap"] if (need_order or en["map"]) else None
-        # CarIdxF2Time only feeds the standings gap column.
-        car_f2 = (self.ir["CarIdxF2Time"]
-                  if (en["standings"] and config.has_column("standings", "gap"))
-                  else None)
+        mcfg = config.CFG.get("map", {})
+        need_map_status = en["map"] and mcfg.get("show_car_status", True)
+        need_on_pit = config.any_table_column("status") or need_map_status
+        need_car_flags = config.any_table_column("car_flag") or need_map_status
+        car_lap = (self.ir["CarIdxLap"]
+                   if (need_order or en["map"]
+                       or config.any_table_column("laps")) else None)
+        need_f2 = (
+            (en["standings"] and config.any_table_column(
+                "gap", "gap_leader", "gap_ahead", sections=("standings",)))
+            or (en["relative"] and config.any_table_column(
+                "gap_leader", "gap_ahead", sections=("relative",)))
+            or en["leaderboard_strip"]
+        )
+        car_f2 = self.ir["CarIdxF2Time"] if need_f2 else None
+        on_pit_arr = (self.ir["CarIdxOnPitRoad"] if need_on_pit else None)
+        car_flags = (self.ir["CarIdxSessionFlags"] if need_car_flags else None)
+        self._need_weekend_info = (
+            config.slot_in_use("weather", "incident_limit")
+            or config.slot_in_use("track_wetness")
+            or (en["map"] and mcfg.get("show_expanded_weather"))
+            or (en["dash"] and config.dash_uses_any("incidents_limit"))
+            or en["weather_panel"]
+        )
+        try:
+            sess_uid = int(self.ir["SessionUniqueID"])
+        except (TypeError, ValueError, KeyError):
+            sess_uid = None
+        if sess_uid != self._closing_session_uid:
+            self._closing_state = {}
+            self._radar_closing_state = {}
+            self._radar_clear_since = None
+            self._closing_session_uid = sess_uid
+            self._delta_last_lap_time = None
+            self._delta_prev_lap = None
+            self._sector_timer.reset_session()
+            self._ll_personal_best = None
+            self._clear_weather_hist()
+            self._ll_laps_version += 1
         # _drivers() also refreshes the dash's engine/shift-light params.
         drivers = self._drivers() if need_drivers else {}
         lap_est = self._lap_est(est_time) if est_time is not None else 0.0
@@ -996,11 +1143,19 @@ class AdvancedSimHUD:
 
         # Per-car lap times only if a shown table shows that column.
         self._car_last = self._car_best = None
-        if (en["relative"] and config.has_column("relative", "last_lap")) or \
-                (en["standings"] and config.has_column("standings", "last_lap")):
+        if (en["relative"] and config.any_table_column("last_lap", "qual_best",
+                                                        sections=("relative",))) or \
+                (en["standings"] and config.any_table_column(
+                    "last_lap", "qual_best", sections=("standings",))) or \
+                (en["delta_bar"]
+                 and config.CFG["delta_bar"].get("mode") == "leader_last"):
             self._car_last = self.ir["CarIdxLastLapTime"]
-        if (en["relative"] and config.has_column("relative", "best_lap")) or \
-                (en["standings"] and config.has_column("standings", "best_lap")):
+        if (en["relative"] and config.any_table_column("best_lap", "qual_best",
+                                                       "gap_pole",
+                                                       sections=("relative",))) or \
+                (en["standings"] and config.any_table_column(
+                    "best_lap", "qual_best", "gap_pole",
+                    sections=("standings",))):
             self._car_best = self.ir["CarIdxBestLapTime"]
 
         radio_speaker = None
@@ -1034,32 +1189,52 @@ class AdvancedSimHUD:
                 drivers, class_pos, positions, self._pace_idxs)
 
         if en["radar"]:
-            self._update_radar(player, lap_pct, surface, car_left_right)
+            self._update_radar(player, lap_pct, surface, car_left_right,
+                               est_time, lap_est, drivers)
         if en["standings"]:
             self._update_standings(positions, drivers, surface, car_f2, player,
-                                   lap_est, car_lap, sess_time, radio_speaker)
+                                   lap_est, car_lap, sess_time, radio_speaker,
+                                   est_time, on_pit_arr, car_flags)
         if en["relative"]:
             self._update_relative(player, est_time, surface, drivers, positions,
-                                  car_lap, lap_est, sess_time, radio_speaker)
+                                  car_lap, lap_est, sess_time, radio_speaker,
+                                  car_f2, on_pit_arr, car_flags)
         if en["map"]:
             self._update_map(player, lap_pct, surface, drivers, positions,
-                             car_lap, radio_speaker)
+                             car_lap, radio_speaker, on_pit_arr, car_flags)
         if en["dash"]:
             self._update_dash(player, positions, car_lap)
+        if self._needs_sector_timer(en):
+            self._advance_sector_timer(player, lap_pct)
+        if en["sector_timing"]:
+            self._update_sector_widget()
+        if self._needs_fuel_lap_tracking(en):
+            self._track_fuel_per_lap()
         if en["laptime_log"]:
-            self._update_laptime_log()
+            self._update_laptime_log(player)
         if en["fuel_calc"]:
             self._update_fuel_calc()
         if en["inputs"]:
             self._update_inputs()
         if en["delta_bar"]:
-            self._update_delta_bar()
+            self._update_delta_bar(player, positions)
         if en["flags"]:
-            self._update_flags()
-        if en["sector_timing"]:
-            self._update_sectors(player, lap_pct)
+            self._update_flags(player, positions, est_time, lap_est, drivers)
+        if self._needs_lap_engine(en):
+            self._update_lap_engine(player, lap_pct)
         if en["lap_compare"]:
-            self._update_lap_compare(player, lap_pct)
+            self._update_lap_compare_widget()
+        if en["tire_panel"]:
+            self._update_tire_panel()
+        if en["pit_board"]:
+            self._update_pit_board()
+        if en["weather_panel"]:
+            self._update_weather_panel()
+        if en["leaderboard_strip"]:
+            self._update_leaderboard_strip(positions, drivers, car_f2,
+                                           lap_est, player)
+        if en["ers_hybrid"]:
+            self._update_ers_hybrid()
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -1120,64 +1295,209 @@ class AdvancedSimHUD:
             lap_est = max((t for t in est_time if t and t > 0), default=0.0)
         return lap_est
 
-    def _update_radar(self, player, lap_pct, surface, car_left_right) -> None:
-        # Nearest car ahead / behind within range (excluding the alongside zone,
-        # which is shown by the side markers instead). Also track the nearest car
-        # of all so the side marker can be positioned fore/aft.
+    def _update_radar(self, player, lap_pct, surface, car_left_right,
+                      est_time, lap_est, drivers) -> None:
         rc = config.CFG["radar"]
         nearest_ahead = nearest_behind = None
-        nearest_abs = None          # signed delta of the overall closest car
-        alongside_zone = 0.004
+        alongside_zone = float(rc.get("alongside_zone_pct", 0.004) or 0.004)
         radar_range = rc["range_pct"]
         want_front = rc.get("show_front", True)
         want_rear = rc.get("show_rear", True)
+        want_labels = rc.get("show_side_labels", False)
+        want_closing = rc.get("closing_rate_color", False)
+        closing_full = float(rc.get("closing_rate_full", 1.5) or 1.5)
+        want_clear = rc.get("show_clear_timer", False)
+
+        def on_track(idx: int) -> bool:
+            return not surface or (idx < len(surface)
+                                   and surface[idx] == oc.TRK_ON_TRACK)
+
         if player is not None and lap_pct:
             me = lap_pct[player]
             for idx, pct in enumerate(lap_pct):
                 if idx == player or pct is None or pct < 0:
                     continue
-                if surface and surface[idx] != oc.TRK_ON_TRACK:
+                if not on_track(idx):
                     continue
-                delta = pct - me
-                if delta > 0.5:
-                    delta -= 1.0
-                elif delta < -0.5:
-                    delta += 1.0
-                if nearest_abs is None or abs(delta) < abs(nearest_abs):
-                    nearest_abs = delta
+                delta = wrap_lap_delta(pct, me)
                 if want_front and alongside_zone < delta <= radar_range:
-                    nearest_ahead = delta if nearest_ahead is None else min(nearest_ahead, delta)
+                    nearest_ahead = (delta if nearest_ahead is None
+                                       else min(nearest_ahead, delta))
                 elif want_rear and -radar_range <= delta < -alongside_zone:
-                    nearest_behind = delta if nearest_behind is None else max(nearest_behind, delta)
+                    nearest_behind = (delta if nearest_behind is None
+                                      else max(nearest_behind, delta))
 
         def closeness(delta):
             if delta is None:
                 return None
             return max(0.0, min(1.0, 1.0 - abs(delta) / radar_range))
 
-        # Where the alongside car sits fore/aft: +1 = your front bumper (top of
-        # the radar), -1 = your rear bumper (bottom). Derived from the closest
-        # car's lap-distance delta since iRacing's CarLeftRight is side-only.
         span = rc.get("side_span_pct", 0.0045) or 0.0045
-        if nearest_abs is None:
-            side_pos = 0.0
-        else:
-            side_pos = max(-1.0, min(1.0, nearest_abs / span))
+        left_active = car_left_right in oc.CAR_ON_LEFT
+        right_active = car_left_right in oc.CAR_ON_RIGHT
 
-        self.radar_widget.set_data({
-            "left": car_left_right in oc.CAR_ON_LEFT,
-            "right": car_left_right in oc.CAR_ON_RIGHT,
+        def side_pos(delta):
+            if delta is None:
+                return 0.0
+            return max(-1.0, min(1.0, delta / span))
+
+        def car_label(idx: int | None) -> str:
+            if idx is None:
+                return ""
+            d = drivers.get(idx, {}) if drivers else {}
+            return str(d.get("CarNumber") or "")
+
+        def side_closing(idx: int | None, est_delta: float | None):
+            if not want_closing or idx is None or est_delta is None:
+                return None
+            try:
+                now = float(self.ir["SessionTime"])
+            except (TypeError, ValueError, KeyError):
+                now = 0.0
+            rate = tr.closing_rate(
+                self._radar_closing_state, idx, est_delta, now)
+            return tr.closing_rate_tint(rate, closing_full)
+
+        left_idx = left_delta = left_est = None
+        right_idx = right_delta = right_est = None
+        if player is not None and lap_pct and (left_active or right_active):
+            include = on_track if surface else None
+            if left_active:
+                left_idx, left_delta, left_est = tr.nearest_alongside(
+                    lap_pct, player, est_time, lap_est,
+                    alongside_zone=alongside_zone,
+                    include_fn=include,
+                    pace_idxs=self._pace_idxs,
+                )
+            if right_active:
+                right_idx, right_delta, right_est = tr.nearest_alongside(
+                    lap_pct, player, est_time, lap_est,
+                    alongside_zone=alongside_zone,
+                    include_fn=include,
+                    pace_idxs=self._pace_idxs,
+                    exclude={left_idx} if left_idx is not None else None,
+                )
+
+        try:
+            now = float(self.ir["SessionTime"])
+        except (TypeError, ValueError, KeyError):
+            now = 0.0
+        if left_active or right_active:
+            self._radar_clear_since = None
+        elif self._radar_clear_since is None:
+            self._radar_clear_since = now
+        clear_secs = (tr.radar_clear_seconds(self._radar_clear_since, now)
+                      if want_clear else None)
+
+        payload = {
+            "left": left_active,
+            "right": right_active,
             "left2": car_left_right == oc.LR_2_CARS_LEFT,
             "right2": car_left_right == oc.LR_2_CARS_RIGHT,
-            "left_pos": side_pos,
-            "right_pos": side_pos,
+            "left_pos": side_pos(left_delta),
+            "right_pos": side_pos(right_delta),
             "ahead": closeness(nearest_ahead) if want_front else None,
             "behind": closeness(nearest_behind) if want_rear else None,
-        })
+            "left_label": car_label(left_idx) if want_labels else "",
+            "right_label": car_label(right_idx) if want_labels else "",
+            "left_closing": side_closing(left_idx, left_est),
+            "right_closing": side_closing(right_idx, right_est),
+            "clear_secs": clear_secs,
+        }
+        if payload == self.radar_widget.data and not self.radar_widget._animating:
+            return
+        self.radar_widget.set_data(payload)
+
+    def _table_extra_fields(self, idx, cols, *, drivers, positions, surface,
+                            on_pit, est_time, car_f2, car_lap, car_flags,
+                            player, lap_est, is_qual) -> dict:
+        """Optional table columns beyond the original set."""
+        out: dict = {}
+        d = drivers.get(idx, {})
+        if cols.get("class_pos"):
+            cp = self._class_positions
+            if (cp and idx < len(cp) and cp[idx] and cp[idx] > 0
+                    and tr.is_multiclass(cp, positions)):
+                out["class_pos"] = str(cp[idx])
+            else:
+                out["class_pos"] = "\u2014"
+        if cols.get("status"):
+            on = bool(on_pit[idx]) if on_pit and idx < len(on_pit) else False
+            surf = surface[idx] if surface and idx < len(surface) else None
+            out["status"] = tr.car_status_text(surf, on_pit=on)
+        if cols.get("car_flag"):
+            sf = car_flags[idx] if car_flags and idx < len(car_flags) else None
+            out["car_flag"] = tr.car_flag_text(sf)
+            out["car_flag_kind"] = tr.car_flag_kind(sf)
+        if cols.get("laps"):
+            lap = car_lap[idx] if car_lap and idx < len(car_lap) else None
+            out["laps"] = (str(int(lap))
+                           if isinstance(lap, (int, float)) and lap >= 0
+                           else "\u2014")
+        if cols.get("gap_leader"):
+            pos = positions[idx] if positions else None
+            f2 = car_f2[idx] if car_f2 else None
+            out["gap_leader_text"] = tr.fmt_leader_gap(f2, pos, lap_est)
+        if cols.get("gap_ahead"):
+            ahead_idx = tr.position_ahead_idx(positions, idx)
+            secs = None
+            if ahead_idx is not None and est_time:
+                secs = tr.est_interval(est_time, idx, ahead_idx, lap_est)
+            elif ahead_idx is not None and car_f2:
+                secs = tr.f2_interval(car_f2, idx, ahead_idx)
+            out["gap_ahead_text"] = tr.fmt_interval_gap(secs, lap_est)
+        if cols.get("closing") and est_time and player is not None:
+            me = est_time[player] if player < len(est_time) else None
+            t = est_time[idx] if idx < len(est_time) else None
+            if (me is not None and t is not None and idx != player
+                    and lap_est > 0):
+                delta = tr.wrap_est_delta(t, me, lap_est)
+                rate = tr.closing_rate(self._closing_state, idx, delta,
+                                       time.time())
+                out["closing"] = tr.fmt_closing_rate(rate)
+            else:
+                out["closing"] = "\u2014"
+        if cols.get("team"):
+            team = str(d.get("TeamName", "")).strip()
+            out["team"] = team or "\u2014"
+        if cols.get("nickname"):
+            nick = str(d.get("UserNickName", "")).strip()
+            out["nickname"] = nick or "\u2014"
+        if cols.get("qual_pos") or cols.get("qual_best") or cols.get("gap_pole"):
+            dash = "\u2014"
+            if is_qual:
+                grid_pos, _ = self._qualify_grid_positions(live=True)
+                if cols.get("qual_pos"):
+                    qp = grid_pos[idx] if grid_pos and idx < len(grid_pos) else None
+                    out["qual_pos"] = str(qp) if qp and qp > 0 else dash
+                best = (self._car_best[idx]
+                        if self._car_best and idx < len(self._car_best) else None)
+                if cols.get("qual_best"):
+                    out["qual_best"] = (self._fmt_laptime(best)
+                                        if best and best > 0 else dash)
+                if cols.get("gap_pole"):
+                    pole_best = None
+                    if self._car_best:
+                        vals = [t for t in self._car_best if t and t > 0]
+                        pole_best = min(vals) if vals else None
+                    if pole_best and best and best > 0:
+                        out["gap_pole"] = tr.fmt_interval_gap(best - pole_best,
+                                                              lap_est)
+                    else:
+                        out["gap_pole"] = dash
+            else:
+                if cols.get("qual_pos"):
+                    out["qual_pos"] = dash
+                if cols.get("qual_best"):
+                    out["qual_best"] = dash
+                if cols.get("gap_pole"):
+                    out["gap_pole"] = dash
+        return out
 
     def _build_standings_row(self, idx, drivers, positions, surface, car_f2,
                              player, lap_est, cols, car_lap, sess_time,
-                             pit_mode, radio_speaker=None) -> dict:
+                             pit_mode, radio_speaker=None, est_time=None,
+                             on_pit=None, car_flags=None) -> dict:
         # Only compute fields whose column is actually shown.
         d = drivers.get(idx, {})
         cls = sr = ""
@@ -1201,8 +1521,8 @@ class AdvancedSimHUD:
 
         is_player = idx == player
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
-
-        return {
+        is_qual = self._is_qualifying_session()
+        row = {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
             "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
@@ -1223,6 +1543,12 @@ class AdvancedSimHUD:
             "lap_ahead": lap_ahead,
             "speaking": radio_speaker is not None and idx == radio_speaker,
         }
+        row.update(self._table_extra_fields(
+            idx, cols, drivers=drivers, positions=positions, surface=surface,
+            on_pit=on_pit, est_time=est_time, car_f2=car_f2, car_lap=car_lap,
+            car_flags=car_flags, player=player, lap_est=lap_est,
+            is_qual=is_qual))
+        return row
 
     def _current_session_type(self) -> str:
         """Lower-case SessionType for the active session (cached ~1 s)."""
@@ -1309,7 +1635,8 @@ class AdvancedSimHUD:
 
     def _update_standings(self, positions, drivers, surface, car_f2,
                           player, lap_est, car_lap, sess_time,
-                          radio_speaker=None) -> None:
+                          radio_speaker=None, est_time=None, on_pit=None,
+                          car_flags=None) -> None:
         if not positions:
             return
         scfg = config.CFG["standings"]
@@ -1327,7 +1654,8 @@ class AdvancedSimHUD:
             return self._build_standings_row(idx, drivers, positions, surface,
                                              car_f2, player, lap_est, cols,
                                              car_lap, sess_time, pit_mode,
-                                             radio_speaker)
+                                             radio_speaker, est_time, on_pit,
+                                             car_flags)
 
         center = scfg.get("center_on_player", True) and player in ranked
         rows = standings_row_list(
@@ -1343,13 +1671,16 @@ class AdvancedSimHUD:
         )
 
         shown = sum(1 for r in rows if not r.get("empty"))
-        self.standings_widget.set_data({
+        payload = {
             "title": scfg["title"],
             "rows": rows,
             "slots": self._slot_values("standings", drivers, positions, player,
                                        lap_est=lap_est, car_lap=car_lap,
                                        count=f"{shown}/{total}"),
-        })
+        }
+        if payload == self.standings_widget.data:
+            return
+        self.standings_widget.set_data(payload)
 
     @staticmethod
     def _fmt_irating(ir, section: str | None = None) -> str:
@@ -1375,20 +1706,19 @@ class AdvancedSimHUD:
         dc = config.CFG.get("dash", {})
         if not dc.get("show_irating_projection"):
             return False
-        slots = {dc.get(k) for k in (
-            "top_right", "primary_left", "primary_right",
-            "stat_left", "stat_right",
-            "strip_left", "strip_center", "strip_right")}
-        return "irating" in slots
+        return "irating" in config.dash_active_slots()
 
     @staticmethod
     def _dash_uses_irating() -> bool:
-        dc = config.CFG.get("dash", {})
-        slots = {dc.get(k) for k in (
-            "top_right", "primary_left", "primary_right",
-            "stat_left", "stat_right",
-            "strip_left", "strip_center", "strip_right")}
-        return "irating" in slots
+        return "irating" in config.dash_active_slots()
+
+    @staticmethod
+    def _dash_uses_metric(key: str) -> bool:
+        return config.dash_metric_in_use(key)
+
+    @staticmethod
+    def _dash_uses_any(*keys: str) -> bool:
+        return config.dash_uses_any(*keys)
 
     def _row_irating_delta(self, idx, cols, section: str):
         if not cols.get("irating"):
@@ -1567,33 +1897,91 @@ class AdvancedSimHUD:
             pass
         return None
 
-    def _update_laptime_log(self) -> None:
+    def _update_laptime_log(self, player=None) -> None:
         """Record each completed player lap (time + track temp) and push rows."""
+        cols = set(config.laptime_log_column_order())
         try:
             lap = int(self.ir["Lap"])
         except (TypeError, ValueError):
             lap = None
+        on_pit = bool(self.ir["OnPitRoad"]) if "tag" in cols else None
+        surf = None
+        if "tag" in cols:
+            try:
+                surf = self.ir["PlayerTrackSurface"]
+            except (TypeError, ValueError, KeyError):
+                pass
+        if on_pit is not None or "tag" in cols:
+            if on_pit or surf in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS):
+                self._ll_lap_tag = "PIT"
+            elif on_pit is False and self._ll_lap_on_pit:
+                self._ll_lap_tag = "OUT"
+            self._ll_lap_on_pit = bool(on_pit)
         if lap is not None:
             if self._ll_prev_lap is None:
                 self._ll_prev_lap = lap
+                if "incidents" in cols:
+                    try:
+                        self._ll_lap_start_incidents = int(
+                            self.ir["PlayerCarMyIncidentCount"] or 0)
+                    except (TypeError, ValueError):
+                        self._ll_lap_start_incidents = 0
             elif lap > self._ll_prev_lap:
                 last = self._player_last_lap_time()
                 completed = lap - 1
                 if (last is not None
                         and (not self._ll_laps
                              or self._ll_laps[0]["lap"] != completed)):
-                    temp = self.ir["TrackTemp"]
-                    if temp is None:
-                        temp = self.ir["TrackTempCrew"]
-                    self._ll_laps.insert(0, {"lap": completed,
-                                             "secs": last,
-                                             "temp_c": temp})
-                    del self._ll_laps[60:]  # keep memory bounded
+                    temp = tele.read_track_temp(self.ir)
+                    entry: dict = {"lap": completed, "secs": last,
+                                   "temp_c": temp}
+                    if "sectors" in cols and self._sector_timer.last:
+                        entry["sectors"] = self._sector_timer.last[:]
+                    if "fuel" in cols and self._fc_use:
+                        entry["fuel_l"] = self._fc_use[0]
+                    if "tires" in cols:
+                        ts = self.ir["dcTireSet"]
+                        if isinstance(ts, (int, float)) and ts > 0:
+                            entry["tires"] = int(ts)
+                    if "incidents" in cols:
+                        try:
+                            inc = int(self.ir["PlayerCarMyIncidentCount"] or 0)
+                        except (TypeError, ValueError):
+                            inc = 0
+                        start = self._ll_lap_start_incidents or 0
+                        delta = inc - start
+                        entry["incidents"] = delta if delta > 0 else 0
+                    if "tag" in cols and self._ll_lap_tag:
+                        entry["tag"] = self._ll_lap_tag
+                    if config.CFG["laptime_log"].get("delta_mode") == "personal_best":
+                        try:
+                            pb = self.ir["LapBestLapTime"]
+                            if isinstance(pb, (int, float)) and pb > 0:
+                                entry["personal_best"] = float(pb)
+                        except (TypeError, ValueError, KeyError):
+                            pass
+                    self._ll_laps.insert(0, entry)
+                    del self._ll_laps[60:]
+                    self._ll_laps_version += 1
+                    self._delta_last_lap_time = last
                 self._ll_prev_lap = lap
+                self._ll_lap_tag = None
+                if "incidents" in cols:
+                    try:
+                        self._ll_lap_start_incidents = int(
+                            self.ir["PlayerCarMyIncidentCount"] or 0)
+                    except (TypeError, ValueError):
+                        self._ll_lap_start_incidents = 0
             elif lap < self._ll_prev_lap:
-                # New session / reset -- drop stale history.
                 self._ll_laps = []
+                self._ll_laps_version += 1
                 self._ll_prev_lap = lap
+                self._fc_use = []
+                self._fc_prev_lap = lap
+                self._fc_lap_start_fuel = None
+        if self._ll_laps_version == getattr(self, "_ll_render_version", -1):
+            return
+        self._ll_render_version = self._ll_laps_version
         self.laptime_widget.set_data(self._build_laptime_rows())
 
     def _build_laptime_rows(self) -> dict:
@@ -1602,27 +1990,55 @@ class AdvancedSimHUD:
         mode = cfg.get("delta_mode", "previous")
         laps = self._ll_laps
         best = min((l["secs"] for l in laps if l["secs"] > 0), default=None)
+        order = config.laptime_log_column_order()
         rows = []
         for i, l in enumerate(laps[:n]):
             secs = l["secs"]
             if mode == "best":
                 delta = (secs - best) if (best and secs > 0) else None
                 if delta is not None and abs(delta) < 1e-4:
-                    delta = None  # the baseline (best) lap itself
-            else:  # vs the previous (chronologically older) lap
+                    delta = None
+            elif mode == "personal_best":
+                pb = l.get("personal_best")
+                delta = (secs - pb) if (pb and secs > 0) else None
+                if delta is not None and abs(delta) < 1e-4:
+                    delta = None
+            else:
                 prev = laps[i + 1]["secs"] if i + 1 < len(laps) else None
                 delta = (secs - prev) if (prev and secs > 0) else None
-            rows.append({
-                "lap": l["lap"],
+            row: dict = {
+                "lap": str(l["lap"]),
                 "time": self._fmt_laplog_time(secs),
                 "delta": delta,
                 "temp": self._fmt_temp(l["temp_c"]),
-            })
-        return {"rows": rows}
+            }
+            if "sectors" in order:
+                splits = l.get("sectors") or []
+                parts = []
+                for j, t in enumerate(splits):
+                    if isinstance(t, (int, float)) and t > 0:
+                        parts.append(f"{t:.1f}")
+                    else:
+                        parts.append("\u2014")
+                row["sectors"] = " ".join(parts) if parts else "\u2014"
+            if "fuel" in order:
+                fl = l.get("fuel_l")
+                row["fuel"] = (f"{config.conv_fuel(fl):.1f}"
+                               if isinstance(fl, (int, float)) else "\u2014")
+            if "tires" in order:
+                row["tires"] = (str(l["tires"]) if l.get("tires") else "\u2014")
+            if "incidents" in order:
+                inc = l.get("incidents")
+                row["incidents"] = (f"+{inc}x" if inc else "\u2014")
+            if "tag" in order:
+                row["tag"] = l.get("tag") or "\u2014"
+            rows.append(row)
+        return {"rows": rows, "columns": order}
 
     def _build_relative_row(self, idx, delta, drivers, positions, surface, car_lap,
                             player, is_player, cols, sess_time, pit_mode,
-                            radio_speaker=None) -> dict:
+                            radio_speaker=None, est_time=None, car_f2=None,
+                            on_pit=None, car_flags=None, lap_est=0.0) -> dict:
         # Only compute fields whose column is actually shown.
         d = drivers.get(idx, {})
         cls = sr = ""
@@ -1635,7 +2051,8 @@ class AdvancedSimHUD:
         # A car ~a lap ahead will lap you (-> red); ~a lap behind you'll lap
         # it (-> blue). Distance-based so same-lap cars near you aren't tinted.
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
-        return {
+        is_qual = self._is_qualifying_session()
+        row = {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
             "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
@@ -1656,10 +2073,17 @@ class AdvancedSimHUD:
             "lap_ahead": lap_ahead,
             "speaking": radio_speaker is not None and idx == radio_speaker,
         }
+        row.update(self._table_extra_fields(
+            idx, cols, drivers=drivers, positions=positions, surface=surface,
+            on_pit=on_pit, est_time=est_time, car_f2=car_f2, car_lap=car_lap,
+            car_flags=car_flags, player=player, lap_est=lap_est,
+            is_qual=is_qual))
+        return row
 
     def _update_relative(self, player, est_time, surface, drivers,
                          positions, car_lap, lap_est, sess_time,
-                         radio_speaker=None) -> None:
+                         radio_speaker=None, car_f2=None, on_pit=None,
+                         car_flags=None) -> None:
         if player is None or not est_time or not surface or lap_est <= 0:
             return
 
@@ -1695,23 +2119,29 @@ class AdvancedSimHUD:
         for delta, idx in reversed(ahead):
             rows.append(self._build_relative_row(
                 idx, delta, drivers, positions, surface, car_lap, player, False,
-                cols, sess_time, pit_mode, radio_speaker))
+                cols, sess_time, pit_mode, radio_speaker, est_time, car_f2,
+                on_pit, car_flags, lap_est))
         rows.append(self._build_relative_row(
             player, 0.0, drivers, positions, surface, car_lap, player, True,
-            cols, sess_time, pit_mode, radio_speaker))
+            cols, sess_time, pit_mode, radio_speaker, est_time, car_f2,
+            on_pit, car_flags, lap_est))
         for delta, idx in behind:
             rows.append(self._build_relative_row(
                 idx, delta, drivers, positions, surface, car_lap, player, False,
-                cols, sess_time, pit_mode, radio_speaker))
+                cols, sess_time, pit_mode, radio_speaker, est_time, car_f2,
+                on_pit, car_flags, lap_est))
         if rcfg.get("center_on_player", True):
             for k in range(n_behind - len(behind)):
                 rows.append(self._empty_row(f"rel_bot{k}"))
 
-        self.relative_widget.set_data({
+        payload = {
             "rows": rows,
             "slots": self._slot_values("relative", drivers, positions, player,
                                        car_lap, lap_est),
-        })
+        }
+        if payload == self.relative_widget.data:
+            return
+        self.relative_widget.set_data(payload)
 
     def _sof(self, drivers, section=None) -> str:
         irs = [d.get("IRating") for d in drivers.values() if d.get("IRating")]
@@ -1786,9 +2216,90 @@ class AdvancedSimHUD:
             return self._sys_stats()[0]
         if key == "mem":
             return self._sys_stats()[1]
+        if key == "laps_remain":
+            try:
+                rem = self.ir["SessionLapsRemainEx"]
+            except (TypeError, ValueError, KeyError):
+                rem = None
+            return str(rem) if isinstance(rem, int) and rem >= 0 else "\u2014"
+        if key == "incident_limit":
+            wk = self._weekend_info()
+            limit = wk.get("IncidentLimit")
+            try:
+                count = int(self.ir["PlayerCarMyIncidentCount"] or 0)
+            except (TypeError, ValueError, KeyError):
+                count = 0
+            if limit is not None and int(limit) > 0:
+                return f"{count}/{int(limit)}x"
+            return f"{count}x"
+        if key == "fast_repairs":
+            try:
+                used = int(self.ir["FastRepairUsed"] or 0)
+                avail = int(self.ir["FastRepairAvailable"] or 0)
+            except (TypeError, ValueError, KeyError):
+                return "\u2014"
+            total = used + avail
+            return f"{used}/{total}" if total > 0 else "\u2014"
+        if key == "weather":
+            wk = self._weekend_info()
+            skies = wk.get("Skies")
+            hum = wk.get("RelativeHumidity")
+            parts = []
+            if skies is not None:
+                parts.append(str(skies))
+            if hum is not None:
+                try:
+                    parts.append(f"{int(float(hum))}%")
+                except (TypeError, ValueError):
+                    pass
+            return " ".join(parts) if parts else "\u2014"
+        if key == "track_wetness":
+            try:
+                wet = self.ir["TrackWetness"]
+            except (TypeError, ValueError, KeyError):
+                wet = None
+            if wet is None:
+                return "\u2014"
+            try:
+                return f"{float(wet):.0f}%"
+            except (TypeError, ValueError):
+                return "\u2014"
+        if key == "session_type":
+            st = self._current_session_type()
+            if not st:
+                return "\u2014"
+            if "qualif" in st or st == "qual":
+                return "Qualifying"
+            if "race" in st:
+                return "Race"
+            if "practice" in st or st == "open":
+                return "Practice"
+            return st.replace("_", " ").title()
         if key == "count":
             return count
         return None
+
+    def _weekend_info(self) -> dict:
+        """Throttled WeekendInfo + WeekendOptions for header/footer slots."""
+        if not self._need_weekend_info:
+            return self._weekend_cache or {}
+        if self._weekend_cache and self._weekend_counter < 60:
+            self._weekend_counter += 1
+            return self._weekend_cache
+        self._weekend_counter = 0
+        out: dict = {}
+        try:
+            wk = self.ir["WeekendInfo"]
+            if isinstance(wk, dict):
+                opts = wk.get("WeekendOptions") or {}
+                if isinstance(opts, dict):
+                    out["IncidentLimit"] = opts.get("IncidentLimit")
+                out["Skies"] = wk.get("Skies")
+                out["RelativeHumidity"] = wk.get("RelativeHumidity")
+        except (TypeError, ValueError, KeyError):
+            pass
+        self._weekend_cache = out
+        return out
 
     def _class_sof(self, drivers, player, section=None) -> str:
         cid = self._player_class(drivers, player)
@@ -2029,6 +2540,17 @@ class AdvancedSimHUD:
         if saved_turns:
             self.map_widget.set_num_turns(saved_turns)
         meta = file_meta or {}
+        self._track_zones = {
+            "drs_zones": meta.get("drs_zones") or [],
+            "p2p_zones": meta.get("p2p_zones") or [],
+        }
+        mcfg = config.CFG.get("map", {})
+        self.map_widget.set_track_zones(
+            drs_zones=(self._track_zones["drs_zones"]
+                       if mcfg.get("show_drs_zones") else []),
+            p2p_zones=(self._track_zones["p2p_zones"]
+                       if mcfg.get("show_p2p_zones") else []),
+        )
         if meta.get("pit_path"):
             if not meta.get("pit_source"):
                 meta = dict(meta, pit_source="schematic")
@@ -2337,24 +2859,46 @@ class AdvancedSimHUD:
 
     def _update_map(self, player, lap_pct, surface, drivers,
                     positions=None, car_lap=None,
-                    radio_speaker=None) -> None:
+                    radio_speaker=None,
+                    on_pit_arr=None, car_flags=None) -> None:
         if player is None or not lap_pct or not surface:
             return
 
+        mcfg = config.CFG["map"]
         # Resolve the player's model-space position once (GPS or dead reckoning)
         # so the learner and the pit capture share a single, consistent frame.
         self._update_player_pos(lap_pct[player])
         self._ensure_track(player, lap_pct)
         # In demo mode the pit lane is synthesized once (see _load_demo_track);
         # skip live learning so it isn't overwritten by the demo's fake pit dips.
-        if config.CFG["map"].get("show_pit", True) and not self.demo:
+        if mcfg.get("show_pit", True) and not self.demo:
             self._update_pit_route(player, lap_pct)
-        if config.CFG["map"].get("show_wind", True):
+        if mcfg.get("show_wind", True):
             self.map_widget.set_wind(self.ir["WindDir"], self.ir["WindVel"])
         else:
             self.map_widget.set_wind(None, 0.0)
+        if mcfg.get("show_expanded_weather", False):
+            wet = rain = None
+            try:
+                wet = self.ir["TrackWetness"]
+            except (TypeError, ValueError, KeyError):
+                pass
+            try:
+                rain = self.ir["RainIntensity"]
+            except (TypeError, ValueError, KeyError):
+                pass
+            self.map_widget.set_weather(wet, rain)
+        else:
+            self.map_widget.set_weather(None, None)
+        self.map_widget.set_track_zones(
+            drs_zones=(self._track_zones.get("drs_zones") or []
+                       if mcfg.get("show_drs_zones") else []),
+            p2p_zones=(self._track_zones.get("p2p_zones") or []
+                       if mcfg.get("show_p2p_zones") else []),
+        )
 
-        on_pit_arr = self.ir["CarIdxOnPitRoad"]
+        if on_pit_arr is None:
+            on_pit_arr = self.ir["CarIdxOnPitRoad"]
         if self._pit_latch_seed_pending:
             self._seed_pit_latches(lap_pct, on_pit_arr, player)
             self._pit_latch_seed_pending = False
@@ -2404,9 +2948,16 @@ class AdvancedSimHUD:
                     color = self._map_car_color(
                         idx, player, car_lap, lap_pct)
             speaking = radio_speaker is not None and idx == radio_speaker
+            status_kind = None
+            if mcfg.get("show_car_status", True):
+                on = (bool(on_pit_arr[idx])
+                      if on_pit_arr and idx < len(on_pit_arr) else False)
+                sf = (car_flags[idx]
+                      if car_flags and idx < len(car_flags) else None)
+                surf = surface[idx] if idx < len(surface) else None
+                status_kind = tr.map_car_status_kind(surf, on_pit=on, car_flag=sf)
             cars.append((idx, pct, num, color, is_player, on_route, on_pit,
-                         speaking, is_pace))
-        mcfg = config.CFG["map"]
+                         speaking, is_pace, status_kind))
         if mcfg.get("show_sector_boundaries", True):
             self.map_widget.set_sector_boundaries(self._sector_starts())
         else:
@@ -2654,13 +3205,18 @@ class AdvancedSimHUD:
     _FLAG_START_SET = 0x40000000
     _FLAG_START_GO = 0x80000000
 
-    def _session_flag_bundle(self) -> tuple[str | None, str | None]:
+    def _session_flag_bundle(self, player=None, positions=None, est_time=None,
+                             lap_est=0.0, drivers=None) -> tuple[str | None, str | None]:
         """Resolved flag name plus a short contextual hint for the UI."""
         flag = self._session_flag()
-        ctx = self._flag_context(flag, getattr(self, "_last_session_flags", 0))
+        sf = getattr(self, "_last_session_flags", 0)
+        ctx = self._flag_context(flag, sf, player, positions, est_time,
+                                 lap_est, drivers)
         return flag, ctx
 
-    def _flag_context(self, flag: str | None, sf: int) -> str | None:
+    def _flag_context(self, flag: str | None, sf: int, player=None,
+                      positions=None, est_time=None, lap_est=0.0,
+                      drivers=None) -> str | None:
         """Human-readable detail for the current flag state."""
         if flag is None:
             if sf & self._FLAG_START_GO:
@@ -2673,20 +3229,25 @@ class AdvancedSimHUD:
 
         if flag == "yellow":
             if sf & self._FLAG_ONE_LAP_GREEN:
-                return "1 lap to green"
-            if sf & self._FLAG_TEN_TO_GO:
-                return "10 to go"
-            if sf & self._FLAG_FIVE_TO_GO:
-                return "5 to go"
-            if sf & self._FLAG_CAUTION_WAVING:
-                return "Caution waving — pits closed"
-            if sf & self._FLAG_CAUTION:
-                return "Full course caution — hold position"
-            if sf & self._FLAG_YELLOW_WAVING:
-                return "Local yellow — slow in sector"
-            if sf & self._FLAG_YELLOW_BASE:
-                return "Local yellow — slow down"
-            return "Slow down — no passing"
+                base = "1 lap to green"
+            elif sf & self._FLAG_TEN_TO_GO:
+                base = "10 to go"
+            elif sf & self._FLAG_FIVE_TO_GO:
+                base = "5 to go"
+            elif sf & self._FLAG_CAUTION_WAVING:
+                base = "Caution waving — pits closed"
+            elif sf & self._FLAG_CAUTION:
+                base = "Full course caution — hold position"
+            elif sf & self._FLAG_YELLOW_WAVING:
+                base = "Local yellow — slow in sector"
+            elif sf & self._FLAG_YELLOW_BASE:
+                base = "Local yellow — slow down"
+            else:
+                base = "Slow down — no passing"
+            sec = self._sector_timer.idx + 1 if self._sector_timer.starts else None
+            if sec:
+                return f"{base} — Sector S{sec}"
+            return base
 
         if flag == "green":
             if sf & self._FLAG_GREEN_HELD:
@@ -2716,6 +3277,23 @@ class AdvancedSimHUD:
             return "Final lap — finish the race"
 
         if flag == "blue":
+            fcfg = config.CFG.get("flags", {})
+            if (fcfg.get("show_blue_detail", True) and player is not None
+                    and est_time and lap_est > 0 and drivers):
+                ahead, _ = tr.nearest_ahead_behind(
+                    est_time, player, lap_est, pace_idxs=self._pace_idxs)
+                if ahead is not None and ahead > 0:
+                    ahead_idx = None
+                    me = est_time[player]
+                    for idx, t in enumerate(est_time):
+                        if idx == player or t is None:
+                            continue
+                        if tr.wrap_est_delta(t, me, lap_est) == ahead:
+                            ahead_idx = idx
+                            break
+                    if ahead_idx is not None:
+                        num = drivers.get(ahead_idx, {}).get("CarNumber", "?")
+                        return f"Car #{num} +{ahead:.1f}s"
             return "Faster car approaching — let them pass"
 
         if flag == "black":
@@ -2745,6 +3323,11 @@ class AdvancedSimHUD:
             return "Halfway point"
 
         if flag == "checkered":
+            fcfg = config.CFG.get("flags", {})
+            if (fcfg.get("show_finish_position", True) and player is not None
+                    and positions and player < len(positions)
+                    and positions[player]):
+                return f"Session complete — P{positions[player]}"
             return "Session complete"
 
         return None
@@ -2863,10 +3446,11 @@ class AdvancedSimHUD:
         show_flags = config.CFG["dash"].get("show_flags", True)
         flag = ctx = None
         if show_flags:
-            flag, ctx = self._session_flag_bundle()
+            flag, ctx = self._session_flag_bundle(
+                player, positions, None, 0.0, self._driver_cache)
         irating = irating_delta = None
         car_number = ""
-        drv = self._drivers().get(player) if player is not None else None
+        drv = self._driver_cache.get(player) if player is not None else None
         if drv:
             if self._dash_uses_irating() or self._dash_needs_irating_projection():
                 ir = drv.get("IRating")
@@ -2877,7 +3461,8 @@ class AdvancedSimHUD:
                 and (self._demo_active or self._session_allows_irating_projection())
                 and player is not None):
             irating_delta = self._irating_deltas.get(player)
-        self.dash_widget.set_data({
+
+        dash_data = {
             "gear": self.ir["Gear"],
             "rpm": self.ir["RPM"],
             "redline": self._car_info.get("redline"),
@@ -2897,29 +3482,139 @@ class AdvancedSimHUD:
             "lap": self.ir["Lap"] or (car_lap[player]
                                       if car_lap and player is not None else None),
             "laps_total": total,
-            "incidents": self.ir["PlayerCarMyIncidentCount"],
-            "tire_l": self.ir["LFwearM"],
-            "tire_r": self.ir["RFwearM"],
-            "fuel": self.ir["FuelLevel"],
-            "fuel_laps": self._fuel_laps(),
-            "air_temp": self.ir["AirTemp"],
-            "track_temp": self.ir["TrackTemp"] or self.ir["TrackTempCrew"],
-            "last_lap": self.ir["LapLastLapTime"],
-            "best_lap": self.ir["LapBestLapTime"],
-            "cur_lap": self.ir["LapCurrentLapTime"],
-            "delta": self.ir["LapDeltaToSessionBest"],
-            "irating": irating,
-            "irating_delta": irating_delta,
-            "flag": flag,
-            "flag_context": ctx,
-        })
+        }
+
+        if self._dash_uses_metric("incidents"):
+            dash_data["incidents"] = self.ir["PlayerCarMyIncidentCount"]
+        if self._dash_uses_metric("tires"):
+            dash_data["tire_l"] = self.ir["LFwearM"]
+            dash_data["tire_r"] = self.ir["RFwearM"]
+        if self._dash_uses_any("fuel", "fuel_stack"):
+            dash_data["fuel"] = self.ir["FuelLevel"]
+        if self._dash_uses_any("fuel_laps", "fuel_stack"):
+            dash_data["fuel_laps"] = self._fuel_laps()
+        if self._dash_uses_metric("air_temp"):
+            dash_data["air_temp"] = self.ir["AirTemp"]
+        if self._dash_uses_metric("track_temp"):
+            dash_data["track_temp"] = tele.read_track_temp(self.ir)
+        if self._dash_uses_metric("last_lap"):
+            dash_data["last_lap"] = self.ir["LapLastLapTime"]
+        if self._dash_uses_metric("best_lap"):
+            dash_data["best_lap"] = self.ir["LapBestLapTime"]
+        if self._dash_uses_metric("cur_lap"):
+            dash_data["cur_lap"] = self.ir["LapCurrentLapTime"]
+        if self._dash_uses_metric("delta"):
+            dash_data["delta"] = self.ir["LapDeltaToSessionBest"]
+        if irating is not None:
+            dash_data["irating"] = irating
+        if irating_delta is not None:
+            dash_data["irating_delta"] = irating_delta
+        if flag is not None:
+            dash_data["flag"] = flag
+        if ctx is not None:
+            dash_data["flag_context"] = ctx
+
+        if self._dash_uses_metric("tires_4"):
+            corners = tele.read_tire_corners(self.ir, wear=True, temp=False)
+            for key, entry in corners.items():
+                dash_data[f"tire_{key}"] = entry.get("wear")
+        if self._dash_uses_metric("tire_temp"):
+            corners = tele.read_tire_corners(self.ir, wear=False, temp=True)
+            for key, entry in corners.items():
+                dash_data[f"tire_temp_{key}"] = entry.get("temp")
+            temps = [dash_data[k] for k in (
+                "tire_temp_lf", "tire_temp_rf", "tire_temp_lr", "tire_temp_rr")
+                     if isinstance(dash_data.get(k), (int, float))]
+            dash_data["tire_temp_max"] = max(temps) if temps else None
+        if self._dash_uses_metric("fuel_pct"):
+            dash_data["fuel_pct"] = self.ir["FuelLevelPct"]
+        if self._dash_uses_metric("fuel_burn"):
+            dash_data["fuel_burn"] = self.ir["FuelUsePerHour"]
+        if self._dash_uses_metric("delta_best"):
+            dash_data["delta_best"] = self.ir["LapDeltaToBestLap"]
+        if self._dash_uses_metric("delta_optimal"):
+            dash_data["delta_optimal"] = self.ir["LapDeltaToOptimalLap"]
+        if self._dash_uses_metric("time_remain"):
+            dash_data["time_remain"] = self._session_time_remain()
+        if self._dash_uses_metric("class_pos") and player is not None:
+            cp = self._class_positions
+            if cp is None:
+                try:
+                    cp = self.ir["CarIdxClassPosition"]
+                except (TypeError, ValueError, KeyError):
+                    cp = None
+            if cp and player < len(cp) and cp[player] and cp[player] > 0:
+                dash_data["class_pos"] = cp[player]
+                cid = self._player_class(self._driver_cache, player)
+                if cid is not None and positions:
+                    dash_data["class_total"] = sum(
+                        1 for idx, d in self._driver_cache.items()
+                        if d.get("CarClassID") == cid
+                        and idx < len(positions)
+                        and positions[idx] and positions[idx] > 0)
+                else:
+                    dash_data["class_total"] = sum(1 for x in cp if x and x > 0)
+        if self._dash_uses_metric("incidents_team"):
+            dash_data["incidents_team"] = self.ir["PlayerCarTeamIncidentCount"]
+        if self._dash_uses_metric("incidents_limit"):
+            wk = self._weekend_info()
+            limit = wk.get("IncidentLimit")
+            dash_data["incident_limit"] = (int(limit) if limit is not None
+                                           and int(limit) > 0 else None)
+        if self._dash_uses_metric("dc_brake_bias"):
+            dash_data["dc_brake_bias"] = self.ir["dcBrakeBias"]
+        if self._dash_uses_metric("dc_tc"):
+            dash_data["dc_traction_control"] = self.ir["dcTractionControl"]
+        if self._dash_uses_metric("dc_abs"):
+            dash_data["dc_abs"] = self.ir["dcABS"]
+        if self._dash_uses_metric("dc_fuel_mix"):
+            dash_data["dc_fuel_mixture"] = self.ir["dcFuelMixture"]
+        if self._dash_uses_metric("dc_tire_set"):
+            dash_data["dc_tire_set"] = self.ir["dcTireSet"]
+        if self._dash_uses_metric("engine_warn"):
+            dash_data["engine_warnings"] = self.ir["EngineWarnings"]
+        if self._dash_uses_metric("oil_temp"):
+            dash_data["oil_temp"] = self.ir["OilTemp"]
+        if self._dash_uses_metric("water_temp"):
+            dash_data["water_temp"] = self.ir["WaterTemp"]
+        if self._dash_uses_metric("voltage"):
+            dash_data["voltage"] = self.ir["Voltage"]
+        if self._dash_uses_any("gap_ahead", "gap_behind") and player is not None:
+            est = self.ir["CarIdxEstTime"]
+            lap_est = float(self._car_info.get("est_lap", 0.0) or 0.0)
+            if lap_est <= 0 and est:
+                lap_est = max((t for t in est if t and t > 0), default=0.0)
+            if est and lap_est > 0:
+                def _include(idx):
+                    surf = self.ir["CarIdxTrackSurface"]
+                    return self._relative_include(idx, surf, positions, player)
+                ahead, behind = tr.nearest_ahead_behind(
+                    est, player, lap_est, include_fn=_include,
+                    pace_idxs=self._pace_idxs)
+                if self._dash_uses_metric("gap_ahead"):
+                    dash_data["gap_ahead"] = ahead
+                if self._dash_uses_metric("gap_behind"):
+                    dash_data["gap_behind"] = behind
+
+        if self._dash_uses_metric("lap_corners"):
+            snap = self._lap_engine.snapshot()
+            turns = snap.get("turns") or []
+            if turns:
+                parts = []
+                for t in turns[:2]:
+                    lbl = t.get("label", "?")
+                    lost = t.get("t_lost", 0.0)
+                    parts.append(f"{lbl} {lost:+.2f}")
+                dash_data["lap_corners"] = " ".join(parts)
+
+        self.dash_widget.set_data(dash_data)
 
     def _update_inputs(self) -> None:
         """Feed the input-telemetry trace (throttle/brake/clutch/steer + gear)."""
-        # iRacing's Clutch is 1.0 when fully engaged (pedal up); show pedal travel.
+        icfg = config.CFG.get("inputs", {})
         clutch_raw = self.ir["Clutch"]
         clutch = (1.0 - clutch_raw) if isinstance(clutch_raw, (int, float)) else None
-        self.inputs_widget.set_data({
+        payload = {
             "throttle": self.ir["Throttle"],
             "brake": self.ir["Brake"],
             "clutch": clutch,
@@ -2927,7 +3622,15 @@ class AdvancedSimHUD:
             "abs_active": bool(self.ir["BrakeABSactive"]),
             "gear": self.ir["Gear"],
             "speed_ms": self.ir["Speed"],
-        })
+        }
+        if icfg.get("show_handbrake"):
+            payload["handbrake"] = self.ir["HandbrakeRaw"]
+        if icfg.get("show_steering_torque"):
+            payload["steer_torque"] = self.ir["SteeringWheelPctTorque"]
+        if icfg.get("show_tc_abs"):
+            payload["tc_active"] = self.ir["dcTractionControl"]
+            payload["abs_setting"] = self.ir["dcABS"]
+        self.inputs_widget.set_data(payload)
 
     def _steer_norm(self):
         """Steering angle normalized to 0..1 (0.5 centered), using the car's
@@ -2942,25 +3645,84 @@ class AdvancedSimHUD:
 
     # --- delta bar / flags / pit service / sector timing -------------------
 
-    def _update_delta_bar(self) -> None:
+    def _update_delta_bar(self, player=None, positions=None) -> None:
         """Feed the live delta against the configured reference lap."""
         mode = config.CFG["delta_bar"].get("mode", "session_best")
-        key = {"session_best": "LapDeltaToSessionBest",
-               "best_lap": "LapDeltaToBestLap",
-               "optimal": "LapDeltaToOptimalLap"}.get(mode, "LapDeltaToSessionBest")
-        delta = self.ir[key]
-        self.delta_bar_widget.set_data(
-            {"delta": delta if isinstance(delta, (int, float)) else None})
+        delta = None
+        if mode == "last_lap":
+            cur = self.ir["LapCurrentLapTime"]
+            if (isinstance(cur, (int, float)) and cur > 0
+                    and isinstance(self._delta_last_lap_time, (int, float))
+                    and self._delta_last_lap_time > 0):
+                delta = cur - self._delta_last_lap_time
+        elif mode == "leader_last":
+            leader_idx = None
+            if positions:
+                for idx, pos in enumerate(positions):
+                    if pos == 1:
+                        leader_idx = idx
+                        break
+            if leader_idx is not None:
+                times = self._car_last
+                cur = self.ir["LapCurrentLapTime"]
+                if (times and leader_idx < len(times)
+                        and isinstance(times[leader_idx], (int, float))
+                        and times[leader_idx] > 0
+                        and isinstance(cur, (int, float)) and cur > 0):
+                    delta = cur - times[leader_idx]
+        else:
+            key = {"session_best": "LapDeltaToSessionBest",
+                   "best_lap": "LapDeltaToBestLap",
+                   "optimal": "LapDeltaToOptimalLap"}.get(
+                       mode, "LapDeltaToSessionBest")
+            delta = self.ir[key]
+        widget = self.delta_bar_widget
+        delta_val = delta if isinstance(delta, (int, float)) else None
+        prev = getattr(widget, "data", None) or {}
+        if (delta_val == prev.get("delta")
+                and not getattr(widget, "_animating", False)):
+            return
+        widget.set_data({"delta": delta_val})
 
-    def _update_flags(self) -> None:
-        """Feed the standalone flag banner (hidden entirely when no flag flies,
-        except in layout-edit mode where a placeholder stays visible)."""
-        flag, ctx = self._session_flag_bundle()
-        self.flags_widget.set_data({"flag": flag, "flag_context": ctx,
-                                    "edit": self.edit_mode_enabled()})
+    def _update_flags(self, player=None, positions=None, est_time=None,
+                      lap_est=0.0, drivers=None) -> None:
+        """Feed the standalone flag banner."""
+        fcfg = config.CFG.get("flags", {})
+        flag, ctx = self._session_flag_bundle(
+            player, positions, est_time, lap_est, drivers)
+        secondary = None
+        incident_warn = False
+        if flag is None and fcfg.get("show_incident_warning", True):
+            try:
+                count = int(self.ir["PlayerCarMyIncidentCount"] or 0)
+            except (TypeError, ValueError):
+                count = 0
+            wk = self._weekend_info()
+            limit = wk.get("IncidentLimit")
+            if isinstance(limit, (int, float)) and limit > 0:
+                pct = count / float(limit)
+                thresh = float(fcfg.get("incident_warn_pct", 0.75) or 0.75)
+                if pct >= thresh:
+                    incident_warn = True
+                    secondary = f"Incidents {count}/{int(limit)}"
+        if fcfg.get("show_pit_limiter", True):
+            try:
+                ew = self.ir["EngineWarnings"]
+                warn = tr.engine_warning_text(ew)
+                if warn and "LIM" in warn.split():
+                    secondary = secondary or "Pit limiter active"
+            except (TypeError, ValueError, KeyError):
+                pass
+        self.flags_widget.set_data({
+            "flag": flag,
+            "flag_context": ctx,
+            "secondary": secondary,
+            "incident_warn": incident_warn,
+            "edit": self.edit_mode_enabled(),
+        })
 
-    def _update_sectors(self, player, lap_pct) -> None:
-        """Feed live sector splits derived from the player's lap distance."""
+    def _advance_sector_timer(self, player, lap_pct) -> None:
+        """Advance sector splits from lap distance (no widget paint)."""
         self._sector_timer.set_boundaries(self._sector_starts())
         pct = None
         if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
@@ -2968,9 +3730,113 @@ class AdvancedSimHUD:
             pct = lap_pct[player]
         self._sector_timer.update(pct, self.ir["LapCurrentLapTime"],
                                   self.ir["LapLastLapTime"])
-        self.sector_widget.set_data(self._sector_timer.snapshot(
+        scfg = config.CFG.get("sector_timing", {})
+        if (scfg.get("highlight_active_sector_on_map", False)
+                and self._visible_widgets.get("map") and self._sector_timer.starts):
+            self.map_widget.set_active_sector(
+                self._sector_timer.idx, self._sector_timer.starts)
+        elif self._visible_widgets.get("map"):
+            self.map_widget.set_active_sector(None, None)
+
+    def _update_sector_widget(self) -> None:
+        """Push sector snapshot to the sector timing widget."""
+        scfg = config.CFG.get("sector_timing", {})
+        snap = self._sector_timer.snapshot(
             self.ir["LapCurrentLapTime"], self.ir["LapLastLapTime"],
-            self.ir["LapBestLapTime"]))
+            self.ir["LapBestLapTime"],
+            show_delta=scfg.get("show_sector_delta", False))
+        self.sector_widget.set_data(snap)
+
+    def _track_fuel_per_lap(self) -> None:
+        """Record fuel burned on each completed lap (shared by fuel calc + lap log)."""
+        fuel = self.ir["FuelLevel"]
+        cap = self._fuel_capacity(fuel)
+        try:
+            lap = int(self.ir["Lap"])
+        except (TypeError, ValueError):
+            lap = None
+        if lap is None or not isinstance(fuel, (int, float)):
+            return
+        if self._fc_prev_lap is None:
+            self._fc_prev_lap = lap
+            self._fc_lap_start_fuel = fuel
+        elif lap > self._fc_prev_lap:
+            used = (self._fc_lap_start_fuel or 0.0) - fuel
+            if 0.0 < used < (cap or 1e9):
+                self._fc_use.insert(0, float(used))
+                n = int(config.CFG["fuel_calc"].get("history_laps", 10) or 10)
+                del self._fc_use[max(1, n):]
+            self._fc_prev_lap = lap
+            self._fc_lap_start_fuel = fuel
+        elif lap < self._fc_prev_lap:
+            self._fc_use = []
+            self._fc_prev_lap = lap
+            self._fc_lap_start_fuel = fuel
+
+    def _update_lap_engine(self, player, lap_pct) -> None:
+        """Record the player's lap for corner comparison (engine only)."""
+        if not self.demo:
+            self._lap_engine.set_identity(self._lap_compare_key(),
+                                          self._car_info.get("redline"))
+        pct = None
+        if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
+                and 0 <= player < len(lap_pct)):
+            pct = lap_pct[player]
+        surf = self.ir["PlayerTrackSurface"]
+        off_track = surf == oc.TRK_OFF_TRACK
+        lcfg = config.CFG.get("lap_compare", {})
+        wet = None
+        if lcfg.get("exclude_wet_laps", True):
+            try:
+                wet = self.ir["TrackWetness"]
+            except (TypeError, ValueError, KeyError):
+                pass
+        gear = rpm = None
+        if lcfg.get("show_gear_rpm", False):
+            gear = self.ir["Gear"]
+            rpm = self.ir["RPM"]
+        self._lap_engine.update(
+            pct,
+            on_pit=bool(self.ir["OnPitRoad"]),
+            throttle=self.ir["Throttle"],
+            brake=self.ir["Brake"],
+            steer=self._steer_norm(),
+            speed=self.ir["Speed"],
+            laptime=self.ir["LapCurrentLapTime"],
+            last_lap_time=self.ir["LapLastLapTime"],
+            lat=self.ir["LatAccel"],
+            lon=self.ir["LongAccel"],
+            gear=gear,
+            rpm=rpm,
+            off_track=off_track,
+            incidents=self.ir["PlayerCarMyIncidentCount"],
+            corner_pcts=self._corner_pcts(),
+            track_len=self._track_length_m(),
+            track_wetness=wet,
+            exclude_wet=lcfg.get("exclude_wet_laps", True),
+            wet_threshold=float(lcfg.get("wetness_delta_threshold", 5.0) or 5.0),
+        )
+
+    @staticmethod
+    def _lap_compare_snap_key(snap: dict) -> tuple:
+        turns = snap.get("turns") or []
+        return (
+            snap.get("live_delta"),
+            snap.get("last_delta"),
+            snap.get("ref_time"),
+            snap.get("have_ref"),
+            snap.get("is_new_best"),
+            tuple((t.get("label"), t.get("t_lost")) for t in turns[:6]),
+        )
+
+    def _update_lap_compare_widget(self) -> None:
+        """Feed the lap compare widget from the engine snapshot."""
+        snap = self._lap_engine.snapshot()
+        key = self._lap_compare_snap_key(snap)
+        if key == self._lap_compare_snap_key:
+            return
+        self._lap_compare_snap_key = key
+        self.lap_compare_widget.set_data(snap)
 
     def _sector_starts(self):
         """Sector start percentages from the session, else N equal divisions.
@@ -2994,37 +3860,6 @@ class AdvancedSimHUD:
             starts = [i / n for i in range(n)]
         self._sector_starts_cache = starts
         return starts
-
-    def _update_lap_compare(self, player, lap_pct) -> None:
-        """Record the player's lap and feed the corner-by-corner comparison."""
-        if not self.demo:  # demo keeps its seeded benchmark; no persistence
-            self._lap_engine.set_identity(self._lap_compare_key(),
-                                          self._car_info.get("redline"))
-        pct = None
-        if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
-                and 0 <= player < len(lap_pct)):
-            pct = lap_pct[player]
-        surf = self.ir["PlayerTrackSurface"]
-        off_track = surf == oc.TRK_OFF_TRACK
-        self._lap_engine.update(
-            pct,
-            on_pit=bool(self.ir["OnPitRoad"]),
-            throttle=self.ir["Throttle"],
-            brake=self.ir["Brake"],
-            steer=self._steer_norm(),
-            speed=self.ir["Speed"],
-            laptime=self.ir["LapCurrentLapTime"],
-            last_lap_time=self.ir["LapLastLapTime"],
-            lat=self.ir["LatAccel"],
-            lon=self.ir["LongAccel"],
-            gear=self.ir["Gear"],
-            rpm=self.ir["RPM"],
-            off_track=off_track,
-            incidents=self.ir["PlayerCarMyIncidentCount"],
-            corner_pcts=self._corner_pcts(),
-            track_len=self._track_length_m(),
-        )
-        self.lap_compare_widget.set_data(self._lap_engine.snapshot())
 
     def _lap_compare_key(self):
         """A stable "<track>::<car>" key so the benchmark persists per combo.
@@ -3131,25 +3966,10 @@ class AdvancedSimHUD:
         except (TypeError, ValueError):
             lap = None
 
-        # Record fuel burned on each completed lap.
-        if lap is not None and isinstance(fuel, (int, float)):
-            if self._fc_prev_lap is None:
-                self._fc_prev_lap = lap
-                self._fc_lap_start_fuel = fuel
-            elif lap > self._fc_prev_lap:
-                used = (self._fc_lap_start_fuel or 0.0) - fuel
-                if 0.0 < used < (cap or 1e9):
-                    self._fc_use.insert(0, float(used))
-                    n = int(config.CFG["fuel_calc"].get("history_laps", 10) or 10)
-                    del self._fc_use[max(1, n):]
-                self._fc_prev_lap = lap
-                self._fc_lap_start_fuel = fuel
-
+        fcfg = config.CFG["fuel_calc"]
         lap_avg = self._avg_lap_secs()
         laps_rem, time_rem = self._race_remaining(lap_avg)
 
-        # Usage scenarios. Fall back to the live burn estimate before we have
-        # any per-lap samples.
         if self._fc_use:
             u_avg = sum(self._fc_use) / len(self._fc_use)
             u_max = max(self._fc_use)
@@ -3161,6 +3981,30 @@ class AdvancedSimHUD:
             if per_hr and lap_s:
                 est = per_hr * (lap_s / 3600.0)
             u_avg = u_max = u_min = est
+
+        live_burn = None
+        if fcfg.get("show_live_burn", False):
+            if self._fc_use:
+                live_burn = self._fc_use[0]
+            elif u_avg:
+                live_burn = u_avg
+        fuel_pct = None
+        if fcfg.get("show_tank_pct", False):
+            try:
+                fuel_pct = self.ir["FuelLevelPct"]
+            except (TypeError, ValueError, KeyError):
+                if cap and isinstance(fuel, (int, float)) and cap > 0:
+                    fuel_pct = 100.0 * fuel / cap
+
+        legal_min = None
+        if laps_rem is not None and u_avg and u_avg > 0:
+            buf = float(fcfg.get("legal_fuel_buffer_l", 2.0) or 0.0)
+            legal_min = max(0.0, laps_rem * u_avg + buf)
+
+        stints = None
+        stint_laps = float(fcfg.get("stint_laps", 0) or 0)
+        if fcfg.get("show_stints", False) and stint_laps > 0 and u_avg and u_avg > 0 and cap:
+            stints = int(cap // (stint_laps * u_avg))
 
         def scenario(u):
             if not u or u <= 0 or not isinstance(fuel, (int, float)):
@@ -3201,16 +4045,188 @@ class AdvancedSimHUD:
                 total = max(1, min(40, int(round(laps_rem))))
                 wa = max(0, min(total - 1, int(rows["max"]["laps"])))
                 wb = max(0, min(total - 1, int(rows["min"]["laps"])))
-                strip = {"total": total, "window": (wa, wb), "now": 0}
+                try:
+                    total_laps = int(self.ir["SessionLapsTotal"])
+                except (TypeError, ValueError, KeyError):
+                    total_laps = None
+                if total_laps and total_laps > 0:
+                    elapsed = max(0, lap - 1)
+                    now_idx = max(0, min(total - 1,
+                                        int(round(elapsed / total_laps * total))))
+                else:
+                    now_idx = max(0, min(total - 1, total - int(laps_rem)))
+                strip = {"total": total, "window": (wa, wb), "now": now_idx}
 
-        self.fuel_widget.set_data({
+        pit_hint = None
+        if fcfg.get("show_pit_compare", False) and u_avg and u_avg > 0:
+            loss = float(fcfg.get("pit_loss_seconds", 25.0) or 25.0)
+            pit_hint = f"Pit now ~{loss:.0f}s vs +2 laps ~{2 * u_avg:.1f}L"
+
+        alert = False
+        if fcfg.get("show_low_fuel_alert", True):
+            lt = float(fcfg.get("low_fuel_laps_threshold", 2.0) or 2.0)
+            tt = float(fcfg.get("low_fuel_time_threshold", 120.0) or 120.0)
+            if laps_margin is not None and laps_margin < lt:
+                alert = True
+            if time_margin is not None and time_margin < tt:
+                alert = True
+
+        payload = {
             "level": fuel, "cap": cap, "add": add,
             "window": window, "window_open": win_open,
             "rows": rows,
             "time_empty": time_empty, "time_margin": time_margin,
             "laps_empty": laps_empty, "laps_margin": laps_margin,
             "strip": strip,
+            "live_burn": live_burn,
+            "fuel_pct": fuel_pct,
+            "legal_min": legal_min,
+            "stints": stints,
+            "pit_hint": pit_hint,
+            "alert": alert,
+        }
+        key = tele.fuel_payload_key(payload)
+        if key == getattr(self, "_fuel_payload_key", None):
+            return
+        self._fuel_payload_key = key
+        self.fuel_widget.set_data(payload)
+
+    def _update_tire_panel(self) -> None:
+        cfg = config.CFG.get("tire_panel", {})
+        corners = tele.read_tire_corners(
+            self.ir,
+            wear=cfg.get("show_wear", True),
+            temp=cfg.get("show_temp", True),
+            pressure=cfg.get("show_pressure", False),
+        )
+        self.tire_panel_widget.set_data({
+            "corners": corners,
+            "edit": self.edit_mode_enabled(),
         })
+
+    def _update_pit_board(self) -> None:
+        cfg = config.CFG.get("pit_board", {})
+        flags = self.ir["PitSvFlags"]
+        services = ps.decode_flags(flags)
+        fuel_l = None
+        try:
+            fuel_l = float(self.ir["PitSvFuel"])
+        except (TypeError, ValueError, KeyError):
+            pass
+        compound = None
+        if cfg.get("show_compound", True):
+            try:
+                compound = int(self.ir["PitSvTireCompound"])
+            except (TypeError, ValueError, KeyError):
+                pass
+        repairs = None
+        if cfg.get("show_fast_repairs", True):
+            try:
+                used = int(self.ir["FastRepairUsed"] or 0)
+                avail = int(self.ir["FastRepairAvailable"] or 0)
+                repairs = f"{max(0, avail - used)}/{avail}" if avail > 0 else None
+            except (TypeError, ValueError, KeyError):
+                pass
+        pressures = None
+        if cfg.get("show_pressures", False):
+            pressures = {}
+            for key, sdk_key in zip(
+                    ("lf", "rf", "lr", "rr"), tele.PIT_PRESSURE_KEYS):
+                try:
+                    val = self.ir[sdk_key]
+                    if isinstance(val, (int, float)):
+                        pressures[key] = float(val)
+                except (TypeError, ValueError, KeyError):
+                    pass
+            if not pressures:
+                pressures = None
+        pit_active = bool(self.ir["PitstopActive"])
+        payload = {
+            "services": services,
+            "fuel_l": fuel_l if fuel_l and fuel_l > 0 else None,
+            "compound": compound if compound and compound > 0 else None,
+            "repairs": repairs,
+            "pressures": pressures,
+            "pit_active": pit_active,
+            "edit": self.edit_mode_enabled(),
+        }
+        if payload == getattr(self.pit_board_widget, "data", None):
+            return
+        self.pit_board_widget.set_data(payload)
+
+    def _weather_track_trend(self, track_temp, window_s: float) -> float | None:
+        if not isinstance(track_temp, (int, float)):
+            return None
+        hist = self._ensure_weather_hist()
+        now = time.time()
+        self._weather_sample_counter += 1
+        if self._weather_sample_counter >= 60:
+            self._weather_sample_counter = 0
+            hist.append((now, float(track_temp)))
+        if not hist:
+            return None
+        cutoff = now - max(30.0, window_s)
+        old = None
+        for ts, val in hist:
+            if ts >= cutoff:
+                old = val
+                break
+        if old is None:
+            old = hist[0][1]
+        t = config.conv_temp(track_temp)
+        o = config.conv_temp(old)
+        if t is None or o is None:
+            return None
+        return t - o
+
+    def _update_weather_panel(self) -> None:
+        cfg = config.CFG.get("weather_panel", {})
+        wk = self._weekend_info()
+        snap = tele.weather_snapshot(self.ir, wk, cfg=cfg)
+        window = float(cfg.get("trend_window_seconds", 300.0) or 300.0)
+        if cfg.get("show_trend", True):
+            track_temp = snap.get("track_temp")
+            snap["track_trend"] = self._weather_track_trend(track_temp, window)
+        snap["edit"] = self.edit_mode_enabled()
+        if snap == getattr(self.weather_panel_widget, "data", None):
+            return
+        self.weather_panel_widget.set_data(snap)
+
+    def _update_leaderboard_strip(self, positions, drivers, car_f2,
+                                  lap_est, player) -> None:
+        if not positions:
+            return
+        cfg = config.CFG.get("leaderboard_strip", {})
+        n = max(1, min(5, int(cfg.get("rows", 3) or 3)))
+        ranked = sorted(
+            (idx for idx, pos in enumerate(positions)
+             if pos and pos > 0 and idx not in self._pace_idxs),
+            key=lambda idx: positions[idx],
+        )[:n]
+        rows = []
+        for idx in ranked:
+            d = drivers.get(idx, {})
+            pos = positions[idx]
+            gap = tr.fmt_leader_gap(
+                car_f2[idx] if car_f2 and idx < len(car_f2) else None,
+                pos, lap_est)
+            rows.append({
+                "position": pos,
+                "car_number": d.get("CarNumber", ""),
+                "name": d.get("UserName", f"Car {idx}"),
+                "class_color": d.get("CarClassColor", "#888888"),
+                "gap": gap,
+                "is_player": idx == player,
+            })
+        self.leaderboard_strip_widget.set_data({
+            "rows": rows,
+            "edit": self.edit_mode_enabled(),
+        })
+
+    def _update_ers_hybrid(self) -> None:
+        snap = hy.snapshot(self.ir)
+        snap["edit"] = self.edit_mode_enabled()
+        self.ers_hybrid_widget.set_data(snap)
 
 
 def main() -> int:

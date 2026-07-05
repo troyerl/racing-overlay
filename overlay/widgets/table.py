@@ -42,6 +42,12 @@ SLOT_ITEMS: dict[str, tuple[str, str]] = {
     "sim_time":       ("SIM",  "sim_time"),
     "cpu":            ("CPU",  "cpu"),
     "mem":            ("MEM",  "mem"),
+    "laps_remain":    ("LEFT", "laps_remain"),
+    "incident_limit": ("INC",  "incident_limit"),
+    "fast_repairs":   ("FR",   "fast_repairs"),
+    "weather":        ("WX",   "weather"),
+    "track_wetness":  ("WET",  "track_wetness"),
+    "session_type":   ("",     "session_type"),
 }
 
 
@@ -429,6 +435,9 @@ class BaseTable(QWidget):
                 return h * wf.get("last_lap", 2.9)
             if k == "best_lap":
                 return h * wf.get("best_lap", 2.9)
+            wkey = wf.get(k)
+            if wkey is not None:
+                return h * wkey
             return 0.0  # "name" is flexible
 
         # Build the visible column run in the configured order, then assign each
@@ -530,6 +539,25 @@ class BaseTable(QWidget):
         if "best_lap" in slots:
             bx, bw = slots["best_lap"]
             self._draw_laptime(p, row, "best_lap", bx, y, bw, h, fs)
+        for tkey in ("class_pos", "status", "laps", "closing", "qual_pos",
+                     "team", "nickname"):
+            if tkey in slots:
+                tx, tw = slots[tkey]
+                self._draw_text_cell(p, row, tkey, tx, y, tw, h, fs)
+        if "car_flag" in slots:
+            fx, fw = slots["car_flag"]
+            self._draw_car_flag(p, row, fx, y, fw, h, fs)
+        for gkey, field in (("gap_ahead", "gap_ahead_text"),
+                            ("gap_leader", "gap_leader_text")):
+            if gkey in slots:
+                gx, gw = slots[gkey]
+                self._draw_gap_text(p, row, field, gx, y, gw, h, fs, gutter)
+        if "qual_best" in slots:
+            qx, qw = slots["qual_best"]
+            self._draw_laptime(p, row, "qual_best", qx, y, qw, h, fs)
+        if "gap_pole" in slots:
+            px, pw = slots["gap_pole"]
+            self._draw_gap_text(p, row, "gap_pole", px, y, pw, h, fs, gutter)
 
     def _draw_row_tint(self, p, rect: QRectF, color_key: str) -> None:
         """Soft horizontal wash for player / lapped-traffic row highlights."""
@@ -779,3 +807,40 @@ class BaseTable(QWidget):
         p.setFont(tabfont(fs * 0.92, bold=_data_font_bold()))
         p.drawText(QRectF(x, y, lw, h), Qt.AlignmentFlag.AlignCenter,
                    row.get(key) or "\u2014")
+
+    def _draw_text_cell(self, p, row, key, x, y, w, h, fs):
+        p.setPen(col("muted") if row.get("in_pit") else col("text"))
+        p.setFont(tfont(fs * 0.88, bold=_data_font_bold()))
+        p.drawText(QRectF(x, y, max(10.0, w), h),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                   str(row.get(key) or "\u2014"))
+
+    def _draw_gap_text(self, p, row, field, x, y, w, h, fs, gutter):
+        gtxt = row.get(field) or "\u2014"
+        p.setPen(col("text"))
+        p.setFont(tabfont(fs * _tcfg().get("gap_font_scale", 1.12),
+                          bold=_data_font_bold()))
+        p.drawText(QRectF(x, y, max(10.0, w - gutter), h),
+                   Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
+                   gtxt)
+
+    def _draw_car_flag(self, p, row, x, y, w, h, fs):
+        txt = row.get("car_flag") or "\u2014"
+        kind = row.get("car_flag_kind")
+        if not kind or txt == "\u2014":
+            self._draw_text_cell(p, row, "car_flag", x, y, w, h, fs)
+            return
+        bg_key = {
+            "black": "flag_black",
+            "meatball": "flag_meatball",
+            "dq": "flag_dq",
+            "furled": "flag_furled",
+        }.get(kind, "flag_black")
+        fg_key = bg_key + "_text"
+        cell = QRectF(x + w * 0.05, y + h * 0.22, w * 0.9, h * 0.56)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(col(bg_key))
+        p.drawRoundedRect(cell, cell.height() * 0.35, cell.height() * 0.35)
+        p.setPen(col(fg_key))
+        p.setFont(tfont(fs * 0.72, bold=True))
+        p.drawText(cell, Qt.AlignmentFlag.AlignCenter, txt)

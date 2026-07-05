@@ -294,6 +294,8 @@ class FakeIRSDK:
                         "LicString": _DEMO_DRIVERS[i][3],
                         "CarClassColor": _DEMO_DRIVERS[i][4],
                         "CarClassID": 0,
+                        "TeamName": f"Team {_DEMO_DRIVERS[i][0]}",
+                        "UserNickName": _DEMO_DRIVERS[i][1].split()[0],
                     }
                     for i in range(self.num_cars)
                 ] + [{
@@ -381,6 +383,135 @@ class FakeIRSDK:
             t = time.time() - self._start
             return max(0.0, min(1.0, 0.88 - 0.02 * (0.5 + 0.5 * math.sin(t * 0.05 + 1))))
 
+        if key == "LRwearM":
+            t = time.time() - self._start
+            return max(0.0, min(1.0, 0.90 - 0.02 * (0.5 + 0.5 * math.sin(t * 0.05 + 2))))
+
+        if key == "RRwearM":
+            t = time.time() - self._start
+            return max(0.0, min(1.0, 0.86 - 0.02 * (0.5 + 0.5 * math.sin(t * 0.05 + 3))))
+
+        if key in ("LFtempCL", "RFtempCL", "LRtempCL", "RRtempCL"):
+            base = {"LFtempCL": 85.0, "RFtempCL": 87.0,
+                    "LRtempCL": 82.0, "RRtempCL": 84.0}[key]
+            t = time.time() - self._start
+            return base + 3.0 * math.sin(t * 0.08 + hash(key) % 7)
+
+        if key == "CarIdxSessionFlags":
+            t = time.time() - self._start
+            flags = [0] * self.num_cars
+            if (t % 30.0) < 5.0:
+                flags[2] = 0x00100000  # meatball on car 2
+            if 10.0 < (t % 30.0) < 15.0:
+                flags[1] = 0x00010000  # black on car 1
+            return flags + [0]
+
+        if key == "LapDeltaToBestLap":
+            t = time.time() - self._start
+            return math.sin(t * 0.5) * 0.35
+
+        if key == "LapDeltaToOptimalLap":
+            t = time.time() - self._start
+            return math.sin(t * 0.5 + 0.5) * 0.28
+
+        if key == "PlayerCarTeamIncidentCount":
+            return 14
+
+        if key == "FastRepairAvailable":
+            return 2
+
+        if key == "FastRepairUsed":
+            return 1
+
+        if key == "OilTemp":
+            return 95.0 + math.sin((time.time() - self._start) * 0.04) * 2.0
+
+        if key == "WaterTemp":
+            return 88.0 + math.sin((time.time() - self._start) * 0.03) * 1.5
+
+        if key == "Voltage":
+            return 13.6 + math.sin((time.time() - self._start) * 0.02) * 0.2
+
+        if key == "dcBrakeBias":
+            return 56.0
+
+        if key == "dcTractionControl":
+            return 5.0
+
+        if key == "dcABS":
+            return 3.0
+
+        if key == "dcFuelMixture":
+            return 1.0
+
+        if key == "dcTireSet":
+            return 2.0
+
+        if key == "TrackWetness":
+            laps = self._total_laps()[self.player_idx]
+            return min(30.0, 5.0 + laps * 2.5)
+
+        if key == "RainIntensity":
+            t = time.time() - self._start
+            return max(0.0, min(100.0, 5.0 + 10.0 * math.sin(t * 0.02)))
+
+        if key in ("LFcoldPressure", "RFcoldPressure", "LRcoldPressure",
+                   "RRcoldPressure"):
+            base = {"LFcoldPressure": 179.0, "RFcoldPressure": 181.0,
+                    "LRcoldPressure": 175.0, "RRcoldPressure": 177.0}[key]
+            return base + math.sin((time.time() - self._start) * 0.05) * 2.0
+
+        if key == "PitSvFlags":
+            return 0x0010 | 0x0001 | 0x0004  # fuel + LF + LR tires
+
+        if key == "PitSvFuel":
+            return 42.0
+
+        if key == "PitSvTireCompound":
+            return 2
+
+        if key in ("PitSvLFP", "PitSvRFP", "PitSvLRP", "PitSvRRP"):
+            base = {"PitSvLFP": 180.0, "PitSvRFP": 182.0,
+                    "PitSvLRP": 176.0, "PitSvRRP": 178.0}[key]
+            return base
+
+        if key == "PitstopActive":
+            frac = self._lap_pct()[self.player_idx]
+            return _in_demo_pit(frac)
+
+        if key == "EnergyERSBattery":
+            t = time.time() - self._start
+            return 4_000_000.0 + 500_000.0 * math.sin(t * 0.1)
+
+        if key == "EnergyBatteryToMGU_KLap":
+            return 120_000.0
+
+        if key == "EnergyBudgetBattToMGU_KLap":
+            return 2_000_000.0
+
+        if key == "ManualBoost":
+            return (time.time() - self._start) % 8.0 < 1.5
+
+        if key == "PushToPass":
+            return False
+
+        if key == "FogLevel":
+            return 8.0
+
+        if key == "SessionUniqueID":
+            return 9001
+
+        if key == "QualifyResultsInfo":
+            return {"Results": [
+                {"CarIdx": i, "Position": i + 1, "ClassPosition": i + 1}
+                for i in range(self.num_cars)]}
+
+        if key == "SessionInfo":
+            return {"Sessions": [{"SessionType": "Race"}]}
+
+        if key == "SessionNum":
+            return 0
+
         if key == "FuelUsePerHour":
             return 176.0 * (self.lap_time / 32.0)
 
@@ -447,6 +578,9 @@ class FakeIRSDK:
                     "TrackConfigName": "Oval", "TrackLength": "2.25 km",
                     "TrackType": "oval course", "Category": "Oval",
                     "TrackNumTurns": 4,
+                    "Skies": "Clear",
+                    "RelativeHumidity": 45,
+                    "FogLevel": 8,
                     "WeekendOptions": {"IncidentLimit": 17}}
 
         if key == "SplitTimeInfo":
@@ -527,6 +661,15 @@ class FakeIRSDK:
             return self._drive_profile(self._lap_pct()[self.player_idx])[2]
         if key == "SteeringWheelAngleMax":
             return 5.0                        # radians of lock (for normalizing)
+
+        if key == "HandbrakeRaw":
+            frac = self._lap_pct()[self.player_idx]
+            return 0.85 if 0.48 < frac < 0.52 else 0.0
+
+        if key == "SteeringWheelPctTorque":
+            frac = self._lap_pct()[self.player_idx]
+            t = time.time() - self._start
+            return 0.35 * math.sin(t * 2.5 + frac * 6.0) if frac < 0.5 else 0.0
 
         if key == "LapDist":
             return self._lap_pct()[self.player_idx] * 4000.0  # meters along lap

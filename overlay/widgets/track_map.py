@@ -525,6 +525,17 @@ def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
     return True
 
 
+def _parse_zone_ranges(raw) -> list[tuple[float, float]]:
+    """Normalize track JSON zone lists to [(lo, hi), ...] lap fractions."""
+    out: list[tuple[float, float]] = []
+    if not isinstance(raw, list):
+        return out
+    for z in raw:
+        if isinstance(z, (list, tuple)) and len(z) >= 2:
+            out.append((float(z[0]), float(z[1])))
+    return out
+
+
 def load_track(path: str, n: int = 720):
     """Load a track file -> (points, start_finish_pct, corners, name, meta).
 
@@ -571,6 +582,12 @@ def load_track(path: str, n: int = 720):
         meta["pit_source"] = str(data["pit_source"])
     if data.get("schema"):
         meta["schema"] = int(data["schema"])
+    drs = _parse_zone_ranges(data.get("drs_zones"))
+    if drs:
+        meta["drs_zones"] = drs
+    p2p = _parse_zone_ranges(data.get("p2p_zones"))
+    if p2p:
+        meta["p2p_zones"] = p2p
     return points, sf, corners, data.get("name", ""), meta
 
 
@@ -751,8 +768,13 @@ class TrackMapWidget(QWidget):
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
         self.wind_speed_ms: float = 0.0
+        self.track_wetness: float | None = None
+        self.rain_intensity: float | None = None
+        self.drs_zones: list[tuple[float, float]] = []
+        self.p2p_zones: list[tuple[float, float]] = []
+        self._active_sector: tuple[int, list[float]] | None = None
         # Each car: (idx, lap_pct, label, color_hex, is_player, on_route,
-        # on_pit, speaking, is_pace).
+        # on_pit, speaking, is_pace[, status_kind]).
         self.cars: list[tuple] = []
         self.sector_boundaries: list[float] = []
         self.traffic_markers: dict[str, dict | None] = {
@@ -1551,6 +1573,43 @@ class TrackMapWidget(QWidget):
         self.wind_speed_ms = new_spd
         self.update()
 
+    def set_weather(self, track_wetness=None, rain_intensity=None) -> None:
+        """Optional wetness (0..100) and rain intensity for expanded weather."""
+        wet = (float(track_wetness)
+               if isinstance(track_wetness, (int, float)) else None)
+        rain = (float(rain_intensity)
+                if isinstance(rain_intensity, (int, float)) else None)
+        if wet == self.track_wetness and rain == self.rain_intensity:
+            return
+        self.track_wetness = wet
+        self.rain_intensity = rain
+        self.update()
+
+    def set_track_zones(
+        self,
+        *,
+        drs_zones=None,
+        p2p_zones=None,
+    ) -> None:
+        drs = list(drs_zones or [])
+        p2p = list(p2p_zones or [])
+        if drs == self.drs_zones and p2p == self.p2p_zones:
+            return
+        self.drs_zones = drs
+        self.p2p_zones = p2p
+        self.update()
+
+    def set_active_sector(self, idx: int | None, starts=None) -> None:
+        """Highlight the player's current sector arc on the map."""
+        if idx is None or not starts:
+            new = None
+        else:
+            new = (int(idx), list(starts))
+        if new == self._active_sector:
+            return
+        self._active_sector = new
+        self.update()
+
     def set_cars(self, cars) -> None:
         if cars == self.cars:  # nothing moved -> no repaint needed
             return
@@ -1603,9 +1662,9 @@ class TrackMapWidget(QWidget):
     def _resolve_car_point(self, tx, car, cc: QPointF, off: float,
                            schematic: bool) -> QPointF | None:
         """Screen position of a car dot (shared by car draw + traffic markers)."""
-        if len(car) >= 9:
-            idx, pct, _label, _color, is_player, on_route, on_pit, _speaking, _is_pace = car
-        elif len(car) >= 8:
+        if len(car) >= 10:
+            idx, pct, _label, _color, is_player, on_route, on_pit, _speaking, _is_pace, _sk = car
+        elif len(car) >= 9:
             idx, pct, _label, _color, is_player, on_route, on_pit, _speaking = car
         elif len(car) >= 7:
             idx, pct, _label, _color, is_player, on_route, on_pit = car
@@ -2004,6 +2063,12 @@ class TrackMapWidget(QWidget):
                 self._draw_pit_edit(p, tx)
             if mc.get("show_sector_boundaries", True):
                 self._draw_sector_boundaries(p, tx)
+            if mc.get("show_drs_zones", False) and self.drs_zones:
+                self._draw_zones(p, tx, self.drs_zones, "drs_zone")
+            if mc.get("show_p2p_zones", False) and self.p2p_zones:
+                self._draw_zones(p, tx, self.p2p_zones, "p2p_zone")
+            if self._active_sector is not None:
+                self._draw_active_sector(p, tx)
             corners = self.display_corners()
             if mc.get("show_corners", True):
                 self._draw_corners(p, tx, corners)
@@ -2279,6 +2344,109 @@ class TrackMapWidget(QWidget):
         p.drawRoundedRect(lr, 2, 2)
         p.setPen(_mcol("wind_text"))
         p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
+
+        if _mcfg().get("show_expanded_weather", False):
+            lines: list[str] = []
+            if self.track_wetness is not None:
+                lines.append(f"Wet {self.track_wetness:.0f}%")
+            if self.rain_intensity is not None and self.rain_intensity > 0:
+                lines.append(f"Rain {self.rain_intensity:.0f}%")
+            if lines:
+                ssz2 = max(5, round(6 * config.text_scale_for("map")))
+                p.setFont(QFont(fam, ssz2, QFont.Weight.Bold))
+                fm2 = p.fontMetrics()
+                tw2 = max(fm2.horizontalAdvance(s) for s in lines) + 6
+                th2 = fm2.height() * len(lines) + 4
+                lr2 = QRectF(cx - tw2 / 2, lr.bottom() + 2, tw2, th2)
+                p.setBrush(QColor(10, 13, 17, 190))
+                p.setPen(Qt.PenStyle.NoPen)
+                p.drawRoundedRect(lr2, 2, 2)
+                p.setPen(_mcol("wind_text"))
+                y = lr2.top() + 2
+                for line in lines:
+                    p.drawText(QRectF(lr2.left(), y, lr2.width(), fm2.height() + 1),
+                               Qt.AlignmentFlag.AlignCenter, line)
+                    y += fm2.height()
+
+    def _draw_zones(self, p: QPainter, tx, zones: list[tuple[float, float]],
+                    color_key: str) -> None:
+        if not self.path or not zones:
+            return
+        mc = _mcfg()
+        width = max(4.0, mc.get("asphalt_width", 11) * 1.35)
+        col = _mcol_def(color_key, "#46df7a88")
+        pen = QPen(col, width)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(pen)
+        for lo, hi in zones:
+            span = (hi - lo) % 1.0
+            if span <= 1e-5:
+                continue
+            steps = max(8, int(span * len(self.path)))
+            pts: list[QPointF] = []
+            for i in range(steps + 1):
+                pct = (lo + span * (i / steps)) % 1.0
+                pt = self._loop_point_at_pct(pct)
+                if pt is not None:
+                    pts.append(tx(pt))
+            if len(pts) < 2:
+                continue
+            path = QPainterPath()
+            path.moveTo(pts[0])
+            for q in pts[1:]:
+                path.lineTo(q)
+            p.drawPath(path)
+
+    def _draw_active_sector(self, p: QPainter, tx) -> None:
+        if not self.path or not self._active_sector:
+            return
+        idx, starts = self._active_sector
+        n = len(starts)
+        if n <= 0 or idx < 0 or idx >= n:
+            return
+        lo = starts[idx]
+        hi = starts[(idx + 1) % n] if n > 1 else 1.0
+        if idx + 1 >= n:
+            hi = 1.0
+        self._draw_zones(p, tx, [(lo, hi)], "active_sector")
+
+    def _status_color(self, kind: str | None) -> QColor | None:
+        if not kind:
+            return None
+        key = f"status_{kind}"
+        colors = _mcfg().get("colors", {})
+        if key in colors:
+            return _mcol(key)
+        if kind in ("black", "dq", "furled", "meatball"):
+            return _mcol_def(f"status_{kind}", "#ff9416")
+        return None
+
+    def _draw_car_status_badge(self, p: QPainter, c: QPointF, r: float,
+                               kind: str | None) -> None:
+        if not kind:
+            return
+        fill = self._status_color(kind)
+        if fill is None:
+            return
+        br = max(5.0, r * 0.55)
+        bx = c.x() + r * 0.65
+        by = c.y() - r * 0.65
+        p.setPen(QPen(QColor(0, 0, 0, 180), 1))
+        p.setBrush(fill)
+        p.drawEllipse(QPointF(bx, by), br, br)
+        glyph = {
+            "pit": "P", "off": "!", "garage": "G",
+            "black": "B", "meatball": "M", "dq": "X", "furled": "W",
+        }.get(kind, "")
+        if glyph:
+            sz = max(5, round(br * 1.1))
+            p.setFont(QFont(config.CFG.get("font_family", "Arial"), sz,
+                            QFont.Weight.Bold))
+            p.setPen(QColor(255, 255, 255) if kind != "furled" else QColor(20, 20, 20))
+            p.drawText(QRectF(bx - br, by - br, 2 * br, 2 * br),
+                       Qt.AlignmentFlag.AlignCenter, glyph)
 
     def _draw_pit_edit(self, p: QPainter, tx) -> None:
         """In-progress pit road (red) and merge (blue) polylines + handles."""
@@ -2636,9 +2804,14 @@ class TrackMapWidget(QWidget):
             dot_frac = 0.05
         rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
         marker_slots = self._marker_slots_by_idx()
+        show_status = mc.get("show_car_status", True)
         for car in sorted(self.cars, key=lambda c: c[4]):
             speaking = is_pace = False
-            if len(car) >= 9:
+            status_kind = None
+            if len(car) >= 10:
+                (idx, pct, label, color, is_player, on_route, on_pit,
+                 speaking, is_pace, status_kind) = car
+            elif len(car) >= 9:
                 idx, pct, label, color, is_player, on_route, on_pit, speaking, is_pace = car
             elif len(car) >= 8:
                 idx, pct, label, color, is_player, on_route, on_pit, speaking = car
@@ -2689,6 +2862,8 @@ class TrackMapWidget(QWidget):
                 p.drawEllipse(c, r, r)
             if speaking and not is_pace:
                 self._draw_car_speaking(p, c, r)
+            if show_status and status_kind and not is_pace:
+                self._draw_car_status_badge(p, c, r, status_kind)
             p.setPen(_mcol_def("pace_car_text", "#ffffff") if is_pace
                        else (QColor(20, 20, 20) if is_player else QColor(255, 255, 255)))
             text_rect = QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r)
