@@ -49,6 +49,9 @@ def test_save_loop_v2_writes_without_pit(tmp_path, monkeypatch):
     doc = json.loads(path.read_text())
     assert doc["track_id"] == 451
     assert len(doc["points"]) == 4
+    assert doc.get("map_rotation") == 0
+    assert doc.get("map_mirror") is False
+    assert doc.get("updated_at")
     assert "pit_path" not in doc
     assert hud._session_demo_track_id == "451"
 

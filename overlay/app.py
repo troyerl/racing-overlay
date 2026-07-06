@@ -28,6 +28,7 @@ import os
 import sys
 import time
 from collections import deque
+from datetime import datetime, timezone
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtWidgets import QApplication
@@ -161,6 +162,7 @@ class AdvancedSimHUD:
         self._sys_cache: tuple[str, str] | None = None
         self._sys_counter = 0
         self._track_loaded = False        # a track file is in use
+        self._loaded_track_updated_at: str | None = None
         self._track_file_checked = False  # we've looked for a file for this track
         self._track_id = None             # current track's iRacing TrackID
         self._track_turns = None          # WeekendInfo TrackNumTurns (corner count)
@@ -767,9 +769,12 @@ class AdvancedSimHUD:
         self._pit_in_pct = self._pit_out_pct = None
         self.map_widget.clear_pit()
         self.map_widget.clear_pit_edit()
-        mcfg = config.CFG.setdefault("map", {})
-        mcfg["rotation"] = 0
-        mcfg["mirror"] = False
+        self._apply_track_orientation({
+            "schema": 2,
+            "import_version": 2,
+            "map_rotation": 0,
+            "map_mirror": False,
+        })
         self._track_loaded = True
         self._refresh_settings_authoring()
         self.map_widget.flash_hint(
@@ -831,6 +836,8 @@ class AdvancedSimHUD:
             "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
             "corners": track_map.corners_to_json(
                 self.map_widget.display_corners()),
+            "map_rotation": 0,
+            "map_mirror": False,
         }
         if self._track_turns:
             doc["num_turns"] = int(self._track_turns)
@@ -845,12 +852,33 @@ class AdvancedSimHUD:
     def _write_track_json(self, tid, doc: dict) -> str:
         path = os.path.join(self.tracks_dir, f"{tid}.json")
         os.makedirs(self.tracks_dir, exist_ok=True)
+        stamped = dict(doc)
+        stamped["updated_at"] = datetime.now(timezone.utc).isoformat()
         tmp = f"{path}.tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh, indent=2)
+            json.dump(stamped, fh, indent=2)
             fh.write("\n")
         os.replace(tmp, path)
         return path
+
+    def _apply_track_orientation(self, meta: dict) -> None:
+        """Apply per-track map rotation/mirror from saved JSON into base config."""
+        if not meta:
+            return
+        schema = meta.get("schema")
+        imp = meta.get("import_version")
+        has_orient = ("map_rotation" in meta or "map_mirror" in meta)
+        if not has_orient:
+            return
+        if schema != 2 and imp != 2:
+            return
+        full = config.base_cfg()
+        mcfg = full.setdefault("map", {})
+        if "map_rotation" in meta:
+            mcfg["rotation"] = int(meta["map_rotation"]) % 360
+        if "map_mirror" in meta:
+            mcfg["mirror"] = bool(meta["map_mirror"])
+        config.apply_base(full, notify=True)
 
     def _preview_uploaded_track_in_demo(self, tid) -> None:
         """Session-only demo map preview after an author upload (not persisted)."""
@@ -2611,7 +2639,11 @@ class AdvancedSimHUD:
         saved_turns = _coerce_int((file_meta or {}).get("num_turns"))
         if saved_turns:
             self.map_widget.set_num_turns(saved_turns)
+            if not self._track_turns:
+                self._track_turns = saved_turns
         meta = file_meta or {}
+        self._apply_track_orientation(meta)
+        self._loaded_track_updated_at = meta.get("updated_at")
         if self.demo and tid not in ("_demo", "demo"):
             nt = saved_turns or _coerce_int(meta.get("num_turns"))
             demo_data.configure_weekend_info(
@@ -2742,28 +2774,26 @@ class AdvancedSimHUD:
             self.map_widget.set_track_is_oval(self._track_is_oval)
             track_file = track_map.find_track_file(
                 self._track_id, self.tracks_dir)
-            if not track_file and config.cloud_tracks() \
-                    and self._track_id is not None \
-                    and self._track_id not in self._remote_tried:
+            local_doc = (track_store.load_local(self.tracks_dir, self._track_id)
+                         if track_file else None)
+            manifest = track_store.cached_manifest()
+            stale = track_store.needs_cloud_refresh(
+                self._track_id, local_doc, manifest)
+            if config.cloud_tracks() and self._track_id is not None \
+                    and self._track_id not in self._remote_tried \
+                    and (not track_file or stale):
                 self._remote_tried.add(self._track_id)
                 self._track_sync.fetch_async(self._track_id)
+                if track_file and stale:
+                    self.map_widget.flash_hint(
+                        "Refreshing track map from cloud\u2026")
+                    return
             if track_file:
-                try:
-                    pts, sf, corners, _, meta = track_map.load_track(
-                        track_file)
-                    self.map_widget.set_track(pts, sf, corners)
-                    saved_turns = _coerce_int(meta.get("num_turns"))
-                    self.map_widget.set_num_turns(
-                        self._track_turns or saved_turns)
-                    if saved_turns and not self._track_turns:
-                        self._track_turns = saved_turns
-                    self._apply_pit_meta(meta)
+                if self._apply_track_from_path(track_file, str(self._track_id)):
                     self._track_loaded = True
                     track_store.touch(self.tracks_dir, self._track_id)
                     self._refresh_settings_authoring()
                     return
-                except Exception:
-                    pass
 
         if not self._no_track_hint:
             self._no_track_hint = True
@@ -2799,8 +2829,11 @@ class AdvancedSimHUD:
         target = (self._demo_track_pending_id if self.demo else self._track_id)
         if not doc or not track_store.same_track_id(track_id, target):
             return
+        remote_ts = doc.get("updated_at") or ""
         if self._track_loaded and not self.demo:
-            return
+            if self._loaded_track_updated_at and \
+                    self._loaded_track_updated_at == remote_ts:
+                return
         try:
             path = track_store.write_local(self.tracks_dir, doc)
             if not path:

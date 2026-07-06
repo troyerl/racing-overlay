@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.51.0 - 2026-07-06
+
+- **Cross-device track orientation.** Saved tracks now include `map_rotation` and
+  `map_mirror` so every device renders the same orientation as the HTML import.
+  Author saves stamp `updated_at`; live sessions refresh stale local caches from
+  the cloud instead of keeping an old geometry file.
+
 ## 1.50.0 - 2026-07-06
 
 - **HTML import orientation.** V2 loop import now preserves the members-page map

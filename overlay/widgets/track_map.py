@@ -584,6 +584,14 @@ def load_track(path: str, n: int = 720):
         meta["pit_source"] = str(data["pit_source"])
     if data.get("schema"):
         meta["schema"] = int(data["schema"])
+    if data.get("import_version") is not None:
+        meta["import_version"] = int(data["import_version"])
+    if data.get("map_rotation") is not None:
+        meta["map_rotation"] = int(data["map_rotation"])
+    if "map_mirror" in data:
+        meta["map_mirror"] = bool(data["map_mirror"])
+    if data.get("updated_at"):
+        meta["updated_at"] = str(data["updated_at"])
     drs = _parse_zone_ranges(data.get("drs_zones"))
     if drs:
         meta["drs_zones"] = drs

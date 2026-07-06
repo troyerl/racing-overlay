@@ -268,7 +268,8 @@ def normalize(doc: dict) -> dict:
         "schema": doc.get("schema", 1),
     }
     for key in ("pit_span", "pit_speed", "pit_lane_speed_pct", "source", "learned",
-                "pit_source", "pit_in_pct", "pit_out_pct", "num_turns"):
+                "pit_source", "pit_in_pct", "pit_out_pct", "num_turns",
+                "import_version", "map_rotation", "map_mirror"):
         if doc.get(key) is not None:
             out[key] = doc[key]
     # The pit-lane geometry plus its entry/exit blend lines (open polylines).
@@ -467,12 +468,16 @@ def write_local(tracks_dir: str, doc: dict) -> str | None:
     return path
 
 
+_manifest_cache: dict | None = None
+
+
 def remote_manifest() -> dict | None:
     """Map of {track_id: updated_at} for every shared track (None on error).
 
     Only the id + timestamp are fetched (not the geometry), so the startup sync
     can cheaply decide which tracks actually changed before downloading them.
     """
+    global _manifest_cache
     col = _collection(write=False)
     if col is None:
         return None
@@ -482,9 +487,42 @@ def remote_manifest() -> dict | None:
             tid = d.get("track_id")
             if tid is not None:
                 out[tid] = d.get("updated_at") or ""
+        _manifest_cache = out
         return out
     except Exception:
         return None
+
+
+def cached_manifest() -> dict | None:
+    """Last manifest fetched by ``remote_manifest`` (no network)."""
+    return _manifest_cache
+
+
+def _manifest_ts(manifest: dict | None, track_id) -> str | None:
+    """Look up a track's cloud ``updated_at`` in a manifest dict."""
+    if not manifest or track_id is None:
+        return None
+    for tid in track_id_variants(track_id):
+        if tid in manifest:
+            return manifest[tid] or ""
+        s = str(tid)
+        if s in manifest:
+            return manifest[s] or ""
+    return None
+
+
+def needs_cloud_refresh(track_id, local_doc: dict | None,
+                        manifest: dict | None) -> bool:
+    """True when the cloud copy is newer than (or unknown vs) the local file."""
+    remote_ts = _manifest_ts(manifest, track_id)
+    if not remote_ts:
+        return False
+    if not local_doc:
+        return True
+    local_ts = local_doc.get("updated_at") or ""
+    if not local_ts:
+        return True
+    return local_ts != remote_ts
 
 
 # Cap on how many *downloaded* tracks the local cache keeps. Each map is only
