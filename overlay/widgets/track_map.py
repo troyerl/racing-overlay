@@ -1013,6 +1013,12 @@ class TrackMapWidget(QWidget):
         self._pit_edit_pan = (0.0, 0.0)
         self.update()
 
+    def _begin_pit_pan(self, pos: QPointF) -> None:
+        self._pit_pan_active = True
+        self._pit_pan_origin = pos
+        self._pit_pan_start = self._pit_edit_pan
+        self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
     @staticmethod
     def _pit_points_coincide(a: tuple[float, float],
                              b: tuple[float, float]) -> bool:
@@ -2687,13 +2693,15 @@ class TrackMapWidget(QWidget):
                 event.accept()
                 return
         if (self.pit_edit_mode and self.path
+                and event.button() == Qt.MouseButton.MiddleButton):
+            self._begin_pit_pan(event.position())
+            event.accept()
+            return
+        if (self.pit_edit_mode and self.path
                 and event.button() == Qt.MouseButton.LeftButton
                 and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
                 and self._pit_drag_idx is None):
-            self._pit_pan_active = True
-            self._pit_pan_origin = event.position()
-            self._pit_pan_start = self._pit_edit_pan
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._begin_pit_pan(event.position())
             event.accept()
             return
         if (self.pit_edit_mode and self.path
@@ -2806,7 +2814,9 @@ class TrackMapWidget(QWidget):
                 self._pit_edit_cb()
             event.accept()
             return
-        if self._pit_pan_active and event.button() == Qt.MouseButton.LeftButton:
+        if (self._pit_pan_active
+                and event.button() in (Qt.MouseButton.LeftButton,
+                                       Qt.MouseButton.MiddleButton)):
             self._pit_pan_active = False
             self._pit_pan_origin = None
             self.setCursor(Qt.CursorShape.CrossCursor if self.pit_edit_mode

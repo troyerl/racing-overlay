@@ -12,7 +12,9 @@ def _demo_hud(**kwargs) -> AdvancedSimHUD:
     hud = object.__new__(AdvancedSimHUD)
     hud.demo = True
     hud._demo_track_id = kwargs.get("demo_track")
-    hud._v2_authoring_track_id = kwargs.get("v2_id")
+    hud._shared_demo_track_id = kwargs.get("shared_id")
+    hud._session_demo_track_id = kwargs.get("session_id")
+    hud.tracks_dir = kwargs.get("tracks_dir", "/tmp")
     return hud
 
 
@@ -21,13 +23,27 @@ def test_resolve_demo_track_id_defaults_to_chicagoland():
     assert hud._resolve_demo_track_id() == "123"
 
 
-def test_resolve_demo_track_id_cli_override():
-    hud = _demo_hud(demo_track="451")
+def test_resolve_demo_track_id_prefers_shared():
+    hud = _demo_hud(shared_id="451")
     assert hud._resolve_demo_track_id() == "451"
 
 
-def test_resolve_demo_track_id_v2_authoring_override():
-    hud = _demo_hud(v2_id=522)
+def test_resolve_demo_track_id_prefers_session_over_shared():
+    hud = _demo_hud(shared_id="451", session_id="999")
+    assert hud._resolve_demo_track_id() == "999"
+
+
+def test_resolve_demo_track_id_ignores_cli_when_shared_set():
+    hud = _demo_hud(demo_track="999", shared_id="451")
+    assert hud._resolve_demo_track_id() == "451"
+
+
+def test_resolve_demo_track_id_from_cache(tmp_path):
+    from overlay import track_store
+
+    track_store.write_app_settings_cache(str(tmp_path), {"demo_track_id": 522})
+    hud = _demo_hud(tracks_dir=str(tmp_path))
+    hud._apply_app_settings_cache()
     assert hud._resolve_demo_track_id() == "522"
 
 
@@ -50,10 +66,29 @@ def test_configure_pit_extents_updates_demo_pit_helpers():
 
 
 def test_weekend_info_reports_chicagoland():
+    demo_data.configure_weekend_info(
+        demo_data.DEMO_TRACK_ID,
+        name="Chicagoland Speedway",
+        num_turns=4,
+    )
     ir = demo_data.FakeIRSDK()
     wk = ir["WeekendInfo"]
     assert wk["TrackID"] == demo_data.DEMO_TRACK_ID
     assert wk["TrackDisplayName"] == "Chicagoland Speedway"
+
+
+def test_configure_weekend_info_updates_telemetry():
+    demo_data.configure_weekend_info(451, name="Road America", num_turns=14)
+    ir = demo_data.FakeIRSDK()
+    wk = ir["WeekendInfo"]
+    assert wk["TrackID"] == 451
+    assert wk["TrackDisplayName"] == "Road America"
+    assert wk["TrackNumTurns"] == 14
+    demo_data.configure_weekend_info(
+        demo_data.DEMO_TRACK_ID,
+        name="Chicagoland Speedway",
+        num_turns=4,
+    )
 
 
 def test_demo_lap_pct_not_pinned_to_player():

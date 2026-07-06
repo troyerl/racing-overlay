@@ -104,10 +104,10 @@ Flags:
   changing**, and a tight battle pack around your car weaves past on both sides
   so the **radar regularly shows left / right / both**. Every panel animates.
   Great for layout/styling work.
-- `--demo-track <ID>` &mdash; with `--demo`, load a different track from the
-  shared library instead of the default Chicagoland (TrackID 123). The map is
-  fetched from MongoDB on each launch; a local cache is used only while the
-  download is in flight (e.g. `--demo-track 451` to preview another layout).
+- `--demo-track <ID>` &mdash; **deprecated.** Demo mode now loads the shared
+  **Community demo track** set by authors in Settings (App tab). This flag is
+  ignored when a shared track ID is configured. Without a shared ID, demo falls
+  back to Chicagoland (TrackID 123).
 - `--tracks-dir <PATH>` &mdash; override the tracks directory (useful in dev:
   `--tracks-dir tracks` loads from the repo checkout without copying to App Support).
 - `--no-clickthrough` &mdash; "edit mode": windows become interactive so you can
@@ -166,10 +166,10 @@ in this priority order:
 2. **Cloud library:** if no local file exists, the overlay may fetch one from the
    shared track library when cloud tracks are enabled.
 3. If neither is available, import a members HTML track map in **Track Scan**.
-4. **Demo mode:** loads **Chicagoland Speedway** (TrackID 123) from the shared
-   track library on every launch (local cache as stale-while-revalidate). Use
-   `--demo-track <ID>` to try another track; `--demo-track _demo` restores the
-   built-in generic oval.
+4. **Demo mode:** loads the **Community demo track** from MongoDB (set by
+   authors in **Settings → App → Community demo track**). A local cache is used
+   offline or while the fetch is in flight. When no shared ID is set, demo falls
+   back to **Chicagoland Speedway** (TrackID 123).
 
 ### Pit lane
 
@@ -240,10 +240,13 @@ tools below (HTML or PNG); the JSON loads automatically when you join that track
 
 **V2 manual pit (Track Scan):** `tools/svg_layers_to_track_v2.py` imports only the
 racing loop from the members `active-config` layer. In Settings → Track Scan (write
-access), choose the HTML, **Import loop**, then click **Pit road** and **Merge**
-points on the live overlay map; **Save track** auto-generates `pit_in` and writes
-`tracks/<TrackID>.json`. The v1 `svg_layers_to_track.py` CLI still auto-imports
-pit geometry from the HTML pit layer when you want a one-shot import.
+access), choose the HTML, **Import loop**, then **Save loop** to upload geometry
+without pit lane (demo mode previews that track for the current session only).
+On another device, sync or join the track, draw **Pit road** and **Merge** on the
+map, then **Save track** to add pit geometry. Set **Community demo track** in App
+settings to rotate the featured map for all users. The v1 `svg_layers_to_track.py`
+CLI still auto-imports pit geometry from the HTML pit layer when you want a
+one-shot import.
 
 **Members HTML (recommended):** on [members.iracing.com](https://members.iracing.com),
 open the track page with Pit Road enabled, DevTools → copy/save the `#track-map-*`

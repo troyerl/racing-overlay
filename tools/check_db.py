@@ -84,6 +84,16 @@ def main() -> int:
     ids = _local_ids()
     print(f"  local track files: {ids if ids else '(none)'}")
 
+    settings = track_store.fetch_app_settings()
+    if settings and settings.get("demo_track_id") is not None:
+        name = settings.get("demo_track_name") or ""
+        label = f"{name} " if name else ""
+        print(f"  shared demo track: {label}ID {settings['demo_track_id']}"
+              + (f" (updated {settings['updated_at']})"
+                 if settings.get("updated_at") else ""))
+    else:
+        print("  shared demo track: (not set — demo uses Chicagoland 123)")
+
     if not config.cloud_tracks():
         print("\n! Sharing is OFF in settings -- the app won't upload. Enable "
               "cloud tracks in the map settings.")

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import copy
 import sys
+import threading
 
 from PyQt6.QtCore import (
     Qt,
@@ -58,6 +59,7 @@ from PyQt6.QtWidgets import (
 )
 
 from . import config, constants, paths, track_store, version
+from . import demo_data
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
@@ -1947,6 +1949,8 @@ class ConfigEditor(QWidget):
             v.addWidget(self._about_card())
             v.addWidget(self._auto_switch_card())
             v.addWidget(self._cloud_tracks_card())
+            if track_store.can_write():
+                v.addWidget(self._demo_track_admin_card())
             v.addStretch(1)
             return page
 
@@ -2723,6 +2727,123 @@ class ConfigEditor(QWidget):
         config.set_cloud_tracks(bool(on))
         self._flash("Community track maps on" if on
                     else "Community track maps off")
+
+    def _demo_track_admin_card(self) -> QFrame:
+        """Author-only: set the shared demo track for all users."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Community demo track")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Sets the map every user sees in demo mode. Change the "
+                      "track ID here weekly to rotate the featured layout.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        row.addWidget(QLabel("Track ID"))
+        self._demo_track_spin = QSpinBox()
+        self._demo_track_spin.setRange(1, 99999)
+        self._demo_track_spin.setValue(int(demo_data.DEMO_TRACK_ID))
+        row.addWidget(self._demo_track_spin)
+        row.addStretch(1)
+        v.addLayout(row)
+        self._demo_track_status = QLabel("Loading shared setting\u2026")
+        self._demo_track_status.setObjectName("enableHint")
+        self._demo_track_status.setWordWrap(True)
+        v.addWidget(self._demo_track_status)
+        save_btn = QPushButton("Save to cloud")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.clicked.connect(self._save_demo_track_admin)
+        v.addWidget(save_btn)
+        if self._overlay is not None:
+            self._overlay._track_sync.app_settingsFetched.connect(
+                self._on_demo_track_settings_fetched)
+            self._overlay._track_sync.app_settingsSaved.connect(
+                self._on_demo_track_settings_saved)
+            self._overlay._track_sync.fetch_app_settings_async()
+        else:
+            cached = track_store.load_app_settings_cache(paths.tracks_dir())
+            self._update_demo_track_status(cached)
+        return card
+
+    def refresh_demo_track_admin(self, settings=None) -> None:
+        self._update_demo_track_status(settings)
+
+    def _update_demo_track_status(self, settings) -> None:
+        if not hasattr(self, "_demo_track_status"):
+            return
+        if not settings or settings.get("demo_track_id") is None:
+            self._demo_track_status.setText(
+                f"No shared demo track set \u2014 users fall back to track "
+                f"{demo_data.DEMO_TRACK_ID} (Chicagoland).")
+            return
+        tid = settings["demo_track_id"]
+        name = settings.get("demo_track_name") or ""
+        updated = settings.get("updated_at") or ""
+        label = f"{name} " if name else ""
+        extra = f" (updated {updated})" if updated else ""
+        self._demo_track_status.setText(
+            f"Shared demo track: {label}ID {tid}{extra}")
+        if hasattr(self, "_demo_track_spin"):
+            try:
+                self._demo_track_spin.setValue(int(tid))
+            except (TypeError, ValueError):
+                pass
+
+    def _on_demo_track_settings_fetched(self, settings) -> None:
+        self._update_demo_track_status(settings)
+
+    def _on_demo_track_settings_saved(self, ok: bool) -> None:
+        if ok:
+            self._flash("Shared demo track saved")
+            if self._overlay is not None:
+                self._overlay._track_sync.fetch_app_settings_async()
+        else:
+            self._flash("Demo track save failed")
+
+    def _save_demo_track_admin(self) -> None:
+        tid = self._demo_track_spin.value()
+        self._flash(f"Checking track {tid}\u2026")
+        threading.Thread(target=self._save_demo_track_worker,
+                         args=(tid,), daemon=True).start()
+
+    def _save_demo_track_worker(self, tid: int) -> None:
+        doc = track_store.fetch_track(tid)
+        if not doc:
+            QTimer.singleShot(
+                0, lambda: self._flash(
+                    f"Track {tid} not found in the cloud library"))
+            return
+        name = str(doc.get("name") or "")
+        ok = track_store.save_app_settings({
+            "demo_track_id": tid,
+            "demo_track_name": name,
+        })
+        QTimer.singleShot(0, lambda: self._on_demo_track_save_local(ok, tid, name))
+
+    def _on_demo_track_save_local(self, ok: bool, tid: int, name: str) -> None:
+        if not ok:
+            self._on_demo_track_settings_saved(False)
+            return
+        settings = {
+            "demo_track_id": tid,
+            "demo_track_name": name,
+            "updated_at": "",
+        }
+        if self._overlay is not None:
+            track_store.write_app_settings_cache(
+                self._overlay.tracks_dir, settings)
+            self._overlay._shared_demo_track_id = str(tid)
+            if self._overlay.demo:
+                self._overlay._load_demo_track()
+            self._overlay._track_sync.fetch_app_settings_async()
+        self._update_demo_track_status(settings)
+        self._on_demo_track_settings_saved(True)
 
     def _preset_cars_card(self) -> QFrame:
         """Card on the General page to bind cars that auto-load this preset."""

@@ -51,9 +51,12 @@ class TrackImportV2Panel(QFrame):
         hint = QLabel(
             "While on track in iRacing, draw or adjust the pit road (red) and "
             "exit merge line (blue) on the overlay map. Scroll to zoom, "
-            "Shift-drag to pan; pit end and merge start stay linked. "
+            "Middle-click drag or Shift-drag to pan; pit end and merge start "
+            "stay linked. "
             "Corner labels are edited in Track metadata below. "
-            "Save writes tracks/<TrackID>.json.")
+            "Save loop uploads geometry without pit; Save track requires pit "
+            "road + merge. In demo mode the map previews your upload for this "
+            "session only.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -91,6 +94,9 @@ class TrackImportV2Panel(QFrame):
         clear.setObjectName("warn")
         clear.setCursor(Qt.CursorShape.PointingHandCursor)
         clear.clicked.connect(self._clear_pit)
+        save_loop = QPushButton("Save loop")
+        save_loop.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_loop.clicked.connect(self._save_loop)
         save = QPushButton("Save track")
         save.setCursor(Qt.CursorShape.PointingHandCursor)
         save.clicked.connect(self._save_track)
@@ -99,6 +105,7 @@ class TrackImportV2Panel(QFrame):
         btn_row.addWidget(reset_view)
         btn_row.addWidget(clear)
         btn_row.addStretch(1)
+        btn_row.addWidget(save_loop)
         btn_row.addWidget(save)
         v.addLayout(btn_row)
 
@@ -260,6 +267,31 @@ class TrackImportV2Panel(QFrame):
             return
         self._overlay.map_widget.clear_pit_edit()
         self._sync_from_overlay()
+
+    def _save_loop(self) -> None:
+        if self._overlay is None:
+            self._report("Start the overlay first.")
+            return
+        if not hasattr(self._overlay, "save_loop_v2"):
+            return
+        state = (self._overlay.pit_edit_state()
+                 if hasattr(self._overlay, "pit_edit_state") else {})
+        if not state.get("has_loop"):
+            self._report("No track loaded — join a session or import HTML first.")
+            return
+
+        def _run() -> None:
+            try:
+                ok, msg = self._overlay.save_loop_v2()
+            except Exception as exc:
+                ok, msg = False, str(exc)
+            self._status.setText(msg)
+            self.notified.emit(msg if msg else ("Save failed" if not ok else ""))
+            if ok:
+                self.saved.emit(msg)
+            self.refresh()
+
+        QTimer.singleShot(0, _run)
 
     def _save_track(self) -> None:
         if self._overlay is None:

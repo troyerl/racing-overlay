@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 
 import pytest
-from PyQt6.QtCore import QPoint, QPointF, Qt, QRectF
-from PyQt6.QtGui import QWheelEvent
+from PyQt6.QtCore import QPoint, QPointF, Qt, QRectF, QEvent
+from PyQt6.QtGui import QMouseEvent, QWheelEvent
 from PyQt6.QtWidgets import QApplication
 
 from overlay.widgets.track_map import TrackMapWidget, _PIT_JOINT_EPS
@@ -53,6 +53,19 @@ def _wheel_event(pos: QPointF, *, angle_delta_y: int = 0,
         Qt.KeyboardModifier.NoModifier,
         Qt.ScrollPhase.ScrollUpdate,
         False,
+    )
+
+
+def _mouse_event(event_type, pos: QPointF, button: Qt.MouseButton,
+                 buttons: Qt.MouseButton | None = None) -> QMouseEvent:
+    btns = buttons if buttons is not None else button
+    return QMouseEvent(
+        event_type,
+        pos,
+        pos,
+        button,
+        btns,
+        Qt.KeyboardModifier.NoModifier,
     )
 
 
@@ -145,3 +158,25 @@ def test_wheel_zoom_respects_layout_coords(qapp):
     w.wheelEvent(_wheel_event(QPointF(200, 150), angle_delta_y=120))
     assert w._pit_edit_zoom > 1.0
     assert all(math.isfinite(v) for v in w._pit_edit_pan)
+
+
+def test_middle_click_drag_pans_without_adding_points(qapp):
+    w = _pit_edit_ready(qapp)
+    w.load_pit_edit([(0.2, 0.4), (0.5, 0.42)], [(0.5, 0.42), (0.9, 0.48)])
+    n_road = len(w._pit_edit_road)
+    n_merge = len(w._pit_edit_merge)
+    start_pan = w._pit_edit_pan
+    pos = QPointF(200, 150)
+    w.mousePressEvent(_mouse_event(
+        QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.MiddleButton))
+    assert w._pit_pan_active
+    w.mouseMoveEvent(_mouse_event(
+        QEvent.Type.MouseMove, QPointF(230, 170), Qt.MouseButton.NoButton,
+        Qt.MouseButton.MiddleButton))
+    assert w._pit_edit_pan != start_pan
+    w.mouseReleaseEvent(_mouse_event(
+        QEvent.Type.MouseButtonRelease, QPointF(230, 170),
+        Qt.MouseButton.MiddleButton))
+    assert not w._pit_pan_active
+    assert len(w._pit_edit_road) == n_road
+    assert len(w._pit_edit_merge) == n_merge

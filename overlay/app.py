@@ -262,8 +262,12 @@ class AdvancedSimHUD:
         self._track_sync = track_store.TrackSync()
         self._track_sync.fetched.connect(self._on_remote_track)
         self._track_sync.synced.connect(self._on_tracks_synced)
+        self._track_sync.app_settingsFetched.connect(self._on_app_settings_fetched)
         self._remote_tried: set = set()  # track ids we've already asked for
         self._demo_track_pending_id: str | None = None
+        self._shared_demo_track_id: str | None = None
+        self._session_demo_track_id: str | None = None
+        self._apply_app_settings_cache()
         # MongoDB is the source of truth: on launch, refresh the local cache so
         # any maps the author changed are pulled in (runs off the GUI thread).
         if not self.demo and config.cloud_tracks():
@@ -323,6 +327,7 @@ class AdvancedSimHUD:
         self.ers_hybrid_widget = ErsHybridWidget()
         if self.demo:
             self._load_demo_track()
+            self._fetch_shared_app_settings()
             self._seed_demo_laptimes()
             self._lap_engine.seed_demo()
 
@@ -581,7 +586,7 @@ class AdvancedSimHUD:
             self.map_widget.set_num_turns(self._track_turns or saved_turns)
             if saved_turns and not self._track_turns:
                 self._track_turns = saved_turns
-                self._apply_pit_meta(meta)
+            self._apply_pit_meta(meta)
             self._track_loaded = True
             self._refresh_settings_authoring()
             return True
@@ -736,7 +741,7 @@ class AdvancedSimHUD:
         self._v2_loop_doc = doc
         n = len(doc.get("points") or [])
         msg = (f"Loop imported for TrackID {tid} — {n} pts. "
-               f"Draw pit road on the map, then merge, then Save track.")
+               f"Save loop to upload now, or draw pit road + merge and Save track.")
         log.info("v2 loop import OK for TrackID %s (%d pts)", tid, n)
         return True, msg
 
@@ -810,6 +815,68 @@ class AdvancedSimHUD:
         """Refresh in-progress pit preview after a handle drag (no file write)."""
         self.map_widget.update()
 
+    def _build_loop_doc(self, tid) -> dict:
+        """Racing loop + corners for v2 track save (no pit geometry)."""
+        loop = [(p[0], p[1]) for p in self.map_widget.path]
+        doc: dict = {
+            "schema": 2,
+            "import_version": 2,
+            "pit_source": "manual",
+            "track_id": tid,
+            "name": (self._learn_name or self._v2_authoring_name or str(tid)),
+            "start_finish": float(self.map_widget.start_finish),
+            "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
+            "corners": track_map.corners_to_json(
+                self.map_widget.display_corners()),
+        }
+        if self._track_turns:
+            doc["num_turns"] = int(self._track_turns)
+        elif self.map_widget.num_turns:
+            doc["num_turns"] = int(self.map_widget.num_turns)
+        if self._v2_loop_doc:
+            for key in ("import_version",):
+                if key in self._v2_loop_doc:
+                    doc[key] = self._v2_loop_doc[key]
+        return doc
+
+    def _write_track_json(self, tid, doc: dict) -> str:
+        path = os.path.join(self.tracks_dir, f"{tid}.json")
+        os.makedirs(self.tracks_dir, exist_ok=True)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+        return path
+
+    def _preview_uploaded_track_in_demo(self, tid) -> None:
+        """Session-only demo map preview after an author upload (not persisted)."""
+        self._session_demo_track_id = str(tid)
+        if self.demo:
+            self._load_demo_track()
+            self.map_widget.flash_hint(
+                f"Demo map previewing TrackID {tid} this session")
+
+    def save_loop_v2(self) -> tuple[bool, str]:
+        """Write loop + corners only; upload without pit lane."""
+        tid = self._authoring_track_id()
+        if tid is None:
+            return False, ("No TrackID — join a session on track, or import "
+                           "members HTML with id=\"track-map-123\".")
+        if not self.map_widget.path or len(self.map_widget.path) < 3:
+            return False, "No track loop loaded."
+        doc = self._build_loop_doc(tid)
+        path = self._write_track_json(tid, doc)
+        if track_store.can_write():
+            self._track_sync.upload_local_async(self.tracks_dir, tid)
+        self._preview_uploaded_track_in_demo(tid)
+        msg = f"Saved loop to {path} (no pit lane)."
+        if track_store.can_write():
+            msg += " Uploaded to cloud."
+        if self.demo:
+            msg += " Demo map updated for this session."
+        return True, msg
+
     def save_manual_track_v2(self) -> tuple[bool, str]:
         """Finalize manual pit geometry and write tracks/<TrackID>.json."""
         tid = self._authoring_track_id()
@@ -846,43 +913,21 @@ class AdvancedSimHUD:
         pit_out_pct = round(_pct_on_loop(loop, pit_out[-1]), 5)
         lane_lo, lane_hi = _pit_span_on_loop(loop, pit_path)
 
-        doc: dict = {
-            "schema": 2,
-            "import_version": 2,
-            "pit_source": "manual",
-            "track_id": tid,
-            "name": (self._learn_name or self._v2_authoring_name or str(tid)),
-            "start_finish": float(self.map_widget.start_finish),
-            "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
-            "corners": track_map.corners_to_json(
-                self.map_widget.display_corners()),
+        doc = self._build_loop_doc(tid)
+        doc.update({
             "pit_in": [[round(x, 7), round(y, 7)] for x, y in pit_in],
             "pit_path": [[round(x, 7), round(y, 7)] for x, y in pit_path],
             "pit_out": [[round(x, 7), round(y, 7)] for x, y in pit_out],
             "pit_in_pct": pit_in_pct,
             "pit_span": [round(lane_lo, 5), round(lane_hi, 5)],
             "pit_out_pct": pit_out_pct,
-        }
-        if self._track_turns:
-            doc["num_turns"] = int(self._track_turns)
-        elif self.map_widget.num_turns:
-            doc["num_turns"] = int(self.map_widget.num_turns)
+        })
         if self._pit_speed_ms > 0:
             doc["pit_speed"] = round(self._pit_speed_ms, 3)
         if self._pit_lane_speed_pct != 1.0:
             doc["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
-        if self._v2_loop_doc:
-            for key in ("import_version",):
-                if key in self._v2_loop_doc:
-                    doc[key] = self._v2_loop_doc[key]
 
-        path = os.path.join(self.tracks_dir, f"{tid}.json")
-        os.makedirs(self.tracks_dir, exist_ok=True)
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(doc, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, path)
+        path = self._write_track_json(tid, doc)
 
         meta = {k: doc[k] for k in (
             "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
@@ -891,13 +936,16 @@ class AdvancedSimHUD:
         self._apply_pit_meta(meta)
         if track_store.can_write():
             self._track_sync.upload_local_async(self.tracks_dir, tid)
+        self._preview_uploaded_track_in_demo(tid)
         n_in = len(pit_in)
         n_path = len(pit_path)
         n_out = len(pit_out)
         msg = (f"Saved {path} — entry {n_in}, road {n_path}, "
                f"merge {n_out} pts")
+        if track_store.can_write():
+            msg += " Uploaded to cloud."
         if self.demo:
-            msg += f". Restart with: python3 run.py --demo --demo-track {tid}"
+            msg += " Demo map updated for this session."
         return True, msg
 
     def pit_edit_state(self) -> dict:
@@ -2501,11 +2549,32 @@ class AdvancedSimHUD:
 
     def _resolve_demo_track_id(self) -> str:
         """Pick which track file to load in demo mode."""
-        if self._demo_track_id:
-            return self._demo_track_id
-        if self._v2_authoring_track_id is not None:
-            return str(self._v2_authoring_track_id)
+        if self._session_demo_track_id is not None:
+            return str(self._session_demo_track_id)
+        if self._shared_demo_track_id is not None:
+            return str(self._shared_demo_track_id)
         return str(demo_data.DEMO_TRACK_ID)
+
+    def _apply_app_settings_cache(self) -> None:
+        cached = track_store.load_app_settings_cache(self.tracks_dir)
+        if cached and cached.get("demo_track_id") is not None:
+            self._shared_demo_track_id = str(cached["demo_track_id"])
+
+    def _fetch_shared_app_settings(self) -> None:
+        if track_store.read_available():
+            self._track_sync.fetch_app_settings_async()
+
+    def _on_app_settings_fetched(self, settings) -> None:
+        if not settings or settings.get("demo_track_id") is None:
+            return
+        track_store.write_app_settings_cache(self.tracks_dir, settings)
+        new_id = str(settings["demo_track_id"])
+        old_id = self._shared_demo_track_id
+        self._shared_demo_track_id = new_id
+        if self.demo and old_id != new_id and self._session_demo_track_id is None:
+            self._load_demo_track()
+        if self._settings_window is not None:
+            self._settings_window.refresh_demo_track_admin(settings)
 
     def _sync_demo_pit_from_meta(self, meta: dict | None) -> None:
         """Align demo pit-car simulation with loaded track pit lap-% extents."""
@@ -2540,6 +2609,18 @@ class AdvancedSimHUD:
         if saved_turns:
             self.map_widget.set_num_turns(saved_turns)
         meta = file_meta or {}
+        if self.demo and tid not in ("_demo", "demo"):
+            nt = saved_turns or _coerce_int(meta.get("num_turns"))
+            demo_data.configure_weekend_info(
+                tid,
+                name=name or meta.get("name", ""),
+                num_turns=nt,
+            )
+            if nt:
+                self.map_widget.set_num_turns(nt)
+                self.map_widget.set_track_is_oval(nt == 4)
+            elif str(tid) == str(demo_data.DEMO_TRACK_ID):
+                self.map_widget.set_track_is_oval(True)
         self._track_zones = {
             "drs_zones": meta.get("drs_zones") or [],
             "p2p_zones": meta.get("p2p_zones") or [],
@@ -2562,7 +2643,7 @@ class AdvancedSimHUD:
         tid = self._resolve_demo_track_id()
         self._demo_track_pending_id = tid
         legacy_demo = tid in ("_demo", "demo")
-        if str(tid) == str(demo_data.DEMO_TRACK_ID):
+        if str(tid) == str(demo_data.DEMO_TRACK_ID) and self._shared_demo_track_id is None:
             self.map_widget.set_track_is_oval(True)
             self.map_widget.set_num_turns(4)
 

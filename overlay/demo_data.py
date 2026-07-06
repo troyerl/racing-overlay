@@ -20,6 +20,54 @@ from . import common as oc
 # Default demo map: Chicagoland Speedway (iRacing TrackID 123).
 DEMO_TRACK_ID = 123
 
+_DEFAULT_WEEKEND_INFO = {
+    "TrackID": DEMO_TRACK_ID,
+    "TrackDisplayName": "Chicagoland Speedway",
+    "TrackConfigName": "Oval",
+    "TrackLength": "2.25 km",
+    "TrackType": "oval course",
+    "Category": "Oval",
+    "TrackNumTurns": 4,
+    "Skies": "Clear",
+    "RelativeHumidity": 45,
+    "FogLevel": 8,
+    "WeekendOptions": {"IncidentLimit": 17},
+}
+_weekend_info = dict(_DEFAULT_WEEKEND_INFO)
+
+
+def configure_weekend_info(
+    track_id,
+    *,
+    name: str = "",
+    num_turns: int | None = None,
+    track_type: str = "",
+    category: str = "",
+) -> None:
+    """Align demo WeekendInfo telemetry with the loaded shared track map."""
+    global DEMO_TRACK_ID, _weekend_info
+    try:
+        DEMO_TRACK_ID = int(track_id)
+    except (TypeError, ValueError):
+        DEMO_TRACK_ID = track_id
+    nt = int(num_turns) if num_turns else 4
+    tt = track_type or ("oval course" if nt <= 4 else "road course")
+    cat = category or ("Oval" if "oval" in tt.lower() else "Road")
+    display = (name or "").strip() or f"Track {track_id}"
+    _weekend_info = {
+        "TrackID": DEMO_TRACK_ID,
+        "TrackDisplayName": display,
+        "TrackConfigName": "Default",
+        "TrackLength": _DEFAULT_WEEKEND_INFO["TrackLength"],
+        "TrackType": tt,
+        "Category": cat,
+        "TrackNumTurns": nt,
+        "Skies": "Clear",
+        "RelativeHumidity": 45,
+        "FogLevel": 8,
+        "WeekendOptions": {"IncidentLimit": 17},
+    }
+
 # (car number, name, iRating, license string, class color)
 _DEMO_DRIVERS = [
     ("11", "Denny Hamlin", 4600, "B 2.34", "#ff5bac"),
@@ -573,15 +621,7 @@ class FakeIRSDK:
             return 11
 
         if key == "WeekendInfo":
-            return {"TrackID": DEMO_TRACK_ID,
-                    "TrackDisplayName": "Chicagoland Speedway",
-                    "TrackConfigName": "Oval", "TrackLength": "2.25 km",
-                    "TrackType": "oval course", "Category": "Oval",
-                    "TrackNumTurns": 4,
-                    "Skies": "Clear",
-                    "RelativeHumidity": 45,
-                    "FogLevel": 8,
-                    "WeekendOptions": {"IncidentLimit": 17}}
+            return dict(_weekend_info)
 
         if key == "SplitTimeInfo":
             return {"Sectors": [{"SectorNum": 0, "SectorStartPct": 0.0},

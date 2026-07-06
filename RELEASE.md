@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.48.0 - 2026-07-06
+
+- **Loop-only track save.** Track Scan adds **Save loop** to upload racing-line
+  geometry without pit lane, so you can author on one device and add pit road +
+  merge on another with **Save track**. Loop-only cloud uploads clear stale pit
+  fields in Mongo.
+- **Session demo preview.** Uploading a track previews it on the demo map for the
+  current session only; the shared Community demo track returns on next launch.
+
+## 1.47.0 - 2026-07-06
+
+- **Shared Community demo track.** Authors with MongoDB write access can set a
+  shared demo track ID in **Settings → App → Community demo track**. Every user
+  running `--demo` loads that map from the cloud library (with local cache).
+  Rotate the featured track weekly by changing one admin value. Demo telemetry
+  (session info, turn count) follows the loaded map. `--demo-track` is deprecated
+  and ignored when a shared ID is configured.
+
 ## 1.46.0 - 2026-07-05
 
 - **Weak widget customization.** Tire panel, pit board, weather panel,

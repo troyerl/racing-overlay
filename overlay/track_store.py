@@ -97,6 +97,12 @@ _READ_URI_DEFAULT = "mongodb+srv://GridGlanceUser:3w69ejWh1WGKenQa@gridglance.dg
 
 _DB_NAME = "gridglance"
 _COLLECTION = "tracks"
+_SETTINGS_COLLECTION = "app_settings"
+_PIT_GEOM_KEYS = (
+    "pit_path", "pit_in", "pit_out", "pit_span", "pit_in_pct", "pit_out_pct",
+)
+_SETTINGS_DOC_ID = "global"
+_APP_SETTINGS_CACHE = "_app_settings.json"
 
 # Fail fast and hold few connections: clients connect, fetch, and effectively
 # idle, which matters against Atlas connection caps when many users share one
@@ -210,7 +216,7 @@ def diagnose() -> dict:
     return info
 
 
-def _collection(write: bool):
+def _db_collection(collection: str, write: bool):
     """A pymongo collection handle, or None if unconfigured / pymongo missing."""
     global _read_client, _write_client
     uri = _write_uri() if write else (_read_uri() or _write_uri())
@@ -232,11 +238,21 @@ def _collection(write: bool):
                 if _read_client is None:
                     _read_client = MongoClient(uri, **_mongo_client_kwargs())
                 client = _read_client
-        return client[_DB_NAME][_COLLECTION]
+        return client[_DB_NAME][collection]
     except Exception as exc:
         log.warning("could not create Mongo %s client: %s: %s",
                     "write" if write else "read", type(exc).__name__, exc)
         return None
+
+
+def _collection(write: bool):
+    """Tracks geometry collection."""
+    return _db_collection(_COLLECTION, write)
+
+
+def _settings_collection(write: bool):
+    """Singleton app settings collection."""
+    return _db_collection(_SETTINGS_COLLECTION, write)
 
 
 def normalize(doc: dict) -> dict:
@@ -311,12 +327,89 @@ def fetch_track(track_id) -> dict | None:
         return None
 
 
-def upload_doc(doc: dict) -> bool:
+def fetch_app_settings() -> dict | None:
+    """Load the shared global app settings doc (demo track id, etc.)."""
+    col = _settings_collection(write=False)
+    if col is None:
+        return None
+    try:
+        doc = col.find_one({"_id": _SETTINGS_DOC_ID})
+        if not doc:
+            return None
+        out = {k: v for k, v in doc.items() if k != "_id"}
+        return out
+    except Exception as exc:
+        log.warning("app settings fetch failed: %s: %s", type(exc).__name__, exc)
+        return None
+
+
+def save_app_settings(settings: dict) -> bool:
+    """Upsert global app settings (author only)."""
+    if not can_write():
+        log.warning("app settings save skipped: no read-write URI")
+        return False
+    col = _settings_collection(write=True)
+    if col is None:
+        return False
+    try:
+        payload: dict = {
+            "_id": _SETTINGS_DOC_ID,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        tid = settings.get("demo_track_id")
+        if tid is not None:
+            try:
+                payload["demo_track_id"] = int(tid)
+            except (TypeError, ValueError):
+                payload["demo_track_id"] = tid
+        name = settings.get("demo_track_name")
+        if name:
+            payload["demo_track_name"] = str(name)
+        col.update_one({"_id": _SETTINGS_DOC_ID}, {"$set": payload}, upsert=True)
+        log.info("saved app settings to %s.%s", _DB_NAME, _SETTINGS_COLLECTION)
+        return True
+    except Exception as exc:
+        log.warning("app settings save failed: %s: %s", type(exc).__name__, exc)
+        return False
+
+
+def app_settings_cache_path(tracks_dir: str) -> str:
+    return os.path.join(tracks_dir, _APP_SETTINGS_CACHE)
+
+
+def load_app_settings_cache(tracks_dir: str) -> dict | None:
+    """Last-known shared app settings (offline fallback)."""
+    path = app_settings_cache_path(tracks_dir)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        return doc if isinstance(doc, dict) else None
+    except (OSError, ValueError):
+        return None
+
+
+def write_app_settings_cache(tracks_dir: str, settings: dict) -> None:
+    """Persist shared app settings beside the track cache."""
+    if not settings:
+        return
+    os.makedirs(tracks_dir, exist_ok=True)
+    path = app_settings_cache_path(tracks_dir)
+    clean = {k: v for k, v in settings.items() if k != "_id"}
+    tmp = f"{path}.tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(clean, fh)
+    os.replace(tmp, path)
+
+
+def upload_doc(doc: dict, *, loop_only: bool = False) -> bool:
     """Upsert a track document (author only). False if not permitted / failed.
 
     The collection (``gridglance.tracks``) is created automatically by MongoDB
     on the first successful upsert. Failures are logged (not raised) so a
     misconfigured credential or blocked network is visible in the app console.
+
+    When ``loop_only`` is True, pit geometry keys are removed from the cloud doc
+    so a loop-only re-upload does not leave stale pit data behind.
     """
     if not can_write():
         log.warning("track upload skipped: no read-write URI. Set "
@@ -330,14 +423,21 @@ def upload_doc(doc: dict) -> bool:
         if clean.get("track_id") is None or not clean.get("points"):
             log.warning("track upload skipped: missing track_id or points")
             return False
-        col.update_one({"track_id": clean["track_id"]},
-                       {"$set": clean}, upsert=True)
+        update: dict = {"$set": clean}
+        if loop_only:
+            update["$unset"] = {k: "" for k in _PIT_GEOM_KEYS}
+        col.update_one({"track_id": clean["track_id"]}, update, upsert=True)
         log.info("uploaded track %s to %s.%s",
                  clean["track_id"], _DB_NAME, _COLLECTION)
         return True
     except Exception as exc:
         log.warning("track upload failed: %s: %s", type(exc).__name__, exc)
         return False
+
+
+def _local_is_loop_only(doc: dict) -> bool:
+    pit = doc.get("pit_path")
+    return not (isinstance(pit, list) and len(pit) >= 2)
 
 
 def load_local(tracks_dir: str, track_id) -> dict | None:
@@ -497,6 +597,10 @@ class TrackSync(QObject):
     fetched = pyqtSignal(object, object)
     # number of cached tracks refreshed by a startup sync.
     synced = pyqtSignal(int)
+    # shared app settings doc (or None).
+    app_settingsFetched = pyqtSignal(object)
+    # True when author save succeeded.
+    app_settingsSaved = pyqtSignal(bool)
 
     def fetch_async(self, track_id) -> None:
         if not read_available():
@@ -530,4 +634,23 @@ class TrackSync(QObject):
     def _upload_local(self, tracks_dir: str, track_id) -> None:
         doc = load_local(tracks_dir, track_id)
         if doc:
-            upload_doc(doc)
+            upload_doc(doc, loop_only=_local_is_loop_only(doc))
+
+    def fetch_app_settings_async(self) -> None:
+        if not read_available():
+            return
+        threading.Thread(target=self._fetch_app_settings, daemon=True).start()
+
+    def _fetch_app_settings(self) -> None:
+        doc = fetch_app_settings()
+        self.app_settingsFetched.emit(doc)
+
+    def save_app_settings_async(self, settings: dict) -> None:
+        if not can_write():
+            return
+        threading.Thread(target=self._save_app_settings,
+                         args=(settings,), daemon=True).start()
+
+    def _save_app_settings(self, settings: dict) -> None:
+        ok = save_app_settings(settings)
+        self.app_settingsSaved.emit(ok)
