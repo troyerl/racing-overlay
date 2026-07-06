@@ -5,6 +5,15 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.49.0 - 2026-07-06
+
+- **Pit edit middle-click pan.** In Track Scan pit authoring, middle-click drag
+  (mouse wheel click) pans the map without adding pit points. Shift+left-drag
+  still works.
+- **Laptime log paint fix.** Fixed a crash when the laptime log drew temperature
+  rows (`icons.draw_thermo` was missing) and corrected row vertical positioning
+  so lap rows render in the right place.
+
 ## 1.48.0 - 2026-07-06
 
 - **Loop-only track save.** Track Scan adds **Save loop** to upload racing-line

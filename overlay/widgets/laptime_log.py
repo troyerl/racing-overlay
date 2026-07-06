@@ -113,13 +113,13 @@ class LaptimeLogWidget(QWidget):
                 p.setPen(Qt.PenStyle.NoPen)
                 p.setBrush(col("row_alt", _SECTION))
                 p.drawRect(row_rect)
-            self._draw_row(p, row, cells, row_h, data_bold, cfg)
+            self._draw_row(p, row, cells, y, row_h, data_bold, cfg)
             if cfg.get("row_dividers", True) and i < len(shown) - 1:
                 draw_row_divider(p, inner_x, y + row_h, inner_w, _SECTION)
 
-    def _draw_row(self, p, row, cells, row_h, data_bold, cfg) -> None:
+    def _draw_row(self, p, row, cells, y, row_h, data_bold, cfg) -> None:
         for key, (x, cw) in cells.items():
-            rect = QRectF(x, 0, cw, row_h)
+            rect = QRectF(x, y, cw, row_h)
             val = row.get(key, "")
             if key == "delta":
                 delta = row.get("delta")
@@ -141,12 +141,22 @@ class LaptimeLogWidget(QWidget):
                 icon_w = row_h * 0.35
                 total = icon_w + tw + 4
                 ox = x + (cw - total) / 2
-                icons.draw_thermo(p, ox, row_h * 0.32, icon_w, row_h * 0.36,
-                                  col("text", _SECTION))
-                p.drawText(QRectF(ox + icon_w + 4, 0, tw + 2, row_h),
+                if icons.has("track_temp"):
+                    p.setFont(icons.icon_font(row_h * 0.36))
+                    p.setPen(col("text", _SECTION))
+                    p.drawText(
+                        QRectF(ox, y + row_h * 0.32, icon_w, row_h * 0.36),
+                        Qt.AlignmentFlag.AlignCenter,
+                        icons.glyph("track_temp"),
+                    )
+                p.setFont(tabfont(row_h * cfg.get("font_scale", 0.42),
+                                  bold=data_bold))
+                p.setPen(col("text", _SECTION))
+                p.drawText(QRectF(ox + icon_w + 4, y, tw + 2, row_h),
                            Qt.AlignmentFlag.AlignVCenter, text)
             elif key == "tag" and val:
-                chip = QRectF(x + cw * 0.1, row_h * 0.22, cw * 0.8, row_h * 0.56)
+                chip = QRectF(x + cw * 0.1, y + row_h * 0.22,
+                              cw * 0.8, row_h * 0.56)
                 draw_dark_cell(p, chip, _SECTION, radius=4)
                 p.setPen(col("text", _SECTION))
                 p.setFont(tfont(row_h * 0.30, bold=True))
