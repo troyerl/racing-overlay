@@ -53,6 +53,31 @@ def test_tracks_equivalent_with_aliases(tmp_path):
     assert not track_store.tracks_equivalent(str(tmp_path), 53, 123)
 
 
+def test_track_doc_matches_session_alias(tmp_path):
+    _write_track(tmp_path, 447, aliases=[53])
+    track_store.invalidate_alias_cache()
+    doc = {"track_id": 447, "alias_track_ids": [53]}
+    assert track_store.track_doc_matches_session(str(tmp_path), 53, doc)
+    assert track_store.track_doc_matches_session(str(tmp_path), 447, doc)
+    assert not track_store.track_doc_matches_session(str(tmp_path), 123, doc)
+
+
+def test_remote_manifest_indexes_alias_ids():
+    col = MagicMock()
+    col.find.return_value = [
+        {
+            "track_id": 447,
+            "updated_at": "2026-07-06T13:00:00+00:00",
+            "alias_track_ids": [53],
+        },
+    ]
+    with patch.object(track_store, "_collection", return_value=col):
+        track_store._manifest_cache = None
+        manifest = track_store.remote_manifest()
+    assert manifest[447] == "2026-07-06T13:00:00+00:00"
+    assert manifest[53] == "2026-07-06T13:00:00+00:00"
+
+
 def test_find_track_file_resolves_alias(tmp_path):
     path = _write_track(tmp_path, 447, aliases=[53])
     track_store.invalidate_alias_cache()

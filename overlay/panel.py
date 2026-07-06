@@ -143,8 +143,22 @@ class PanelWindow(QWidget):
 
         stored = self.layout_state.get(key)
         x, y, w, h = stored if stored and len(stored) == 4 else default_geom
-        self.setGeometry(int(x), int(y), int(w), int(h))
+        x, y, w, h = layout_store.clamp_panel_geometry(x, y, w, h)
+        self.setGeometry(x, y, w, h)
+        if stored and list(stored) != [x, y, w, h]:
+            self.layout_state[key] = [x, y, w, h]
         self._rescale_font()
+
+    def ensure_on_screen(self) -> bool:
+        """Clamp geometry when mostly off-screen; return True if adjusted."""
+        g = self.geometry()
+        nx, ny, nw, nh = layout_store.clamp_panel_geometry(
+            g.x(), g.y(), g.width(), g.height())
+        if (nx, ny, nw, nh) == (g.x(), g.y(), g.width(), g.height()):
+            return False
+        self.setGeometry(nx, ny, nw, nh)
+        self._save_geometry()
+        return True
 
     def showEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         super().showEvent(event)

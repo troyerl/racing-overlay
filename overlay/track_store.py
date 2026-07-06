@@ -409,6 +409,22 @@ def tracks_equivalent(tracks_dir: str, a, b) -> bool:
     return same_track_id(ra, rb)
 
 
+def track_doc_matches_session(tracks_dir: str, session_id, doc: dict) -> bool:
+    """True when a cloud track doc belongs to the live session TrackID."""
+    if session_id is None or not doc:
+        return False
+    canonical = doc.get("track_id")
+    if canonical is None:
+        return False
+    if same_track_id(session_id, canonical):
+        return True
+    aliases = _normalize_alias_ids(doc.get("alias_track_ids"), canonical)
+    for aid in aliases:
+        if same_track_id(session_id, aid):
+            return True
+    return tracks_equivalent(tracks_dir, session_id, canonical)
+
+
 def _fetch_track_query(track_id) -> dict:
     """Mongo query matching canonical id or ``alias_track_ids`` membership."""
     clauses: list[dict] = []
@@ -591,10 +607,16 @@ def remote_manifest() -> dict | None:
         return None
     try:
         out: dict = {}
-        for d in col.find({}, {"_id": 0, "track_id": 1, "updated_at": 1}):
+        for d in col.find({}, {"_id": 0, "track_id": 1, "updated_at": 1,
+                               "alias_track_ids": 1}):
             tid = d.get("track_id")
-            if tid is not None:
-                out[tid] = d.get("updated_at") or ""
+            if tid is None:
+                continue
+            ts = d.get("updated_at") or ""
+            aliases = _normalize_alias_ids(d.get("alias_track_ids"), tid)
+            for key in (tid, *aliases):
+                for variant in track_id_variants(key):
+                    out[variant] = ts
         _manifest_cache = out
         return out
     except Exception:

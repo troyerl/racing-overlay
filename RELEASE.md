@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.57.0 - 2026-07-06
+
+- **IMS scoring-pylon leaderboard strip.** Restyled the leaderboard strip like
+  the Indianapolis scoring pylon: black background, dot separator, white position
+  numbers, and amber 7-segment LED car numbers with discrete bulb gaps.
+- **Full-field standings tower.** `rows: 0` (the new default) shows the entire
+  classified field; set a positive row count to cap at top N. LAP, MPH, name, and
+  gap rows are optional and off by default.
+- **Tighter strip layout.** Position numbers are right-aligned in a column sized
+  to the widest digit; car numbers get the reclaimed width.
+- **Panels stay on screen.** Saved panel geometry is clamped when a widget would
+  open mostly off-screen; preset changes and show events re-check visibility.
+- **Live track load reliability.** Cloud track fetch retries after failures, stale
+  local maps load immediately while refresh runs in the background, and alias
+  TrackIDs match session tracks from MongoDB.
+
 ## 1.56.1 - 2026-07-06
 
 - **Smoother pit entry on ovals.** When `OnPitRoad` engages on schematic tracks

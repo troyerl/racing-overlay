@@ -62,8 +62,15 @@ def _hud(tmp_path, **kwargs) -> AdvancedSimHUD:
     hud._track_zones = {"drs_zones": [], "p2p_zones": []}
     hud._pit_path = None
     hud._alias_track_ids = []
+    hud._player_on_route = False
+    hud._player_route_ticks = 0
+    hud._pit_route_latch = {}
+    hud._pit_prev_on = {}
+    hud._pit_exit_latch = {}
+    hud._pit_latch_seed_pending = False
     hud._remote_tried = set()
     hud._no_track_hint = False
+    hud._track_fetch_last = 0.0
     hud.map_widget = _FakeMap()
     hud._track_sync = MagicMock()
     hud._refresh_settings_authoring = MagicMock()
@@ -204,7 +211,8 @@ def test_ensure_track_fetches_when_stale(tmp_path, monkeypatch):
     monkeypatch.setattr(track_store, "needs_cloud_refresh", lambda *_a: True)
     hud._ensure_track(None, None)
     hud._track_sync.fetch_async.assert_called_once_with(451)
-    assert hud._track_loaded is False
+    assert hud._track_loaded is True
+    assert hud._loaded_track_updated_at == "old-ts"
 
 
 def test_ensure_track_loads_when_fresh(tmp_path, monkeypatch):
@@ -256,3 +264,61 @@ def test_on_remote_track_skips_when_already_current(tmp_path):
     with patch.object(track_store, "write_local") as write_local:
         hud._on_remote_track(451, doc)
     write_local.assert_not_called()
+
+
+def test_ensure_track_retries_after_failed_fetch(tmp_path, monkeypatch):
+    hud = _hud(tmp_path, track_id=451)
+    hud.ir = {"WeekendInfo": {"TrackID": 451, "TrackDisplayName": "Test"}}
+    monkeypatch.setattr(track_store, "cached_manifest", lambda: None)
+    monkeypatch.setattr(track_store, "needs_cloud_refresh", lambda *_a: True)
+    times = iter([0.0, 11.0, 11.0])
+    monkeypatch.setattr("overlay.app.time.monotonic", lambda: next(times))
+    hud._ensure_track(None, None)
+    assert hud._track_sync.fetch_async.call_count == 1
+    assert hud._track_loaded is False
+    hud._on_remote_track(451, None)
+    hud._ensure_track(None, None)
+    assert hud._track_sync.fetch_async.call_count == 2
+    doc = {
+        "track_id": 451,
+        "points": [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]],
+        "start_finish": 0.0,
+        "updated_at": "new-ts",
+    }
+    hud._on_remote_track(451, doc)
+    assert hud._track_loaded is True
+
+
+def test_ensure_track_loads_stale_local_while_refreshing(tmp_path, monkeypatch):
+    _write_track(tmp_path, 451, updated_at="old-ts")
+    hud = _hud(tmp_path)
+    monkeypatch.setattr(track_store, "cached_manifest", lambda: {451: "new-ts"})
+    monkeypatch.setattr(track_store, "needs_cloud_refresh", lambda *_a: True)
+    hud._ensure_track(None, None)
+    assert hud._track_loaded is True
+    assert hud._loaded_track_updated_at == "old-ts"
+    hud._track_sync.fetch_async.assert_called_once_with(451)
+    hud._on_remote_track(451, {
+        "track_id": 451,
+        "points": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]],
+        "start_finish": 0.0,
+        "updated_at": "new-ts",
+    })
+    assert hud._loaded_track_updated_at == "new-ts"
+    saved = json.loads((tmp_path / "451.json").read_text(encoding="utf-8"))
+    assert saved["updated_at"] == "new-ts"
+    assert len(saved["points"]) == 3
+
+
+def test_ensure_track_resets_on_track_id_change(tmp_path, monkeypatch):
+    _write_track(tmp_path, 451, updated_at="ts-a")
+    _write_track(tmp_path, 522, updated_at="ts-b")
+    hud = _hud(tmp_path, track_id=451)
+    monkeypatch.setattr(track_store, "cached_manifest", lambda: None)
+    monkeypatch.setattr(track_store, "needs_cloud_refresh", lambda *_a: False)
+    hud._ensure_track(None, None)
+    assert hud._track_loaded is True
+    hud.ir = {"WeekendInfo": {"TrackID": 522, "TrackDisplayName": "IMS"}}
+    hud._ensure_track(None, None)
+    assert hud._track_loaded is True
+    assert hud._loaded_track_updated_at == "ts-b"

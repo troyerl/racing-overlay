@@ -106,3 +106,25 @@ def test_leader_icon_is_crown():
 
     assert icons._CODEPOINTS["leader"] == 0xF521
     assert icons._CODEPOINTS["leader"] != icons._CODEPOINTS["best_lap"]
+
+
+def test_load_demo_track_offline_fallback(tmp_path):
+    """Demo mode shows a bundled/synthetic map when the cloud track is missing."""
+    import shutil
+    import sys
+    from PyQt6.QtWidgets import QApplication
+
+    from overlay.app import AdvancedSimHUD
+
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication(sys.argv)
+    hud = AdvancedSimHUD(click_through=False, demo=True, tracks_dir=str(tmp_path))
+    assert hud.map_widget.path and len(hud.map_widget.path) >= 2
+
+    shutil.copy(
+        "tracks/_demo.json",
+        tmp_path / "_demo.json",
+    )
+    hud2 = AdvancedSimHUD(click_through=False, demo=True, tracks_dir=str(tmp_path))
+    assert hud2.map_widget.path and len(hud2.map_widget.path) >= 2

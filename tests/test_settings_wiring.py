@@ -126,7 +126,6 @@ def test_fade_ease_tau_wired_in_table():
 
 def test_row_dividers_wired_in_list_widgets():
     for section, path in (
-        ("leaderboard_strip", "overlay/widgets/leaderboard_strip.py"),
         ("pit_board", "overlay/widgets/pit_board.py"),
         ("weather_panel", "overlay/widgets/weather_panel.py"),
     ):

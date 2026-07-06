@@ -39,6 +39,7 @@ from . import constants
 from . import demo_data
 from . import paths
 from . import irating_calc
+from . import layout_store
 from . import sysstats
 from . import track_store
 from . import traffic as tr
@@ -79,7 +80,7 @@ DEFAULT_GEOMS = {
     "relative": (620, 120, 600, 360),
     "radar": (40, 500, 200, 260),
     "map": (620, 500, 480, 320),
-    "dash": (260, 800, 660, 190),
+    "dash": (260, 680, 660, 190),
     "laptime_log": (40, 500, 380, 320),
     "fuel_calc": (440, 500, 460, 380),
     "inputs": (260, 600, 660, 150),
@@ -89,9 +90,9 @@ DEFAULT_GEOMS = {
     "lap_compare": (40, 60, 380, 320),
     "tire_panel": (920, 500, 220, 180),
     "pit_board": (920, 700, 240, 200),
-    "weather_panel": (40, 840, 260, 150),
-    "leaderboard_strip": (320, 840, 280, 120),
-    "ers_hybrid": (620, 840, 220, 110),
+    "weather_panel": (40, 720, 260, 150),
+    "leaderboard_strip": (320, 720, 96, 300),
+    "ers_hybrid": (620, 720, 220, 110),
 }
 
 _WIDGET_KEYS = (
@@ -101,6 +102,8 @@ _WIDGET_KEYS = (
     "tire_panel", "pit_board", "weather_panel",
     "leaderboard_strip", "ers_hybrid",
 )
+
+_TRACK_FETCH_RETRY_SEC = 10.0
 
 # Pit route latch: consecutive ticks on pit road before drawing player on route.
 PIT_COMMIT_HOLD = 15
@@ -169,6 +172,7 @@ class AdvancedSimHUD:
         self._track_is_oval = False       # oval vs road (metadata only)
         self._learn_name = ""             # display name for saved tracks
         self._no_track_hint = False       # throttle "import HTML" flash
+        self._track_fetch_last = 0.0      # monotonic time of last cloud fetch attempt
         self._pit_speed_ms = 0.0
         self._pit_lane_speed_pct = 1.0
         self._pit_latch_seed_pending = False
@@ -451,6 +455,7 @@ class AdvancedSimHUD:
         for key, win in self._win_by_key.items():
             want = self._overlay_running and live and self._is_shown(key)
             if want and not win.isVisible():
+                win.ensure_on_screen()
                 win.show()
             elif not want and win.isVisible():
                 win.hide()
@@ -464,11 +469,17 @@ class AdvancedSimHUD:
         """Reapply the newly active preset's saved window layout to every panel."""
         self._layout_state.clear()
         self._layout_state.update(config.active_layout())
+        layout_changed = False
         for key, win in self._win_by_key.items():
             geom = self._layout_state.get(key) or DEFAULT_GEOMS.get(key)
             if geom:
-                win.setGeometry(int(geom[0]), int(geom[1]),
-                                int(geom[2]), int(geom[3]))
+                x, y, w, h = layout_store.clamp_panel_geometry(*geom)
+                win.setGeometry(x, y, w, h)
+                if list(geom) != [x, y, w, h]:
+                    self._layout_state[key] = [x, y, w, h]
+                    layout_changed = True
+        if layout_changed:
+            config.save_active_layout(self._layout_state)
         self._refresh_visible_widgets()
         self._apply_visibility()
         self._repaint_all()
@@ -1349,7 +1360,7 @@ class AdvancedSimHUD:
             self._update_weather_panel()
         if en["leaderboard_strip"]:
             self._update_leaderboard_strip(positions, drivers, car_f2,
-                                           lap_est, player)
+                                           lap_est, player, car_lap)
         if en["ers_hybrid"]:
             self._update_ers_hybrid()
 
@@ -2718,28 +2729,34 @@ class AdvancedSimHUD:
             self._sync_demo_pit_from_meta(meta)
         return True
 
+    def _try_apply_track_file(self, tid) -> bool:
+        path = track_map.find_track_file(tid, self.tracks_dir)
+        return bool(path and self._apply_track_from_path(path, str(tid)))
+
     def _load_demo_track(self) -> None:
         tid = self._resolve_demo_track_id()
         self._demo_track_pending_id = tid
         legacy_demo = tid in ("_demo", "demo")
-        if str(tid) == str(demo_data.DEMO_TRACK_ID) and self._shared_demo_track_id is None:
+        default_demo = str(tid) == str(demo_data.DEMO_TRACK_ID)
+        if default_demo and self._shared_demo_track_id is None:
             self.map_widget.set_track_is_oval(True)
             self.map_widget.set_num_turns(4)
 
-        path = track_map.find_track_file(tid, self.tracks_dir)
-        loaded = bool(path and self._apply_track_from_path(path, tid))
+        loaded = self._try_apply_track_file(tid)
 
         if not loaded:
-            if legacy_demo:
-                pts = track_map.build_demo_path()
-                self.map_widget.set_path(pts)
-                meta = self._demo_pit_geometry(pts)
-                if meta:
-                    self._apply_pit_meta(meta)
-                    self._sync_demo_pit_from_meta(meta)
-            else:
-                label = "Chicagoland" if str(tid) == str(demo_data.DEMO_TRACK_ID) else tid
-                self.map_widget.flash_hint(f"Loading {label} from cloud…")
+            loaded = self._try_apply_track_file("_demo")
+        if not loaded and (legacy_demo or default_demo):
+            pts = track_map.build_demo_path()
+            self.map_widget.set_path(pts)
+            meta = self._demo_pit_geometry(pts)
+            if meta:
+                self._apply_pit_meta(meta)
+                self._sync_demo_pit_from_meta(meta)
+            loaded = True
+        elif not loaded:
+            label = "Chicagoland" if default_demo else tid
+            self.map_widget.flash_hint(f"Loading {label} from cloud…")
         elif not self._pit_path:
             meta = self._demo_pit_geometry(self.map_widget.path)
             if meta:
@@ -2799,45 +2816,86 @@ class AdvancedSimHUD:
             "pit_lane_speed_pct": 0.38,
         }
 
+    def _reset_track_load_state(self) -> None:
+        """Clear track-load flags when the session TrackID changes."""
+        self._track_loaded = False
+        self._loaded_track_updated_at = None
+        self._track_file_checked = False
+        self._no_track_hint = False
+        self._remote_tried.clear()
+        self._track_fetch_last = 0.0
+        self._reset_pit_state()
+        self._pit_latch_seed_pending = True
+
+    def _sync_track_session(self) -> bool:
+        """Read WeekendInfo track metadata. False when unavailable."""
+        weekend = self.ir["WeekendInfo"]
+        if not weekend:
+            return False
+        new_tid = weekend.get("TrackID")
+        if (self._track_id is not None and new_tid is not None
+                and str(self._track_id) != str(new_tid)):
+            self._reset_track_load_state()
+        self._track_id = new_tid
+        self._learn_name = (weekend.get("TrackDisplayName")
+                            or weekend.get("TrackName") or "")
+        self._track_turns = _coerce_int(weekend.get("TrackNumTurns"))
+        self.map_widget.set_num_turns(self._track_turns)
+        self._track_is_oval = constants.is_oval_track(weekend)
+        self.map_widget.set_track_is_oval(self._track_is_oval)
+        self._track_file_checked = True
+        return True
+
+    def _try_load_local_track(self, tid) -> bool:
+        path = track_map.find_track_file(tid, self.tracks_dir)
+        if not path:
+            return False
+        if not self._apply_track_from_path(path, str(tid)):
+            return False
+        self._track_loaded = True
+        self._remote_tried.add(str(tid))
+        track_store.touch(self.tracks_dir, tid)
+        self._refresh_settings_authoring()
+        return True
+
+    def _maybe_fetch_remote_track(self, tid, *, stale: bool = False) -> None:
+        now = time.monotonic()
+        if (self._track_fetch_last > 0
+                and now - self._track_fetch_last < _TRACK_FETCH_RETRY_SEC):
+            return
+        self._track_fetch_last = now
+        self._track_sync.fetch_async(tid)
+        if stale:
+            self.map_widget.flash_hint(
+                "Refreshing track map from cloud\u2026")
+
     def _ensure_track(self, player, lap_pct) -> None:
         """Load track from local file or cloud; prompt HTML import if missing."""
-        if self.demo or self._track_loaded:
+        if self.demo:
+            return
+        if not self._sync_track_session():
+            return
+        if self._track_loaded:
+            return
+        tid = self._track_id
+        if tid is None:
             return
 
-        if not self._track_file_checked:
-            weekend = self.ir["WeekendInfo"]
-            if not weekend:
-                return
-            self._track_file_checked = True
-            self._track_id = weekend.get("TrackID")
-            self._learn_name = (weekend.get("TrackDisplayName")
-                                or weekend.get("TrackName") or "")
-            self._track_turns = _coerce_int(weekend.get("TrackNumTurns"))
-            self.map_widget.set_num_turns(self._track_turns)
-            self._track_is_oval = constants.is_oval_track(weekend)
-            self.map_widget.set_track_is_oval(self._track_is_oval)
-            track_file = track_map.find_track_file(
-                self._track_id, self.tracks_dir)
-            local_doc = (track_store.load_local(self.tracks_dir, self._track_id)
-                         if track_file else None)
-            manifest = track_store.cached_manifest()
-            stale = track_store.needs_cloud_refresh(
-                self._track_id, local_doc, manifest, self.tracks_dir)
-            if self._track_id is not None \
-                    and self._track_id not in self._remote_tried \
-                    and (not track_file or stale):
-                self._remote_tried.add(self._track_id)
-                self._track_sync.fetch_async(self._track_id)
-                if track_file and stale:
-                    self.map_widget.flash_hint(
-                        "Refreshing track map from cloud\u2026")
-                    return
-            if track_file:
-                if self._apply_track_from_path(track_file, str(self._track_id)):
-                    self._track_loaded = True
-                    track_store.touch(self.tracks_dir, self._track_id)
-                    self._refresh_settings_authoring()
-                    return
+        track_file = track_map.find_track_file(tid, self.tracks_dir)
+        local_doc = (track_store.load_local(self.tracks_dir, tid)
+                     if track_file else None)
+        manifest = track_store.cached_manifest()
+        stale = track_store.needs_cloud_refresh(
+            tid, local_doc, manifest, self.tracks_dir)
+        need_fetch = not track_file or stale
+
+        if track_file and self._try_load_local_track(tid):
+            if stale:
+                self._maybe_fetch_remote_track(tid, stale=True)
+            return
+
+        if need_fetch:
+            self._maybe_fetch_remote_track(tid, stale=stale)
 
         if not self._no_track_hint:
             self._no_track_hint = True
@@ -2871,8 +2929,14 @@ class AdvancedSimHUD:
     def _on_remote_track(self, track_id, doc) -> None:
         """A shared track map arrived from the cloud (off the GUI thread)."""
         target = (self._demo_track_pending_id if self.demo else self._track_id)
-        if not doc or not track_store.tracks_equivalent(
-                self.tracks_dir, track_id, target):
+        if not doc:
+            log.warning("cloud track fetch returned no document for TrackID %s",
+                        track_id)
+            return
+        if not track_store.track_doc_matches_session(
+                self.tracks_dir, target, doc):
+            log.warning("cloud track %s does not match session TrackID %s",
+                        doc.get("track_id"), target)
             return
         remote_ts = doc.get("updated_at") or ""
         if self._track_loaded and not self.demo:
@@ -2882,8 +2946,12 @@ class AdvancedSimHUD:
         try:
             path = track_store.write_local(self.tracks_dir, doc)
             if not path:
+                log.warning("could not cache cloud track %s locally",
+                            doc.get("track_id"))
                 return
             if not self._apply_track_from_path(path, str(target)):
+                log.warning("could not apply cloud track %s from %s",
+                            doc.get("track_id"), path)
                 return
             if not self.demo:
                 saved_turns = _coerce_int(doc.get("num_turns"))
@@ -2891,11 +2959,14 @@ class AdvancedSimHUD:
                 if saved_turns and not self._track_turns:
                     self._track_turns = saved_turns
             self._track_loaded = True
+            if target is not None:
+                self._remote_tried.add(str(target))
             track_store.enforce_cache_limit(
                 self.tracks_dir, protect=[target, doc.get("track_id")])
             self._refresh_settings_authoring()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("remote track apply failed: %s: %s",
+                        type(exc).__name__, exc)
 
     def _reset_pit_state(self) -> None:
         """Clear pit-route runtime state (latches, not saved geometry)."""
@@ -4356,23 +4427,41 @@ class AdvancedSimHUD:
             return
         self.weather_panel_widget.set_data(snap)
 
+    @staticmethod
+    def _leaderboard_speed_mph(speed_ms) -> int | None:
+        if speed_ms is None:
+            return None
+        try:
+            v = float(speed_ms)
+        except (TypeError, ValueError):
+            return None
+        if v <= 0:
+            return None
+        return int(round(v * 2.2369362921))
+
     def _update_leaderboard_strip(self, positions, drivers, car_f2,
-                                  lap_est, player) -> None:
+                                  lap_est, player, car_lap=None) -> None:
         cfg = config.CFG.get("leaderboard_strip", {})
+        car_speed = None
+        try:
+            car_speed = self.ir["CarIdxSpeed"]
+        except (KeyError, TypeError):
+            pass
         if not positions:
             if self.edit_mode_enabled():
-                n = max(1, min(5, int(cfg.get("rows", 3) or 3)))
                 self.leaderboard_strip_widget.set_data({
                     "rows": [],
                     "edit": True,
                 })
             return
-        n = max(1, min(5, int(cfg.get("rows", 3) or 3)))
+        cap = int(cfg.get("rows", 0) or 0)
         ranked = sorted(
             (idx for idx, pos in enumerate(positions)
              if pos and pos > 0 and idx not in self._pace_idxs),
             key=lambda idx: positions[idx],
-        )[:n]
+        )
+        if cap > 0:
+            ranked = ranked[:cap]
         rows = []
         for idx in ranked:
             d = drivers.get(idx, {})
@@ -4380,12 +4469,23 @@ class AdvancedSimHUD:
             gap = tr.fmt_leader_gap(
                 car_f2[idx] if car_f2 and idx < len(car_f2) else None,
                 pos, lap_est)
+            lap = None
+            if car_lap and idx < len(car_lap):
+                try:
+                    lap = int(car_lap[idx])
+                except (TypeError, ValueError):
+                    lap = None
+            speed_mph = None
+            if car_speed and idx < len(car_speed):
+                speed_mph = self._leaderboard_speed_mph(car_speed[idx])
             rows.append({
                 "position": pos,
                 "car_number": d.get("CarNumber", ""),
                 "name": d.get("UserName", f"Car {idx}"),
                 "class_color": d.get("CarClassColor", "#888888"),
                 "gap": gap,
+                "lap": lap,
+                "speed_mph": speed_mph,
                 "is_player": idx == player,
             })
         self.leaderboard_strip_widget.set_data({

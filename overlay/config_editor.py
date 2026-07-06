@@ -208,8 +208,10 @@ LABEL_OVERRIDES = {
     "pit_board.pit_banner_text": "Active pit banner text",
     "weather_panel.show_title": "Show title bar",
     "weather_panel.title": "Title text",
-    "leaderboard_strip.show_position": "Show position (P1, P2, …)",
-    "leaderboard_strip.show_gap": "Show gap column",
+    "leaderboard_strip.show_position": "Show position (1, 2, …)",
+    "leaderboard_strip.show_lap": "Show lap count column",
+    "leaderboard_strip.show_mph": "Show MPH column",
+    "leaderboard_strip.show_gap": "Show gap below each row",
     "ers_hybrid.show_title": "Show title bar",
     "ers_hybrid.title": "Title text",
     "ers_hybrid.label_battery": "Battery row label",
@@ -367,7 +369,7 @@ _WIDGET_HINTS = {
     "tire_panel": "Four-corner wear, temperature, and pressure.",
     "pit_board": "Requested pit services and repair status.",
     "weather_panel": "Skies, rain, temps, trend, and wind.",
-    "leaderboard_strip": "Compact top-N leaderboard with gaps.",
+    "leaderboard_strip": "Compact top-N leaderboard (IMS scoring-pylon style).",
     "ers_hybrid": "Hybrid battery and boost / push-to-pass state.",
 }
 
@@ -610,8 +612,8 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     ],
     "leaderboard_strip": [
         ("Content", [
-            "rows", "show_position", "show_name", "show_car_number", "show_gap",
-            "show_class_color", "highlight_player", "text_scale",
+            "rows", "show_position", "show_car_number", "show_lap", "show_mph",
+            "show_name", "show_gap", "highlight_player", "text_scale",
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
         ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),

@@ -390,6 +390,13 @@ class FakeIRSDK:
         if key == "CarIdxLap":
             return self._lap_counts()
 
+        if key == "CarIdxSpeed":
+            # Approximate start/finish speed (m/s) for the scoring pylon MPH column.
+            t = time.time() - self._start
+            return [max(12.0, self._engine()[0] * self._speed[i]
+                        + 4.0 * math.sin(t * 0.35 + self._phase[i]))
+                    for i in range(self.num_cars)]
+
         if key == "CarIdxF2Time":
             totals = self._total_laps()
             leader = max(totals)
