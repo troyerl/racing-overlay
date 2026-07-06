@@ -39,6 +39,14 @@ def test_player_entry_when_approaching_pits():
         0, pct, False, is_player=True, route=route, approaching=True)
 
 
+def test_player_entry_without_approaching():
+    hud = _chicagoland_hud()
+    route = (hud._pit_in_pct, hud._pit_out_pct)
+    pct = 0.85
+    assert hud._car_on_route(
+        0, pct, False, is_player=True, route=route, approaching=False)
+
+
 def test_opponent_exit_hold_after_pit():
     hud = _chicagoland_hud()
     route = (hud._pit_in_pct, hud._pit_out_pct)

@@ -209,3 +209,56 @@ def test_entry_feather_mid_route_is_pure_pit(qapp):
     route = w._pos_for_schematic_route(0, pct, on_route=True, on_pit_road=True)
     assert route is not None
     assert w._feather_schematic_pos(pct, route) == route
+
+
+def test_pit_blend_weight_entry_starts_at_zero(qapp):
+    w = _make_widget()
+    lo = w.pit_in_pct
+    wgt = w._pit_blend_weight(
+        lo, on_route=False, on_pit=False, in_entry=True, in_exit=False)
+    assert wgt == 0.0
+
+
+def test_pit_blend_weight_entry_ramps(qapp):
+    w = _make_widget()
+    lo, hi = w.pit_in_pct, w.pit_out_pct
+    span = (hi - lo) % 1.0
+    feather = min(max(span * 0.12, 0.012), span * 0.35)
+    pct = (lo + feather * 0.5) % 1.0
+    wgt = w._pit_blend_weight(
+        pct, on_route=False, on_pit=False, in_entry=True, in_exit=False)
+    assert 0.0 < wgt < 1.0
+
+
+def test_resolve_car_blends_entry_without_on_route(qapp):
+    """Entry phase eases from track toward pit route before on_route flips."""
+    import math
+    from PyQt6.QtCore import QPointF
+
+    w = _make_chicagoland_like_widget()
+    lo = w.pit_in_pct
+    lane_lo = w.pit_span[0]
+    pct = (lo + ((lane_lo - lo) % 1.0) * 0.25) % 1.0
+    w.resize(400, 300)
+    w._layout_scale = 300.0
+    w._layout_ox = 20.0
+    w._layout_oy = 10.0
+
+    def tx(pt):
+        return QPointF(pt[0] * 300 + 20, pt[1] * 300 + 10)
+
+    track = w._loop_point_at_pct(pct)
+    route = w._pos_for_schematic_route(
+        0, pct, on_route=True, on_pit_road=False, raw=True)
+    assert track is not None and route is not None
+    wgt = w._pit_blend_weight(
+        pct, on_route=False, on_pit=False, in_entry=True, in_exit=False)
+    assert 0.0 < wgt < 1.0
+    car = (0, pct, "1", "#fff", False, False, False,
+           False, False, None, True, False)
+    cc = tx(w._centroid)
+    pt = w._resolve_car_point(tx, car, cc, 12.0, True)
+    assert pt is not None
+    expected = w._blend_xy(track, route, wgt)
+    exp_scr = tx(expected)
+    assert math.hypot(pt.x() - exp_scr.x(), pt.y() - exp_scr.y()) < 2.0

@@ -823,9 +823,16 @@ class AdvancedSimHUD:
         """Refresh in-progress pit preview after a handle drag (no file write)."""
         self.map_widget.update()
 
+    def _orientation_from_cfg(self) -> tuple[int, bool]:
+        """Map rotation/mirror stamped into saved track JSON."""
+        mcfg = config.CFG.get("map", {})
+        rot = int(round((mcfg.get("rotation", 0) or 0) / 90.0)) * 90 % 360
+        return rot, bool(mcfg.get("mirror", False))
+
     def _build_loop_doc(self, tid) -> dict:
         """Racing loop + corners for v2 track save (no pit geometry)."""
         loop = [(p[0], p[1]) for p in self.map_widget.path]
+        rot, mirror = self._orientation_from_cfg()
         doc: dict = {
             "schema": 2,
             "import_version": 2,
@@ -836,8 +843,8 @@ class AdvancedSimHUD:
             "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
             "corners": track_map.corners_to_json(
                 self.map_widget.display_corners()),
-            "map_rotation": 0,
-            "map_mirror": False,
+            "map_rotation": rot,
+            "map_mirror": mirror,
         }
         if self._track_turns:
             doc["num_turns"] = int(self._track_turns)
@@ -3049,6 +3056,8 @@ class AdvancedSimHUD:
                     continue
             on_route = self._car_on_route(idx, pct, on_pit, is_player, route,
                                           blends_on, approaching=approaching)
+            in_entry, _in_lane, in_exit = self._pit_route_phases(
+                pct, on_pit=on_pit)
             d = drivers.get(idx)
             if is_pace:
                 num = "PC"
@@ -3074,7 +3083,7 @@ class AdvancedSimHUD:
                 surf = surface[idx] if idx < len(surface) else None
                 status_kind = tr.map_car_status_kind(surf, on_pit=on, car_flag=sf)
             cars.append((idx, pct, num, color, is_player, on_route, on_pit,
-                         speaking, is_pace, status_kind))
+                         speaking, is_pace, status_kind, in_entry, in_exit))
         if mcfg.get("show_sector_boundaries", True):
             self.map_widget.set_sector_boundaries(self._sector_starts())
         else:
@@ -3228,7 +3237,7 @@ class AdvancedSimHUD:
         if is_player:
             if on_pit or self._player_on_route:
                 return True
-            return in_entry and approaching
+            return in_entry
 
         latched = self._pit_route_latch.get(idx, False)
         if on_pit:

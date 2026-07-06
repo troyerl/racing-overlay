@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.55.0 - 2026-07-06
+
+- **Car direction after import.** V2 HTML import now trusts the start/finish arrow
+  for loop winding instead of forcing counter-clockwise geometry, fixing car dots
+  that crawled backwards along the track on some layouts.
+- **Persist map orientation on save.** Rotation and mirror settings from
+  **Settings → Map** are stamped into saved track JSON so cloud reloads keep the
+  author's corrected orientation.
+- **Smoother pit entry and rotation changes.** Pit entry eases from the racing
+  line onto the pit route; toggling map rotation or mirror clears stale car
+  animation so dots no longer teleport.
+
 ## 1.54.0 - 2026-07-06
 
 - **Settings wiring audit.** Every visible setting now either applies live or is

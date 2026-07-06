@@ -176,8 +176,8 @@ def test_v2_chicagoland_sf_direction_and_turn_labels():
     assert doc["start_finish"] == 0.0
     assert len(doc["corners"]) == 4
     assert {c["label"] for c in doc["corners"]} == {"1", "2", "3", "4"}
-    # iRacing oval numbering: T1 first after S/F along lap direction.
-    assert [c["label"] for c in doc["corners"]] == ["1", "2", "3", "4"]
+    # Lap direction follows the S/F arrow (not forced CCW); T4 is first after S/F here.
+    assert [c["label"] for c in doc["corners"]] == ["4", "3", "2", "1"]
 
     sf_svg = layers["start_finish"]
     anchor = _sf_anchor_point(sf_svg)
@@ -253,3 +253,45 @@ def test_v2_indianapolis_sf_stripe_anchor():
     sf_pct = _pct_on_loop(loop, stripe_norm)
     assert sf_pct < 0.05 or sf_pct > 0.95
     assert tip[0] > stripe[0]
+
+
+def test_align_loop_preserves_arrow_when_ccw_would_flip():
+    """Arrow direction must not be undone by forced CCW winding."""
+    import math
+
+    from bs4 import BeautifulSoup
+
+    from tools.schematic_to_track import _ensure_ccw, _signed_area
+    from tools.svg_layers_to_track import extract_layers_from_html
+    from tools.svg_layers_to_track_v2 import (
+        _align_loop_from_sf,
+        _resolve_loop_segment,
+        _sample_segment,
+        _sf_arrow_direction,
+    )
+
+    path = _require_html("Oval", "Chicagoland.html")
+    html = open(path, encoding="utf-8").read()
+    soup = BeautifulSoup(html, "html.parser")
+    segment = _resolve_loop_segment(soup)
+    raw = _sample_segment(segment, 200)
+    layers = extract_layers_from_html(html)
+    sf_svg = layers["start_finish"]
+    aligned = _align_loop_from_sf(raw, sf_svg)
+    arrow = _sf_arrow_direction(sf_svg)
+    assert arrow is not None
+    assert _signed_area(aligned) < 0
+    dx = aligned[1][0] - aligned[0][0]
+    dy = aligned[1][1] - aligned[0][1]
+    ln = math.hypot(dx, dy) or 1.0
+    dot = (dx / ln) * arrow[0] + (dy / ln) * arrow[1]
+    assert dot > 0
+
+    ccw_loop = _ensure_ccw(list(aligned))
+    assert ccw_loop != aligned
+    assert _signed_area(ccw_loop) > 0
+
+    from tools.svg_layers_to_track_v2 import import_loop_from_html
+
+    doc = import_loop_from_html(html_path=path, num_samples=200)
+    assert [c["label"] for c in doc["corners"]] == ["4", "3", "2", "1"]

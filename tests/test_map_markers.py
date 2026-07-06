@@ -181,3 +181,60 @@ def test_car_screen_points_ease_toward_target(qapp):
     assert anim2 is False
     assert math.hypot(pts2[1].x() - targets2[1].x(),
                       pts2[1].y() - targets2[1].y()) < 1.0
+
+
+def test_car_motion_key_change_seeds_from_last_pt(qapp):
+    """Route/track key changes should ease from the last screen pos, not snap."""
+    w = TrackMapWidget()
+    loop = [(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8), (0.2, 0.2)]
+    w.set_track(loop, start_finish=0.0, corners=[])
+    pit_path = [(0.2, 0.35), (0.8, 0.35)]
+    w.set_pit_source("manual")
+    w.pit_in_pct = 0.05
+    w.pit_out_pct = 0.75
+    w.pit_span = (0.10, 0.70)
+    w.pit_in = [(0.05, 0.25), pit_path[0]]
+    w.pit_path = pit_path
+    w.pit_out = [pit_path[-1], (0.75, 0.25)]
+    w.resize(400, 300)
+    w.show()
+    qapp.processEvents()
+    w._layout_scale = 200.0
+    w._layout_ox = 50.0
+    w._layout_oy = 40.0
+
+    def tx(pt):
+        return QPointF(pt[0] * 200 + 50, pt[1] * 200 + 40)
+
+    mc = {"asphalt_width": 11}
+    car_track = (1, 0.30, "7", "#3aa0ff", False, False, False,
+                 False, False, None, False, False)
+    w.cars = [car_track]
+    pts1, _ = w._build_smooth_car_screen_points(tx, mc)
+    assert 1 in pts1
+
+    car_route = (1, 0.30, "7", "#3aa0ff", False, True, True,
+                 False, False, None, False, False)
+    w.cars = [car_route]
+    targets = w._build_car_screen_points(tx, mc)
+    w._last_ms = w._clock.elapsed() - 16
+    pts2, anim2 = w._build_smooth_car_screen_points(tx, mc)
+    assert anim2 is True
+    dist_prev = math.hypot(pts2[1].x() - pts1[1].x(), pts2[1].y() - pts1[1].y())
+    dist_target = math.hypot(pts2[1].x() - targets[1].x(),
+                             pts2[1].y() - targets[1].y())
+    assert dist_prev < dist_target
+
+
+def test_car_anim_cleared_on_orientation_change(qapp):
+    from overlay import config
+
+    w = TrackMapWidget()
+    w._car_anim[1] = {"pt": QPointF(10, 20)}
+    full = config.base_cfg()
+    full.setdefault("map", {})["rotation"] = 90
+    config.apply_base(full, notify=True)
+    try:
+        assert w._car_anim == {}
+    finally:
+        config.reload()

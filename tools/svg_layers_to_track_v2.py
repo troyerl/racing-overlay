@@ -145,7 +145,8 @@ def _align_loop_from_sf(
         ln = math.hypot(dx, dy) or 1.0
         if (dx / ln) * arrow[0] + (dy / ln) * arrow[1] < 0:
             loop = [loop[0]] + list(reversed(loop[1:]))
-    loop = _ensure_ccw(loop)
+    elif not arrow:
+        loop = _ensure_ccw(loop)
     crossing = _sf_stripe_crossing(loop, sf_svg)
     if crossing is not None:
         _, pt = crossing

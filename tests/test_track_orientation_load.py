@@ -128,6 +128,20 @@ def test_build_loop_doc_includes_orientation(tmp_path):
     assert doc["map_mirror"] is False
 
 
+def test_build_loop_doc_stamps_cfg_orientation(tmp_path):
+    full = config.base_cfg()
+    full.setdefault("map", {})["rotation"] = 180
+    full["map"]["mirror"] = True
+    config.apply_base(full, notify=False)
+    try:
+        hud = _hud(tmp_path)
+        doc = hud._build_loop_doc(451)
+        assert doc["map_rotation"] == 180
+        assert doc["map_mirror"] is True
+    finally:
+        config.reload()
+
+
 def test_write_track_json_stamps_updated_at(tmp_path):
     hud = _hud(tmp_path)
     path = hud._write_track_json(451, {"track_id": 451, "points": [[0, 0]]})

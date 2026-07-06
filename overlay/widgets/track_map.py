@@ -792,6 +792,10 @@ class TrackMapWidget(QWidget):
         }
         self._car_anim: dict[int, dict] = {}
         self._car_animating = False
+        mcfg0 = _mcfg()
+        self._cfg_rot = int(round((mcfg0.get("rotation", 0) or 0) / 90.0)) * 90 % 360
+        self._cfg_mirror = bool(mcfg0.get("mirror", False))
+        config.on_change(self._on_map_config_change)
         self._clock = QElapsedTimer()
         self._clock.start()
         self._last_ms = 0
@@ -841,6 +845,16 @@ class TrackMapWidget(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.WheelFocus)
         self.setMinimumHeight(180)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def _on_map_config_change(self, cfg: dict) -> None:
+        """Drop stale car easing when layout rotation/mirror changes."""
+        mcfg = cfg.get("map", {})
+        rot = int(round((mcfg.get("rotation", 0) or 0) / 90.0)) * 90 % 360
+        mirror = bool(mcfg.get("mirror", False))
+        if rot != self._cfg_rot or mirror != self._cfg_mirror:
+            self._cfg_rot = rot
+            self._cfg_mirror = mirror
+            self._car_anim.clear()
 
     def _invalidate_corner_cache(self) -> None:
         self._display_corners_cache = None
@@ -1401,7 +1415,7 @@ class TrackMapWidget(QWidget):
         return route_pos
 
     def _pos_for_schematic_route(self, idx: int, pct: float, on_route: bool,
-                                 on_pit_road: bool):
+                                 on_pit_road: bool, *, raw: bool = False):
         """Place a car on authored pit polylines (schematic tracks only)."""
         if not on_route or not is_schematic_pit_source(self.pit_source):
             return None
@@ -1437,7 +1451,7 @@ class TrackMapWidget(QWidget):
                 and self._pct_in_interval(pct, exit_pct, hi)):
             pos = self._pit_phase_pos(pct, exit_pct, hi, [self.pit_out])
             if pos is not None:
-                return self._feather_schematic_pos(pct, pos)
+                return pos if raw else self._feather_schematic_pos(pct, pos)
 
         # Entry blend: pit_in_pct -> pit lane start on pit_in only.
         if (not on_pit_road and lo is not None and entry_end is not None
@@ -1445,8 +1459,43 @@ class TrackMapWidget(QWidget):
                 and self._pct_in_interval(pct, lo, entry_end)):
             pos = self._pit_phase_pos(pct, lo, entry_end, [self.pit_in])
             if pos is not None:
-                return self._feather_schematic_pos(pct, pos)
+                return pos if raw else self._feather_schematic_pos(pct, pos)
         return None
+
+    def _pit_blend_weight(
+        self,
+        pct: float,
+        *,
+        on_route: bool,
+        on_pit: bool,
+        in_entry: bool,
+        in_exit: bool,
+    ) -> float:
+        """0 = racing line only, 1 = pit route only (schematic entry/exit ramps)."""
+        if not is_schematic_pit_source(self.pit_source):
+            return 1.0 if on_route else 0.0
+        lo, hi = self.pit_in_pct, self.pit_out_pct
+        if lo is None or hi is None:
+            return 1.0 if on_route else 0.0
+        if on_pit or (on_route and not in_entry and not in_exit):
+            return 1.0
+        if not in_entry and not in_exit:
+            return 0.0
+        span = (hi - lo) % 1.0
+        if span <= 1e-6:
+            return 0.0
+        feather = min(max(span * 0.12, 0.012), span * 0.35)
+        if in_entry:
+            d_entry = (pct - lo) % 1.0
+            if d_entry < feather:
+                return d_entry / feather
+            return 1.0
+        if in_exit:
+            d_exit = (hi - pct) % 1.0
+            if d_exit < feather:
+                return d_exit / feather
+            return 1.0
+        return 0.0
 
     def set_player_xy(self, xy) -> None:
         """Set the player's live (model-space) position, or None to clear.
@@ -1645,7 +1694,11 @@ class TrackMapWidget(QWidget):
     def _resolve_car_point(self, tx, car, cc: QPointF, off: float,
                            schematic: bool, *, pct_override: float | None = None) -> QPointF | None:
         """Screen position of a car dot (shared by car draw + traffic markers)."""
-        if len(car) >= 10:
+        in_entry = in_exit = False
+        if len(car) >= 12:
+            (idx, pct, _label, _color, is_player, on_route, on_pit,
+             _speaking, _is_pace, _sk, in_entry, in_exit) = car
+        elif len(car) >= 10:
             idx, pct, _label, _color, is_player, on_route, on_pit, _speaking, _is_pace, _sk = car
         elif len(car) >= 9:
             idx, pct, _label, _color, is_player, on_route, on_pit, _speaking = car
@@ -1656,28 +1709,38 @@ class TrackMapWidget(QWidget):
             on_route = on_pit = False
         if pct_override is not None:
             pct = pct_override
-        c = None
-        if on_route:
-            if schematic:
-                pos = self._pos_for_schematic_route(idx, pct, on_route, on_pit)
-                if pos is not None:
-                    c = tx(pos)
-            elif is_player and self.player_xy is not None:
-                c = tx(self.player_xy)
+        from tools.schematic_to_track import _point_on_loop_at_frac
+
+        frac = self._loop_frac_for_pct(pct)
+        track_pos = _point_on_loop_at_frac(self.path, frac)
+        weight = self._pit_blend_weight(
+            pct,
+            on_route=on_route,
+            on_pit=on_pit,
+            in_entry=in_entry,
+            in_exit=in_exit,
+        )
+        route_pos = None
+        if schematic and weight > 0:
+            route_pos = self._pos_for_schematic_route(
+                idx, pct, True, on_pit, raw=True)
+        elif on_route and weight > 0:
+            if is_player and self.player_xy is not None:
+                route_pos = self.player_xy
             elif self.pit_path and len(self.pit_path) >= 2:
                 t = self._route_t_for_pct(pct)
                 if t is not None:
-                    pos = self._pos_on_route(t)
-                    if pos is not None:
-                        c = tx(pos)
-        if c is None:
-            from tools.schematic_to_track import _point_on_loop_at_frac
-            frac = self._loop_frac_for_pct(pct)
-            c = tx(_point_on_loop_at_frac(self.path, frac))
-            if on_pit:
-                dx, dy = c.x() - cc.x(), c.y() - cc.y()
-                ln = math.hypot(dx, dy) or 1.0
-                c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
+                    route_pos = self._pos_on_route(t)
+        if route_pos is not None and weight > 0:
+            model = (route_pos if weight >= 1.0
+                     else self._blend_xy(track_pos, route_pos, weight))
+        else:
+            model = track_pos
+        c = tx(model)
+        if on_pit and weight < 0.5:
+            dx, dy = c.x() - cc.x(), c.y() - cc.y()
+            ln = math.hypot(dx, dy) or 1.0
+            c = QPointF(c.x() - dx / ln * off, c.y() - dy / ln * off)
         return c
 
     def _car_motion_key(self, car, schematic: bool) -> tuple:
@@ -1713,11 +1776,20 @@ class TrackMapWidget(QWidget):
             key = self._car_motion_key(car, schematic)
             st = self._car_anim.get(idx)
             if st is None or st.get("key") != key:
-                st = {"key": key, "pct": pct, "pt": QPointF(target), "xy": None}
+                prev_pt = QPointF(st["pt"]) if st else QPointF(target)
+                st = {"key": key, "pct": pct, "pt": prev_pt, "xy": None}
                 if key[0] == "player_xy" and self.player_xy is not None:
                     st["xy"] = self.player_xy
                 self._car_anim[idx] = st
-                pts[idx] = target
+                if prev_pt != target:
+                    pt, moving = self._smooth_marker_point(
+                        prev_pt, target, dt, tau=tau, snap=120.0)
+                    st["pt"] = pt
+                    pts[idx] = pt
+                    if moving:
+                        animating = True
+                else:
+                    pts[idx] = target
                 continue
 
             if key[0] == "player_xy" and self.player_xy is not None:
@@ -2884,7 +2956,10 @@ class TrackMapWidget(QWidget):
         for car in sorted(self.cars, key=lambda c: c[4]):
             speaking = is_pace = False
             status_kind = None
-            if len(car) >= 10:
+            if len(car) >= 12:
+                (idx, pct, label, color, is_player, on_route, on_pit,
+                 speaking, is_pace, status_kind, _in_entry, _in_exit) = car
+            elif len(car) >= 10:
                 (idx, pct, label, color, is_player, on_route, on_pit,
                  speaking, is_pace, status_kind) = car
             elif len(car) >= 9:
