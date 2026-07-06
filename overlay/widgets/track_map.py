@@ -1063,33 +1063,6 @@ class TrackMapWidget(QWidget):
         elif phase == "merge" and idx == 0 and self._pit_edit_road:
             self._pit_edit_road[-1] = (x, y)
 
-    def _pit_edit_fit_points(self, model) -> list[tuple[float, float]]:
-        """Model-space points to frame while pit editing (after mirror/rotate)."""
-        pts: list[tuple[float, float]] = []
-        for seg in (self._pit_edit_road, self._pit_edit_merge):
-            pts.extend(model(pt) for pt in seg)
-        if not pts:
-            return []
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        pad_x = max(0.02, (max(xs) - min(xs)) * 0.08)
-        pad_y = max(0.02, (max(ys) - min(ys)) * 0.08)
-        lo_x, hi_x = min(xs) - pad_x, max(xs) + pad_x
-        lo_y, hi_y = min(ys) - pad_y, max(ys) + pad_y
-        if self.path:
-            expand = 0.15
-            ex = (hi_x - lo_x) * expand
-            ey = (hi_y - lo_y) * expand
-            lo_x -= ex
-            hi_x += ex
-            lo_y -= ey
-            hi_y += ey
-            for pt in self.path:
-                mx, my = model(pt)
-                if lo_x <= mx <= hi_x and lo_y <= my <= hi_y:
-                    pts.append((mx, my))
-        return pts
-
     def set_pit_edit_phase(self, phase: str) -> None:
         phase = (phase or "road").strip().lower()
         if phase not in ("road", "merge"):
@@ -2073,13 +2046,9 @@ class TrackMapWidget(QWidget):
                 if seg:
                     fit.extend(model(pt) for pt in seg)
             if self.pit_edit_mode:
-                pit_fit = self._pit_edit_fit_points(model)
-                if pit_fit:
-                    fit = pit_fit
-                else:
-                    for seg in (self._pit_edit_road, self._pit_edit_merge):
-                        if seg:
-                            fit.extend(model(pt) for pt in seg)
+                for seg in (self._pit_edit_road, self._pit_edit_merge):
+                    if seg:
+                        fit.extend(model(pt) for pt in seg)
             xs = [m[0] for m in fit]
             ys = [m[1] for m in fit]
             minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)

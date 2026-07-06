@@ -5,6 +5,11 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.52.0 - 2026-07-06
+
+- **Pit edit zoom.** Placing the first pit road point no longer auto-zooms the
+  map; the view stays at full-track scale until you wheel-zoom or middle-click pan.
+
 ## 1.51.0 - 2026-07-06
 
 - **Cross-device track orientation.** Saved tracks now include `map_rotation` and

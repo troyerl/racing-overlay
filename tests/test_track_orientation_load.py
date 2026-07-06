@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from overlay import config, track_store
 from overlay.app import AdvancedSimHUD

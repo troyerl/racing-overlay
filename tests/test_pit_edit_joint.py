@@ -129,6 +129,25 @@ def test_joint_handle_single_hit(qapp):
     assert w._pit_handle_at(QPointF(0, 0)) == ("joint", 0)
 
 
+def _force_paint(w, qapp, size=(400, 300)):
+    w.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
+    w.resize(*size)
+    w.show()
+    w.repaint()
+    qapp.processEvents()
+
+
+def test_first_pit_point_does_not_change_base_scale(qapp):
+    w = _widget()
+    w.pit_edit_mode = True
+    _force_paint(w, qapp)
+    scale_before = w._pit_edit_base_scale
+    assert scale_before > 10
+    w._pit_edit_road.append((0.3, 0.5))
+    _force_paint(w, qapp)
+    assert w._pit_edit_base_scale == pytest.approx(scale_before, rel=1e-5)
+
+
 def test_reset_pit_edit_view(qapp):
     w = _widget()
     w.pit_edit_mode = True
