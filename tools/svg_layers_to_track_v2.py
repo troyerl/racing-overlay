@@ -246,7 +246,7 @@ def _normalize_loop(raw_points: list[list[float]]) -> tuple[list[list[float]],
     normalized = []
     for x, y in raw_points:
         norm_x = (x - min_x) / max_range
-        norm_y = 1.0 - ((y - min_y) / max_range)
+        norm_y = (y - min_y) / max_range
         normalized.append([round(norm_x, 7), round(norm_y, 7)])
     return normalized, (min_x, min_y, max_range)
 
@@ -286,7 +286,7 @@ def import_loop_from_html(
 
     corners: list[dict] = []
     if turns_svg:
-        corners = _parse_turn_numbers(turns_svg, loop, norm, flip_y=True)
+        corners = _parse_turn_numbers(turns_svg, loop, norm, flip_y=False)
     elif num_corners:
         from tools.schematic_to_track import _oval_corners
         corners = _oval_corners(loop, num_corners)

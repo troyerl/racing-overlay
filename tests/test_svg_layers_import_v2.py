@@ -76,7 +76,7 @@ def test_v2_normalized_points_in_unit_square():
     assert max(xs) - min(xs) > 0.5 or max(ys) - min(ys) > 0.5
 
 
-def test_v2_y_axis_flipped():
+def test_v2_y_axis_matches_svg():
     from bs4 import BeautifulSoup
     from svgpathtools import parse_path
     from tools.svg_layers_to_track_v2 import _resolve_active_path_element
@@ -91,7 +91,29 @@ def test_v2_y_axis_flipped():
     doc = import_svg_html_v2(html_text=html, num_samples=100)
     out_y = [p[1] for p in doc["points"]]
     if raw_y[0] != raw_y[-1]:
-        assert (raw_y[0] > raw_y[50]) == (out_y[0] < out_y[50])
+        assert (raw_y[0] > raw_y[50]) == (out_y[0] > out_y[50])
+
+
+def test_v2_compound_oval_preserves_svg_vertical_order():
+    from bs4 import BeautifulSoup
+    from tools.svg_layers_to_track_v2 import (
+        _align_loop_from_sf,
+        _normalize_loop,
+        _resolve_loop_segment,
+        _sample_segment,
+    )
+    from tools.svg_layers_to_track import extract_layers_from_html
+
+    html = _fixture("compound_oval.html")
+    soup = BeautifulSoup(html, "html.parser")
+    segment = _resolve_loop_segment(soup)
+    raw = _sample_segment(segment, 80)
+    layers = extract_layers_from_html(html)
+    aligned = _align_loop_from_sf(raw, layers.get("start_finish"))
+    normalized, _ = _normalize_loop([[p[0], p[1]] for p in aligned])
+    top_i = min(range(len(aligned)), key=lambda i: aligned[i][1])
+    bot_i = max(range(len(aligned)), key=lambda i: aligned[i][1])
+    assert normalized[top_i][1] < normalized[bot_i][1]
 
 
 def test_v2_import_track_source_html():
@@ -164,7 +186,7 @@ def test_v2_chicagoland_sf_direction_and_turn_labels():
     min_x, min_y, span = norm
     anchor_norm = (
         (anchor[0] - min_x) / span,
-        1.0 - ((anchor[1] - min_y) / span),
+        (anchor[1] - min_y) / span,
     )
     sf_pct = _pct_on_loop(loop, anchor_norm)
     assert sf_pct < 0.05 or sf_pct > 0.95
@@ -219,7 +241,7 @@ def test_v2_indianapolis_sf_stripe_anchor():
     def _to_norm(pt):
         return (
             (pt[0] - min_x) / span,
-            1.0 - ((pt[1] - min_y) / span),
+            (pt[1] - min_y) / span,
         )
 
     stripe_norm = _to_norm(stripe)

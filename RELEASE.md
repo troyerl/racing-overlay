@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.50.0 - 2026-07-06
+
+- **HTML import orientation.** V2 loop import now preserves the members-page map
+  orientation (no vertical flip). Importing a track resets `map.rotation` to 0
+  and `map.mirror` off so the overlay preview matches the HTML. Re-import tracks
+  saved with older imports if the layout looked upside-down.
+
 ## 1.49.0 - 2026-07-06
 
 - **Pit edit middle-click pan.** In Track Scan pit authoring, middle-click drag

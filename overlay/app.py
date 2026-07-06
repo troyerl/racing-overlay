@@ -767,10 +767,13 @@ class AdvancedSimHUD:
         self._pit_in_pct = self._pit_out_pct = None
         self.map_widget.clear_pit()
         self.map_widget.clear_pit_edit()
+        mcfg = config.CFG.setdefault("map", {})
+        mcfg["rotation"] = 0
+        mcfg["mirror"] = False
         self._track_loaded = True
         self._refresh_settings_authoring()
         self.map_widget.flash_hint(
-            "Loop imported — draw pit road, then merge (Track Scan)")
+            "Loop imported — map orientation reset to match HTML")
         self.map_widget.update()
 
     def load_pit_into_editor(self, *, force: bool = False) -> bool:

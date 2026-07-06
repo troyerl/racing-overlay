@@ -239,7 +239,9 @@ blend lines and places cars on the authored pit polylines. Import with the CLI
 tools below (HTML or PNG); the JSON loads automatically when you join that track.
 
 **V2 manual pit (Track Scan):** `tools/svg_layers_to_track_v2.py` imports only the
-racing loop from the members `active-config` layer. In Settings → Track Scan (write
+racing loop from the members `active-config` layer, preserving the same on-screen
+orientation as the members page. **Import loop** also resets `map.rotation` to 0
+and `map.mirror` off so the preview matches the HTML. In Settings → Track Scan (write
 access), choose the HTML, **Import loop**, then **Save loop** to upload geometry
 without pit lane (demo mode previews that track for the current session only).
 On another device, sync or join the track, draw **Pit road** and **Merge** on the
