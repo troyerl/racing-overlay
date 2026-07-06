@@ -111,7 +111,7 @@ class LeaderboardStripWidget(QWidget):
                                   row_h * 2.0, rect.height()),
                            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
                            str(gap))
-            if i + 1 < len(rows):
+            if i + 1 < len(rows) and cfg.get("row_dividers", True):
                 draw_row_divider(p, card.left() + pad, y + row_h,
                                  card.width() - 2 * pad, _SECTION)
             y += row_h

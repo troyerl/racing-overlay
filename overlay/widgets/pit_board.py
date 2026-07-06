@@ -7,8 +7,8 @@ from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
-from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_section_header,
-                     draw_status_chip, panel_pad, resolve_row_height)
+from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_row_divider,
+                     draw_section_header, draw_status_chip, panel_pad, resolve_row_height)
 from .fonts import data_font_bold, tabfont, tfont
 
 _SECTION = "pit_board"
@@ -74,7 +74,7 @@ class PitBoardWidget(QWidget):
         row_h = max(18.0, row_h)
         rad = cell_radius(row_h)
         mark_w = max(18.0, row_h * 0.45)
-        for svc in services:
+        for i, svc in enumerate(services):
             rect = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h - 2)
             draw_dark_cell(p, rect, _SECTION, radius=rad)
             checked = svc.get("checked")
@@ -88,6 +88,9 @@ class PitBoardWidget(QWidget):
                               rect.width() - mark_w - 8, rect.height()),
                        Qt.AlignmentFlag.AlignVCenter, svc.get("label", ""))
             y += row_h
+            if (cfg.get("row_dividers", True) and i + 1 < len(services)):
+                draw_row_divider(p, card.left() + pad, y - 2,
+                                 card.width() - 2 * pad, _SECTION)
         extras = []
         if cfg.get("show_compound", True) and d.get("compound") is not None:
             extras.append(f"Set {d['compound']}")

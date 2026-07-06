@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from overlay.config_editor import (
     MAP_SETTINGS_SKIP,
+    SECTION_SETTINGS_SKIP,
     WIDGET_NAV_GROUPS,
     ordered_settings_sections,
 )
@@ -38,6 +39,19 @@ def test_map_settings_skip_keys():
     assert "auto_corners" in MAP_SETTINGS_SKIP
     assert "row_dividers" in MAP_SETTINGS_SKIP
     assert "data_font_bold" in MAP_SETTINGS_SKIP
+
+
+def test_section_settings_skip_hides_row_dividers_where_no_rows():
+    for section in ("radar", "delta_bar", "flags", "inputs", "ers_hybrid",
+                    "tire_panel", "sector_timing"):
+        assert "row_dividers" in SECTION_SETTINGS_SKIP[section]
+
+
+def test_section_settings_skip_row_dividers_not_hidden_for_list_widgets():
+    for section in ("leaderboard_strip", "pit_board", "weather_panel"):
+        assert section not in SECTION_SETTINGS_SKIP or (
+            "row_dividers" not in SECTION_SETTINGS_SKIP.get(section, frozenset())
+        )
 
 
 def test_cloud_tracks_always_enabled():

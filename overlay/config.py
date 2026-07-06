@@ -1339,6 +1339,11 @@ def text_scale_for(section: str | None = None) -> float:
 
 
 def _notify() -> None:
+    try:
+        from .widgets import fonts
+        fonts.clear_font_cache()
+    except Exception:
+        pass
     for cb in list(_listeners):
         try:
             cb(CFG)
@@ -1454,6 +1459,7 @@ def apply_garage(full_cfg: dict, notify: bool = True) -> dict:
     GARAGE = diff_from_defaults(full_cfg, BASE)
     _PRESETS[ACTIVE_PRESET]["garage"] = GARAGE
     _compute_cfg()
+    _clear_column_caches()
     if notify:
         _notify()
     return CFG

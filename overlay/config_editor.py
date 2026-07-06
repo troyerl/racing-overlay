@@ -381,6 +381,19 @@ SETTINGS_SECTION_KEYS = {"__general__", "__app__", "__scan__"}
 # Map widget settings page: hide keys that are track-data or unused table chrome.
 MAP_SETTINGS_SKIP = frozenset({"auto_corners", "row_dividers", "data_font_bold"})
 
+# Per-section keys in DEFAULTS that must not appear in Settings (no UI effect).
+_ROW_DIVIDERS_SKIP = frozenset({"row_dividers"})
+SECTION_SETTINGS_SKIP: dict[str, frozenset[str]] = {
+    "map": MAP_SETTINGS_SKIP,
+    "radar": _ROW_DIVIDERS_SKIP,
+    "delta_bar": _ROW_DIVIDERS_SKIP,
+    "flags": _ROW_DIVIDERS_SKIP,
+    "inputs": _ROW_DIVIDERS_SKIP,
+    "ers_hybrid": _ROW_DIVIDERS_SKIP,
+    "tire_panel": _ROW_DIVIDERS_SKIP,
+    "sector_timing": _ROW_DIVIDERS_SKIP,
+}
+
 # Left-nav widget order grouped by usage (keys must exist in config.DEFAULTS).
 WIDGET_NAV_GROUPS: list[tuple[str, list[str]]] = [
     ("Standings", ["relative", "standings", "leaderboard_strip"]),
@@ -491,7 +504,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "ease_side_tau", "ease_glow_tau",
         ]),
         ("Display", ["show_nose", "show_axis", "show_panel", "text_scale"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold", "sizes"]),
+        ("Layout", ["corner_radius_frac", "data_font_bold", "sizes"]),
         ("Colors", ["colors"]),
     ],
     "dash": [
@@ -530,12 +543,12 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "show_tc_abs", "show_shift_markers", "show_brake_threshold",
             "brake_threshold", "line_width",
         ]),
-        ("Typography", ["text_scale", "row_dividers", "data_font_bold"]),
+        ("Typography", ["text_scale", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "delta_bar": [
         ("Behavior", ["mode", "range", "show_value", "text_scale"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "flags": [
@@ -544,7 +557,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "show_blue_detail", "show_pit_limiter", "show_finish_position",
             "text_scale",
         ]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Layout", ["data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "lap_compare": [
@@ -566,7 +579,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "highlight_active_sector_on_map", "text_scale",
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "tire_panel": [
@@ -574,7 +587,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "show_title", "title", "show_wear", "show_temp", "show_pressure",
             "warn_wear_pct", "text_scale",
         ]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "pit_board": [
@@ -610,7 +623,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "label_p2p", "empty_text", "show_battery", "show_lap_energy",
             "show_boost", "show_p2p", "text_scale",
         ]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "map": [
@@ -2058,6 +2071,7 @@ class ConfigEditor(QWidget):
 
         if key == "map":
             skip = set(skip) | MAP_SETTINGS_SKIP
+        skip = set(skip) | SECTION_SETTINGS_SKIP.get(key, frozenset())
 
         self._populate(target, schema, [key], color, [], skip=skip)
         v.addStretch(1)

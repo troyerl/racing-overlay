@@ -11,6 +11,11 @@ from .. import config
 _FONT_CACHE: dict = {}
 
 
+def clear_font_cache() -> None:
+    """Drop cached QFont objects (call after config changes)."""
+    _FONT_CACHE.clear()
+
+
 def _tabular_family() -> str:
     fam = config.CFG.get("tabular_font_family", "") or ""
     if fam:

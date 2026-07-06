@@ -336,19 +336,20 @@ class BaseTable(QWidget):
         keys_now = set()
         animating = False
         tau = float(tc.get("row_ease_tau", 0.16) or 0.16)
+        fade_tau = float(tc.get("fade_ease_tau", 0.12) or 0.12)
         for tgt, row in enumerate(rows):
             key = row.get("key", tgt)
             keys_now.add(key)
             if row.get("empty"):
                 st = self._anim.get(key)
                 if st is None:
-                    st = {"idx": float(tgt)}
+                    st = {"idx": float(tgt), "opacity": 1.0}
                     self._anim[key] = st
                 st["idx"] = float(tgt)
                 continue
             st = self._anim.get(key)
             if st is None:
-                st = {"idx": float(tgt)}
+                st = {"idx": float(tgt), "opacity": 0.0}
                 self._anim[key] = st
             target = float(tgt)
             if abs(st["idx"] - target) > _ROW_SNAP_SLOTS:
@@ -356,6 +357,10 @@ class BaseTable(QWidget):
             else:
                 st["idx"] = ease(st["idx"], target, dt, tau)
             if abs(st["idx"] - target) > 0.02:
+                animating = True
+            op = float(st.get("opacity", 1.0))
+            st["opacity"] = ease(op, 1.0, dt, fade_tau)
+            if abs(st["opacity"] - 1.0) > 0.01:
                 animating = True
         for dead in [k for k in self._anim if k not in keys_now]:
             del self._anim[dead]
@@ -370,7 +375,13 @@ class BaseTable(QWidget):
             row = rows[tgt]
             st = self._anim[row.get("key", tgt)]
             y = body_top + st["idx"] * row_h
+            opacity = float(st.get("opacity", 1.0))
+            if opacity < 0.99:
+                p.save()
+                p.setOpacity(opacity)
             self._draw_row(p, row, tgt, pad, y, w - 2 * pad, row_h)
+            if opacity < 0.99:
+                p.restore()
             if (tc.get("row_dividers", True) and prev_draw_idx is not None
                     and abs(st["idx"] - prev_draw_idx) <= 1.05
                     and not row.get("empty")):

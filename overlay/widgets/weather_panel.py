@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
 from .chrome import (cell_radius, col, draw_card, draw_dark_cell, draw_metric_row,
-                     draw_section_header, panel_pad, resolve_row_height)
+                     draw_row_divider, draw_section_header, panel_pad, resolve_row_height)
 from .fonts import data_font_bold, tfont
 
 _SECTION = "weather_panel"
@@ -105,12 +105,15 @@ class WeatherPanelWidget(QWidget):
             row_h = resolve_row_height(body_h=body_h, row_count=n, panel_h=h, cfg=cfg)
         row_h = max(18.0, row_h)
         rad = cell_radius(row_h)
-        for label, val, sub in lines[:5]:
+        for i, (label, val, sub) in enumerate(lines[:5]):
             rect = QRectF(card.left() + pad, y, card.width() - 2 * pad, row_h - 3)
             draw_dark_cell(p, rect, _SECTION, radius=rad)
             draw_metric_row(p, rect.adjusted(8, 0, -8, 0), label, val, _SECTION,
                             sub=sub, data_bold=data_bold)
             y += row_h
+            if cfg.get("row_dividers", True) and i + 1 < len(lines[:5]):
+                draw_row_divider(p, card.left() + pad, y - 3,
+                                 card.width() - 2 * pad, _SECTION)
 
         if cfg.get("show_wind", False) and d.get("wind_dir") is not None:
             cx = card.right() - pad - row_h * 0.4

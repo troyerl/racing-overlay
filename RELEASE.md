@@ -5,6 +5,19 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.54.0 - 2026-07-06
+
+- **Settings wiring audit.** Every visible setting now either applies live or is
+  hidden when it does not affect that widget. Row dividers work on leaderboard
+  strip, pit board, and weather panel; removed from widgets without row lists
+  (radar, delta bar, flags, inputs, and others).
+- **Table fade animation.** `fade_ease_tau` now controls row fade-in when cars
+  enter the relative/standings tables.
+- **Live apply fixes.** Garage profile column-order edits refresh immediately;
+  font family and scale changes clear the font cache on every config update.
+- **Wiring tests.** Automated checks guard settings-to-widget wiring so orphan
+  options are caught in CI.
+
 ## 1.53.0 - 2026-07-06
 
 - **Default styling.** Map asphalt width 12 and outline width 6; panel corner
