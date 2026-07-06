@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.56.1 - 2026-07-06
+
+- **Smoother pit entry on ovals.** When `OnPitRoad` engages on schematic tracks
+  like Indianapolis, your car dot now eases onto the pit entry line instead of
+  freezing on the racing line and jumping to the pit lane.
+
 ## 1.56.0 - 2026-07-06
 
 - **Track ID aliases.** Authors can list alternate iRacing TrackIDs on a saved

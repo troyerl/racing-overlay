@@ -1447,7 +1447,23 @@ class TrackMapWidget(QWidget):
         if exit_pct is None:
             exit_pct = lane_hi if lane_hi is not None else path_hi
 
-        # Pit lane: pit_path while OnPitRoad (before exit/entry blends).
+        # Exit blend: pit lane end -> rejoin (off pit road, latched in demo).
+        if (not on_pit_road and hi is not None and exit_pct is not None
+                and self.pit_out and len(self.pit_out) >= 2
+                and self._pct_in_interval(pct, exit_pct, hi)):
+            pos = self._pit_phase_pos(pct, exit_pct, hi, [self.pit_out])
+            if pos is not None:
+                return pos if raw else self._feather_schematic_pos(pct, pos)
+
+        # Entry blend: pit_in_pct -> pit lane start on pit_in only.
+        if (lo is not None and entry_end is not None
+                and self.pit_in and len(self.pit_in) >= 2
+                and self._pct_in_interval(pct, lo, entry_end)):
+            pos = self._pit_phase_pos(pct, lo, entry_end, [self.pit_in])
+            if pos is not None:
+                return pos if raw else self._feather_schematic_pos(pct, pos)
+
+        # Pit lane: pit_path while OnPitRoad (after entry blend).
         memb_lo = lane_lo if lane_lo is not None else route_lo
         memb_hi = lane_hi if lane_hi is not None else route_hi
         on_lane = False
@@ -1460,22 +1476,6 @@ class TrackMapWidget(QWidget):
             pos = self._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
             if pos is not None:
                 return pos
-
-        # Exit blend: pit lane end -> rejoin (off pit road, latched in demo).
-        if (not on_pit_road and hi is not None and exit_pct is not None
-                and self.pit_out and len(self.pit_out) >= 2
-                and self._pct_in_interval(pct, exit_pct, hi)):
-            pos = self._pit_phase_pos(pct, exit_pct, hi, [self.pit_out])
-            if pos is not None:
-                return pos if raw else self._feather_schematic_pos(pct, pos)
-
-        # Entry blend: pit_in_pct -> pit lane start on pit_in only.
-        if (not on_pit_road and lo is not None and entry_end is not None
-                and self.pit_in and len(self.pit_in) >= 2
-                and self._pct_in_interval(pct, lo, entry_end)):
-            pos = self._pit_phase_pos(pct, lo, entry_end, [self.pit_in])
-            if pos is not None:
-                return pos if raw else self._feather_schematic_pos(pct, pos)
         return None
 
     def _pit_blend_weight(
@@ -1493,11 +1493,7 @@ class TrackMapWidget(QWidget):
         lo, hi = self.pit_in_pct, self.pit_out_pct
         if lo is None or hi is None:
             return 1.0 if on_route else 0.0
-        if on_pit or (on_route and not in_entry and not in_exit):
-            return 1.0
         if not on_route and not on_pit:
-            return 0.0
-        if not in_entry and not in_exit:
             return 0.0
         span = (hi - lo) % 1.0
         if span <= 1e-6:
@@ -1511,7 +1507,9 @@ class TrackMapWidget(QWidget):
         if in_exit:
             d_exit = (hi - pct) % 1.0
             if d_exit < feather:
-                return d_exit / feather
+                return d_exit / feather if on_route else 0.0
+            return 1.0 if on_route else 0.0
+        if on_pit or on_route:
             return 1.0
         return 0.0
 
@@ -1765,9 +1763,12 @@ class TrackMapWidget(QWidget):
         is_player = car[4]
         on_route = car[5] if len(car) > 5 else False
         on_pit = car[6] if len(car) > 6 else False
+        in_entry = car[10] if len(car) >= 11 else False
         if (is_player and on_route and self.player_xy is not None
                 and not schematic):
             return ("player_xy", on_route, on_pit)
+        if schematic and in_entry:
+            return ("pct", on_route, on_pit)
         if on_route:
             return ("route", on_route, on_pit)
         return ("pct", on_route, on_pit)

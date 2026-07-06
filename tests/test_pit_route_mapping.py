@@ -201,14 +201,39 @@ def test_entry_feather_starts_on_track(qapp):
     assert w._feather_schematic_pos(lo, route) == track
 
 
-def test_entry_feather_mid_route_is_pure_pit(qapp):
+def test_entry_feather_mid_lane_is_pure_pit(qapp):
+    """Mid-lane (past pit_span start) with OnPitRoad uses pit_path."""
     w = _make_widget()
-    lo, hi = w.pit_in_pct, w.pit_span[1]
-    span = (hi - lo) % 1.0
-    pct = (lo + span * 0.5) % 1.0
+    lane_lo, lane_hi = w.pit_span
+    span = (lane_hi - lane_lo) % 1.0
+    pct = (lane_lo + span * 0.5) % 1.0
     route = w._pos_for_schematic_route(0, pct, on_route=True, on_pit_road=True)
     assert route is not None
     assert w._feather_schematic_pos(pct, route) == route
+
+
+def test_pit_blend_weight_on_pit_entry_starts_low(qapp):
+    w = _make_widget()
+    lo = w.pit_in_pct
+    wgt = w._pit_blend_weight(
+        lo, on_route=True, on_pit=True, in_entry=True, in_exit=False)
+    assert wgt == 0.0
+
+
+def test_on_pit_entry_uses_pit_in_segment(qapp):
+    """OnPitRoad during entry lap-% maps through pit_in, not pit_path."""
+    w = _make_chicagoland_like_widget()
+    lo = w.pit_in_pct
+    lane_lo = w.pit_span[0]
+    pct = (lo + ((lane_lo - lo) % 1.0) * 0.5) % 1.0
+    pit_in_pos = w._pit_phase_pos(pct, lo, lane_lo, [w.pit_in])
+    routed = w._pos_for_schematic_route(
+        0, pct, on_route=True, on_pit_road=True, raw=True)
+    path_pos = w._pit_path_pos_for_route_pct(
+        pct, w.pit_in_pct, w.pit_out_pct)
+    assert pit_in_pos is not None and routed is not None
+    assert routed == pit_in_pos
+    assert path_pos is not None and routed != path_pos
 
 
 def test_pit_blend_weight_entry_starts_at_zero(qapp):
