@@ -212,6 +212,9 @@ LABEL_OVERRIDES = {
     "leaderboard_strip.show_lap": "Show lap count column",
     "leaderboard_strip.show_mph": "Show MPH column",
     "leaderboard_strip.show_gap": "Show gap below each row",
+    "radio_tower.show_position": "Show race position (1, 2, …)",
+    "radio_tower.show_car_number": "Show car number",
+    "radio_tower.show_name": "Show driver name",
     "ers_hybrid.show_title": "Show title bar",
     "ers_hybrid.title": "Title text",
     "ers_hybrid.label_battery": "Battery row label",
@@ -370,6 +373,7 @@ _WIDGET_HINTS = {
     "pit_board": "Requested pit services and repair status.",
     "weather_panel": "Skies, rain, temps, trend, and wind.",
     "leaderboard_strip": "Compact top-N leaderboard (IMS scoring-pylon style).",
+    "radio_tower": "Current team-radio speaker with position and car number.",
     "ers_hybrid": "Hybrid battery and boost / push-to-pass state.",
 }
 
@@ -394,6 +398,7 @@ SECTION_SETTINGS_SKIP: dict[str, frozenset[str]] = {
     "ers_hybrid": _ROW_DIVIDERS_SKIP,
     "tire_panel": _ROW_DIVIDERS_SKIP,
     "sector_timing": _ROW_DIVIDERS_SKIP,
+    "radio_tower": _ROW_DIVIDERS_SKIP,
 }
 
 # Left-nav widget order grouped by usage (keys must exist in config.DEFAULTS).
@@ -401,7 +406,7 @@ WIDGET_NAV_GROUPS: list[tuple[str, list[str]]] = [
     ("Standings", ["relative", "standings", "leaderboard_strip"]),
     ("Timing", ["laptime_log", "sector_timing", "delta_bar", "lap_compare"]),
     ("Driving", ["dash", "inputs", "fuel_calc", "tire_panel"]),
-    ("Session", ["flags", "weather_panel", "pit_board", "ers_hybrid"]),
+    ("Session", ["flags", "weather_panel", "pit_board", "radio_tower", "ers_hybrid"]),
     ("Awareness", ["map", "radar"]),
 ]
 
@@ -617,6 +622,15 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
         ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "radio_tower": [
+        ("Content", [
+            "show_title", "title", "show_position", "show_car_number",
+            "show_name", "highlight_player", "text_scale",
+        ]),
+        ("Row layout", ["row_height_px", "max_row_height_frac"]),
+        ("Layout", ["corner_radius_frac", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "ers_hybrid": [

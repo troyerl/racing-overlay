@@ -63,6 +63,7 @@ from .widgets.lap_compare import LapCompareEngine, LapCompareWidget
 from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.leaderboard_strip import LeaderboardStripWidget
 from .widgets.pit_board import PitBoardWidget
+from .widgets.radio_tower import RadioTowerWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
 from .widgets.sector_timing import SectorTimer, SectorTimingWidget
@@ -92,6 +93,7 @@ DEFAULT_GEOMS = {
     "pit_board": (920, 700, 240, 200),
     "weather_panel": (40, 720, 260, 150),
     "leaderboard_strip": (320, 720, 96, 300),
+    "radio_tower": (200, 720, 220, 56),
     "ers_hybrid": (620, 720, 220, 110),
 }
 
@@ -100,7 +102,7 @@ _WIDGET_KEYS = (
     "laptime_log", "fuel_calc", "inputs", "delta_bar",
     "flags", "sector_timing", "lap_compare",
     "tire_panel", "pit_board", "weather_panel",
-    "leaderboard_strip", "ers_hybrid",
+    "leaderboard_strip", "radio_tower", "ers_hybrid",
 )
 
 _TRACK_FETCH_RETRY_SEC = 10.0
@@ -331,6 +333,7 @@ class AdvancedSimHUD:
         self.pit_board_widget = PitBoardWidget()
         self.weather_panel_widget = WeatherPanelWidget()
         self.leaderboard_strip_widget = LeaderboardStripWidget()
+        self.radio_tower_widget = RadioTowerWidget()
         self.ers_hybrid_widget = ErsHybridWidget()
         if self.demo:
             self._load_demo_track()
@@ -354,6 +357,7 @@ class AdvancedSimHUD:
         self._wrap("pit_board", self.pit_board_widget)
         self._wrap("weather_panel", self.weather_panel_widget)
         self._wrap("leaderboard_strip", self.leaderboard_strip_widget)
+        self._wrap("radio_tower", self.radio_tower_widget)
         self._wrap("ers_hybrid", self.ers_hybrid_widget)
         self._refresh_visible_widgets()
 
@@ -1070,7 +1074,7 @@ class AdvancedSimHUD:
                   self.sector_widget, self.lap_compare_widget,
                   self.tire_panel_widget, self.pit_board_widget,
                   self.weather_panel_widget, self.leaderboard_strip_widget,
-                  self.ers_hybrid_widget):
+                  self.radio_tower_widget, self.ers_hybrid_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -1184,12 +1188,12 @@ class AdvancedSimHUD:
 
         player = self.ir["PlayerCarIdx"]
         need_order = (en["standings"] or en["relative"] or en["dash"]
-                      or en["leaderboard_strip"])
+                      or en["leaderboard_strip"] or en["radio_tower"])
         need_drivers = (en["standings"] or en["relative"] or en["map"] or en["dash"]
-                        or en["leaderboard_strip"])
+                        or en["leaderboard_strip"] or en["radio_tower"])
         map_use_pos = (en["map"]
                        and config.CFG["map"].get("car_label", "number") == "position")
-        need_pos = need_order or map_use_pos or en["leaderboard_strip"]
+        need_pos = need_order or map_use_pos or en["leaderboard_strip"] or en["radio_tower"]
         # Each array is only read if some visible widget consumes it.
         positions = None
         self._class_positions = None
@@ -1289,7 +1293,7 @@ class AdvancedSimHUD:
         radio_speaker = None
         if ((en["relative"] and config.has_column("relative", "badge"))
                 or (en["standings"] and config.has_column("standings", "badge"))
-                or en["map"]):
+                or en["map"] or en["radio_tower"]):
             try:
                 idx = int(self.ir["RadioTransmitCarIdx"])
                 if idx >= 0:
@@ -1361,6 +1365,8 @@ class AdvancedSimHUD:
         if en["leaderboard_strip"]:
             self._update_leaderboard_strip(positions, drivers, car_f2,
                                            lap_est, player, car_lap)
+        if en["radio_tower"]:
+            self._update_radio_tower(positions, drivers, player, radio_speaker)
         if en["ers_hybrid"]:
             self._update_ers_hybrid()
 
@@ -4438,6 +4444,28 @@ class AdvancedSimHUD:
         if v <= 0:
             return None
         return int(round(v * 2.2369362921))
+
+    def _update_radio_tower(self, positions, drivers, player,
+                            radio_speaker) -> None:
+        edit = self.edit_mode_enabled()
+        rows = []
+        if (radio_speaker is not None and positions
+                and radio_speaker < len(positions)
+                and radio_speaker not in self._pace_idxs):
+            pos = positions[radio_speaker]
+            if pos and pos > 0:
+                d = drivers.get(radio_speaker, {})
+                rows.append({
+                    "position": pos,
+                    "car_number": d.get("CarNumber", ""),
+                    "name": d.get("UserName", ""),
+                    "active": True,
+                    "is_player": radio_speaker == player,
+                })
+        payload = {"rows": rows, "edit": edit}
+        if payload == getattr(self.radio_tower_widget, "data", None):
+            return
+        self.radio_tower_widget.set_data(payload)
 
     def _update_leaderboard_strip(self, positions, drivers, car_f2,
                                   lap_est, player, car_lap=None) -> None:

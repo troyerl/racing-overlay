@@ -10,6 +10,7 @@ from overlay.widgets.delta_bar import DeltaBarWidget
 from overlay.widgets.ers_hybrid import ErsHybridWidget
 from overlay.widgets.leaderboard_strip import LeaderboardStripWidget
 from overlay.widgets.pit_board import PitBoardWidget
+from overlay.widgets.radio_tower import RadioTowerWidget
 from overlay.widgets.sector_timing import SectorTimingWidget
 from overlay.widgets.tire_panel import TirePanelWidget
 from overlay.widgets.weather_panel import WeatherPanelWidget
@@ -26,6 +27,7 @@ def qapp():
 @pytest.mark.parametrize("widget_cls", [
     WeatherPanelWidget,
     PitBoardWidget,
+    RadioTowerWidget,
     LeaderboardStripWidget,
     ErsHybridWidget,
     TirePanelWidget,

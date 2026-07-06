@@ -19,6 +19,7 @@ WIDGET_NAMES: dict[str, str] = {
     "pit_board": "Pit board",
     "weather_panel": "Weather panel",
     "leaderboard_strip": "Leaderboard strip",
+    "radio_tower": "Radio tower",
     "ers_hybrid": "ERS / hybrid panel",
 }
 
@@ -344,6 +345,13 @@ HELP_OVERRIDES: dict[str, str] = {
     "leaderboard_strip.show_gap": "When on, shows gap to the car ahead below each row.",
     "leaderboard_strip.show_class_color": "Legacy option; class stripes are not drawn in pylon style.",
     "leaderboard_strip.highlight_player": "When on, highlights your row in the strip.",
+    # --- Radio tower ---
+    "radio_tower.show_title": "When on, shows the title bar. When off, hides it.",
+    "radio_tower.title": "Title text in the radio tower header.",
+    "radio_tower.show_position": "When on, shows the speaker's race position in a left column.",
+    "radio_tower.show_car_number": "When on, appends the car number to the driver label (e.g. Name #12).",
+    "radio_tower.show_name": "When on, shows the driver name in the label line beside position.",
+    "radio_tower.highlight_player": "When on, highlights your row when you are on radio.",
     # --- ERS / hybrid ---
     "ers_hybrid.show_title": "When on, shows the title bar. When off, hides it.",
     "ers_hybrid.title": "Title text in the hybrid panel header.",

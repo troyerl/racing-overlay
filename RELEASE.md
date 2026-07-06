@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.58.0 - 2026-07-06
+
+- **Radio tower widget.** New Session panel shows who is on team radio right
+  now, with race position and driver name/car number in one line (e.g.
+  `5 - Logan Troyer #12`). The row highlights green while they transmit; the
+  panel hides when the channel is silent.
+
 ## 1.57.0 - 2026-07-06
 
 - **IMS scoring-pylon leaderboard strip.** Restyled the leaderboard strip like

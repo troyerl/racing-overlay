@@ -54,6 +54,7 @@ _SECTION_FILES: dict[str, list[str]] = {
     "pit_board": ["overlay/widgets/pit_board.py", "overlay/app.py"],
     "weather_panel": ["overlay/widgets/weather_panel.py", "overlay/app.py"],
     "leaderboard_strip": ["overlay/widgets/leaderboard_strip.py", "overlay/app.py"],
+    "radio_tower": ["overlay/widgets/radio_tower.py", "overlay/app.py"],
     "ers_hybrid": ["overlay/widgets/ers_hybrid.py", "overlay/app.py"],
 }
 

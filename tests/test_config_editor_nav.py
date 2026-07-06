@@ -43,7 +43,7 @@ def test_map_settings_skip_keys():
 
 def test_section_settings_skip_hides_row_dividers_where_no_rows():
     for section in ("radar", "delta_bar", "flags", "inputs", "ers_hybrid",
-                    "tire_panel", "sector_timing"):
+                    "tire_panel", "sector_timing", "radio_tower"):
         assert "row_dividers" in SECTION_SETTINGS_SKIP[section]
 
 
