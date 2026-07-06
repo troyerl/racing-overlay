@@ -43,7 +43,7 @@ def test_player_entry_without_approaching():
     hud = _chicagoland_hud()
     route = (hud._pit_in_pct, hud._pit_out_pct)
     pct = 0.85
-    assert hud._car_on_route(
+    assert not hud._car_on_route(
         0, pct, False, is_player=True, route=route, approaching=False)
 
 

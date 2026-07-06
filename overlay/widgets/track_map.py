@@ -1479,6 +1479,8 @@ class TrackMapWidget(QWidget):
             return 1.0 if on_route else 0.0
         if on_pit or (on_route and not in_entry and not in_exit):
             return 1.0
+        if not on_route and not on_pit:
+            return 0.0
         if not in_entry and not in_exit:
             return 0.0
         span = (hi - lo) % 1.0

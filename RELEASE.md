@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.55.1 - 2026-07-06
+
+- **Map pit display fix.** Passing the pit entry on the racing line no longer
+  pulls your car dot onto the pit route or grays it out. Pit entry blending only
+  applies when you are approaching or committed to pit road.
+
 ## 1.55.0 - 2026-07-06
 
 - **Car direction after import.** V2 HTML import now trusts the start/finish arrow

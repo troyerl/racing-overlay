@@ -3237,7 +3237,7 @@ class AdvancedSimHUD:
         if is_player:
             if on_pit or self._player_on_route:
                 return True
-            return in_entry
+            return in_entry and approaching
 
         latched = self._pit_route_latch.get(idx, False)
         if on_pit:

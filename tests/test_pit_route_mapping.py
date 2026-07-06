@@ -219,19 +219,64 @@ def test_pit_blend_weight_entry_starts_at_zero(qapp):
     assert wgt == 0.0
 
 
-def test_pit_blend_weight_entry_ramps(qapp):
+def test_pit_blend_weight_entry_ramps_when_on_route(qapp):
     w = _make_widget()
     lo, hi = w.pit_in_pct, w.pit_out_pct
     span = (hi - lo) % 1.0
     feather = min(max(span * 0.12, 0.012), span * 0.35)
     pct = (lo + feather * 0.5) % 1.0
     wgt = w._pit_blend_weight(
-        pct, on_route=False, on_pit=False, in_entry=True, in_exit=False)
+        pct, on_route=True, on_pit=False, in_entry=True, in_exit=False)
     assert 0.0 < wgt < 1.0
 
 
-def test_resolve_car_blends_entry_without_on_route(qapp):
-    """Entry phase eases from track toward pit route before on_route flips."""
+def test_pit_blend_weight_exit_zero_on_racing_line(qapp):
+    """Wide exit lap-% arc must not pull on-track cars onto pit geometry."""
+    w = _make_chicagoland_like_widget()
+    lane_hi = w.pit_span[1]
+    pit_out = w.pit_out_pct
+    pct = (lane_hi + ((pit_out - lane_hi) % 1.0) * 0.5) % 1.0
+    _, _, in_exit = (
+        False,
+        w._pct_in_interval(pct, w.pit_span[0], w.pit_span[1]),
+        w._pct_in_interval(pct, lane_hi, pit_out),
+    )
+    assert in_exit
+    wgt = w._pit_blend_weight(
+        pct, on_route=False, on_pit=False, in_entry=False, in_exit=True)
+    assert wgt == 0.0
+
+
+def test_resolve_car_stays_on_track_in_exit_zone(qapp):
+    import math
+    from PyQt6.QtCore import QPointF
+
+    w = _make_chicagoland_like_widget()
+    lane_hi = w.pit_span[1]
+    pit_out = w.pit_out_pct
+    pct = 0.10
+    assert w._pct_in_interval(pct, lane_hi, pit_out)
+    w.resize(400, 300)
+    w._layout_scale = 300.0
+    w._layout_ox = 20.0
+    w._layout_oy = 10.0
+
+    def tx(pt):
+        return QPointF(pt[0] * 300 + 20, pt[1] * 300 + 10)
+
+    track = w._loop_point_at_pct(pct)
+    assert track is not None
+    car = (0, pct, "1", "#fff", True, False, False,
+           False, False, None, False, True)
+    cc = tx(w._centroid)
+    pt = w._resolve_car_point(tx, car, cc, 12.0, True)
+    assert pt is not None
+    exp_scr = tx(track)
+    assert math.hypot(pt.x() - exp_scr.x(), pt.y() - exp_scr.y()) < 2.0
+
+
+def test_resolve_car_blends_entry_when_on_route(qapp):
+    """Entry phase eases from track toward pit route when committed to route."""
     import math
     from PyQt6.QtCore import QPointF
 
@@ -252,9 +297,9 @@ def test_resolve_car_blends_entry_without_on_route(qapp):
         0, pct, on_route=True, on_pit_road=False, raw=True)
     assert track is not None and route is not None
     wgt = w._pit_blend_weight(
-        pct, on_route=False, on_pit=False, in_entry=True, in_exit=False)
+        pct, on_route=True, on_pit=False, in_entry=True, in_exit=False)
     assert 0.0 < wgt < 1.0
-    car = (0, pct, "1", "#fff", False, False, False,
+    car = (0, pct, "1", "#fff", False, True, False,
            False, False, None, True, False)
     cc = tx(w._centroid)
     pt = w._resolve_car_point(tx, car, cc, 12.0, True)
