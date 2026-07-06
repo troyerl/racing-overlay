@@ -2174,6 +2174,21 @@ class ConfigEditor(QWidget):
         turn_row.addWidget(self._num_turns_spin)
         v.addLayout(turn_row)
 
+        alias_row = QHBoxLayout()
+        alias_lbl = QLabel("Also used for Track IDs")
+        alias_lbl.setObjectName("rowLabel")
+        self._alias_track_ids_edit = QLineEdit()
+        self._alias_track_ids_edit.setPlaceholderText("e.g. 53")
+        self._alias_track_ids_edit.setToolTip(
+            "Other iRacing TrackIDs that share this layout (e.g. historical "
+            "variants). Comma-separated.")
+        self._alias_track_ids_edit.editingFinished.connect(
+            self._alias_track_ids_authoring_changed)
+        alias_row.addWidget(alias_lbl)
+        alias_row.addStretch(1)
+        alias_row.addWidget(self._alias_track_ids_edit)
+        v.addLayout(alias_row)
+
         edit_row = QHBoxLayout()
         edit_texts = QVBoxLayout()
         edit_texts.setSpacing(1)
@@ -2234,6 +2249,8 @@ class ConfigEditor(QWidget):
         self._num_turns_spin.setEnabled(enabled)
         self._corner_edit_sw.setEnabled(enabled)
         self._sf_edit_sw.setEnabled(sf_enabled)
+        if hasattr(self, "_alias_track_ids_edit"):
+            self._alias_track_ids_edit.setEnabled(enabled)
         if enabled:
             ms = float(state.get("pit_speed_ms") or 0.0)
             self._pit_speed_spin.setValue(config.conv_speed(ms) if ms else 0.0)
@@ -2244,13 +2261,26 @@ class ConfigEditor(QWidget):
             cnt = state.get("corner_count", 0)
             tid = state.get("authoring_track_id")
             tid_txt = f" (TrackID {tid})" if tid is not None else ""
+            canonical = state.get("canonical_track_id")
+            if canonical is not None and str(canonical) != str(tid):
+                tid_txt += f" → file {canonical}"
             self._authoring_status.setText(
                 f"{cnt} corner labels on map{tid_txt}."
                 if cnt else f"No corner labels yet{tid_txt}.")
+            if hasattr(self, "_alias_track_ids_edit"):
+                aliases = state.get("alias_track_ids") or []
+                text = ", ".join(str(a) for a in aliases)
+                self._alias_track_ids_edit.blockSignals(True)
+                self._alias_track_ids_edit.setText(text)
+                self._alias_track_ids_edit.blockSignals(False)
         else:
             self._pit_speed_spin.setValue(0.0)
             self._pit_lane_speed_spin.setValue(100.0)
             self._num_turns_spin.setValue(0)
+            if hasattr(self, "_alias_track_ids_edit"):
+                self._alias_track_ids_edit.blockSignals(True)
+                self._alias_track_ids_edit.clear()
+                self._alias_track_ids_edit.blockSignals(False)
             if state.get("demo"):
                 self._authoring_status.setText(
                     "Track metadata editing needs a live iRacing session "
@@ -2290,6 +2320,31 @@ class ConfigEditor(QWidget):
         else:
             self._authoring_status.setText(
                 "Could not save pit lane speed (no local track file).")
+            self._flash("Save failed")
+
+    def _alias_track_ids_authoring_changed(self) -> None:
+        if self._overlay is None or not hasattr(
+                self._overlay, "set_alias_track_ids_authoring"):
+            return
+        raw = self._alias_track_ids_edit.text().strip()
+        ids: list[int] = []
+        for part in raw.replace(";", ",").split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ids.append(int(part))
+            except ValueError:
+                self._authoring_status.setText(
+                    f"Invalid Track ID: {part!r}")
+                return
+        if self._overlay.set_alias_track_ids_authoring(ids):
+            label = ", ".join(str(i) for i in ids) if ids else "(none)"
+            self._authoring_status.setText(f"Track ID aliases saved ({label}).")
+            self._flash("Track ID aliases saved")
+        else:
+            self._authoring_status.setText(
+                "Could not save Track ID aliases (no local track file).")
             self._flash("Save failed")
 
     def _num_turns_authoring_changed(self, value: int) -> None:

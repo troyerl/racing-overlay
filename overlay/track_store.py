@@ -272,6 +272,10 @@ def normalize(doc: dict) -> dict:
                 "import_version", "map_rotation", "map_mirror"):
         if doc.get(key) is not None:
             out[key] = doc[key]
+    canonical = out.get("track_id")
+    aliases = doc.get("alias_track_ids")
+    if aliases and canonical is not None:
+        out["alias_track_ids"] = _normalize_alias_ids(aliases, canonical)
     # The pit-lane geometry plus its entry/exit blend lines (open polylines).
     for key in ("pit_path", "pit_in", "pit_out"):
         seg = doc.get(key)
@@ -311,6 +315,109 @@ def same_track_id(a, b) -> bool:
         return False
 
 
+_alias_index_cache: dict | None = None
+_alias_index_dir: str | None = None
+
+
+def invalidate_alias_cache() -> None:
+    """Drop cached alias index after a local track file changes."""
+    global _alias_index_cache, _alias_index_dir
+    _alias_index_cache = None
+    _alias_index_dir = None
+
+
+def _normalize_alias_ids(raw, canonical) -> list[int]:
+    """Unique int alias ids, excluding the canonical track_id."""
+    out: list[int] = []
+    seen = {str(canonical)}
+    for item in raw or []:
+        try:
+            aid = int(item)
+        except (TypeError, ValueError):
+            continue
+        if str(aid) in seen:
+            continue
+        seen.add(str(aid))
+        out.append(aid)
+    return out
+
+
+def _direct_track_file_exists(tracks_dir: str, track_id) -> bool:
+    for ext in (".json", ".svg"):
+        if os.path.exists(os.path.join(tracks_dir, f"{track_id}{ext}")):
+            return True
+    return False
+
+
+def build_alias_index(tracks_dir: str) -> dict:
+    """Map any track id (canonical or alias) -> canonical ``track_id``."""
+    global _alias_index_cache, _alias_index_dir
+    if _alias_index_cache is not None and _alias_index_dir == tracks_dir:
+        return _alias_index_cache
+    index: dict = {}
+    try:
+        names = os.listdir(tracks_dir)
+    except OSError:
+        _alias_index_cache = index
+        _alias_index_dir = tracks_dir
+        return index
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        path = os.path.join(tracks_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(doc, dict):
+            continue
+        canonical = doc.get("track_id")
+        if canonical is None:
+            continue
+        aliases = _normalize_alias_ids(doc.get("alias_track_ids"), canonical)
+        for key in (canonical, *aliases):
+            for variant in track_id_variants(key):
+                index[str(variant)] = canonical
+    _alias_index_cache = index
+    _alias_index_dir = tracks_dir
+    return index
+
+
+def resolve_track_id(tracks_dir: str, track_id):
+    """Resolve session TrackID to the canonical on-disk id when aliased."""
+    if track_id is None:
+        return None
+    if _direct_track_file_exists(tracks_dir, track_id):
+        return track_id
+    index = build_alias_index(tracks_dir)
+    for variant in track_id_variants(track_id):
+        canonical = index.get(str(variant))
+        if canonical is not None:
+            return canonical
+    return track_id
+
+
+def tracks_equivalent(tracks_dir: str, a, b) -> bool:
+    """True when two TrackIDs refer to the same layout (including aliases)."""
+    if same_track_id(a, b):
+        return True
+    if a is None or b is None:
+        return False
+    ra = resolve_track_id(tracks_dir, a)
+    rb = resolve_track_id(tracks_dir, b)
+    return same_track_id(ra, rb)
+
+
+def _fetch_track_query(track_id) -> dict:
+    """Mongo query matching canonical id or ``alias_track_ids`` membership."""
+    clauses: list[dict] = []
+    for tid in track_id_variants(track_id):
+        clauses.append({"track_id": tid})
+        clauses.append({"alias_track_ids": tid})
+    return {"$or": clauses}
+
+
 def fetch_track(track_id) -> dict | None:
     """Look up a single track by iRacing TrackID. None on miss / any error."""
     if track_id is None:
@@ -319,10 +426,9 @@ def fetch_track(track_id) -> dict | None:
     if col is None:
         return None
     try:
-        for tid in track_id_variants(track_id):
-            doc = col.find_one({"track_id": tid}, {"_id": 0})
-            if doc:
-                return doc
+        doc = col.find_one(_fetch_track_query(track_id), {"_id": 0})
+        if doc:
+            return doc
         return None
     except Exception:
         return None
@@ -445,7 +551,8 @@ def load_local(tracks_dir: str, track_id) -> dict | None:
     """Read the on-disk JSON for a track id (used before uploading)."""
     if track_id is None:
         return None
-    path = os.path.join(tracks_dir, f"{track_id}.json")
+    resolved = resolve_track_id(tracks_dir, track_id)
+    path = os.path.join(tracks_dir, f"{resolved}.json")
     try:
         with open(path, "r", encoding="utf-8") as fh:
             return json.load(fh)
@@ -465,6 +572,7 @@ def write_local(tracks_dir: str, doc: dict) -> str | None:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(clean, fh)
     os.replace(tmp, path)
+    invalidate_alias_cache()
     return path
 
 
@@ -498,10 +606,13 @@ def cached_manifest() -> dict | None:
     return _manifest_cache
 
 
-def _manifest_ts(manifest: dict | None, track_id) -> str | None:
+def _manifest_ts(manifest: dict | None, track_id,
+                 tracks_dir: str | None = None) -> str | None:
     """Look up a track's cloud ``updated_at`` in a manifest dict."""
     if not manifest or track_id is None:
         return None
+    if tracks_dir:
+        track_id = resolve_track_id(tracks_dir, track_id)
     for tid in track_id_variants(track_id):
         if tid in manifest:
             return manifest[tid] or ""
@@ -512,9 +623,10 @@ def _manifest_ts(manifest: dict | None, track_id) -> str | None:
 
 
 def needs_cloud_refresh(track_id, local_doc: dict | None,
-                        manifest: dict | None) -> bool:
+                        manifest: dict | None,
+                        tracks_dir: str | None = None) -> bool:
     """True when the cloud copy is newer than (or unknown vs) the local file."""
-    remote_ts = _manifest_ts(manifest, track_id)
+    remote_ts = _manifest_ts(manifest, track_id, tracks_dir)
     if not remote_ts:
         return False
     if not local_doc:
@@ -565,7 +677,8 @@ def _cloud_cache(tracks_dir: str) -> list[tuple]:
 
 def touch(tracks_dir: str, track_id) -> None:
     """Mark a cached track as just-used (bumps mtime for LRU eviction)."""
-    path = os.path.join(tracks_dir, f"{track_id}.json")
+    resolved = resolve_track_id(tracks_dir, track_id)
+    path = os.path.join(tracks_dir, f"{resolved}.json")
     try:
         os.utime(path, None)
     except OSError:

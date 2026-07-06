@@ -187,6 +187,7 @@ class AdvancedSimHUD:
         self._v2_loop_doc: dict | None = None
         self._v2_authoring_track_id = None
         self._v2_authoring_name = ""
+        self._alias_track_ids: list[int] = []
         # Sector timing: derives sector splits from lap-distance crossings.
         self._sector_timer = SectorTimer()
         # Lap compare: records per-lap input traces and analyses corners.
@@ -523,7 +524,15 @@ class AdvancedSimHUD:
             "has_pit_geometry": bool(
                 self._pit_path and len(self._pit_path) >= 2),
             "authoring_track_id": tid,
+            "canonical_track_id": self._canonical_track_id(tid),
+            "alias_track_ids": list(self._alias_track_ids),
         }
+
+    def _canonical_track_id(self, tid):
+        """On-disk / cloud id for a session or authoring TrackID."""
+        if tid is None:
+            return None
+        return track_store.resolve_track_id(self.tracks_dir, tid) or tid
 
     def _refresh_settings_authoring(self) -> None:
         """Re-sync Track Scan controls after a track loads in the background."""
@@ -541,10 +550,11 @@ class AdvancedSimHUD:
         tid = self._authoring_track_id()
         if tid is None or not self.map_widget.path:
             return False
+        canonical = self._canonical_track_id(tid)
         corners = track_map.corners_to_json(self.map_widget.display_corners())
         pit_span = self._pit_span
         return track_map.ensure_track_file(
-            self.tracks_dir, tid, self.map_widget.path,
+            self.tracks_dir, canonical, self.map_widget.path,
             name=self._learn_name or self._v2_authoring_name,
             start_finish=self.map_widget.start_finish,
             corners=corners,
@@ -601,17 +611,18 @@ class AdvancedSimHUD:
         tid = self._authoring_track_id()
         if tid is None or not fields:
             return False
+        canonical = self._canonical_track_id(tid)
         if not self._ensure_local_track_file():
             return False
         try:
             ok = track_map.update_track_meta(
-                self.tracks_dir, tid, **fields)
+                self.tracks_dir, canonical, **fields)
         except Exception:
             return False
         if not ok:
             return False
         if track_store.can_write():
-            self._track_sync.upload_local_async(self.tracks_dir, tid)
+            self._track_sync.upload_local_async(self.tracks_dir, canonical)
         return True
 
     def set_pit_speed_authoring(self, speed_ms: float) -> bool:
@@ -650,6 +661,15 @@ class AdvancedSimHUD:
         else:
             fields["num_turns"] = None
         return self._persist_track_meta(**fields)
+
+    def set_alias_track_ids_authoring(self, ids: list[int]) -> bool:
+        """Save alternate iRacing TrackIDs that share this map layout."""
+        canonical = self._canonical_track_id(self._authoring_track_id())
+        if canonical is None:
+            return False
+        self._alias_track_ids = track_store._normalize_alias_ids(ids, canonical)
+        return self._persist_track_meta(
+            alias_track_ids=(self._alias_track_ids or None))
 
     def set_corner_edit_mode(self, enabled: bool) -> None:
         """Toggle drag-to-move corner labels on the map widget."""
@@ -831,13 +851,18 @@ class AdvancedSimHUD:
 
     def _build_loop_doc(self, tid) -> dict:
         """Racing loop + corners for v2 track save (no pit geometry)."""
+        canonical = self._canonical_track_id(tid)
+        try:
+            doc_tid = int(canonical)
+        except (TypeError, ValueError):
+            doc_tid = canonical
         loop = [(p[0], p[1]) for p in self.map_widget.path]
         rot, mirror = self._orientation_from_cfg()
         doc: dict = {
             "schema": 2,
             "import_version": 2,
             "pit_source": "manual",
-            "track_id": tid,
+            "track_id": doc_tid,
             "name": (self._learn_name or self._v2_authoring_name or str(tid)),
             "start_finish": float(self.map_widget.start_finish),
             "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
@@ -854,6 +879,9 @@ class AdvancedSimHUD:
             for key in ("import_version",):
                 if key in self._v2_loop_doc:
                     doc[key] = self._v2_loop_doc[key]
+        aliases = getattr(self, "_alias_track_ids", None)
+        if aliases:
+            doc["alias_track_ids"] = list(aliases)
         return doc
 
     def _write_track_json(self, tid, doc: dict) -> str:
@@ -866,6 +894,7 @@ class AdvancedSimHUD:
             json.dump(stamped, fh, indent=2)
             fh.write("\n")
         os.replace(tmp, path)
+        track_store.invalidate_alias_cache()
         return path
 
     def _apply_track_orientation(self, meta: dict) -> None:
@@ -904,9 +933,10 @@ class AdvancedSimHUD:
         if not self.map_widget.path or len(self.map_widget.path) < 3:
             return False, "No track loop loaded."
         doc = self._build_loop_doc(tid)
-        path = self._write_track_json(tid, doc)
+        canonical = self._canonical_track_id(tid)
+        path = self._write_track_json(canonical, doc)
         if track_store.can_write():
-            self._track_sync.upload_local_async(self.tracks_dir, tid)
+            self._track_sync.upload_local_async(self.tracks_dir, canonical)
         self._preview_uploaded_track_in_demo(tid)
         msg = f"Saved loop to {path} (no pit lane)."
         if track_store.can_write():
@@ -965,7 +995,7 @@ class AdvancedSimHUD:
         if self._pit_lane_speed_pct != 1.0:
             doc["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
 
-        path = self._write_track_json(tid, doc)
+        path = self._write_track_json(self._canonical_track_id(tid), doc)
 
         meta = {k: doc[k] for k in (
             "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
@@ -973,7 +1003,8 @@ class AdvancedSimHUD:
         ) if k in doc}
         self._apply_pit_meta(meta)
         if track_store.can_write():
-            self._track_sync.upload_local_async(self.tracks_dir, tid)
+            self._track_sync.upload_local_async(
+                self.tracks_dir, self._canonical_track_id(tid))
         self._preview_uploaded_track_in_demo(tid)
         n_in = len(pit_in)
         n_path = len(pit_path)
@@ -2649,6 +2680,12 @@ class AdvancedSimHUD:
             if not self._track_turns:
                 self._track_turns = saved_turns
         meta = file_meta or {}
+        aliases = meta.get("alias_track_ids")
+        if isinstance(aliases, list):
+            self._alias_track_ids = track_store._normalize_alias_ids(
+                aliases, meta.get("track_id"))
+        else:
+            self._alias_track_ids = []
         self._apply_track_orientation(meta)
         self._loaded_track_updated_at = meta.get("updated_at")
         if self.demo and tid not in ("_demo", "demo"):
@@ -2785,7 +2822,7 @@ class AdvancedSimHUD:
                          if track_file else None)
             manifest = track_store.cached_manifest()
             stale = track_store.needs_cloud_refresh(
-                self._track_id, local_doc, manifest)
+                self._track_id, local_doc, manifest, self.tracks_dir)
             if self._track_id is not None \
                     and self._track_id not in self._remote_tried \
                     and (not track_file or stale):
@@ -2834,7 +2871,8 @@ class AdvancedSimHUD:
     def _on_remote_track(self, track_id, doc) -> None:
         """A shared track map arrived from the cloud (off the GUI thread)."""
         target = (self._demo_track_pending_id if self.demo else self._track_id)
-        if not doc or not track_store.same_track_id(track_id, target):
+        if not doc or not track_store.tracks_equivalent(
+                self.tracks_dir, track_id, target):
             return
         remote_ts = doc.get("updated_at") or ""
         if self._track_loaded and not self.demo:
@@ -2854,7 +2892,7 @@ class AdvancedSimHUD:
                     self._track_turns = saved_turns
             self._track_loaded = True
             track_store.enforce_cache_limit(
-                self.tracks_dir, protect=[target])
+                self.tracks_dir, protect=[target, doc.get("track_id")])
             self._refresh_settings_authoring()
         except Exception:
             pass

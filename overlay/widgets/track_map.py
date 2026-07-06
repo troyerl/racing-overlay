@@ -408,8 +408,11 @@ def corners_to_json(corners) -> list[dict]:
 def find_track_file(track_id, tracks_dir: str = "tracks") -> str | None:
     if track_id is None:
         return None
+    from .. import track_store
+
+    resolved = track_store.resolve_track_id(tracks_dir, track_id)
     for ext in (".json", ".svg"):
-        path = os.path.join(tracks_dir, f"{track_id}{ext}")
+        path = os.path.join(tracks_dir, f"{resolved}{ext}")
         if os.path.exists(path):
             return path
     return None
@@ -464,6 +467,9 @@ def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
     """
     if track_id is None or not points or len(points) < 2:
         return False
+    from .. import track_store
+
+    track_id = track_store.resolve_track_id(tracks_dir, track_id)
     path = os.path.join(tracks_dir, f"{track_id}.json")
     if os.path.exists(path):
         return True
@@ -495,6 +501,7 @@ def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
     os.replace(tmp, path)
+    track_store.invalidate_alias_cache()
     return True
 
 
@@ -507,6 +514,9 @@ def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
     """
     if track_id is None or not fields:
         return False
+    from .. import track_store
+
+    track_id = track_store.resolve_track_id(tracks_dir, track_id)
     path = os.path.join(tracks_dir, f"{track_id}.json")
     if not os.path.exists(path):
         return False
@@ -524,6 +534,7 @@ def update_track_meta(tracks_dir: str, track_id, **fields) -> bool:
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh)
     os.replace(tmp, path)
+    track_store.invalidate_alias_cache()
     return True
 
 
@@ -592,6 +603,11 @@ def load_track(path: str, n: int = 720):
         meta["map_mirror"] = bool(data["map_mirror"])
     if data.get("updated_at"):
         meta["updated_at"] = str(data["updated_at"])
+    if data.get("track_id") is not None:
+        meta["track_id"] = data["track_id"]
+    aliases = data.get("alias_track_ids")
+    if isinstance(aliases, list):
+        meta["alias_track_ids"] = aliases
     drs = _parse_zone_ranges(data.get("drs_zones"))
     if drs:
         meta["drs_zones"] = drs

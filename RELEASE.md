@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.56.0 - 2026-07-06
+
+- **Track ID aliases.** Authors can list alternate iRacing TrackIDs on a saved
+  map (**Track Scan → Track metadata → Also used for Track IDs**) so layout
+  variants share one track file and cloud document — e.g. Echo Park Atlanta
+  current (447) and 2008 layout (53).
+
 ## 1.55.1 - 2026-07-06
 
 - **Map pit display fix.** Passing the pit entry on the racing line no longer

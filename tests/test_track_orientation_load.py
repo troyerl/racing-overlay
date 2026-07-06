@@ -61,6 +61,7 @@ def _hud(tmp_path, **kwargs) -> AdvancedSimHUD:
     hud._track_is_oval = False
     hud._track_zones = {"drs_zones": [], "p2p_zones": []}
     hud._pit_path = None
+    hud._alias_track_ids = []
     hud._remote_tried = set()
     hud._no_track_hint = False
     hud.map_widget = _FakeMap()
