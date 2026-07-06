@@ -796,7 +796,7 @@ class TrackMapWidget(QWidget):
         self._clock.start()
         self._last_ms = 0
         self._display_corners_cache: list | None = None
-        self.placeholder = "LEARNING TRACK\u2026  drive a lap"
+        self.placeholder = "No track map loaded"
         self._progress_pct = -1
         # Multi-lap scan UI: a persistent badge while scanning ('LAP n/3' or
         # 'PIT n/3'), plus a transient hint banner that auto-clears.
@@ -849,14 +849,8 @@ class TrackMapWidget(QWidget):
         self.set_track(path, start_finish=0.0, corners=[])
 
     def set_progress(self, frac: float) -> None:
-        """Update the 'learning track' percentage shown before a path exists."""
-        pct = max(0, min(100, int(frac * 100)))
-        if pct == self._progress_pct:
-            return
-        self._progress_pct = pct
-        self.placeholder = f"LEARNING TRACK\u2026  {pct}%  \u00b7  drive a lap"
-        if self.path is None:  # only the placeholder needs repainting
-            self.update()
+        """Legacy hook — track learning removed; no-op."""
+        del frac
 
     def set_scan_status(self, text: str) -> None:
         """Show (or clear) a small scan badge like 'LAP 2/3' or 'PIT 2/3'."""
@@ -1700,7 +1694,7 @@ class TrackMapWidget(QWidget):
     def _build_smooth_car_screen_points(self, tx, mc: dict) -> tuple[dict[int, QPointF], bool]:
         """Ease car dots toward telemetry targets for smoother map motion."""
         cc = tx(self._centroid)
-        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        off = mc.get("asphalt_width", 12) * 0.85 + 3.0
         schematic = is_schematic_pit_source(self.pit_source)
         targets = self._build_car_screen_points(tx, mc)
         dt = self._dt()
@@ -1761,7 +1755,7 @@ class TrackMapWidget(QWidget):
 
     def _build_car_screen_points(self, tx, mc: dict) -> dict[int, QPointF]:
         cc = tx(self._centroid)
-        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        off = mc.get("asphalt_width", 12) * 0.85 + 3.0
         schematic = is_schematic_pit_source(self.pit_source)
         pts: dict[int, QPointF] = {}
         for car in self.cars:
@@ -1776,7 +1770,7 @@ class TrackMapWidget(QWidget):
             return None
         cc = tx(self._centroid)
         mc = _mcfg()
-        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        off = mc.get("asphalt_width", 12) * 0.85 + 3.0
         schematic = is_schematic_pit_source(self.pit_source)
         return self._resolve_car_point(tx, car, cc, off, schematic)
 
@@ -1787,7 +1781,7 @@ class TrackMapWidget(QWidget):
         """Screen-space inset so outward labels/icons are not clipped."""
         mc = mc or _mcfg()
         pad = 26.0
-        asph = mc.get("asphalt_width", 11)
+        asph = mc.get("asphalt_width", 12)
         outward = 0.0
         if mc.get("show_traffic_markers", True):
             sz = max(8, round(10 * config.text_scale_for("map")))
@@ -1861,7 +1855,7 @@ class TrackMapWidget(QWidget):
         if not self.sector_boundaries:
             return
         mc = _mcfg()
-        asph = mc.get("asphalt_width", 11)
+        asph = mc.get("asphalt_width", 12)
         sz = max(5, round(7 * config.text_scale_for("map")))
         fam = config.CFG.get("font_family", "Arial")
         p.setFont(QFont(fam, sz, QFont.Weight.Bold))
@@ -1890,7 +1884,7 @@ class TrackMapWidget(QWidget):
 
     def _draw_traffic_markers(self, p: QPainter, tx, mc: dict,
                               car_pts: dict[int, QPointF]) -> None:
-        asph = mc.get("asphalt_width", 11)
+        asph = mc.get("asphalt_width", 12)
         sz = max(8, round(10 * config.text_scale_for("map")))
         icon_off = asph * 1.2 + sz + 10.0
         specs = (
@@ -2089,13 +2083,13 @@ class TrackMapWidget(QWidget):
                 p.setBrush(_mcol("infield"))
                 p.drawPath(qpath)
 
-            asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 11))
+            asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 12))
             asphalt.setCapStyle(Qt.PenCapStyle.RoundCap)
             asphalt.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(asphalt)
             p.drawPath(qpath)
-            p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 2)))
+            p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 6)))
             p.drawPath(qpath)
 
             if mc.get("show_pit", True) and (self.pit_path or self.pit_in
@@ -2197,7 +2191,7 @@ class TrackMapWidget(QWidget):
         # Offset the highlight inward (toward the infield) so it reads as a
         # separate lane running beside the track rather than over it.
         cc = tx(self._centroid)
-        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        off = mc.get("asphalt_width", 12) * 0.85 + 3.0
         pts = []
         for i in idxs:
             s = tx(self.path[i])
@@ -2238,7 +2232,7 @@ class TrackMapWidget(QWidget):
             lane.lineTo(q)
         p.setOpacity(_pit_lane_opacity())
         # Asphalt underlay so it reads as a real road surface like the track.
-        base = QPen(_mcol("asphalt"), max(3.0, mc.get("asphalt_width", 11) * 0.6))
+        base = QPen(_mcol("asphalt"), max(3.0, mc.get("asphalt_width", 12) * 0.6))
         base.setCapStyle(Qt.PenCapStyle.RoundCap)
         base.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -2416,7 +2410,7 @@ class TrackMapWidget(QWidget):
         if not self.path or not zones:
             return
         mc = _mcfg()
-        width = max(4.0, mc.get("asphalt_width", 11) * 1.35)
+        width = max(4.0, mc.get("asphalt_width", 12) * 1.35)
         col = _mcol_def(color_key, "#46df7a88")
         pen = QPen(col, width)
         pen.setCapStyle(Qt.PenCapStyle.RoundCap)
@@ -2533,7 +2527,7 @@ class TrackMapWidget(QWidget):
         """In-progress pit road (red) and merge (blue) polylines + handles."""
         mc = _mcfg()
         self._pit_hit = []
-        r = max(4.0, mc.get("asphalt_width", 11) * 0.35)
+        r = max(4.0, mc.get("asphalt_width", 12) * 0.35)
 
         def _polyline(pts, color_key: str, width: float):
             if len(pts) < 2:
@@ -2549,9 +2543,9 @@ class TrackMapWidget(QWidget):
             p.setPen(pen)
             p.drawPath(path)
 
-        _polyline(self._pit_edit_road, "pit", max(3.0, mc.get("asphalt_width", 11) * 0.55))
+        _polyline(self._pit_edit_road, "pit", max(3.0, mc.get("asphalt_width", 12) * 0.55))
         _polyline(self._pit_edit_merge, "pit_blend_out",
-                  max(2.5, mc.get("asphalt_width", 11) * 0.45))
+                  max(2.5, mc.get("asphalt_width", 12) * 0.45))
 
         joint = self._pit_has_joint()
         joint_pt = (self._pit_edit_road[-1] if joint else None)
@@ -2846,7 +2840,7 @@ class TrackMapWidget(QWidget):
         p.setFont(QFont(fam, sz, QFont.Weight.Bold))
         fm = p.fontMetrics()
         cc = tx(self._centroid)
-        asph = _mcfg().get("asphalt_width", 11)
+        asph = _mcfg().get("asphalt_width", 12)
         off = asph * 0.5 + sz + 8.0
         bh = fm.height() + 4
         self._corner_hit = []
@@ -2877,7 +2871,7 @@ class TrackMapWidget(QWidget):
     def _draw_cars(self, p: QPainter, tx, mc: dict,
                    car_pts: dict[int, QPointF]) -> None:
         cc = tx(self._centroid)
-        off = mc.get("asphalt_width", 11) * 0.85 + 3.0
+        off = mc.get("asphalt_width", 12) * 0.85 + 3.0
         # Pit-car styling is the same for every car -- resolve it once.
         pit_opacity = max(0.05, min(1.0, mc.get("pit_dot_opacity", 0.45)))
         pit_fill = _mcol("pit_car")

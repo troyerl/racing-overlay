@@ -70,7 +70,7 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(name)s: %(message)s")
 
     print("== GridGlance sharing diagnostics ==")
-    print(f"  cloud sharing enabled (setting): {_yn(config.cloud_tracks())}")
+    print(f"  cloud sharing:                   always on (MongoDB)")
     info = track_store.diagnose()
     print(f"  pymongo installed:               {_yn(info['pymongo'])}")
     print(f"  read URI:                        {info['read_uri']}")
@@ -94,9 +94,6 @@ def main() -> int:
     else:
         print("  shared demo track: (not set — demo uses Chicagoland 123)")
 
-    if not config.cloud_tracks():
-        print("\n! Sharing is OFF in settings -- the app won't upload. Enable "
-              "cloud tracks in the map settings.")
     if not info["can_write"]:
         print("\n! No write URI: uploads are disabled. Set GRIDGLANCE_MONGODB_URI "
               "to your read-write Atlas connection string (a read-write string "

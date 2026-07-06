@@ -60,6 +60,7 @@ from PyQt6.QtWidgets import (
 
 from . import config, constants, paths, track_store, version
 from . import demo_data
+from . import setting_help
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
@@ -377,6 +378,48 @@ _WIDGET_HINTS = {
 # the user can write, so it stays absent for read-only users).
 SETTINGS_SECTION_KEYS = {"__general__", "__app__", "__scan__"}
 
+# Map widget settings page: hide keys that are track-data or unused table chrome.
+MAP_SETTINGS_SKIP = frozenset({"auto_corners", "row_dividers", "data_font_bold"})
+
+# Left-nav widget order grouped by usage (keys must exist in config.DEFAULTS).
+WIDGET_NAV_GROUPS: list[tuple[str, list[str]]] = [
+    ("Standings", ["relative", "standings", "leaderboard_strip"]),
+    ("Timing", ["laptime_log", "sector_timing", "delta_bar", "lap_compare"]),
+    ("Driving", ["dash", "inputs", "fuel_calc", "tire_panel"]),
+    ("Session", ["flags", "weather_panel", "pit_board", "ers_hybrid"]),
+    ("Awareness", ["map", "radar"]),
+]
+
+
+def ordered_settings_sections(
+        widget_keys: set[str] | None = None,
+        *,
+        include_scan: bool = False) -> list[tuple[str, str, str | None]]:
+    """Build nav page order: (section_key, title, nav_group_or_None)."""
+    if widget_keys is None:
+        widget_keys = {k for k, v in config.DEFAULTS.items() if isinstance(v, dict)}
+    head: list[tuple[str, str, str | None]] = [
+        ("__general__", "General", None),
+        ("__app__", "App", None),
+    ]
+    if include_scan:
+        head.append(("__scan__", "Track Scan", None))
+    ordered: list[tuple[str, str, str | None]] = []
+    seen: set[str] = set()
+    for group, keys in WIDGET_NAV_GROUPS:
+        for key in keys:
+            if key in widget_keys and key not in seen:
+                ordered.append((key, _pretty(key), group))
+                seen.add(key)
+    other = sorted(
+        (k for k in widget_keys if k not in seen and k not in SETTINGS_SECTION_KEYS),
+        key=lambda k: _pretty(k).lower(),
+    )
+    for key in other:
+        ordered.append((key, _pretty(key), "Other"))
+    return head + ordered
+
+
 # Purpose-based setting groups for widget pages (top-level DEFAULTS dict keys).
 # Keys not listed fall through ungrouped at the bottom of the page.
 _TABLE_SETTING_GROUPS = [
@@ -572,7 +615,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     ],
     "map": [
         ("Display", [
-            "show_infield", "show_corners", "auto_corners", "show_start_finish",
+            "show_infield", "show_corners", "show_start_finish",
             "show_wind", "show_expanded_weather", "show_car_status",
             "show_drs_zones", "show_p2p_zones", "show_panel", "show_pace_car",
             "show_sector_boundaries", "show_traffic_markers",
@@ -587,7 +630,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Layout", [
             "rotation", "mirror", "asphalt_width", "outline_width",
-            "corner_radius_frac", "text_scale", "row_dividers", "data_font_bold",
+            "corner_radius_frac", "text_scale",
         ]),
         ("Colors", ["colors", "palette"]),
     ],
@@ -602,6 +645,16 @@ QLabel#title {{ font-size: 21px; font-weight: 800; color: #f4f6f8; }}
 QLabel#subtitle {{ color: #8b93a1; font-size: 11px; }}
 QLabel#status {{ color: {ACCENT}; font-size: 11px; }}
 QLabel#rowLabel {{ color: #c7cdd6; }}
+QLabel#helpHint {{
+    background: transparent; border: 1px solid #3a404c; border-radius: 11px;
+    color: #8b93a1; font-size: 11px; font-weight: 700; min-width: 22px;
+    max-width: 22px; min-height: 22px; max-height: 22px; padding: 0;
+}}
+QLabel#helpHint:hover {{ border-color: {ACCENT_DIM}; color: #e6e8ec; }}
+QLabel#navSection {{
+    color: #6b7280; font-size: 10px; font-weight: 700; letter-spacing: 0.8px;
+    padding: 14px 8px 4px 8px;
+}}
 QLabel#pageTitle {{ font-size: 16px; font-weight: 800; color: #f4f6f8; }}
 QLabel#pageHint {{ color: #8b93a1; font-size: 11px; }}
 QLabel#enableTitle {{ font-size: 13px; font-weight: 700; color: #f4f6f8; }}
@@ -1417,7 +1470,9 @@ class ConfigEditor(QWidget):
         self._rows: list[dict] = []          # {widget, text, accordions}
         self._accordions: list[CollapsibleSection] = []
         self._nav_items: dict[str, NavItem] = {}
-        self._sections: list[tuple[str, str]] = []
+        self._nav_group_headers: dict[str, QLabel] = {}
+        self._widget_nav_group: dict[str, str] = {}
+        self._sections: list[tuple[str, str, str | None]] = []
         self._cur_index = 0
         self._top_tab = "widgets"
         self._carbon = _carbon_tile()
@@ -1565,6 +1620,7 @@ class ConfigEditor(QWidget):
             ("Reload", self._reload, ""),
             ("Apply", self._apply, "warn"),
             ("Save", self._save, "primary"),
+            ("Quit", self._quit_app, "danger"),
         ):
             b = QPushButton(text)
             b.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -1827,23 +1883,27 @@ class ConfigEditor(QWidget):
         self._rows.clear()
         self._accordions.clear()
         self._nav_items.clear()
+        self._nav_group_headers.clear()
+        self._widget_nav_group.clear()
 
-        # General + App first (Settings tab), then -- only for users with write
-        # access -- the Track Scan authoring tab, then the rest alphabetically by
-        # title so the widget vertical tabs read A-Z (Dash, Fuel Calc, ...).
-        head = [("__general__", "General"), ("__app__", "App")]
-        if track_store.can_write():
-            head.append(("__scan__", "Track Scan"))
-        self._sections = head + sorted(
-            ((k, _pretty(k)) for k, val in config.DEFAULTS.items()
-             if isinstance(val, dict)),
-            key=lambda kt: kt[1].lower())
-        for idx, (key, title) in enumerate(self._sections):
+        widget_keys = {k for k, v in config.DEFAULTS.items() if isinstance(v, dict)}
+        self._sections = ordered_settings_sections(
+            widget_keys, include_scan=track_store.can_write())
+        last_group: str | None = None
+        for idx, (key, title, group) in enumerate(self._sections):
+            if group and group != last_group:
+                hdr = QLabel(group.upper())
+                hdr.setObjectName("navSection")
+                self.nav_lay.addWidget(hdr)
+                self._nav_group_headers[group] = hdr
+                last_group = group
+            if group:
+                self._widget_nav_group[key] = group
             color = TAB_COLORS.get(title, "#9aa3b2")
             self.stack.addWidget(self._scroll(self._build_page(key, title, color)))
             nav = NavItem(title, color)
             nav.clicked.connect(lambda i=idx: self._select(i))
-            if key not in ("__general__", "__app__") and "show" in config.DEFAULTS.get(key, {}):
+            if key not in SETTINGS_SECTION_KEYS and "show" in config.DEFAULTS.get(key, {}):
                 nav.set_dot(bool(_get_at(self.working, [key, "show"])))
             self._nav_items[key] = nav
             self.nav_lay.addWidget(nav)
@@ -1853,7 +1913,7 @@ class ConfigEditor(QWidget):
 
     def _group_keys(self, tab: str) -> set[str]:
         """The section keys that belong to the given top tab."""
-        allk = {k for k, _t in self._sections}
+        allk = {k for k, _t, _g in self._sections}
         settings = allk & SETTINGS_SECTION_KEYS
         return settings if tab == "settings" else (allk - settings)
 
@@ -1866,14 +1926,21 @@ class ConfigEditor(QWidget):
         for name, btn in self._top_tabs.items():
             btn.setChecked(name == self._top_tab)
         keys = self._group_keys(self._top_tab)
+        visible_groups: set[str] = set()
         first_idx = None
-        for idx, (key, _t) in enumerate(self._sections):
+        for idx, (key, _t, _g) in enumerate(self._sections):
             nav = self._nav_items.get(key)
             visible = key in keys
             if nav:
                 nav.setVisible(visible)
+            if visible:
+                grp = self._widget_nav_group.get(key)
+                if grp:
+                    visible_groups.add(grp)
             if visible and first_idx is None:
                 first_idx = idx
+        for group, hdr in self._nav_group_headers.items():
+            hdr.setVisible(group in visible_groups)
         cur_key = (self._sections[self._cur_index][0]
                    if 0 <= self._cur_index < len(self._sections) else None)
         if cur_key in keys:
@@ -1885,7 +1952,7 @@ class ConfigEditor(QWidget):
         self._cur_index = index
         self.stack.setCurrentIndex(index)
         active_nav = None
-        for idx, (key, _t) in enumerate(self._sections):
+        for idx, (key, _t, _g) in enumerate(self._sections):
             nav = self._nav_items.get(key)
             if nav:
                 nav.setSelected(idx == index)
@@ -1948,7 +2015,6 @@ class ConfigEditor(QWidget):
             v.addWidget(note)
             v.addWidget(self._about_card())
             v.addWidget(self._auto_switch_card())
-            v.addWidget(self._cloud_tracks_card())
             if track_store.can_write():
                 v.addWidget(self._demo_track_admin_card())
             v.addStretch(1)
@@ -1989,6 +2055,9 @@ class ConfigEditor(QWidget):
             v.addWidget(body)
             target = body.layout()
             skip = {"show"}
+
+        if key == "map":
+            skip = set(skip) | MAP_SETTINGS_SKIP
 
         self._populate(target, schema, [key], color, [], skip=skip)
         v.addStretch(1)
@@ -2369,13 +2438,25 @@ class ConfigEditor(QWidget):
         h.setContentsMargins(2, 2, 2, 2)
         h.setSpacing(12)
         label_text = _label_for(path)
+        help_text = setting_help.help_for(path, default_val, label_text)
         label = QLabel(label_text)
         label.setObjectName("rowLabel")
         label.setMinimumWidth(170)
         label.setWordWrap(True)
+        if help_text:
+            row.setToolTip(help_text)
+            label.setToolTip(help_text)
         h.addWidget(label, 0)
+        if help_text:
+            hint = QLabel("?")
+            hint.setObjectName("helpHint")
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setToolTip(help_text)
+            h.addWidget(hint, 0)
 
         ctrl = self._control(path, default_val, value, color)
+        if help_text:
+            ctrl.setToolTip(help_text)
         if isinstance(ctrl, NumberControl):
             h.addWidget(ctrl, 1)
         else:
@@ -2384,8 +2465,9 @@ class ConfigEditor(QWidget):
 
         self._rows.append({
             "widget": row,
-            # Searchable on both the friendly label and the raw key path.
-            "text": (label_text + " " + " ".join(_pretty(p) for p in path)).lower(),
+            # Searchable on friendly label, raw path, and help text.
+            "text": (label_text + " " + " ".join(_pretty(p) for p in path)
+                     + " " + help_text).lower(),
             "accordions": list(chain),
             "dep": ROW_DEPENDENCIES.get(".".join(str(p) for p in path)),
         })
@@ -2700,33 +2782,6 @@ class ConfigEditor(QWidget):
     def _set_auto_switch(self, setter, on: bool) -> None:
         setter(bool(on))
         self._flash("Auto-switch updated")
-
-    def _cloud_tracks_card(self) -> QFrame:
-        """General-page card: opt in/out of shared (cloud) track maps."""
-        card = QFrame()
-        card.setObjectName("enableCard")
-        v = QVBoxLayout(card)
-        v.setContentsMargins(15, 11, 15, 12)
-        v.setSpacing(8)
-        t = QLabel("Community track maps")
-        t.setObjectName("enableTitle")
-        hint = QLabel("Download shared track maps automatically the first time "
-                      "you visit a track, instead of driving a lap to learn it. "
-                      "Turn off to stay fully offline.")
-        hint.setObjectName("enableHint")
-        hint.setWordWrap(True)
-        v.addWidget(t)
-        v.addWidget(hint)
-        w, sw = self._opt_toggle("Download shared track maps",
-                                 config.cloud_tracks())
-        sw.toggled.connect(self._toggle_cloud_tracks)
-        v.addWidget(w)
-        return card
-
-    def _toggle_cloud_tracks(self, on: bool) -> None:
-        config.set_cloud_tracks(bool(on))
-        self._flash("Community track maps on" if on
-                    else "Community track maps off")
 
     def _demo_track_admin_card(self) -> QFrame:
         """Author-only: set the shared demo track for all users."""
@@ -3106,6 +3161,14 @@ class ConfigEditor(QWidget):
         # telemetry-driven context.
         config.set_preview_context(None)
         super().closeEvent(event)
+
+    def _quit_app(self) -> None:
+        """Exit GridGlance entirely (not just hide Settings)."""
+        if self.autosave_sw.isChecked():
+            self._autosave()
+        if self._overlay is not None:
+            self._overlay.stop_overlay()
+        QApplication.instance().quit()
 
 
 def main() -> int:

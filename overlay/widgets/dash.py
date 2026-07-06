@@ -1117,7 +1117,7 @@ class DashWidget(QWidget):
         draw_panel_rect(p, box, _SECTION)
         p.setPen(QPen(orange, max(1.6, box.height() * 0.022)))
         p.setBrush(Qt.BrushStyle.NoBrush)
-        r = min(box.width(), box.height()) * self._cfg().get("corner_radius_frac", 0.22)
+        r = min(box.width(), box.height()) * self._cfg().get("corner_radius_frac", 0.0)
         p.drawRoundedRect(box, r, r)
         fs = box.height() * 0.40
         f = self._val_font(fs)

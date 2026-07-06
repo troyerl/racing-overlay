@@ -272,7 +272,7 @@ class AdvancedSimHUD:
         self._apply_app_settings_cache()
         # MongoDB is the source of truth: on launch, refresh the local cache so
         # any maps the author changed are pulled in (runs off the GUI thread).
-        if not self.demo and config.cloud_tracks():
+        if not self.demo:
             self._track_sync.sync_down_async(self.tracks_dir)
         # The overlay widgets start hidden; the settings window (or --start)
         # turns them on, and they keep running after settings is closed.
@@ -610,7 +610,7 @@ class AdvancedSimHUD:
             return False
         if not ok:
             return False
-        if config.cloud_tracks():
+        if track_store.can_write():
             self._track_sync.upload_local_async(self.tracks_dir, tid)
         return True
 
@@ -2702,7 +2702,7 @@ class AdvancedSimHUD:
                 self._apply_pit_meta(meta)
                 self._sync_demo_pit_from_meta(meta)
 
-        if config.cloud_tracks() and not legacy_demo:
+        if not legacy_demo:
             self._track_sync.fetch_async(tid)
 
     def _demo_pit_geometry(self, pts):
@@ -2779,7 +2779,7 @@ class AdvancedSimHUD:
             manifest = track_store.cached_manifest()
             stale = track_store.needs_cloud_refresh(
                 self._track_id, local_doc, manifest)
-            if config.cloud_tracks() and self._track_id is not None \
+            if self._track_id is not None \
                     and self._track_id not in self._remote_tried \
                     and (not track_file or stale):
                 self._remote_tried.add(self._track_id)
@@ -2798,7 +2798,7 @@ class AdvancedSimHUD:
         if not self._no_track_hint:
             self._no_track_hint = True
             self.map_widget.flash_hint(
-                "No track file — import HTML in Settings \u2192 Track Scan")
+                "No track map — loading from cloud library\u2026")
 
     def _on_tracks_synced(self, n) -> None:
         """Startup cache refresh finished; if the map we're showing was one of

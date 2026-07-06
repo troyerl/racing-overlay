@@ -85,7 +85,7 @@ def draw_card(p: QPainter, w: float, h: float, section: str | None = None,
     """Paint gradient card shell; returns (card rect, corner radius)."""
     cfg = section_cfg(section)
     radius = max(8.0, h * (radius_frac if radius_frac is not None
-                           else cfg.get("corner_radius_frac", 0.05)))
+                           else cfg.get("corner_radius_frac", 0.0)))
     card = QRectF(0.5, 0.5, w - 1, h - 1)
     colors = cfg.get("colors", {})
     if "bg_top" in colors and "bg_bottom" in colors:
@@ -106,7 +106,7 @@ def draw_panel_rect(p: QPainter, rect: QRectF, section: str | None = None, *,
     """Paint gradient panel in an arbitrary rect; returns corner radius."""
     cfg = section_cfg(section)
     frac = (radius_frac if radius_frac is not None
-            else cfg.get("corner_radius_frac", 0.05))
+            else cfg.get("corner_radius_frac", 0.0))
     if radius_basis == "min":
         radius = min(rect.width(), rect.height()) * frac
     else:

@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.53.0 - 2026-07-06
+
+- **Default styling.** Map asphalt width 12 and outline width 6; panel corner
+  radius defaults to 0 (square corners) for tables and widgets.
+- **Settings Quit.** Quit button fully exits the app (not just minimize Settings).
+- **Setting descriptions.** Every settings row has a tooltip and ? help button
+  explaining what the option does and what changes when you adjust it.
+
 ## 1.52.0 - 2026-07-06
 
 - **Pit edit zoom.** Placing the first pit road point no longer auto-zooms the

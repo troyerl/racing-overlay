@@ -46,7 +46,7 @@ LAPTIME_LOG_COLUMNS = ("lap", "time", "delta", "temp", "sectors", "fuel",
 # gets its *own* copy of these so they can be themed and sized independently from
 # the settings editor -- changing one never touches the other.
 _TABLE_STYLE: dict = {
-    "corner_radius_frac": 0.05,
+    "corner_radius_frac": 0.0,
     "alt_row_shading": True,
     "row_dividers": True,
     "name_font_bold": True,
@@ -156,6 +156,7 @@ _TABLE_STYLE: dict = {
 _WIDGET_CHROME: dict = {
     "row_dividers": True,
     "data_font_bold": False,
+    "corner_radius_frac": 0.0,
 }
 _WIDGET_CHROME_COLORS: dict = {
     "header_bg": "#0b0e12bb",
@@ -260,7 +261,6 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         # How many of your most recent laps to list (newest at the top).
         "rows": 8,
-        "corner_radius_frac": 0.05,
         "alt_row_shading": True,
         "show_header": True,
         # Row text size (multiple of row height) and the header size on top of it.
@@ -298,7 +298,6 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        "corner_radius_frac": 0.04,
         "title": "FUEL CALCULATOR",
         # How many recent laps of fuel use to average for the projections.
         "history_laps": 10,
@@ -397,7 +396,6 @@ DEFAULTS: dict = {
         "show_axis": True,
         # Draw a rounded card behind the radar (matches the dash panels).
         "show_panel": False,
-        "corner_radius_frac": 0.12,
         "sizes": {
             "car_w": 0.13,
             "car_h": 0.20,
@@ -424,7 +422,6 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        "corner_radius_frac": 0.22,
         "shift_segments": 20,
         "shift_red_frac": 0.16,
         "shift_yellow_frac": 0.24,
@@ -623,7 +620,6 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        "corner_radius_frac": 0.06,
         # Reference lap: session_best, best_lap, optimal, last_lap, leader_last.
         "mode": "session_best",
         # Seconds of delta at full bar deflection (smaller = more sensitive).
@@ -738,7 +734,6 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        "corner_radius_frac": 0.05,
         "row_height_px": 0,
         "max_row_height_frac": 0.0,
         # Fallback sector count when the session provides no sector layout.
@@ -771,8 +766,8 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size (corner labels, car numbers), x global text_scale.
         "text_scale": 1.0,
-        "asphalt_width": 11,
-        "outline_width": 2,
+        "asphalt_width": 12,
+        "outline_width": 6,
         # Car dot size. 0.05 is the default size; raise/lower to scale every car
         # dot (and the player's glow ring) up or down proportionally.
         "dot_radius_frac": 0.05,
@@ -829,7 +824,6 @@ DEFAULTS: dict = {
         # Draw a rounded card behind the whole map. Off by default so only the
         # infield (the area enclosed by the track loop) is shaded.
         "show_panel": False,
-        "corner_radius_frac": 0.08,
         "colors": {
             **_WIDGET_CHROME_COLORS,
             "asphalt": "#333a42",
@@ -897,7 +891,6 @@ DEFAULTS: dict = {
         **_WIDGET_CHROME,
         "show": False,
         "text_scale": 1.0,
-        "corner_radius_frac": 0.05,
         "show_title": True,
         "title": "TIRES",
         "show_wear": True,
@@ -921,7 +914,6 @@ DEFAULTS: dict = {
         **_WIDGET_CHROME,
         "show": False,
         "text_scale": 1.0,
-        "corner_radius_frac": 0.05,
         "show_title": True,
         "title": "PIT SERVICES",
         "show_pit_banner": True,
@@ -948,7 +940,6 @@ DEFAULTS: dict = {
         **_WIDGET_CHROME,
         "show": False,
         "text_scale": 1.0,
-        "corner_radius_frac": 0.05,
         "show_title": True,
         "title": "WEATHER",
         "row_height_px": 0,
@@ -974,7 +965,6 @@ DEFAULTS: dict = {
         **_WIDGET_CHROME,
         "show": False,
         "text_scale": 1.0,
-        "corner_radius_frac": 0.05,
         "rows": 3,
         "row_height_px": 0,
         "max_row_height_frac": 0.0,
@@ -1001,7 +991,6 @@ DEFAULTS: dict = {
         **_WIDGET_CHROME,
         "show": False,
         "text_scale": 1.0,
-        "corner_radius_frac": 0.05,
         "show_title": True,
         "title": "HYBRID",
         "label_battery": "ERS",
@@ -1261,7 +1250,7 @@ def _load_all() -> None:
     AUTO_SWITCH_BY_LEAGUE = bool(raw.get("auto_switch_by_league", True))
     AUTO_SWITCH_BY_CAR = bool(raw.get("auto_switch_by_car", True))
     AUTO_SWITCH_TO_DEFAULT = bool(raw.get("auto_switch_to_default", True))
-    CLOUD_TRACKS = bool(raw.get("cloud_tracks", True))
+    CLOUD_TRACKS = True  # always on; legacy cloud_tracks:false in profiles is ignored
     active = raw.get("active_preset")
     ACTIVE_PRESET = active if active in _PRESETS else next(iter(_PRESETS))
     _ensure_one_default()
@@ -1519,7 +1508,6 @@ def _serialize() -> dict:
         "auto_switch_by_league": AUTO_SWITCH_BY_LEAGUE,
         "auto_switch_by_car": AUTO_SWITCH_BY_CAR,
         "auto_switch_to_default": AUTO_SWITCH_TO_DEFAULT,
-        "cloud_tracks": CLOUD_TRACKS,
         "presets": presets,
     }
 
@@ -1744,14 +1732,13 @@ def set_auto_switch_to_default(value: bool) -> None:
 
 
 def cloud_tracks() -> bool:
-    """Whether to download (and, for authors, upload) shared track maps."""
-    return CLOUD_TRACKS
+    """Shared track maps from MongoDB are always enabled."""
+    return True
 
 
 def set_cloud_tracks(value: bool) -> None:
-    global CLOUD_TRACKS
-    CLOUD_TRACKS = bool(value)
-    save_profiles()
+    """No-op — cloud track sync cannot be disabled."""
+    del value
 
 
 def active_layout() -> dict:
