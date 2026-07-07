@@ -149,6 +149,13 @@ class PanelWindow(QWidget):
             self.layout_state[key] = [x, y, w, h]
         self._rescale_font()
 
+    def fit_content_height(self, content_h: int, *, min_h: int = 44) -> None:
+        """Resize panel height to fit content widget (width unchanged)."""
+        m = self.layout().contentsMargins()
+        needed = max(min_h, content_h + m.top() + m.bottom())
+        if needed != self.height():
+            self.resize(self.width(), needed)
+
     def ensure_on_screen(self) -> bool:
         """Clamp geometry when mostly off-screen; return True if adjusted."""
         g = self.geometry()

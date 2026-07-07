@@ -52,6 +52,141 @@ def read_track_temp(ir):
     return temp
 
 
+def _read_ir(ir, key):
+    try:
+        return ir[key]
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _int_or_none(val) -> int | None:
+    try:
+        if val is None:
+            return None
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_tire_inventory(
+    telemetry: dict,
+    cfg: dict,
+    *,
+    pit_stops_count: int = 0,
+) -> dict:
+    """Resolve tire set counts: SDK first, then manual config fallback."""
+    from . import pit_strategy_constants as psc
+
+    available = telemetry.get("tire_sets_available")
+    used = telemetry.get("tire_sets_used")
+    limit = telemetry.get("dry_tire_set_limit")
+    manual_total = int(cfg.get("race_tire_sets_total", 0) or 0)
+    reserve = int(cfg.get("tire_sets_reserve", psc.TIRE_SETS_RESERVE) or 0)
+
+    sets_used: int | None = None
+    if isinstance(used, (int, float)) and used >= 0:
+        sets_used = int(used)
+    elif pit_stops_count > 0:
+        sets_used = int(pit_stops_count)
+
+    source = "unlimited"
+    sets_limited = False
+    sets_remaining: int | None = None
+    sets_total: int | None = None
+
+    if isinstance(available, (int, float)) and 0 <= int(available) < psc.TIRE_SETS_UNLIMITED:
+        sets_remaining = int(available)
+        sets_limited = True
+        source = "sdk"
+        if sets_used is not None:
+            sets_total = sets_remaining + sets_used
+    elif isinstance(limit, (int, float)) and 0 < int(limit) < psc.TIRE_SETS_UNLIMITED:
+        sets_total = int(limit)
+        sets_limited = True
+        source = "limit"
+        sets_used = sets_used or 0
+        sets_remaining = max(0, sets_total - sets_used)
+    elif manual_total > 0:
+        sets_total = manual_total
+        sets_limited = True
+        source = "manual"
+        sets_used = sets_used or 0
+        sets_remaining = max(0, sets_total - sets_used)
+
+    current_set = (sets_used + 1) if sets_used is not None else None
+    tire_inventory_low = (
+        sets_limited and sets_remaining is not None and sets_remaining <= reserve)
+    tire_inventory_exhausted = (
+        sets_limited and sets_remaining is not None and sets_remaining <= 0)
+
+    return {
+        "sets_limited": sets_limited,
+        "sets_remaining": sets_remaining,
+        "sets_total": sets_total,
+        "sets_used": sets_used,
+        "current_set": current_set,
+        "inventory_source": source,
+        "tire_inventory_low": tire_inventory_low,
+        "tire_inventory_exhausted": tire_inventory_exhausted,
+        "inventory_blocks_window": tire_inventory_exhausted,
+    }
+
+
+def read_pit_advisor_telemetry(ir, car_info: dict | None = None) -> dict:
+    """Single gate for pit-advisor SDK reads (live race telemetry only)."""
+    car_info = car_info or {}
+    out: dict = {
+        "player": _int_or_none(_read_ir(ir, "PlayerCarIdx")),
+        "lap": _int_or_none(_read_ir(ir, "Lap")),
+        "session_time": _float_or_none(_read_ir(ir, "SessionTime")),
+        "fuel_level": _float_or_none(_read_ir(ir, "FuelLevel")),
+        "fuel_level_pct": _float_or_none(_read_ir(ir, "FuelLevelPct")),
+        "fuel_use_per_hour": _float_or_none(_read_ir(ir, "FuelUsePerHour")),
+        "fuel_max": _float_or_none(car_info.get("fuel_max")),
+        "est_lap": _float_or_none(car_info.get("est_lap")),
+        "tire_corners": read_tire_corners(ir, wear=True, temp=False),
+        "tire_sets_available": _int_or_none(_read_ir(ir, "TireSetsAvailable")),
+        "tire_sets_used": _int_or_none(_read_ir(ir, "TireSetsUsed")),
+        "dry_tire_set_limit": _int_or_none(_read_ir(ir, "PlayerCarDryTireSetLimit")),
+        "dc_tire_set": _int_or_none(_read_ir(ir, "dcTireSet")),
+        "positions": _read_ir(ir, "CarIdxPosition"),
+        "car_lap": _read_ir(ir, "CarIdxLap"),
+        "on_pit_road": _read_ir(ir, "CarIdxOnPitRoad"),
+        "surface": _read_ir(ir, "CarIdxTrackSurface"),
+        "lap_pcts": _read_ir(ir, "CarIdxLapDistPct"),
+        "est_time": _read_ir(ir, "CarIdxEstTime"),
+        "f2_time": _read_ir(ir, "CarIdxF2Time"),
+        "car_last": _read_ir(ir, "CarIdxLastLapTime"),
+        "car_flags": _read_ir(ir, "CarIdxSessionFlags"),
+        "session_flags": _int_or_none(_read_ir(ir, "SessionFlags")) or 0,
+        "session_laps_remain_ex": _float_or_none(_read_ir(ir, "SessionLapsRemainEx")),
+        "session_laps_remain": _float_or_none(_read_ir(ir, "SessionLapsRemain")),
+        "session_time_remain": _float_or_none(_read_ir(ir, "SessionTimeRemain")),
+        "session_laps_total": _int_or_none(_read_ir(ir, "SessionLapsTotal")),
+        "pit_sv_flags": _int_or_none(_read_ir(ir, "PitSvFlags")),
+        "pit_sv_fuel": _float_or_none(_read_ir(ir, "PitSvFuel")),
+        "pit_sv_tire_compound": _int_or_none(_read_ir(ir, "PitSvTireCompound")),
+        "track_wetness": _float_or_none(_read_ir(ir, "TrackWetness")),
+    }
+    return out
+
+
+def read_pit_menu(telemetry: dict) -> dict:
+    """Decode queued pit services from telemetry dict."""
+    from . import pit_service as ps
+
+    flags = telemetry.get("pit_sv_flags") or 0
+    services = {s["key"]: s["checked"] for s in ps.decode_flags(flags)}
+    tires = any(services.get(k) for k in ("lf_tire", "rf_tire", "lr_tire", "rr_tire"))
+    return {
+        "fuel_queued": bool(services.get("fuel")),
+        "tires_queued": tires,
+        "fast_repair_queued": bool(services.get("fast_repair")),
+        "tearoff_queued": bool(services.get("tearoff")),
+        "pit_sv_fuel": telemetry.get("pit_sv_fuel"),
+    }
+
+
 def _float_or_none(val):
     try:
         return float(val) if val is not None else None

@@ -10,6 +10,7 @@ from overlay import config
 from overlay.widgets.delta_bar import DeltaBarWidget
 from overlay.widgets.ers_hybrid import ErsHybridWidget
 from overlay.widgets.leaderboard_strip import LeaderboardStripWidget
+from overlay.widgets.pit_advisor import PitAdvisorWidget
 from overlay.widgets.pit_board import PitBoardWidget
 from overlay.widgets.radio_tower import RadioTowerWidget
 from overlay.widgets.sector_timing import SectorTimingWidget
@@ -30,6 +31,7 @@ def qapp():
     WeatherPanelWidget,
     SystemPanelWidget,
     PitBoardWidget,
+    PitAdvisorWidget,
     RadioTowerWidget,
     LeaderboardStripWidget,
     ErsHybridWidget,

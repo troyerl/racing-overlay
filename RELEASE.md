@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.0 - 2026-07-07
+
+- **Pit advisor widget.** New Session panel recommends when to pit on green and
+  under caution — fuel window, tire wear, undercut/cover gaps, field pitting,
+  reentry traffic, and caution outlook in one call (PIT NOW, PIT NEXT LAP, STAY
+  OUT, HOLD, MARGINAL).
+- **Opponent tire inference.** Tracks each car's pit stops and stint length to
+  guess who is out of tire sets; recommends strategic early pits when you can
+  gain net positions by stopping before bankrupt cars ahead are forced in.
+- **Measured pit loss.** After your stops, pit duration EMA refines undercut and
+  position-cost math; optional splash-pit detection skips fuel-only stops when
+  tuning opponent tire counts.
+- **Pit menu hard gate.** PIT NOW / PIT NEXT LAP waits until fuel and/or tires
+  are queued on the iRacing pit menu when the option is enabled.
+- **Race settings accordion.** Pit Advisor settings split **Race** (tire set
+  limit, pit loss, stint length, wetness — per session/track) from **Content**
+  (display and strategy thresholds).
+
 ## 1.59.0 - 2026-07-07
 
 - **Performance panel widget.** New Session panel shows machine CPU, memory, and

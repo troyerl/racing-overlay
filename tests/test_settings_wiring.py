@@ -41,7 +41,7 @@ _SECTION_FILES: dict[str, list[str]] = {
     "relative": ["overlay/widgets/table.py", "overlay/app.py"],
     "standings": ["overlay/widgets/table.py", "overlay/app.py"],
     "laptime_log": ["overlay/widgets/laptime_log.py", "overlay/app.py"],
-    "fuel_calc": ["overlay/widgets/fuel_calc.py", "overlay/app.py"],
+    "fuel_calc": ["overlay/widgets/fuel_calc.py", "overlay/pit_strategy.py", "overlay/app.py"],
     "radar": ["overlay/widgets/radar.py", "overlay/app.py"],
     "dash": ["overlay/widgets/dash.py", "overlay/app.py"],
     "inputs": ["overlay/widgets/inputs.py", "overlay/app.py"],
@@ -57,6 +57,8 @@ _SECTION_FILES: dict[str, list[str]] = {
     "radio_tower": ["overlay/widgets/radio_tower.py", "overlay/app.py"],
     "ers_hybrid": ["overlay/widgets/ers_hybrid.py", "overlay/app.py"],
     "system_panel": ["overlay/widgets/system_panel.py", "overlay/app.py"],
+    "pit_advisor": ["overlay/widgets/pit_advisor.py", "overlay/pit_strategy.py",
+                    "overlay/telemetry.py", "overlay/app.py"],
 }
 
 _SHARED_FILES = [

@@ -40,6 +40,7 @@ from . import demo_data
 from . import paths
 from . import irating_calc
 from . import layout_store
+from . import pit_strategy as pstrat
 from . import sysstats
 from . import track_store
 from . import traffic as tr
@@ -62,6 +63,7 @@ from .widgets.inputs import InputTraceWidget
 from .widgets.lap_compare import LapCompareEngine, LapCompareWidget
 from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.leaderboard_strip import LeaderboardStripWidget
+from .widgets.pit_advisor import PitAdvisorWidget
 from .widgets.pit_board import PitBoardWidget
 from .widgets.system_panel import SystemPanelWidget
 from .widgets.radio_tower import RadioTowerWidget
@@ -97,6 +99,7 @@ DEFAULT_GEOMS = {
     "radio_tower": (200, 720, 220, 56),
     "ers_hybrid": (620, 720, 220, 110),
     "system_panel": (1140, 720, 180, 150),
+    "pit_advisor": (420, 720, 220, 100),
 }
 
 _WIDGET_KEYS = (
@@ -104,7 +107,7 @@ _WIDGET_KEYS = (
     "laptime_log", "fuel_calc", "inputs", "delta_bar",
     "flags", "sector_timing", "lap_compare",
     "tire_panel", "pit_board", "weather_panel",
-    "leaderboard_strip", "radio_tower", "ers_hybrid", "system_panel",
+    "leaderboard_strip", "radio_tower", "ers_hybrid", "system_panel", "pit_advisor",
 )
 
 _TRACK_FETCH_RETRY_SEC = 10.0
@@ -238,6 +241,7 @@ class AdvancedSimHUD:
         # EstTime delta history for the closing-rate column.
         self._closing_state: dict = {}
         self._closing_session_uid: int | None = None
+        self._pit_advisor_closing_state: dict = {}
         self._radar_closing_state: dict = {}
         self._radar_clear_since: float | None = None
         self._need_weekend_info = False
@@ -251,6 +255,7 @@ class AdvancedSimHUD:
         self._ll_render_version = -1
         self._fuel_payload_key = None
         self._lap_compare_snap_key = None
+        self._caution_tracker = pstrat.CautionTracker()
         self._visible_widgets: dict[str, bool] = {}
         # Throttled WeekendInfo cache for header/footer slots.
         self._weekend_cache: dict = {}
@@ -338,6 +343,7 @@ class AdvancedSimHUD:
         self.radio_tower_widget = RadioTowerWidget()
         self.ers_hybrid_widget = ErsHybridWidget()
         self.system_panel_widget = SystemPanelWidget()
+        self.pit_advisor_widget = PitAdvisorWidget()
         if self.demo:
             self._load_demo_track()
             self._fetch_shared_app_settings()
@@ -363,6 +369,7 @@ class AdvancedSimHUD:
         self._wrap("radio_tower", self.radio_tower_widget)
         self._wrap("ers_hybrid", self.ers_hybrid_widget)
         self._wrap("system_panel", self.system_panel_widget)
+        self._wrap("pit_advisor", self.pit_advisor_widget)
         self._refresh_visible_widgets()
 
     @staticmethod
@@ -1079,7 +1086,7 @@ class AdvancedSimHUD:
                   self.tire_panel_widget, self.pit_board_widget,
                   self.weather_panel_widget, self.leaderboard_strip_widget,
                   self.radio_tower_widget, self.ers_hybrid_widget,
-                  self.system_panel_widget):
+                  self.system_panel_widget, self.pit_advisor_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -1267,6 +1274,7 @@ class AdvancedSimHUD:
             self._ll_personal_best = None
             self._clear_weather_hist()
             self._ll_laps_version += 1
+            self._caution_tracker = pstrat.CautionTracker()
         # _drivers() also refreshes the dash's engine/shift-light params.
         drivers = self._drivers() if need_drivers else {}
         lap_est = self._lap_est(est_time) if est_time is not None else 0.0
@@ -1274,7 +1282,8 @@ class AdvancedSimHUD:
         # Track pit stops only if a *shown* table shows the pit column.
         sess_time = None
         if ((en["relative"] and config.has_column("relative", "pit"))
-                or (en["standings"] and config.has_column("standings", "pit"))):
+                or (en["standings"] and config.has_column("standings", "pit"))
+                or en["pit_advisor"]):
             sess_time = self.ir["SessionTime"]
             self._update_pit_tracking(surface, car_lap, sess_time)
 
@@ -1285,7 +1294,8 @@ class AdvancedSimHUD:
                 (en["standings"] and config.any_table_column(
                     "last_lap", "qual_best", sections=("standings",))) or \
                 (en["delta_bar"]
-                 and config.CFG["delta_bar"].get("mode") == "leader_last"):
+                 and config.CFG["delta_bar"].get("mode") == "leader_last") or \
+                en["pit_advisor"]:
             self._car_last = self.ir["CarIdxLastLapTime"]
         if (en["relative"] and config.any_table_column("best_lap", "qual_best",
                                                        "gap_pole",
@@ -1376,6 +1386,8 @@ class AdvancedSimHUD:
             self._update_ers_hybrid()
         if en["system_panel"]:
             self._update_system_panel()
+        if en["pit_advisor"]:
+            self._update_pit_advisor()
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -1399,6 +1411,10 @@ class AdvancedSimHUD:
         """Record each car's last pit (lap + race time) on pit-road entry."""
         on_pit = self.ir["CarIdxOnPitRoad"]
         n = len(surface) if surface else (len(on_pit) if on_pit else 0)
+        try:
+            player = int(self.ir["PlayerCarIdx"])
+        except (TypeError, ValueError, KeyError):
+            player = None
         for idx in range(n):
             if on_pit is not None:
                 now_on = bool(on_pit[idx])
@@ -1408,6 +1424,37 @@ class AdvancedSimHUD:
             if now_on and not st["on"]:  # rising edge = just entered the pits
                 st["lap"] = car_lap[idx] if car_lap else None
                 st["time"] = sess_time
+                st["pit_count"] = int(st.get("pit_count") or 0) + 1
+                if idx == player:
+                    wear_corners = tele.read_tire_corners(
+                        self.ir, wear=True, temp=False)
+                    wears = []
+                    for entry in wear_corners.values():
+                        w = entry.get("wear")
+                        if isinstance(w, (int, float)):
+                            fv = float(w)
+                            wears.append(fv * 100.0 if fv <= 1.0 else fv)
+                    if wears:
+                        st["wear_at_pit"] = min(wears)
+            elif st["on"] and not now_on:
+                entry = st.get("time")
+                if entry is not None and sess_time is not None:
+                    duration = float(sess_time) - float(entry)
+                    st["last_pit_duration"] = duration
+                    pacfg = config.CFG.get("pit_advisor", {})
+                    splash_max = float(
+                        pacfg.get("opponent_splash_pit_max_s", 0) or 0)
+                    is_full_stop = splash_max <= 0 or duration >= splash_max
+                    if is_full_stop:
+                        st["tire_stop_count"] = (
+                            int(st.get("tire_stop_count") or 0) + 1)
+                    if idx == player:
+                        pstrat.record_pit_loss_sample(
+                            self._pit,
+                            player,
+                            duration,
+                            cfg=pacfg,
+                        )
             st["on"] = now_on
 
     def _pit_text(self, idx, car_lap, sess_time, mode) -> str:
@@ -4214,137 +4261,153 @@ class AdvancedSimHUD:
         return laps, t
 
     def _update_fuel_calc(self) -> None:
-        fuel = self.ir["FuelLevel"]
-        cap = self._fuel_capacity(fuel)
-        try:
-            lap = int(self.ir["Lap"])
-        except (TypeError, ValueError):
-            lap = None
-
         fcfg = config.CFG["fuel_calc"]
-        lap_avg = self._avg_lap_secs()
-        laps_rem, time_rem = self._race_remaining(lap_avg)
-
-        if self._fc_use:
-            u_avg = sum(self._fc_use) / len(self._fc_use)
-            u_max = max(self._fc_use)
-            u_min = min(self._fc_use)
-        else:
-            est = None
-            per_hr = self.ir["FuelUsePerHour"]
-            lap_s = self._fuel_lap_secs()
-            if per_hr and lap_s:
-                est = per_hr * (lap_s / 3600.0)
-            u_avg = u_max = u_min = est
-
-        live_burn = None
-        if fcfg.get("show_live_burn", False):
-            if self._fc_use:
-                live_burn = self._fc_use[0]
-            elif u_avg:
-                live_burn = u_avg
-        fuel_pct = None
-        if fcfg.get("show_tank_pct", False):
-            try:
-                fuel_pct = self.ir["FuelLevelPct"]
-            except (TypeError, ValueError, KeyError):
-                if cap and isinstance(fuel, (int, float)) and cap > 0:
-                    fuel_pct = 100.0 * fuel / cap
-
-        legal_min = None
-        if laps_rem is not None and u_avg and u_avg > 0:
-            buf = float(fcfg.get("legal_fuel_buffer_l", 2.0) or 0.0)
-            legal_min = max(0.0, laps_rem * u_avg + buf)
-
-        stints = None
-        stint_laps = float(fcfg.get("stint_laps", 0) or 0)
-        if fcfg.get("show_stints", False) and stint_laps > 0 and u_avg and u_avg > 0 and cap:
-            stints = int(cap // (stint_laps * u_avg))
-
-        def scenario(u):
-            if not u or u <= 0 or not isinstance(fuel, (int, float)):
-                return {"usage": u, "laps": None, "pits": None, "refuel": None}
-            laps_on_fuel = fuel / u
-            refuel = None
-            pits = None
-            if laps_rem is not None:
-                refuel = max(0.0, laps_rem * u - fuel)
-                if cap and cap > 0:
-                    pits = refuel / cap
-            return {"usage": u, "laps": laps_on_fuel, "pits": pits,
-                    "refuel": refuel}
-
-        rows = {"avg": scenario(u_avg), "max": scenario(u_max),
-                "min": scenario(u_min)}
-
-        laps_empty = rows["avg"]["laps"]
-        time_empty = (laps_empty * lap_avg) if (laps_empty and lap_avg) else None
-        laps_margin = (laps_empty - laps_rem) if (laps_empty is not None
-                                                  and laps_rem is not None) else None
-        time_margin = (time_empty - time_rem) if (time_empty is not None
-                                                  and time_rem is not None) else None
-        add = rows["avg"]["refuel"]
-
-        # Pit window: with the heaviest usage you must pit soonest, with the
-        # lightest, latest -- that range is the window (in absolute lap numbers).
-        window = None
-        win_open = False
-        strip = {"total": 0, "window": None, "now": None}
-        if lap is not None and rows["max"]["laps"] and rows["min"]["laps"] \
-                and add and add > 0:
-            a = lap + int(rows["max"]["laps"])
-            b = lap + int(rows["min"]["laps"])
-            window = (a, b)
-            win_open = lap >= a - 1
-            if laps_rem is not None and laps_rem > 0:
-                total = max(1, min(40, int(round(laps_rem))))
-                wa = max(0, min(total - 1, int(rows["max"]["laps"])))
-                wb = max(0, min(total - 1, int(rows["min"]["laps"])))
-                try:
-                    total_laps = int(self.ir["SessionLapsTotal"])
-                except (TypeError, ValueError, KeyError):
-                    total_laps = None
-                if total_laps and total_laps > 0:
-                    elapsed = max(0, lap - 1)
-                    now_idx = max(0, min(total - 1,
-                                        int(round(elapsed / total_laps * total))))
-                else:
-                    now_idx = max(0, min(total - 1, total - int(laps_rem)))
-                strip = {"total": total, "window": (wa, wb), "now": now_idx}
-
-        pit_hint = None
-        if fcfg.get("show_pit_compare", False) and u_avg and u_avg > 0:
-            loss = float(fcfg.get("pit_loss_seconds", 25.0) or 25.0)
-            pit_hint = f"Pit now ~{loss:.0f}s vs +2 laps ~{2 * u_avg:.1f}L"
-
-        alert = False
-        if fcfg.get("show_low_fuel_alert", True):
-            lt = float(fcfg.get("low_fuel_laps_threshold", 2.0) or 2.0)
-            tt = float(fcfg.get("low_fuel_time_threshold", 120.0) or 120.0)
-            if laps_margin is not None and laps_margin < lt:
-                alert = True
-            if time_margin is not None and time_margin < tt:
-                alert = True
-
-        payload = {
-            "level": fuel, "cap": cap, "add": add,
-            "window": window, "window_open": win_open,
-            "rows": rows,
-            "time_empty": time_empty, "time_margin": time_margin,
-            "laps_empty": laps_empty, "laps_margin": laps_margin,
-            "strip": strip,
-            "live_burn": live_burn,
-            "fuel_pct": fuel_pct,
-            "legal_min": legal_min,
-            "stints": stints,
-            "pit_hint": pit_hint,
-            "alert": alert,
-        }
+        payload = pstrat.build_fuel_snapshot(
+            self.ir,
+            car_info=self._car_info,
+            fc_use=self._fc_use,
+            ll_laps=self._ll_laps,
+            cfg=fcfg,
+        )
         key = tele.fuel_payload_key(payload)
         if key == getattr(self, "_fuel_payload_key", None):
             return
         self._fuel_payload_key = key
         self.fuel_widget.set_data(payload)
+
+    def _update_pit_advisor(self) -> None:
+        pacfg = config.CFG.get("pit_advisor", {})
+        telem = tele.read_pit_advisor_telemetry(self.ir, self._car_info)
+        player = telem.get("player")
+        lap_est = float(telem.get("est_lap") or self._car_info.get("est_lap", 0.0) or 0.0)
+        est_time = telem.get("est_time")
+        positions = telem.get("positions")
+        drivers = self._drivers()
+        car_lap = telem.get("car_lap")
+        on_pit = telem.get("on_pit_road")
+        surface = telem.get("surface")
+        lap_pcts = telem.get("lap_pcts")
+        f2_time = telem.get("f2_time")
+        car_last = telem.get("car_last")
+        car_flags = telem.get("car_flags")
+        flag, ctx = self._session_flag_bundle(
+            player, positions, est_time, lap_est, drivers)
+        pit_ctx = pstrat.build_pit_context(
+            player=player,
+            positions=positions,
+            est_time=est_time,
+            lap_est=lap_est,
+            drivers=drivers,
+            pace_idxs=self._pace_idxs,
+            flag=flag,
+            flag_context=ctx,
+            session_flags=telem.get("session_flags")
+            or getattr(self, "_last_session_flags", 0),
+        )
+        cur_lap = telem.get("lap")
+        sess_time = telem.get("session_time")
+        pstrat.update_caution_tracker(
+            self._caution_tracker,
+            yellow=bool(pit_ctx.get("caution")),
+            lap=cur_lap,
+            session_time=sess_time,
+        )
+        if self._caution_tracker.fuel_ema_reset:
+            self._fc_use.clear()
+        caution_hist = self._caution_tracker.as_dict()
+        pit_loss = pstrat.resolve_pit_loss(pacfg, self._pit, player)
+        laps_rem = telem.get("session_laps_remain_ex")
+        if laps_rem is None:
+            laps_rem = telem.get("session_laps_remain")
+        dry_limit = telem.get("dry_tire_set_limit")
+        sets_total = (
+            int(dry_limit) if isinstance(dry_limit, (int, float))
+            and 0 < int(dry_limit) < 255 else None)
+        field_intel = pstrat.build_field_intel(
+            player=player,
+            positions=positions,
+            car_lap=car_lap,
+            on_pit_road=on_pit,
+            surface=surface,
+            pit_state=self._pit,
+            lap_pcts=lap_pcts,
+            f2_time=f2_time,
+            est_time=est_time,
+            lap_est=lap_est,
+            pace_idxs=self._pace_idxs,
+            current_lap=cur_lap,
+            pit_loss=pit_loss,
+            cfg=pacfg,
+            ll_laps=self._ll_laps,
+            car_last=car_last,
+            car_flags=car_flags,
+            session_time=sess_time,
+            closing_state=self._pit_advisor_closing_state,
+            laps_remaining=laps_rem,
+            sets_total=sets_total,
+        )
+        tire_snapshot = pstrat.build_tire_snapshot(
+            telem,
+            ll_laps=self._ll_laps,
+            cfg=pacfg,
+            pit_state=self._pit,
+            player=player,
+            car_lap=car_lap,
+            laps_remaining=laps_rem,
+            pit_loss=pit_loss,
+        )
+        caution_outlook = pstrat.build_caution_outlook(
+            caution_hist,
+            field_intel,
+            current_lap=cur_lap,
+            cfg=pacfg,
+        )
+        session_phase = pstrat.build_session_phase(telem, pacfg)
+        pit_menu = tele.read_pit_menu(telem)
+        snapshot = pstrat.build_fuel_snapshot(
+            self.ir,
+            car_info=self._car_info,
+            fc_use=self._fc_use,
+            ll_laps=self._ll_laps,
+            cfg=pacfg,
+            caution=bool(pit_ctx.get("caution")),
+        )
+        strategy = pstrat.build_strategy_extras(
+            snapshot,
+            ll_laps=self._ll_laps,
+            cfg=pacfg,
+            pit_state=self._pit,
+            player=player,
+            car_lap=car_lap,
+            on_pit_road=on_pit,
+            field_intel=field_intel,
+            tire_snapshot=tire_snapshot,
+            session_phase=session_phase,
+            pit_loss=pit_loss,
+        )
+        advice = pstrat.advise_pit_strategy(
+            snapshot,
+            pit_ctx,
+            pacfg,
+            field_intel=field_intel,
+            caution_hist=caution_hist,
+            strategy=strategy,
+            tire_snapshot=tire_snapshot,
+            caution_outlook=caution_outlook,
+            pit_menu=pit_menu,
+            session_phase=session_phase,
+        )
+        payload = {
+            "rec": advice.rec.value,
+            "label": advice.label,
+            "rationale": advice.rationale,
+            "secondary": advice.secondary,
+            "actionable": advice.actionable,
+            "edit": self.edit_mode_enabled(),
+        }
+        if payload == getattr(self.pit_advisor_widget, "data", None):
+            return
+        self.pit_advisor_widget.set_data(payload)
 
     def _update_tire_panel(self) -> None:
         cfg = config.CFG.get("tire_panel", {})
