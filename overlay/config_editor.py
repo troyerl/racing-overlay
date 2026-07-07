@@ -110,6 +110,7 @@ OPTION_LABELS = {
     "class_position": "Class position", "track_name": "Track name",
     "session_best": "Session best lap", "local_time": "Local time",
     "sim_time": "Sim time of day", "cpu": "CPU usage %", "mem": "Memory usage %",
+    "gpu": "GPU usage %",
     "order_pill": "Order", "title": "Title", "count": "Count",
     # pit_mode
     "laps_since": "Laps since pit", "time_since": "Time since pit",
@@ -215,6 +216,9 @@ LABEL_OVERRIDES = {
     "radio_tower.show_position": "Show race position (1, 2, …)",
     "radio_tower.show_car_number": "Show car number",
     "radio_tower.show_name": "Show driver name",
+    "system_panel.show_title": "Show title bar",
+    "system_panel.title": "Title text",
+    "system_panel.show_icons": "Show Font Awesome icons instead of text labels",
     "ers_hybrid.show_title": "Show title bar",
     "ers_hybrid.title": "Title text",
     "ers_hybrid.label_battery": "Battery row label",
@@ -280,6 +284,7 @@ _WORD_FIXUPS = {
     "rpm": "RPM", "sof": "SoF", "irating": "iRating", "sr": "SR", "ui": "UI",
     "id": "ID", "bg": "background", "frac": "fraction", "px": "size",
     "tau": "easing", "pct": "percent", "hz": "rate", "cpu": "CPU", "mem": "memory",
+    "gpu": "GPU",
 }
 
 from .widgets.dash import METRIC_KEYS as _DASH_METRICS
@@ -289,7 +294,7 @@ _SLOT_COMMON = [
     "none", "sof", "class_sof", "position", "class_position",
     "session_time", "race_time", "lap", "incidents", "track_name",
     "track_temp", "air_temp", "best_lap", "session_best",
-    "local_time", "sim_time", "cpu", "mem",
+    "local_time", "sim_time", "cpu", "mem", "gpu",
     "laps_remain", "incident_limit", "fast_repairs",
     "weather", "track_wetness", "session_type",
 ]
@@ -374,6 +379,7 @@ _WIDGET_HINTS = {
     "weather_panel": "Skies, rain, temps, trend, and wind.",
     "leaderboard_strip": "Compact top-N leaderboard (IMS scoring-pylon style).",
     "radio_tower": "Current team-radio speaker with position and car number.",
+    "system_panel": "CPU, memory, GPU, FPS, and network/WiFi readouts.",
     "ers_hybrid": "Hybrid battery and boost / push-to-pass state.",
 }
 
@@ -406,7 +412,8 @@ WIDGET_NAV_GROUPS: list[tuple[str, list[str]]] = [
     ("Standings", ["relative", "standings", "leaderboard_strip"]),
     ("Timing", ["laptime_log", "sector_timing", "delta_bar", "lap_compare"]),
     ("Driving", ["dash", "inputs", "fuel_calc", "tire_panel"]),
-    ("Session", ["flags", "weather_panel", "pit_board", "radio_tower", "ers_hybrid"]),
+    ("Session", ["flags", "weather_panel", "pit_board", "radio_tower",
+                 "ers_hybrid", "system_panel"]),
     ("Awareness", ["map", "radar"]),
 ]
 
@@ -631,6 +638,15 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
         ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Colors", ["colors"]),
+    ],
+    "system_panel": [
+        ("Content", [
+            "show_title", "title", "show_icons", "show_cpu", "show_mem", "show_gpu",
+            "show_fps", "show_network", "text_scale",
+        ]),
+        ("Row layout", ["row_height_px", "max_row_height_frac"]),
+        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "ers_hybrid": [

@@ -38,6 +38,9 @@ _WEAK_WIDGET_KEYS = {
                     "max_row_height_frac"},
     "ers_hybrid": {"show_title", "title", "label_battery", "label_lap",
                    "label_boost", "label_p2p", "empty_text", "corner_radius_frac"},
+    "system_panel": {"show_title", "title", "show_icons", "show_cpu", "show_mem",
+                     "show_gpu", "show_fps", "show_network", "corner_radius_frac",
+                     "row_height_px", "max_row_height_frac"},
     "delta_bar": {"corner_radius_frac"},
     "sector_timing": {"corner_radius_frac", "row_height_px", "max_row_height_frac"},
 }

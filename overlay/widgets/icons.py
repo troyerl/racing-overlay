@@ -65,6 +65,9 @@ _CODEPOINTS: dict[str, int] = {
     "sim_time": 0xF185,       # sun
     "cpu": 0xF2DB,            # microchip
     "mem": 0xF538,            # memory
+    "gpu": 0xF390,            # display
+    "fps": 0xF624,            # gauge
+    "network": 0xF1EB,        # wifi
     "order_pill": 0xF0CB,     # list-ol
     "title": 0xF091,          # trophy
     "count": 0xF0C0,          # users

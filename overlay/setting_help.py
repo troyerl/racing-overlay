@@ -20,6 +20,7 @@ WIDGET_NAMES: dict[str, str] = {
     "weather_panel": "Weather panel",
     "leaderboard_strip": "Leaderboard strip",
     "radio_tower": "Radio tower",
+    "system_panel": "System panel",
     "ers_hybrid": "ERS / hybrid panel",
 }
 
@@ -335,6 +336,16 @@ HELP_OVERRIDES: dict[str, str] = {
     "weather_panel.show_wind": "When on, shows wind direction and speed.",
     "weather_panel.show_trend": "When on, shows temperature trend arrows.",
     "weather_panel.trend_window_seconds": "Seconds of history used to compute temperature trends.",
+    "system_panel.show_title": "When on, shows the title bar. When off, hides it.",
+    "system_panel.title": "Title text in the system panel header.",
+    "system_panel.show_icons": "When on, shows Font Awesome icons instead of text "
+    "labels for each metric row.",
+    "system_panel.show_cpu": "When on, shows this machine's CPU usage.",
+    "system_panel.show_mem": "When on, shows this machine's memory usage.",
+    "system_panel.show_gpu": "When on, shows GPU usage (Windows PDH or nvidia-smi).",
+    "system_panel.show_fps": "When on, shows iRacing average frame rate.",
+    "system_panel.show_network": "When on, shows iRacing channel quality/latency "
+    "during online sessions, otherwise OS WiFi signal when available.",
     # --- leaderboard strip ---
     "leaderboard_strip.rows": "How many drivers to show (0 = entire field; positive = top N only).",
     "leaderboard_strip.show_position": "When on, shows race position (1, 2, …).",

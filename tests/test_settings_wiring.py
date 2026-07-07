@@ -56,6 +56,7 @@ _SECTION_FILES: dict[str, list[str]] = {
     "leaderboard_strip": ["overlay/widgets/leaderboard_strip.py", "overlay/app.py"],
     "radio_tower": ["overlay/widgets/radio_tower.py", "overlay/app.py"],
     "ers_hybrid": ["overlay/widgets/ers_hybrid.py", "overlay/app.py"],
+    "system_panel": ["overlay/widgets/system_panel.py", "overlay/app.py"],
 }
 
 _SHARED_FILES = [

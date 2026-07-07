@@ -42,6 +42,7 @@ SLOT_ITEMS: dict[str, tuple[str, str]] = {
     "sim_time":       ("SIM",  "sim_time"),
     "cpu":            ("CPU",  "cpu"),
     "mem":            ("MEM",  "mem"),
+    "gpu":            ("GPU",  "gpu"),
     "laps_remain":    ("LEFT", "laps_remain"),
     "incident_limit": ("INC",  "incident_limit"),
     "fast_repairs":   ("FR",   "fast_repairs"),

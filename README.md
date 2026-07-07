@@ -498,7 +498,7 @@ every slot, so you can pin whatever you like wherever you like:
 | `track_temp` / `air_temp` | Track / air temperature (unit-aware) |
 | `best_lap` / `session_best` | Your best lap / the fastest lap in the lobby |
 | `local_time` / `sim_time` | Real-world clock / in-sim time of day |
-| `cpu` / `mem` | This machine's CPU% / memory% (needs `psutil`) |
+| `cpu` / `mem` / `gpu` | This machine's CPU% / memory% / GPU% |
 | `order_pill` / `title` / `count` | Standings-only decorations |
 
 ```json
@@ -517,8 +517,9 @@ every slot, so you can pin whatever you like wherever you like:
 
 Set a section to `none` to leave it empty. An item that isn't placed in any
 section isn't drawn (and isn't computed). `cpu` / `mem` need the optional
-`psutil` package (see `requirements.txt`); without it they show `--`. Ping /
-connection quality isn't included because iRacing's SDK doesn't expose it.
+`psutil` package (see `requirements.txt`); without it they show `--` on macOS.
+`gpu` uses Windows PDH or optional `nvidia-smi` on Linux; otherwise `--`.
+Ping / connection quality isn't included because iRacing's SDK doesn't expose it.
 
 #### Labels vs. icons (Font Awesome)
 

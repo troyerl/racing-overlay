@@ -1050,6 +1050,32 @@ DEFAULTS: dict = {
             "pill": "#ffd23a",
         },
     },
+    "system_panel": {
+        **_WIDGET_CHROME,
+        "show": False,
+        "text_scale": 1.0,
+        "show_title": True,
+        "title": "PERFORMANCE",
+        "show_icons": False,
+        "row_height_px": 0,
+        "max_row_height_frac": 0.0,
+        "show_cpu": True,
+        "show_mem": True,
+        "show_gpu": True,
+        "show_fps": True,
+        "show_network": True,
+        "colors": {
+            **_WIDGET_CHROME_COLORS,
+            "bg_top": "#1b1f26f2",
+            "bg_bottom": "#0f1216f2",
+            "panel_border": "#ffffff28",
+            "text": "#f4f6f8",
+            "muted": "#8b93a1",
+            "header": "#9fd0ff",
+            "gauge_bg": "#0b0e12",
+            "gauge_fill": "#46df7a",
+        },
+    },
 }
 
 

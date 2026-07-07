@@ -92,6 +92,35 @@ def weather_snapshot(ir, weekend: dict, *, cfg: dict | None = None) -> dict:
     return out
 
 
+def perf_snapshot(ir, *, cfg: dict | None = None) -> dict:
+    """Build system-panel FPS and online channel fields from telemetry."""
+    cfg = cfg or {}
+    out: dict = {}
+    if ir is None:
+        return out
+    if cfg.get("show_fps", True):
+        try:
+            fps = ir["FrameRate"]
+            if fps is not None:
+                out["fps"] = max(0, int(round(float(fps))))
+        except (TypeError, ValueError, KeyError):
+            pass
+    if cfg.get("show_network", True):
+        try:
+            q = _float_or_none(ir["ChanQuality"])
+            if q is not None:
+                out["chan_quality"] = max(0.0, min(100.0, q))
+        except (TypeError, ValueError, KeyError):
+            pass
+        try:
+            lat = _float_or_none(ir["ChanLatency"])
+            if lat is not None:
+                out["chan_latency"] = max(0.0, lat)
+        except (TypeError, ValueError, KeyError):
+            pass
+    return out
+
+
 def fuel_payload_key(data: dict) -> tuple:
     """Hashable key for fuel-calc skip-update comparison."""
     strip = data.get("strip") or {}

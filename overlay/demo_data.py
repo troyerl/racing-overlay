@@ -676,6 +676,15 @@ class FakeIRSDK:
             # Slowly rotating wind so the compass visibly moves in the demo.
             return (time.time() - self._start) * 0.05 % (2 * math.pi)
 
+        if key == "FrameRate":
+            return 60.0
+
+        if key == "ChanQuality":
+            return 97.0
+
+        if key == "ChanLatency":
+            return 28.0
+
         if key == "WindVel":
             return 4.2  # m/s
 

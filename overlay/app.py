@@ -63,6 +63,7 @@ from .widgets.lap_compare import LapCompareEngine, LapCompareWidget
 from .widgets.laptime_log import LaptimeLogWidget
 from .widgets.leaderboard_strip import LeaderboardStripWidget
 from .widgets.pit_board import PitBoardWidget
+from .widgets.system_panel import SystemPanelWidget
 from .widgets.radio_tower import RadioTowerWidget
 from .widgets.radar import RadarWidget
 from .widgets.relative import RelativeWidget
@@ -95,6 +96,7 @@ DEFAULT_GEOMS = {
     "leaderboard_strip": (320, 720, 96, 300),
     "radio_tower": (200, 720, 220, 56),
     "ers_hybrid": (620, 720, 220, 110),
+    "system_panel": (1140, 720, 180, 150),
 }
 
 _WIDGET_KEYS = (
@@ -102,7 +104,7 @@ _WIDGET_KEYS = (
     "laptime_log", "fuel_calc", "inputs", "delta_bar",
     "flags", "sector_timing", "lap_compare",
     "tire_panel", "pit_board", "weather_panel",
-    "leaderboard_strip", "radio_tower", "ers_hybrid",
+    "leaderboard_strip", "radio_tower", "ers_hybrid", "system_panel",
 )
 
 _TRACK_FETCH_RETRY_SEC = 10.0
@@ -164,7 +166,7 @@ class AdvancedSimHUD:
         self._lap_pct = None
         # Cached, throttled values for the header/footer slots.
         self._track_name = ""
-        self._sys_cache: tuple[str, str] | None = None
+        self._sys_cache: tuple[str, str, str, float | None, float | None, float | None] | None = None
         self._sys_counter = 0
         self._track_loaded = False        # a track file is in use
         self._loaded_track_updated_at: str | None = None
@@ -335,6 +337,7 @@ class AdvancedSimHUD:
         self.leaderboard_strip_widget = LeaderboardStripWidget()
         self.radio_tower_widget = RadioTowerWidget()
         self.ers_hybrid_widget = ErsHybridWidget()
+        self.system_panel_widget = SystemPanelWidget()
         if self.demo:
             self._load_demo_track()
             self._fetch_shared_app_settings()
@@ -359,6 +362,7 @@ class AdvancedSimHUD:
         self._wrap("leaderboard_strip", self.leaderboard_strip_widget)
         self._wrap("radio_tower", self.radio_tower_widget)
         self._wrap("ers_hybrid", self.ers_hybrid_widget)
+        self._wrap("system_panel", self.system_panel_widget)
         self._refresh_visible_widgets()
 
     @staticmethod
@@ -1074,7 +1078,8 @@ class AdvancedSimHUD:
                   self.sector_widget, self.lap_compare_widget,
                   self.tire_panel_widget, self.pit_board_widget,
                   self.weather_panel_widget, self.leaderboard_strip_widget,
-                  self.radio_tower_widget, self.ers_hybrid_widget):
+                  self.radio_tower_widget, self.ers_hybrid_widget,
+                  self.system_panel_widget):
             w.update()
 
     def open_settings(self) -> None:
@@ -1369,6 +1374,8 @@ class AdvancedSimHUD:
             self._update_radio_tower(positions, drivers, player, radio_speaker)
         if en["ers_hybrid"]:
             self._update_ers_hybrid()
+        if en["system_panel"]:
+            self._update_system_panel()
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -2350,6 +2357,8 @@ class AdvancedSimHUD:
             return self._sys_stats()[0]
         if key == "mem":
             return self._sys_stats()[1]
+        if key == "gpu":
+            return self._sys_stats()[2]
         if key == "laps_remain":
             try:
                 rem = self.ir["SessionLapsRemainEx"]
@@ -2615,16 +2624,21 @@ class AdvancedSimHUD:
         d = drivers.get(player) if drivers and player is not None else None
         return d.get("CarClassID") if d else None
 
-    def _sys_stats(self) -> tuple[str, str]:
-        """(cpu%, mem%) for the local machine, sampled a couple times a second."""
+    def _sys_stats(self) -> tuple[str, str, str, float | None, float | None, float | None]:
+        """(cpu%, mem%, gpu% strings + raw floats) for the local machine."""
         self._sys_counter += 1
         if self._sys_cache is None or self._sys_counter >= 30:
             self._sys_counter = 0
             cpu = sysstats.cpu_percent()
             mem = sysstats.mem_percent()
+            gpu = sysstats.gpu_percent()
             self._sys_cache = (
                 f"{cpu:.0f}%" if cpu is not None else "--",
                 f"{mem:.0f}%" if mem is not None else "--",
+                f"{gpu:.0f}%" if gpu is not None else "--",
+                cpu,
+                mem,
+                gpu,
             )
         return self._sys_cache
 
@@ -4432,6 +4446,28 @@ class AdvancedSimHUD:
         if snap == getattr(self.weather_panel_widget, "data", None):
             return
         self.weather_panel_widget.set_data(snap)
+
+    def _update_system_panel(self) -> None:
+        cfg = config.CFG.get("system_panel", {})
+        cpu, mem, gpu, cpu_pct, mem_pct, gpu_pct = self._sys_stats()
+        snap = tele.perf_snapshot(self.ir, cfg=cfg)
+        snap["cpu"] = cpu
+        snap["mem"] = mem
+        snap["gpu"] = gpu
+        snap["cpu_pct"] = cpu_pct
+        snap["mem_pct"] = mem_pct
+        snap["gpu_pct"] = gpu_pct
+        if cfg.get("show_network", True):
+            has_chan = (snap.get("chan_quality") is not None
+                        or snap.get("chan_latency") is not None)
+            if not has_chan:
+                wifi = sysstats.wifi_signal()
+                if wifi:
+                    snap["wifi"] = wifi
+        snap["edit"] = self.edit_mode_enabled()
+        if snap == getattr(self.system_panel_widget, "data", None):
+            return
+        self.system_panel_widget.set_data(snap)
 
     @staticmethod
     def _leaderboard_speed_mph(speed_ms) -> int | None:

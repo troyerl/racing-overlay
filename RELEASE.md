@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.59.0 - 2026-07-07
+
+- **Performance panel widget.** New Session panel shows machine CPU, memory, and
+  GPU usage, iRacing frame rate, and network status. Online sessions display
+  channel quality and latency; otherwise the panel falls back to OS WiFi signal
+  on Windows and Linux.
+- **Performance panel polish.** Right-aligned values, thin usage bars for
+  CPU/MEM/GPU, full text labels, and an optional Font Awesome icon mode.
+- **GPU % table slot.** Standings and relative header/footer slots now support
+  **GPU usage %** alongside existing CPU and memory readouts (Windows PDH;
+  optional `nvidia-smi` on Linux).
+
 ## 1.58.0 - 2026-07-06
 
 - **Radio tower widget.** New Session panel shows who is on team radio right

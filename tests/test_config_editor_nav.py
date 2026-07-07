@@ -48,7 +48,8 @@ def test_section_settings_skip_hides_row_dividers_where_no_rows():
 
 
 def test_section_settings_skip_row_dividers_not_hidden_for_list_widgets():
-    for section in ("leaderboard_strip", "pit_board", "weather_panel"):
+    for section in ("leaderboard_strip", "pit_board", "weather_panel",
+                    "system_panel"):
         assert section not in SECTION_SETTINGS_SKIP or (
             "row_dividers" not in SECTION_SETTINGS_SKIP.get(section, frozenset())
         )
