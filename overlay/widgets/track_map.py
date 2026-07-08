@@ -3002,6 +3002,33 @@ class TrackMapWidget(QWidget):
         is_player = len(car) >= 5 and bool(car[4])
         return (speaking, is_player)
 
+    @staticmethod
+    def _car_dot_style(is_player: bool, on_pit: bool, on_route: bool,
+                       pit_opacity: float = 0.45) -> tuple[float, bool, bool]:
+        """Return (opacity, use_pit_fill, use_player_glow) for map car dots."""
+        in_pit_lane = on_pit or on_route
+        if is_player:
+            return (1.0, False, True)
+        if in_pit_lane:
+            return (pit_opacity, True, False)
+        return (1.0, False, False)
+
+    @staticmethod
+    def _draw_player_car_dot(p: QPainter, c: QPointF, r: float,
+                             fill: QColor) -> None:
+        """Soft glow halo plus bright double ring around the player dot."""
+        glow = QColor(fill)
+        glow.setAlpha(70)
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(glow)
+        p.drawEllipse(c, r + 6.0, r + 6.0)
+        p.setBrush(fill)
+        p.setPen(QPen(QColor(0, 0, 0), 2))
+        p.drawEllipse(c, r, r)
+        p.setPen(QPen(QColor(255, 255, 255), 2.4))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(c, r + 2.4, r + 2.4)
+
     def _draw_cars(self, p: QPainter, tx, mc: dict,
                    car_pts: dict[int, QPointF]) -> None:
         cc = tx(self._centroid)
@@ -3040,7 +3067,10 @@ class TrackMapWidget(QWidget):
                 c = self._resolve_car_point(tx, car, cc, off, schematic)
             if c is None:
                 continue
+            in_pit_lane = on_route or on_pit
             r = (12.5 if is_player else 9.0) * rad_scale
+            if is_player and in_pit_lane:
+                r *= 1.15
             slot = marker_slots.get(idx)
             if slot and not is_player:
                 col_key = f"marker_{slot}"
@@ -3048,27 +3078,17 @@ class TrackMapWidget(QWidget):
                 p.setPen(QPen(_mcol_def(col_key, "#ffffff"), 2.6))
                 p.setBrush(Qt.BrushStyle.NoBrush)
                 p.drawEllipse(c, r + 5.0, r + 5.0)
-            # Cars in the pits are grayed out and faded back.
-            if on_route or on_pit:
-                p.setOpacity(pit_opacity)
+            opacity, use_pit_fill, use_player_glow = self._car_dot_style(
+                is_player, on_pit, on_route, pit_opacity)
+            p.setOpacity(opacity)
             if is_pace:
                 fill = _mcol_def("pace_car", "#0b0e12")
+            elif use_pit_fill:
+                fill = pit_fill
             else:
-                fill = pit_fill if (on_route or on_pit) else QColor(color)
-            # Make the player unmistakable: a soft glow halo plus a bright
-            # double ring around a larger dot.
-            if is_player and not on_route and not on_pit:
-                glow = QColor(fill)
-                glow.setAlpha(70)
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(glow)
-                p.drawEllipse(c, r + 6.0, r + 6.0)
-                p.setBrush(fill)
-                p.setPen(QPen(QColor(0, 0, 0), 2))
-                p.drawEllipse(c, r, r)
-                p.setPen(QPen(QColor(255, 255, 255), 2.4))
-                p.setBrush(Qt.BrushStyle.NoBrush)
-                p.drawEllipse(c, r + 2.4, r + 2.4)
+                fill = QColor(color)
+            if use_player_glow:
+                self._draw_player_car_dot(p, c, r, fill)
             else:
                 p.setBrush(fill)
                 p.setPen(QPen(QColor(0, 0, 0), 1))
