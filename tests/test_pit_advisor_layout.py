@@ -72,6 +72,19 @@ def test_hidden_when_not_actionable(qapp):
     )
     assert not layout.visible
     assert layout.chip is None
+    assert layout.total_content_h == 0.0
+
+
+def test_blank_payload_hides_completely(qapp):
+    layout = measure_pit_advisor_layout(
+        220,
+        {"rec": None, "label": None, "rationale": None,
+         "secondary": None, "actionable": False},
+    )
+    assert not layout.visible
+    assert layout.chip is None
+    assert layout.total_content_h == 0.0
+    assert layout.title_rect is None
 
 
 def test_widget_syncs_panel_height(qapp):

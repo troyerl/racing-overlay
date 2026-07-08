@@ -589,6 +589,9 @@ class DashWidget(QWidget):
         bpad = bot_rect.height() * 0.14
         stat_h = bot_rect.height() - bpad * 2
         base_pad = h * 0.035
+        # Size left content against the normal ring pad; extra iRating clearance
+        # (gapL) only adds visual mph–ring whitespace and must not shrink fonts.
+        base_gapL = ring_cx - ring_half - base_pad
         left_pad = self._ring_left_clearance(ring_cx, ring_half, base_pad,
                                              bot_rect, bpad, stat_h, c, d)
         gapL = ring_cx - ring_half - left_pad
@@ -601,7 +604,7 @@ class DashWidget(QWidget):
         if c.get("show_shift_bar", True):
             self._draw_shift(p, QRectF(top_rect.left() + ipad,
                                        top_rect.center().y() - top_rect.height() * 0.20,
-                                       gapL - (top_rect.left() + ipad),
+                                       base_gapL - (top_rect.left() + ipad),
                                        top_rect.height() * 0.40), c)
         if c.get("top_right", "incidents") not in (None, "none"):
             self._draw_status(p, QRectF(gapR, top_rect.top(),
@@ -612,10 +615,14 @@ class DashWidget(QWidget):
         # --- bottom container contents (primary | stats) -----------------
         if c.get("primary_left", "lap_count") not in (None, "none") \
                 or c.get("primary_right", "speed") not in (None, "none"):
-            self._draw_primary(p, QRectF(bot_rect.left() + bpad,
-                                         bot_rect.top() + bpad,
-                                         gapL - (bot_rect.left() + bpad),
-                                         bot_rect.height() - bpad * 2), c, d)
+            # Right-align into the cleared gapL strip, but fit fonts against
+            # base_gapL so iRating spacing does not shrink left text.
+            primary_left = bot_rect.left() + bpad
+            self._draw_primary(
+                p, QRectF(primary_left, bot_rect.top() + bpad,
+                          max(0.0, gapL - primary_left),
+                          bot_rect.height() - bpad * 2),
+                c, d, fit_width=max(0.0, base_gapL - primary_left))
         if c.get("stat_left", "tires") not in (None, "none") \
                 or c.get("stat_right", "fuel_stack") not in (None, "none"):
             self._draw_stats(p, QRectF(gapR, bot_rect.top() + bpad,
@@ -829,7 +836,7 @@ class DashWidget(QWidget):
         p.drawText(QRectF(x, rect.top(), vw + 6, h), _VC_LEFT, val)
 
     # -- primary (lower-left): a small readout + a big readout, right-aligned --
-    def _draw_primary(self, p, rect, c, d):
+    def _draw_primary(self, p, rect, c, d, fit_width=None):
         h = rect.height()
         left_key = c.get("primary_left", "lap_count")
         right_key = c.get("primary_right", "speed")
@@ -881,8 +888,9 @@ class DashWidget(QWidget):
                     tot += self._irating_pair_width(d, z["spd"], h)
             return tot
 
+        fit = rect.width() if fit_width is None else fit_width
         need = measure(1.0)
-        s = rect.width() / need if need > rect.width() and need > 0 else 1.0
+        s = fit / need if need > fit and need > 0 else 1.0
         z = sizes(s)
         total_w = measure(s)
         x = rect.right() - total_w

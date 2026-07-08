@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.4 - 2026-07-08
+
+- **Dual race/garage layouts.** Each preset now keeps separate on-track and
+  in-garage widget positions. Moving a panel in the garage no longer overwrites
+  its track placement; switching On track / In garage (or the live garage
+  context) applies the matching layout.
+- **Map car numbers.** Stabilized number size (no double text-scale, pixel-snapped
+  labels, text antialiasing, consistent player font in pits) so numbers no longer
+  flicker while cars ease.
+- **Map pit transitions.** Cars on pit road stay on the pit path across the
+  start/finish gap (no racing-line blink). Competitors remain visible through the
+  brief APPROACHING_PITS window after leaving pit road.
+- **Dash left fonts.** Shift bar and primary readouts size against the base ring
+  clearance so mph–iRating spacing no longer shrinks left-side text.
+- **Pit advisor visibility.** Quiet during the green-resume window after yellow
+  clears. The panel fully hides when there is nothing actionable to show (no empty
+  card chrome).
+
 ## 1.60.3 - 2026-07-07
 
 - **Standings inactive rows.** Drivers in the garage or disconnected are greyed

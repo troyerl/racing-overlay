@@ -55,6 +55,21 @@ def test_opponent_exit_hold_after_pit():
         3, 0.02, False, is_player=False, route=route, approaching=False)
 
 
+def test_opponent_exit_hold_until_past_pit_out():
+    """Latch stays until past pit_out, not only during the exit-blend phase."""
+    hud = _chicagoland_hud()
+    route = (hud._pit_in_pct, hud._pit_out_pct)
+    hud._pit_route_latch[3] = True
+    # Still inside pit_in..pit_out (wrapping), after lane hi, before pit_out.
+    assert hud._car_on_route(
+        3, 0.20, False, is_player=False, route=route, approaching=False)
+    assert hud._pit_route_latch[3]
+    # Past pit_out on the racing line — clear latch.
+    assert not hud._car_on_route(
+        3, 0.50, False, is_player=False, route=route, approaching=False)
+    assert not hud._pit_route_latch.get(3)
+
+
 def test_seed_pit_latches_exit_hold():
     hud = _chicagoland_hud()
     hud._pit_source = "manual"

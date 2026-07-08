@@ -1167,9 +1167,10 @@ CONTEXTS = ("race", "garage")
 CONTEXT_LABELS = {"race": "On track", "garage": "In garage"}
 
 # Presets are named config sets. Each one bundles its own on-track + in-garage
-# config, its own widget layout, and an optional list of cars that auto-activate
-# it. One preset is active at a time; the race/garage profiles still auto-switch
-# within it. The settings file is "schema 2": {active_preset, presets:{...}}.
+# config, on-track widget layout + optional sparse garage layout overrides, and
+# an optional list of cars that auto-activate it. One preset is active at a
+# time; the race/garage profiles still auto-switch within it. The settings file
+# is "schema 2": {active_preset, presets:{...}}.
 DEFAULT_PRESET = "Default"
 
 
@@ -1328,18 +1329,19 @@ def _blank_preset() -> dict:
     base = copy.deepcopy(DEFAULTS)
     for key in _widget_sections():
         base[key]["show"] = False
-    return {"base": base, "garage": {}, "layout": {}, "cars": [],
-            "leagues": [], "default": False}
+    return {"base": base, "garage": {}, "layout": {}, "layout_garage": {},
+            "cars": [], "leagues": [], "default": False}
 
 
 def _deserialize_preset(entry: dict) -> dict:
-    """Build a live preset (base + garage + layout + cars + leagues) from disk."""
+    """Build a live preset (base + garage + layouts + cars + leagues) from disk."""
     cfg = _migrate_dash_irating(_migrate_table_split(entry.get("config") or {}))
     base_user, garage = _split_user(cfg)
     return {
         "base": _deep_merge(DEFAULTS, base_user),
         "garage": garage,
         "layout": dict(entry.get("layout") or {}),
+        "layout_garage": dict(entry.get("layout_garage") or {}),
         "cars": [str(c) for c in (entry.get("cars") or [])],
         "leagues": _int_list(entry.get("leagues")),
         "default": bool(entry.get("default", False)),
@@ -1499,6 +1501,25 @@ def _notify_preset() -> None:
             pass
 
 
+# Callbacks fired when the effective race/garage context changes (so the
+# overlay can swap to that context's widget layout).
+_context_listeners: list = []
+
+
+def on_context_change(callback) -> None:
+    """Register a callback(ctx) fired when effective_context() changes."""
+    _context_listeners.append(callback)
+
+
+def _notify_context() -> None:
+    ctx = _ctx()
+    for cb in list(_context_listeners):
+        try:
+            cb(ctx)
+        except Exception:
+            pass
+
+
 def set_cfg(new_cfg: dict, notify: bool = True) -> dict:
     """Replace the base (on-track) config and recompute the live config.
 
@@ -1538,21 +1559,27 @@ def set_context(ctx: str, notify: bool = True) -> dict:
     global ACTIVE_CONTEXT
     if ctx not in CONTEXTS:
         return CFG
+    prev = _ctx()
     ACTIVE_CONTEXT = ctx
     # A live editor preview pin overrides the auto-detected context.
     if _preview_context is None:
         _compute_cfg()
         if notify:
             _notify()
+        if _ctx() != prev:
+            _notify_context()
     return CFG
 
 
 def set_preview_context(ctx: str | None) -> dict:
     """Pin the live config to a context for the editor's preview (None clears)."""
     global _preview_context
+    prev = _ctx()
     _preview_context = ctx if ctx in CONTEXTS else None
     _compute_cfg()
     _notify()
+    if _ctx() != prev:
+        _notify_context()
     return CFG
 
 
@@ -1631,6 +1658,8 @@ def _serialize() -> dict:
         entry: dict = {"config": cfg}
         if p.get("layout"):
             entry["layout"] = p["layout"]
+        if p.get("layout_garage"):
+            entry["layout_garage"] = p["layout_garage"]
         if p.get("cars"):
             entry["cars"] = p["cars"]
         if p.get("leagues"):
@@ -1698,6 +1727,7 @@ def create_preset(name: str, copy_from: str | None = None,
             "base": copy.deepcopy(src["base"]),
             "garage": copy.deepcopy(src["garage"]),
             "layout": copy.deepcopy(src["layout"]),
+            "layout_garage": copy.deepcopy(src.get("layout_garage") or {}),
             # Car/league bindings + default flag are unique per preset; don't copy.
             "cars": [],
             "leagues": [],
@@ -1877,14 +1907,54 @@ def set_cloud_tracks(value: bool) -> None:
     del value
 
 
-def active_layout() -> dict:
-    """A copy of the active preset's saved window layout (key -> [x,y,w,h])."""
-    return copy.deepcopy(_PRESETS[ACTIVE_PRESET]["layout"])
+def _geom_equal(a, b) -> bool:
+    """True if two [x,y,w,h] layouts match (ints compared as ints)."""
+    if a is None or b is None:
+        return a is b
+    try:
+        return [int(v) for v in a] == [int(v) for v in b]
+    except (TypeError, ValueError):
+        return list(a) == list(b)
 
 
-def save_active_layout(layout: dict) -> None:
-    """Store + persist the active preset's window layout."""
-    _PRESETS[ACTIVE_PRESET]["layout"] = copy.deepcopy(layout)
+def active_layout(ctx: str | None = None) -> dict:
+    """Effective window layout for a context (key -> [x,y,w,h]).
+
+    Race uses the preset's ``layout``. Garage starts from that map and overlays
+    any sparse ``layout_garage`` entries — widgets never moved in garage keep
+    their on-track position.
+    """
+    preset = _PRESETS[ACTIVE_PRESET]
+    race = copy.deepcopy(preset.get("layout") or {})
+    use = ctx if ctx in CONTEXTS else _ctx()
+    if use != "garage":
+        return race
+    out = race
+    for key, geom in (preset.get("layout_garage") or {}).items():
+        if geom is not None:
+            out[key] = list(geom)
+    return out
+
+
+def save_active_layout(layout: dict, ctx: str | None = None) -> None:
+    """Store + persist the active preset's layout for the given context.
+
+    Race writes the full ``layout`` map. Garage writes a sparse ``layout_garage``
+    of widgets whose geometry differs from the race layout.
+    """
+    use = ctx if ctx in CONTEXTS else _ctx()
+    preset = _PRESETS[ACTIVE_PRESET]
+    if use == "garage":
+        race = preset.get("layout") or {}
+        sparse: dict = {}
+        for key, geom in (layout or {}).items():
+            if geom is None:
+                continue
+            if not _geom_equal(geom, race.get(key)):
+                sparse[key] = list(geom)
+        preset["layout_garage"] = sparse
+    else:
+        preset["layout"] = copy.deepcopy(layout)
     save_profiles()
 
 

@@ -108,10 +108,10 @@ def measure_pit_advisor_layout(width: float, data: dict,
 
     if not visible:
         return _PitLayout(
-            total_content_h=max(72.0, y + pad),
+            total_content_h=0.0,
             visible=False,
-            show_title=show_title,
-            title_rect=title_rect,
+            show_title=False,
+            title_rect=None,
             chip=None,
             rationale_rect=None,
             secondary_rect=None,
@@ -210,6 +210,9 @@ class PitAdvisorWidget(QWidget):
         cfg = config.CFG.get(_SECTION, {})
         layout = measure_pit_advisor_layout(w, self.data, cfg)
 
+        if not layout.visible or not layout.chip or not layout.label:
+            return
+
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         card, radius = draw_card(p, w, h, _SECTION)
@@ -219,9 +222,6 @@ class PitAdvisorWidget(QWidget):
                 p, layout.title_rect,
                 str(cfg.get("title", "PIT ENGINEER")),
                 _SECTION, radius_top=radius)
-
-        if not layout.visible or not layout.chip or not layout.label:
-            return
 
         draw_status_chip(p, layout.chip, str(layout.label), _SECTION,
                          active=layout.active)

@@ -1463,19 +1463,17 @@ class TrackMapWidget(QWidget):
             if pos is not None:
                 return pos if raw else self._feather_schematic_pos(pct, pos)
 
-        # Pit lane: pit_path while OnPitRoad (after entry blend).
-        memb_lo = lane_lo if lane_lo is not None else route_lo
-        memb_hi = lane_hi if lane_hi is not None else route_hi
-        on_lane = False
-        if memb_lo is not None and memb_hi is not None:
-            on_lane = self._pct_in_interval(pct, memb_lo, memb_hi)
-        if (not on_lane and route_lo is not None and route_hi is not None):
-            on_lane = self._pct_in_interval(pct, route_lo, route_hi)
-        if (route_lo is not None and route_hi is not None and on_lane
-                and self.pit_path and len(self.pit_path) >= 2 and on_pit_road):
-            pos = self._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
-            if pos is not None:
-                return pos
+        # Pit lane: while OnPitRoad (after entry blend), always use pit_path.
+        # S/F membership gaps in pit_span must not fall through to the racing line.
+        if on_pit_road and self.pit_path and len(self.pit_path) >= 2:
+            rlo, rhi = route_lo, route_hi
+            if rlo is None or rhi is None:
+                rlo = lo if lo is not None else lane_lo
+                rhi = hi if hi is not None else lane_hi
+            if rlo is not None and rhi is not None:
+                pos = self._pit_path_pos_for_route_pct(pct, rlo, rhi)
+                if pos is not None:
+                    return pos
         return None
 
     def _pit_blend_weight(
@@ -2093,7 +2091,9 @@ class TrackMapWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         p = QPainter(self)
         try:
+            config.use_section("map")
             p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
             rect = QRectF(self.rect())
 
             mc = _mcfg()
@@ -2601,9 +2601,11 @@ class TrackMapWidget(QWidget):
             return
         base = 9.0 if is_player else 7.5
         sz = max(6, round(base * config.text_scale_for("map")))
-        p.setFont(tabfont(sz, bold=True))
+        p.setFont(tabfont(sz, bold=True, widget_scale=False))
         pad = max(2.0, r * 0.15)
-        rect = QRectF(c.x() - r - pad, c.y() - r - pad, 2 * (r + pad), 2 * (r + pad))
+        # Pixel-snap the label center so stroked glyphs don't pulse while cars ease.
+        cx, cy = round(c.x()), round(c.y())
+        rect = QRectF(cx - r - pad, cy - r - pad, 2 * (r + pad), 2 * (r + pad))
         if is_pace:
             fill = _mcol_def("pace_car_text", "#ffffff")
             stroke = QColor(0, 0, 0, 160)
@@ -3043,6 +3045,6 @@ class TrackMapWidget(QWidget):
             show_label = is_player or is_pace or not slot
             self._draw_car_number_label(
                 p, c, label, r=r,
-                is_player=is_player and not on_route and not on_pit,
+                is_player=is_player,
                 is_pace=is_pace, show=show_label)
             p.setOpacity(1.0)

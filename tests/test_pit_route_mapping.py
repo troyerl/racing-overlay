@@ -166,6 +166,23 @@ def test_chicagoland_like_lane_constant_speed(qapp):
     assert w._pit_progress_t(path_hi, path_lo, path_hi, [w.pit_path]) == 1.0
 
 
+def test_on_pit_stays_on_pit_path_across_sf_gap(qapp):
+    """OnPitRoad outside pit_span membership must stay on pit_path (no track snap)."""
+    w = _make_widget()
+    w.pit_in_pct = 0.10
+    w.pit_out_pct = 0.50
+    w.pit_span = (0.15, 0.98)  # S/F hole: 0.98 .. 0.15
+    for pct in (0.99, 0.001, 0.05):
+        assert not w._pct_in_interval(pct, *w.pit_span)
+        assert not w._pct_in_interval(pct, w.pit_in_pct, w.pit_span[0])
+        routed = w._pos_for_schematic_route(
+            0, pct, on_route=True, on_pit_road=True, raw=True)
+        assert routed is not None, pct
+        expected = w._pit_path_pos_for_route_pct(pct, w.pit_in_pct, w.pit_out_pct)
+        assert expected is not None
+        assert routed == expected
+
+
 def test_entry_phase_uses_pit_in_segment(qapp):
     """Entry lap-% maps through pit_in only (then entry feather toward track)."""
     w = _make_chicagoland_like_widget()

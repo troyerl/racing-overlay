@@ -145,6 +145,8 @@ class AdvancedSimHUD:
         config.on_change(self._on_config_change)
         # Reapply the saved window layout when the active preset changes.
         config.on_preset_change(self._on_preset_change)
+        # Swap race/garage widget positions when the context changes.
+        config.on_context_change(self._on_context_change)
         # Last-seen car path + LeagueID (drives auto-switch of presets); the
         # league id is cached because reading WeekendInfo is an expensive parse.
         self._last_car_path: str | None = None
@@ -242,6 +244,7 @@ class AdvancedSimHUD:
         self._closing_state: dict = {}
         self._closing_session_uid: int | None = None
         self._pit_advisor_closing_state: dict = {}
+        self._pit_advisor_has_content = False
         self._radar_closing_state: dict = {}
         self._radar_clear_since: float | None = None
         self._need_weekend_info = False
@@ -474,6 +477,8 @@ class AdvancedSimHUD:
         live = self._connected or self.edit_mode_enabled()
         for key, win in self._win_by_key.items():
             want = self._overlay_running and live and self._is_shown(key)
+            if key == "pit_advisor" and want and not self.edit_mode_enabled():
+                want = bool(self._pit_advisor_has_content)
             if want and not win.isVisible():
                 win.ensure_on_screen()
                 win.show()
@@ -485,8 +490,8 @@ class AdvancedSimHUD:
         self._apply_visibility()
         self._repaint_all()
 
-    def _on_preset_change(self, _name) -> None:
-        """Reapply the newly active preset's saved window layout to every panel."""
+    def _apply_layout(self, persist_clamps: bool = True) -> None:
+        """Reload the active context's layout onto every panel window."""
         self._layout_state.clear()
         self._layout_state.update(config.active_layout())
         layout_changed = False
@@ -498,8 +503,21 @@ class AdvancedSimHUD:
                 if list(geom) != [x, y, w, h]:
                     self._layout_state[key] = [x, y, w, h]
                     layout_changed = True
-        if layout_changed:
+        if persist_clamps and layout_changed:
             config.save_active_layout(self._layout_state)
+
+    def _on_preset_change(self, _name) -> None:
+        """Reapply the newly active preset's saved window layout to every panel."""
+        self._apply_layout()
+        self._refresh_visible_widgets()
+        self._apply_visibility()
+        self._repaint_all()
+
+    def _on_context_change(self, _ctx) -> None:
+        """Swap panels to the race or garage layout for the active preset."""
+        # Don't persist clamps here — that would bake race fallbacks into
+        # layout_garage just because a widget needed an on-screen nudge.
+        self._apply_layout(persist_clamps=False)
         self._refresh_visible_widgets()
         self._apply_visibility()
         self._repaint_all()
@@ -3331,17 +3349,25 @@ class AdvancedSimHUD:
         player_color = config.CFG["map"]["colors"]["player"]
         cars = []
         for idx, pct in enumerate(lap_pct):
-            if pct is None or pct < 0.0 or pct > 1.0:
+            if pct is None or pct < 0.0:
                 continue
+            # Normalize tiny S/F overshoot instead of dropping the car for a tick.
+            if pct > 1.0:
+                pct = pct % 1.0
             is_player = idx == player
             on_pit = (bool(on_pit_arr[idx]) if on_pit_arr and idx < len(on_pit_arr)
                       else surface[idx] in pit_surf)
             approaching = (surface is not None and idx < len(surface)
                            and surface[idx] == oc.TRK_APPROACHING_PITS)
             is_pace = idx in self._pace_idxs
-            # Show cars on track or pit road; pace car only when on the racing line.
-            if not is_pace and not is_player and surface[idx] != oc.TRK_ON_TRACK and not on_pit:
-                continue
+            # Show cars on track, pit road, or the brief APPROACHING_PITS exit
+            # window after OnPitRoad clears; pace car only on the racing line.
+            if not is_pace and not is_player:
+                surf_ok = (surface is not None and idx < len(surface)
+                           and surface[idx] in (oc.TRK_ON_TRACK,
+                                                oc.TRK_APPROACHING_PITS))
+                if not surf_ok and not on_pit:
+                    continue
             if is_pace:
                 if not config.CFG["map"].get("show_pace_car", True):
                     continue
@@ -3525,7 +3551,7 @@ class AdvancedSimHUD:
             self._pit_route_latch[idx] = latched
             return on_pit or latched
 
-        in_entry, _, in_exit = self._pit_route_phases(pct, on_pit=on_pit)
+        in_entry, _, _ = self._pit_route_phases(pct, on_pit=on_pit)
 
         if is_player:
             if on_pit or self._player_on_route:
@@ -3539,9 +3565,14 @@ class AdvancedSimHUD:
         if self.demo and self._is_demo_pit_car(idx) and in_entry:
             self._pit_route_latch[idx] = True
             return True
-        if latched and in_exit:
-            return True
+        # Hold through pit exit like the player: stay on-route until past
+        # pit_out / route end, not only while the exit-blend phase is active.
         if latched:
+            end = self._pit_out_pct if self._pit_out_pct is not None else (
+                route[1] if route else None)
+            start = route[0] if route else 0.0
+            if end is not None and self._pct_in_interval(pct, start, end):
+                return True
             self._pit_route_latch[idx] = False
         return False
 
@@ -4433,6 +4464,7 @@ class AdvancedSimHUD:
 
     def _update_pit_advisor(self) -> None:
         pacfg = config.CFG.get("pit_advisor", {})
+        edit = self.edit_mode_enabled()
         telem = tele.read_pit_advisor_telemetry(self.ir, self._car_info)
         player = telem.get("player")
         lap_est = float(telem.get("est_lap") or self._car_info.get("est_lap", 0.0) or 0.0)
@@ -4448,6 +4480,14 @@ class AdvancedSimHUD:
         car_flags = telem.get("car_flags")
         flag, ctx = self._session_flag_bundle(
             player, positions, est_time, lap_est, drivers)
+        # Quiet during the short green-resume window after yellow clears —
+        # same window the dash flag bar uses; no advice needed mid-restart.
+        if flag == "green" and not edit:
+            self._set_pit_advisor_payload({
+                "rec": None, "label": None, "rationale": None,
+                "secondary": None, "actionable": False, "edit": False,
+            }, has_content=False)
+            return
         pit_ctx = pstrat.build_pit_context(
             player=player,
             positions=positions,
@@ -4558,11 +4598,23 @@ class AdvancedSimHUD:
             "rationale": advice.rationale,
             "secondary": advice.secondary,
             "actionable": advice.actionable,
-            "edit": self.edit_mode_enabled(),
+            "edit": edit,
         }
-        if payload == getattr(self.pit_advisor_widget, "data", None):
-            return
-        self.pit_advisor_widget.set_data(payload)
+        has_content = True
+        if not edit:
+            has_content = bool(advice.label)
+            if has_content and pacfg.get("show_only_when_actionable", True):
+                has_content = bool(advice.actionable)
+        self._set_pit_advisor_payload(payload, has_content=has_content)
+
+    def _set_pit_advisor_payload(self, payload: dict, *, has_content: bool) -> None:
+        """Push pit-advisor data and keep panel visibility in sync."""
+        prev = getattr(self, "_pit_advisor_has_content", False)
+        self._pit_advisor_has_content = has_content
+        if payload != getattr(self.pit_advisor_widget, "data", None):
+            self.pit_advisor_widget.set_data(payload)
+        if has_content != prev:
+            self._apply_visibility()
 
     def _update_tire_panel(self) -> None:
         cfg = config.CFG.get("tire_panel", {})
