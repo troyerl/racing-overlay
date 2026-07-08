@@ -138,6 +138,8 @@ OPTION_LABELS = {
 # terse to be meaningful. Keyed by "section.key" (preferred) or bare key.
 LABEL_OVERRIDES = {
     "check_updates_on_launch": "Check for updates on launch",
+    "start_overlay_on_launch": "Start overlay on launch",
+    "start_at_login": "Start GridGlance at Windows login",
     "font_family": "Font",
     "row_height_px": "Fixed row height (px, 0 = scale to fit)",
     "max_row_height_frac": "Max row height (panel fraction)",
@@ -1756,6 +1758,15 @@ class ConfigEditor(QWidget):
         self._build_nav_and_pages()
         self._filter(self.search.text())  # apply row dependencies on first show
         self._update_ctx_hint()
+        # Keep the preset combo + working copy in sync when the overlay
+        # auto-switches presets (car / league / default fallback).
+        config.on_preset_change(self._on_external_preset_change)
+
+    def _on_external_preset_change(self, name: str) -> None:
+        """Refresh UI when something other than this editor changes the preset."""
+        if self.preset_combo.currentData() == name:
+            return
+        self._after_preset_change(f"Switched to \u201c{name}\u201d")
 
     # --- background ---------------------------------------------------------
 
@@ -1843,7 +1854,79 @@ class ConfigEditor(QWidget):
             QMessageBox.critical(self, "Uninstall failed",
                                  f"Couldn't start the uninstaller.\n\n{exc}")
             return
+        from . import autostart
+        try:
+            autostart.set_enabled(False)
+        except Exception:  # noqa: BLE001
+            pass
         QApplication.instance().quit()
+
+    def _launch_card(self) -> QFrame:
+        """App-page toggles: overlay on launch + Windows start-at-login."""
+        from . import autostart
+        from .setting_help import help_for
+
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Launch")
+        t.setObjectName("enableTitle")
+        hint = QLabel("How GridGlance starts when you open the app or sign in.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+
+        # Prefer filesystem truth for login startup if it drifts from config.
+        login_on = autostart.is_enabled()
+        if bool(self.working.get("start_at_login", False)) != login_on:
+            self.working["start_at_login"] = login_on
+            if self.live_sw.isChecked():
+                config.apply_edits(self._edit_ctx, self.working, notify=False)
+            if self.autosave_sw.isChecked():
+                config.save_profiles()
+
+        overlay_on = bool(self.working.get("start_overlay_on_launch", False))
+        w_ov, sw_ov = self._opt_toggle(
+            LABEL_OVERRIDES["start_overlay_on_launch"], overlay_on)
+        w_ov.setToolTip(help_for(["start_overlay_on_launch"]))
+        sw_ov.toggled.connect(self._set_start_overlay_on_launch)
+        v.addWidget(w_ov)
+
+        w_login, sw_login = self._opt_toggle(
+            LABEL_OVERRIDES["start_at_login"], login_on)
+        w_login.setToolTip(help_for(["start_at_login"]))
+        # Login shortcut is Windows-only; leave the row visible but disabled.
+        if not sys.platform.startswith("win"):
+            w_login.setEnabled(False)
+            sw_login.setEnabled(False)
+            w_login.setToolTip(
+                help_for(["start_at_login"]) + " (Windows only.)")
+        sw_login.toggled.connect(self._set_start_at_login)
+        v.addWidget(w_login)
+        return card
+
+    def _set_start_overlay_on_launch(self, on: bool) -> None:
+        from . import autostart
+        self._set(["start_overlay_on_launch"], bool(on))
+        # Keep Startup shortcut args in sync (--no-settings when overlay auto-starts).
+        try:
+            autostart.refresh_shortcut_if_enabled()
+        except Exception:  # noqa: BLE001
+            pass
+        self._flash("Launch preference updated")
+
+    def _set_start_at_login(self, on: bool) -> None:
+        from . import autostart
+        on = bool(on)
+        self._set(["start_at_login"], on)
+        try:
+            autostart.set_enabled(on)
+        except Exception:  # noqa: BLE001
+            pass
+        self._flash("Start at login updated" if on else "Start at login off")
 
     def _ensure_updater(self):
         if self._updater is not None:
@@ -2137,6 +2220,7 @@ class ConfigEditor(QWidget):
             note.setWordWrap(True)
             v.addWidget(note)
             v.addWidget(self._about_card())
+            v.addWidget(self._launch_card())
             v.addWidget(self._auto_switch_card())
             if track_store.can_write():
                 v.addWidget(self._demo_track_admin_card())

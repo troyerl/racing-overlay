@@ -39,7 +39,7 @@ class _FakeMap:
         pass
 
     def pit_edit_snapshot(self):
-        return [], []
+        return [], [], []
 
 
 def _hud(tmp_path, **kwargs) -> AdvancedSimHUD:

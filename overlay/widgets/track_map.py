@@ -839,6 +839,7 @@ class TrackMapWidget(QWidget):
         # Manual pit authoring (Track Scan v2): road then merge segments.
         self.pit_edit_mode = False
         self.pit_edit_phase = "road"
+        self._pit_edit_entry: list[tuple[float, float]] = []
         self._pit_edit_road: list[tuple[float, float]] = []
         self._pit_edit_merge: list[tuple[float, float]] = []
         self._pit_drag_idx: tuple[str, int] | None = None
@@ -1076,8 +1077,12 @@ class TrackMapWidget(QWidget):
             if self._pit_edit_merge:
                 self._pit_edit_merge[0] = (x, y)
             return
-        pts = (self._pit_edit_road if phase == "road"
-               else self._pit_edit_merge)
+        if phase == "entry":
+            pts = self._pit_edit_entry
+        elif phase == "road":
+            pts = self._pit_edit_road
+        else:
+            pts = self._pit_edit_merge
         if not (0 <= idx < len(pts)):
             return
         pts[idx] = (x, y)
@@ -1089,21 +1094,24 @@ class TrackMapWidget(QWidget):
 
     def set_pit_edit_phase(self, phase: str) -> None:
         phase = (phase or "road").strip().lower()
-        if phase not in ("road", "merge"):
+        if phase not in ("entry", "road", "merge"):
             phase = "road"
         self.pit_edit_phase = phase
         self.update()
 
-    def pit_edit_snapshot(self) -> tuple[list, list]:
-        return (list(self._pit_edit_road), list(self._pit_edit_merge))
+    def pit_edit_snapshot(self) -> tuple[list, list, list]:
+        return (list(self._pit_edit_entry), list(self._pit_edit_road),
+                list(self._pit_edit_merge))
 
-    def load_pit_edit(self, road, merge) -> None:
+    def load_pit_edit(self, road, merge, entry=None) -> None:
+        self._pit_edit_entry = [(float(x), float(y)) for x, y in (entry or [])]
         self._pit_edit_road = [(float(x), float(y)) for x, y in (road or [])]
         self._pit_edit_merge = [(float(x), float(y)) for x, y in (merge or [])]
         self._sync_pit_joint()
         self.update()
 
     def clear_pit_edit(self) -> None:
+        self._pit_edit_entry = []
         self._pit_edit_road = []
         self._pit_edit_merge = []
         self._pit_drag_idx = None
@@ -1112,6 +1120,8 @@ class TrackMapWidget(QWidget):
     def pop_last_pit_edit_point(self) -> None:
         if self.pit_edit_phase == "merge" and self._pit_edit_merge:
             self._pit_edit_merge.pop()
+        elif self.pit_edit_phase == "entry" and self._pit_edit_entry:
+            self._pit_edit_entry.pop()
         elif self._pit_edit_road:
             self._pit_edit_road.pop()
             self._sync_pit_joint()
@@ -2131,7 +2141,8 @@ class TrackMapWidget(QWidget):
                 if seg:
                     fit.extend(model(pt) for pt in seg)
             if self.pit_edit_mode:
-                for seg in (self._pit_edit_road, self._pit_edit_merge):
+                for seg in (self._pit_edit_entry, self._pit_edit_road,
+                            self._pit_edit_merge):
                     if seg:
                         fit.extend(model(pt) for pt in seg)
             xs = [m[0] for m in fit]
@@ -2617,7 +2628,7 @@ class TrackMapWidget(QWidget):
             stroke_w=1.2 if is_player else 1.0)
 
     def _draw_pit_edit(self, p: QPainter, tx) -> None:
-        """In-progress pit road (red) and merge (blue) polylines + handles."""
+        """In-progress entry (yellow), pit road (red), and merge (blue)."""
         mc = _mcfg()
         self._pit_hit = []
         r = max(4.0, mc.get("asphalt_width", 12) * 0.35)
@@ -2636,6 +2647,8 @@ class TrackMapWidget(QWidget):
             p.setPen(pen)
             p.drawPath(path)
 
+        _polyline(self._pit_edit_entry, "pit_blend",
+                  max(2.5, mc.get("asphalt_width", 12) * 0.45))
         _polyline(self._pit_edit_road, "pit", max(3.0, mc.get("asphalt_width", 12) * 0.55))
         _polyline(self._pit_edit_merge, "pit_blend_out",
                   max(2.5, mc.get("asphalt_width", 12) * 0.45))
@@ -2644,6 +2657,7 @@ class TrackMapWidget(QWidget):
         joint_pt = (self._pit_edit_road[-1] if joint else None)
 
         for phase, pts, col in (
+            ("entry", self._pit_edit_entry, QColor(255, 210, 58)),
             ("road", self._pit_edit_road, QColor(255, 90, 90)),
             ("merge", self._pit_edit_merge, QColor(90, 160, 255)),
         ):
@@ -2777,7 +2791,9 @@ class TrackMapWidget(QWidget):
                 event.accept()
                 return
             x, y = self._screen_to_model(event.position())
-            if self.pit_edit_phase == "road":
+            if self.pit_edit_phase == "entry":
+                self._pit_edit_entry.append((x, y))
+            elif self.pit_edit_phase == "road":
                 self._pit_edit_road.append((x, y))
                 if self._pit_edit_merge:
                     self._sync_pit_joint()

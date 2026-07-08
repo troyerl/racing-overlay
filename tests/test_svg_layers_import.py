@@ -332,8 +332,8 @@ def test_okayama_real_html():
     assert max(p[0] for p in pit_path) > 0.80
     hook_pts = [p for p in pit_path if p[1] < pit_med_y - 0.005]
     assert hook_pts, "entry hook should rise above back straight median Y"
-    pit_in = doc["pit_in"]
-    assert max(p[1] for p in pit_in) - min(p[1] for p in pit_in) < 0.04
+    # Inactive pit-path source: no authored yellow entry blend.
+    assert "pit_in" not in doc or not (doc.get("pit_in") or [])
     assert doc["pit_source"] == "inactive"
     _assert_pit_joins(doc)
 

@@ -30,8 +30,8 @@ import time
 from collections import deque
 from datetime import datetime, timezone
 
-from PyQt6.QtCore import QTimer
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QObject, QTimer, Qt, pyqtSlot
+from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog
 
 from . import common as oc
 from . import config
@@ -851,10 +851,19 @@ class AdvancedSimHUD:
         self.map_widget.update()
 
     def load_pit_into_editor(self, *, force: bool = False) -> bool:
-        """Copy saved pit road / exit merge into the manual edit buffers."""
-        road, merge = self.map_widget.pit_edit_snapshot()
-        if not force and (len(road) >= 2 or len(merge) >= 2):
+        """Copy saved pit entry / road / exit merge into the manual edit buffers."""
+        entry, road, merge = self.map_widget.pit_edit_snapshot()
+        if not force and (len(entry) >= 2 or len(road) >= 2 or len(merge) >= 2):
             return True
+        entry_pts: list[tuple[float, float]] = []
+        for pt in self._pit_in or []:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                entry_pts.append((float(pt[0]), float(pt[1])))
+        # Skip degenerate stubs (coincident endpoints at road handoff).
+        if (len(entry_pts) >= 2
+                and abs(entry_pts[0][0] - entry_pts[-1][0]) < 1e-6
+                and abs(entry_pts[0][1] - entry_pts[-1][1]) < 1e-6):
+            entry_pts = []
         road_pts: list[tuple[float, float]] = []
         for pt in self._pit_path or []:
             if isinstance(pt, (list, tuple)) and len(pt) >= 2:
@@ -863,11 +872,12 @@ class AdvancedSimHUD:
         for pt in self._pit_out or []:
             if isinstance(pt, (list, tuple)) and len(pt) >= 2:
                 merge_pts.append((float(pt[0]), float(pt[1])))
-        if len(road_pts) < 2 and len(merge_pts) < 2:
+        if len(road_pts) < 2 and len(merge_pts) < 2 and len(entry_pts) < 2:
             return False
         self.map_widget.load_pit_edit(
             road_pts if len(road_pts) >= 2 else [],
             merge_pts if len(merge_pts) >= 2 else [],
+            entry_pts if len(entry_pts) >= 2 else [],
         )
         return True
 
@@ -1002,7 +1012,8 @@ class AdvancedSimHUD:
                            "members HTML with id=\"track-map-123\".")
         if not self.map_widget.path or len(self.map_widget.path) < 3:
             return False, "No track loop loaded."
-        road, merge = self.map_widget.pit_edit_snapshot()
+        road_snap = self.map_widget.pit_edit_snapshot()
+        entry, road, merge = road_snap
         if len(road) < 2:
             return False, "Need at least 2 pit road points."
         if len(merge) < 2:
@@ -1018,21 +1029,31 @@ class AdvancedSimHUD:
         loop = [(p[0], p[1]) for p in self.map_widget.path]
         pit_path = _resample_open(road, 140)
         pit_out_raw = _resample_open(merge, 41)
-        pit_in_seed = list(road[: min(8, len(road))])
-        pit_in = _connect_blend_to_loop(
-            pit_in_seed, loop, attach_end=False, n_loop=12, max_pts=24)
         pit_out = _connect_blend_to_loop(
             pit_out_raw, loop, attach_end=True, n_loop=20, pit_path=pit_path)
-        pit_in = _resample_open(pit_in, 24)
         pit_out = _resample_open(pit_out, 41)
 
-        pit_in_pct = round(_pct_on_loop(loop, pit_in[0]), 5)
-        pit_out_pct = round(_pct_on_loop(loop, pit_out[-1]), 5)
         lane_lo, lane_hi = _pit_span_on_loop(loop, pit_path)
+        pit_out_pct = round(_pct_on_loop(loop, pit_out[-1]), 5)
 
         doc = self._build_loop_doc(tid)
+        # Optional yellow entry: only when the user drew one — do not invent it.
+        if len(entry) >= 2:
+            pit_in_seed = _resample_open(entry, 24)
+            pit_in = _connect_blend_to_loop(
+                pit_in_seed, loop, attach_end=False, n_loop=12, max_pts=24)
+            if pit_path:
+                # Snap entry end to the pit-road handoff.
+                pit_in = list(pit_in)
+                pit_in[-1] = pit_path[0]
+            pit_in = _resample_open(pit_in, 24)
+            pit_in_pct = round(_pct_on_loop(loop, pit_in[0]), 5)
+            doc["pit_in"] = [[round(x, 7), round(y, 7)] for x, y in pit_in]
+        else:
+            pit_in = []
+            pit_in_pct = round(lane_lo, 5)
+
         doc.update({
-            "pit_in": [[round(x, 7), round(y, 7)] for x, y in pit_in],
             "pit_path": [[round(x, 7), round(y, 7)] for x, y in pit_path],
             "pit_out": [[round(x, 7), round(y, 7)] for x, y in pit_out],
             "pit_in_pct": pit_in_pct,
@@ -1050,6 +1071,9 @@ class AdvancedSimHUD:
             "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
             "pit_out_pct", "pit_speed", "pit_source", "pit_lane_speed_pct",
         ) if k in doc}
+        # Clearing a previously saved entry on re-save without drawing one.
+        if "pit_in" not in meta:
+            meta["pit_in"] = None
         self._apply_pit_meta(meta)
         if track_store.can_write():
             self._track_sync.upload_local_async(
@@ -1058,7 +1082,8 @@ class AdvancedSimHUD:
         n_in = len(pit_in)
         n_path = len(pit_path)
         n_out = len(pit_out)
-        msg = (f"Saved {path} — entry {n_in}, road {n_path}, "
+        entry_note = f"entry {n_in}" if n_in else "no entry"
+        msg = (f"Saved {path} — {entry_note}, road {n_path}, "
                f"merge {n_out} pts")
         if track_store.can_write():
             msg += " Uploaded to cloud."
@@ -1068,9 +1093,10 @@ class AdvancedSimHUD:
 
     def pit_edit_state(self) -> dict:
         """Snapshot for Track Scan v2 import panel."""
-        road, merge = self.map_widget.pit_edit_snapshot()
+        entry, road, merge = self.map_widget.pit_edit_snapshot()
         tid = self._authoring_track_id()
         return {
+            "entry_count": len(entry),
             "road_count": len(road),
             "merge_count": len(merge),
             "pit_edit_mode": self.map_widget.pit_edit_mode,
@@ -3818,6 +3844,11 @@ class AdvancedSimHUD:
         if not self._driver_cache:
             self._drivers()
         car, _name = self.current_car()
+        # DriverInfo often isn't ready on the first connected tick; treating an
+        # empty car as a session change incorrectly falls through to Default and
+        # desyncs the settings preset combo from the live overlay.
+        if not car:
+            return
         league_id = self._session_league_id()
         if car == self._last_car_path and league_id == self._last_league_id:
             return
@@ -4852,9 +4883,13 @@ def main() -> int:
         if i + 1 < len(sys.argv):
             tracks_dir = os.path.abspath(sys.argv[i + 1])
     # Default launch (e.g. double-clicking the desktop icon) opens settings and
-    # waits for you to press "Start Overlay". --start shows the widgets right
-    # away; --no-settings skips opening the settings window.
-    start_now = "--start" in sys.argv or demo
+    # waits for you to press "Start Overlay". --start / --demo / Settings toggle
+    # start widgets immediately; --no-settings skips opening the settings window.
+    start_now = (
+        "--start" in sys.argv
+        or demo
+        or bool(config.CFG.get("start_overlay_on_launch", False))
+    )
     open_settings = "--no-settings" not in sys.argv
     # Give Windows an explicit app identity so the taskbar uses our icon (not the
     # generic python/pythonw one) and groups/pins the app under it. Must be set
@@ -4874,6 +4909,13 @@ def main() -> int:
         from PyQt6.QtGui import QIcon
         app.setWindowIcon(QIcon(icon_path))
 
+    # Taskbar / desktop double-click should activate the tray app, not spawn
+    # another process. Must run before building the HUD.
+    from . import single_instance
+    instance = single_instance.acquire(app)
+    if instance is None:
+        return 0
+
     import signal
 
     signal.signal(signal.SIGINT, lambda *_: app.quit())
@@ -4883,12 +4925,19 @@ def main() -> int:
 
     hud = AdvancedSimHUD(click_through=click_through, demo=demo,
                          demo_track=demo_track, tracks_dir=tracks_dir)
+    instance.set_activate_callback(hud.open_settings)
 
     # In-app auto-update: check GitHub for a newer release and offer to install.
+    # Bound QObject slots (not bare lambdas) so worker-thread signals queue onto
+    # the GUI thread — same pattern as the settings-page updater.
     from .updater import UpdateChecker
     hud._updater = UpdateChecker()
-    hud._updater.found.connect(lambda info: _prompt_update(app, hud, info))
-    hud._updater.downloaded.connect(lambda path: _run_installer(app, path))
+    bridge = _LaunchUpdater(app, hud)
+    hud._updater_bridge = bridge
+    hud._updater.found.connect(bridge.on_found)
+    hud._updater.progress.connect(bridge.on_progress)
+    hud._updater.downloaded.connect(bridge.on_downloaded)
+    hud._updater.failed.connect(bridge.on_failed)
     if config.CFG.get("check_updates_on_launch", True):
         hud._updater.start()
 
@@ -4907,41 +4956,124 @@ def main() -> int:
     return app.exec()
 
 
-def _prompt_update(app, hud, info) -> None:
-    from PyQt6.QtWidgets import QMessageBox
-    box = QMessageBox()
-    box.setWindowTitle("Update available")
-    box.setIcon(QMessageBox.Icon.Information)
-    box.setText(f"GridGlance {info['version']} is available. Update and "
-                f"restart now?\n\nThe app will close, update itself and reopen "
-                f"automatically -- no setup steps.")
-    notes = (info.get("notes") or "").strip()
-    if notes:
-        box.setDetailedText(notes)
-    box.setStandardButtons(QMessageBox.StandardButton.Yes
-                           | QMessageBox.StandardButton.No)
-    if box.exec() == QMessageBox.StandardButton.Yes and info.get("url"):
-        hud._updater.download_async(info["url"])
+class _LaunchUpdater(QObject):
+    """Startup/tray update UX: progress, errors, stop overlay, then install."""
 
+    def __init__(self, app: QApplication, hud: AdvancedSimHUD):
+        super().__init__(app)
+        self._app = app
+        self._hud = hud
+        self._dl_dialog: QProgressDialog | None = None
+        self._dl_canceled = False
 
-def _run_installer(app, path) -> None:
-    """Silently apply the update and quit so it can replace files + relaunch.
+    def _parent_window(self):
+        w = getattr(self._hud, "_settings_window", None)
+        if w is not None and w.isVisible():
+            return w
+        return None
 
-    On Windows the installer runs with /VERYSILENT so there's no setup wizard:
-    it closes the running app, swaps in the new files and the installer's [Run]
-    entry relaunches GridGlance automatically -- the user just sees the app
-    reopen on the new version.
-    """
-    try:
-        import subprocess
-        if os.name == "nt":
-            subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES",
-                              "/NORESTART"])
+    @pyqtSlot(dict)
+    def on_found(self, info: dict) -> None:
+        parent = self._parent_window()
+        box = QMessageBox(parent) if parent is not None else QMessageBox()
+        box.setWindowTitle("Update available")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(f"GridGlance {info['version']} is available. Update and "
+                    f"restart now?\n\nThe app will close, update itself and reopen "
+                    f"automatically -- no setup steps.")
+        notes = (info.get("notes") or "").strip()
+        if notes:
+            box.setDetailedText(notes)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes
+                               | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if box.exec() != QMessageBox.StandardButton.Yes:
+            return
+        url = info.get("url")
+        if not url:
+            QMessageBox.warning(
+                parent, "No installer",
+                "That release doesn't have a downloadable installer "
+                "for this platform.")
+            return
+        self._begin_download(url, info.get("version", "?"))
+
+    def _begin_download(self, url: str, ver: str) -> None:
+        self._dl_canceled = False
+        parent = self._parent_window()
+        dlg = QProgressDialog("Downloading update\u2026", "Cancel", 0, 100, parent)
+        dlg.setWindowTitle(f"Downloading v{ver}")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setMinimumDuration(0)
+        dlg.setValue(0)
+        dlg.canceled.connect(self._cancel_download)
+        self._dl_dialog = dlg
+        dlg.show()
+        self._hud._updater.download_async(url)
+
+    @pyqtSlot()
+    def _cancel_download(self) -> None:
+        self._dl_canceled = True
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+
+    @pyqtSlot(int, int)
+    def on_progress(self, done: int, total: int) -> None:
+        if self._dl_dialog is None:
+            return
+        if total > 0:
+            self._dl_dialog.setMaximum(100)
+            self._dl_dialog.setValue(int(done * 100 / total))
+            mb = done / 1_048_576
+            tot = total / 1_048_576
+            self._dl_dialog.setLabelText(
+                f"Downloading update\u2026  {mb:.1f} / {tot:.1f} MB")
         else:
-            subprocess.Popen([path])
-    except Exception:
-        return
-    app.quit()
+            self._dl_dialog.setMaximum(0)
+
+    @pyqtSlot(str)
+    def on_downloaded(self, path: str) -> None:
+        if self._dl_canceled:
+            return
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+        self._launch_installer(path)
+
+    @pyqtSlot(str)
+    def on_failed(self, msg: str) -> None:
+        if self._dl_dialog is not None:
+            self._dl_dialog.close()
+            self._dl_dialog = None
+        if self._dl_canceled:
+            return
+        QMessageBox.warning(
+            self._parent_window(), "Download failed",
+            f"Couldn't download the update.\n\n{msg}")
+
+    def _launch_installer(self, path: str) -> None:
+        import subprocess
+        parent = self._parent_window()
+        try:
+            if os.name == "nt":
+                subprocess.Popen([path, "/VERYSILENT", "/SUPPRESSMSGBOXES",
+                                  "/NORESTART"])
+            else:
+                subprocess.Popen([path])
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(
+                parent, "Couldn't start installer",
+                f"The update was downloaded to:\n{path}\n\n"
+                f"but couldn't be launched automatically:\n{exc}")
+            return
+        try:
+            self._hud.stop_overlay()
+        except Exception:
+            pass
+        self._app.quit()
 
 
 def _install_tray(app, hud, icon_path):

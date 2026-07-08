@@ -123,6 +123,11 @@ HELP_OVERRIDES: dict[str, str] = {
     "temperature and fuel readouts.",
     "check_updates_on_launch": "Checks GitHub for a newer GridGlance release when "
     "the app starts.",
+    "start_overlay_on_launch": "Starts the overlay widgets as soon as GridGlance "
+    "opens, without waiting for Start Overlay. Settings still open unless launch "
+    "uses --no-settings (e.g. the login Startup shortcut).",
+    "start_at_login": "On Windows, runs GridGlance when you sign in (Startup folder "
+    "shortcut). If overlay-on-launch is on, login skips opening Settings.",
     "row_height_px": "Fixed row height in pixels. 0 scales rows to fill the panel.",
     "max_row_height_frac": "Caps row height as a fraction of panel height when "
     "row height is 0 (stops rows looking zoomed with few entries).",

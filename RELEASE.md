@@ -5,6 +5,25 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.5 - 2026-07-08
+
+- **Start overlay on launch.** Settings → App → Launch can start widgets as soon
+  as GridGlance opens (same idea as `--start`), without waiting for Start Overlay.
+- **Start at Windows login.** Optional Startup-folder shortcut so GridGlance runs
+  when you sign in. If overlay-on-launch is on, login uses `--no-settings` so
+  Settings does not pop up unprompted. Uninstall clears the shortcut.
+- **Single-instance app.** A second launch (taskbar / desktop double-click)
+  activates the running tray app and opens Settings instead of starting another
+  process.
+- **Launch update Yes fix.** Accepting an update prompt at startup now runs on
+  the GUI thread (same pattern as Settings → Check for Updates), so Yes no
+  longer fails while the settings-page updater worked.
+- **Optional pit entry (Track Scan).** Yellow Entry phase is optional; saves only
+  write `pit_in` when you draw one (no auto-seed from pit road). HTML import
+  skips degenerate entry stubs.
+- **Preset auto-switch.** Empty/unknown car at connect no longer falls through
+  to Default and desyncs the Settings preset combo from the live overlay.
+
 ## 1.60.4 - 2026-07-08
 
 - **Dual race/garage layouts.** Each preset now keeps separate on-track and

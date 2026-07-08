@@ -50,9 +50,10 @@ class TrackImportV2Panel(QFrame):
 
         hint = QLabel(
             "While on track in iRacing, draw or adjust the pit road (red) and "
-            "exit merge line (blue) on the overlay map. Scroll to zoom, "
-            "Middle-click drag or Shift-drag to pan; pit end and merge start "
-            "stay linked. "
+            "exit merge line (blue) on the overlay map. Optional yellow entry "
+            "blend is for tracks that have a distinct commit lane — skip it "
+            "when they don't. Scroll to zoom, Middle-click drag or Shift-drag "
+            "to pan; pit end and merge start stay linked. "
             "Corner labels are edited in Track metadata below. "
             "Save loop uploads geometry without pit; Save track requires pit "
             "road + merge. In demo mode the map previews your upload for this "
@@ -62,13 +63,18 @@ class TrackImportV2Panel(QFrame):
         v.addWidget(hint)
 
         phase_row = QHBoxLayout()
-        phase_lbl = QLabel("Pit road / merge")
+        phase_lbl = QLabel("Pit phases")
         phase_lbl.setObjectName("rowLabel")
         phase_row.addWidget(phase_lbl)
         self._phase_group = QButtonGroup(self)
+        self._entry_btn = QPushButton("Entry (optional)")
         self._road_btn = QPushButton("Pit road")
         self._merge_btn = QPushButton("Merge")
-        for btn, phase in ((self._road_btn, "road"), (self._merge_btn, "merge")):
+        for btn, phase in (
+            (self._entry_btn, "entry"),
+            (self._road_btn, "road"),
+            (self._merge_btn, "merge"),
+        ):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, p=phase: self._set_phase(p))
@@ -224,11 +230,19 @@ class TrackImportV2Panel(QFrame):
 
         QTimer.singleShot(0, _run)
 
+    def _current_phase(self) -> str:
+        if self._entry_btn.isChecked():
+            return "entry"
+        if self._merge_btn.isChecked():
+            return "merge"
+        return "road"
+
     def _set_phase(self, phase: str) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_edit_mode"):
             return
         on = self._pit_edit_sw.isChecked()
         self._overlay.set_pit_edit_mode(on, phase)
+        self._entry_btn.setChecked(phase == "entry")
         self._road_btn.setChecked(phase == "road")
         self._merge_btn.setChecked(phase == "merge")
         self._sync_from_overlay()
@@ -236,15 +250,15 @@ class TrackImportV2Panel(QFrame):
     def _pit_edit_toggled(self, on: bool) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_edit_mode"):
             return
-        phase = "merge" if self._merge_btn.isChecked() else "road"
-        self._overlay.set_pit_edit_mode(on, phase)
+        self._overlay.set_pit_edit_mode(on, self._current_phase())
         self._sync_from_overlay()
 
     def _load_saved_pit(self) -> None:
         if self._overlay is None or not hasattr(self._overlay, "load_pit_into_editor"):
             return
         if self._overlay.load_pit_into_editor(force=True):
-            self._report("Loaded pit road and merge from saved track.", flash=False)
+            self._report(
+                "Loaded pit entry / road / merge from saved track.", flash=False)
             self._sync_from_overlay()
         else:
             self._report(
@@ -322,9 +336,11 @@ class TrackImportV2Panel(QFrame):
         if self._overlay is None or not hasattr(self._overlay, "pit_edit_state"):
             return
         state = self._overlay.pit_edit_state()
+        ne = state.get("entry_count", 0)
         nr = state.get("road_count", 0)
         nm = state.get("merge_count", 0)
         phase = state.get("pit_edit_phase", "road")
+        self._entry_btn.setChecked(phase == "entry")
         self._road_btn.setChecked(phase == "road")
         self._merge_btn.setChecked(phase == "merge")
         if not state.get("has_loop"):
@@ -333,14 +349,14 @@ class TrackImportV2Panel(QFrame):
         suffix = f"TrackID {tid}" if tid is not None else "no TrackID"
         in_sim = state.get("in_sim")
         mode = "In session" if in_sim else "Authoring"
+        entry_bits = f"Entry: {ne} pts · " if ne else ""
         base = self._status.text().split("\n")[0] if self._status.text() else ""
-        if base.startswith("Saved "):
-            self._status.setText(
-                f"{base}\n{mode} · {suffix} · "
+        line = (f"{mode} · {suffix} · {entry_bits}"
                 f"Pit road: {nr} pts · Merge: {nm} pts.")
+        if base.startswith("Saved "):
+            self._status.setText(f"{base}\n{line}")
         else:
-            self._status.setText(
-                f"{mode} · {suffix} · Pit road: {nr} pts · Merge: {nm} pts.")
+            self._status.setText(line)
 
     def refresh(self) -> None:
         state: dict = {}
@@ -353,6 +369,7 @@ class TrackImportV2Panel(QFrame):
         self._import_btn.setEnabled(self._can_import())
         edit_enabled = has_loop
         self._pit_edit_sw.setEnabled(edit_enabled)
+        self._entry_btn.setEnabled(edit_enabled)
         self._road_btn.setEnabled(edit_enabled)
         self._merge_btn.setEnabled(edit_enabled)
         self._load_pit_btn.setEnabled(edit_enabled and has_saved_pit)

@@ -18,7 +18,7 @@ class _FakeMap:
         return [{"pct": 0.25, "label": 1}]
 
     def pit_edit_snapshot(self):
-        return [], []
+        return [], [], []
 
 
 def _author_hud(tmp_path, **kwargs) -> AdvancedSimHUD:

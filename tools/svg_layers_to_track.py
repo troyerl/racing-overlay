@@ -1021,7 +1021,7 @@ def _pit_geometry(
             pit_path = _straighten_pit_path(pit_path)
 
     if pit_path_source == "inactive":
-        pit_in = [pit_path[0], pit_path[0]]
+        pit_in = []
     else:
         entry_blend = _chain_entry_blend(entry, med_x=med_x)
         if entry_blend:
@@ -1029,19 +1029,25 @@ def _pit_geometry(
             if _dist(pit_in[-1], pit_path[0]) > 1e-3:
                 pit_in.append(pit_path[0])
         else:
-            pit_in = [pit_path[0], pit_path[0]]
-        pit_in = _snap_end(pit_in, pit_path[0])
-        if _pit_in_invalid(pit_in, pit_path):
-            poly_entry = [s for s in entry if _is_entry_polygon(s, med_x)]
-            entry_blend = _chain_entry_blend(poly_entry, med_x=med_x)
-            if entry_blend:
-                pit_in = list(entry_blend)
-                if _dist(pit_in[-1], pit_path[0]) > 1e-3:
-                    pit_in.append(pit_path[0])
-            else:
-                pit_in = [pit_path[0], pit_path[0]]
+            pit_in = []
+        if pit_in:
             pit_in = _snap_end(pit_in, pit_path[0])
-        pit_in = _collapse_degenerate_pit_in(pit_in, pit_path)
+            if _pit_in_invalid(pit_in, pit_path):
+                poly_entry = [s for s in entry if _is_entry_polygon(s, med_x)]
+                entry_blend = _chain_entry_blend(poly_entry, med_x=med_x)
+                if entry_blend:
+                    pit_in = list(entry_blend)
+                    if _dist(pit_in[-1], pit_path[0]) > 1e-3:
+                        pit_in.append(pit_path[0])
+                    pit_in = _snap_end(pit_in, pit_path[0])
+                else:
+                    pit_in = []
+            if pit_in:
+                pit_in = _collapse_degenerate_pit_in(pit_in, pit_path)
+                # Collapsed stub [handoff, handoff] means "no real entry".
+                if (len(pit_in) < 2
+                        or _dist(pit_in[0], pit_in[-1]) < 1e-3):
+                    pit_in = []
 
     merge_segs = _segments_from_group(pit_svg, "Mergeline")
     merge_tick_count = len(merge_segs)
@@ -1053,7 +1059,7 @@ def _pit_geometry(
     if at_entry:
         merge_anchor = _entry_merge_handoff(pit_path, merge_centroids)
         if pit_path_source == "inactive":
-            pit_in = [merge_anchor, merge_anchor]
+            pit_in = []
 
     merge_blue = _merge_ticks_to_polyline(
         merge_segs, loop, merge_anchor, pit_path,
@@ -1732,6 +1738,8 @@ def import_svg_layers(
 
     if pit_in and pit_path:
         pit_in = _collapse_degenerate_pit_in(pit_in, pit_path)
+        if len(pit_in) < 2 or _dist(pit_in[0], pit_in[-1]) < 1e-3:
+            pit_in = []
     merge_blue = _straighten_colinear_runs(merge_blue, min_run=3)
     if pit_in and handoff is not None:
         pit_in = _snap_end(pit_in, handoff)
@@ -1799,15 +1807,21 @@ def import_svg_layers(
 
     sf = float(start_finish_override) if start_finish_override is not None else 0.0
     lane_lo, lane_hi = _pit_span_on_loop(loop, pit_path)
-    return {
+    # Prefer real entry tip for route start; otherwise route starts at lane.
+    if pit_in and len(pit_in) >= 2 and _dist(pit_in[0], pit_in[-1]) >= 1e-3:
+        pit_in_pct = round(_pct_on_loop(loop, pit_in[0]), 5)
+        pit_in_out = [[round(x, 7), round(y, 7)] for x, y in pit_in]
+    else:
+        pit_in_pct = round(lane_lo, 5)
+        pit_in_out = None
+    doc = {
         "schema": 2,
         "pit_source": pit_path_source,
         "start_finish": sf,
         "points": [[round(x, 7), round(y, 7)] for x, y in loop],
-        "pit_in": [[round(x, 7), round(y, 7)] for x, y in pit_in],
         "pit_path": [[round(x, 7), round(y, 7)] for x, y in pit_path],
         "pit_out": [[round(x, 7), round(y, 7)] for x, y in merge_blue],
-        "pit_in_pct": round(lane_lo, 5),
+        "pit_in_pct": pit_in_pct,
         "pit_span": [
             round(lane_lo, 5),
             round(lane_hi, 5),
@@ -1816,6 +1830,9 @@ def import_svg_layers(
         "num_turns": len(corners) if corners else (num_corners or None),
         "corners": corners,
     }
+    if pit_in_out is not None:
+        doc["pit_in"] = pit_in_out
+    return doc
 
 
 def import_track_source(path: str, *, num_corners: int = 4,

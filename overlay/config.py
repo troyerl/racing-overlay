@@ -183,6 +183,13 @@ DEFAULTS: dict = {
     # Check GitHub for a newer release when the app launches (silent unless an
     # update is found). The "Check for Updates" button works regardless.
     "check_updates_on_launch": True,
+    # When True, start overlay widgets immediately on app launch (same as --start).
+    # Default False preserves Settings-first launch for desktop / Start Menu.
+    "start_overlay_on_launch": False,
+    # When True on Windows, place a Startup-folder shortcut so GridGlance runs at
+    # login. The OS toggle is applied via overlay.autostart; this flag is the
+    # remembered preference (synced from the shortcut on the Settings App page).
+    "start_at_login": False,
     "relative": {
         **copy.deepcopy(_TABLE_STYLE),
         # Show or hide this whole widget (its window + all of its per-tick work).
