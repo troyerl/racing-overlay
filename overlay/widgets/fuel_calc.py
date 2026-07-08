@@ -12,7 +12,7 @@ set_data(); this widget is pure rendering. Expected dict (any value may be None)
       "add": float,              # litres to add to reach the finish
       "window": (int, int)|None, # recommended pit-window lap range
       "window_open": bool,       # are we within that window now?
-      "rows": {                  # avg / max / min usage scenarios
+      "rows": {                  # avg / high / low burn scenarios (keys max/min)
          "avg": {"usage","laps","pits","refuel"},
          "max": {...}, "min": {...},
       },
@@ -45,9 +45,8 @@ _VC_RIGHT = _VC | Qt.AlignmentFlag.AlignRight
 _CENTER = Qt.AlignmentFlag.AlignCenter
 
 _STAT_COLS = ("usage", "laps", "pits", "refuel")
-_STAT_HEADERS = {"usage": "USAGE", "laps": "LAPS", "pits": "PITS",
-                 "refuel": "REFUEL"}
 _STAT_ROWS = ("avg", "max", "min")
+_STAT_ROW_LABELS = {"avg": "AVG", "max": "HIGH", "min": "LOW"}
 
 
 def _cfg() -> dict:
@@ -60,6 +59,29 @@ def _col(key: str) -> QColor:
 
 def _fmt1(x) -> str:
     return f"{x:.1f}" if isinstance(x, (int, float)) else "\u2013"
+
+
+def _stat_headers() -> dict[str, str]:
+    u = config.fuel_unit()
+    return {
+        "usage": f"USAGE ({u}/lap)",
+        "laps": "LAPS",
+        "pits": "PITS",
+        "refuel": f"REFUEL ({u})",
+    }
+
+
+def _fmt_fuel(x) -> str:
+    v = config.conv_fuel(x)
+    if v is None:
+        return "\u2013"
+    return f"{v:.1f}{config.fuel_unit()}"
+
+
+def _fmt_stat_cell(col: str, val) -> str:
+    if col in ("usage", "refuel"):
+        return _fmt_fuel(val)
+    return _fmt1(val)
 
 
 def _fmt_hms(sec) -> str:
@@ -230,7 +252,11 @@ class FuelCalcWidget(QWidget):
         draw_dark_cell(p, rect, _SECTION, radius=8)
         p.setPen(_col("add_text"))
         p.setFont(tabfont(h * 0.46, bold=True))
-        txt = f"+{add:.1f}L" if isinstance(add, (int, float)) else "\u2014"
+        if isinstance(add, (int, float)):
+            add_c = config.conv_fuel(add)
+            txt = f"+{add_c:.1f}{config.fuel_unit()}" if add_c is not None else "\u2014"
+        else:
+            txt = "\u2014"
         p.drawText(rect, _CENTER, txt)
 
     def _draw_gauge(self, p, d, x, y, w, h) -> None:
@@ -278,9 +304,10 @@ class FuelCalcWidget(QWidget):
         cap_txt = f"{capc:.0f}{config.fuel_unit()}" if capc is not None else "\u2014"
         p.drawText(QRectF(x, bar.bottom() + 1, w, h * 0.4), _VC_RIGHT, cap_txt)
 
-    # -- the avg/max/min usage grid -----------------------------------------
+    # -- the avg/high/low burn grid -----------------------------------------
     def _draw_stats(self, p, d, x, y, w, h) -> None:
         rows = d.get("rows") or {}
+        headers = _stat_headers()
         label_w = w * 0.13
         col_w = (w - label_w) / len(_STAT_COLS)
         cfg = _cfg()
@@ -302,7 +329,7 @@ class FuelCalcWidget(QWidget):
         p.setPen(_col("header"))
         for i, k in enumerate(_STAT_COLS):
             cx = x + label_w + i * col_w
-            p.drawText(QRectF(cx, y, col_w, head_h), _CENTER, _STAT_HEADERS[k])
+            p.drawText(QRectF(cx, y, col_w, head_h), _CENTER, headers[k])
 
         rscale = max(0.3, float(cfg.get("stats_row_font_scale", 1.0) or 1.0))
         for r, rk in enumerate(_STAT_ROWS):
@@ -313,14 +340,15 @@ class FuelCalcWidget(QWidget):
                 p.drawRoundedRect(QRectF(x, ry, w, row_h), 4, 4)
             p.setFont(tfont(row_h * 0.4 * rscale, True, widget_scale=False))
             p.setPen(_col("muted"))
-            p.drawText(QRectF(x + 2, ry, label_w, row_h), _VC_LEFT, rk.upper())
+            p.drawText(QRectF(x + 2, ry, label_w, row_h), _VC_LEFT,
+                       _STAT_ROW_LABELS.get(rk, rk.upper()))
             data = rows.get(rk) or {}
             p.setPen(_col("text"))
             p.setFont(tabfont(row_h * 0.46 * rscale, bold=data_bold, widget_scale=False))
             for i, k in enumerate(_STAT_COLS):
                 cx = x + label_w + i * col_w
                 p.drawText(QRectF(cx, ry, col_w, row_h), _CENTER,
-                           _fmt1(data.get(k)))
+                           _fmt_stat_cell(k, data.get(k)))
             if cfg.get("row_dividers", True) and r < len(_STAT_ROWS) - 1:
                 draw_row_divider(p, x, ry + row_h, w, _SECTION)
 

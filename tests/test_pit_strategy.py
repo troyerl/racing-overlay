@@ -19,6 +19,7 @@ from overlay.pit_strategy import (
     record_pit_loss_sample,
     resolve_pit_loss,
     update_caution_tracker,
+    _format_intel_secondary,
 )
 from overlay import telemetry as tele
 from overlay import common as oc
@@ -162,7 +163,8 @@ def test_green_cover_pit_behind():
     assert "Cover" in advice.rationale or "behind" in advice.rationale.lower()
 
 
-def test_build_pit_context_pits_closed_from_flags():
+def test_build_pit_context_pits_closed_from_flags_fallback():
+    """When PitsOpen is unavailable, CAUTION_WAVING implies pits closed."""
     ctx = build_pit_context(
         player=0,
         positions=[1, 2],
@@ -173,9 +175,84 @@ def test_build_pit_context_pits_closed_from_flags():
         flag="yellow",
         flag_context="Caution",
         session_flags=0x00008000,
+        pits_open=None,
     )
     assert ctx["caution"] is True
     assert ctx["pits_closed"] is True
+
+
+def test_build_pit_context_pits_open_overrides_waving():
+    ctx = build_pit_context(
+        player=0,
+        positions=[1, 2],
+        est_time=[0.0, 5.0],
+        lap_est=90.0,
+        drivers={1: {"CarNumber": "7"}},
+        pace_idxs=set(),
+        flag="yellow",
+        flag_context="Caution waving — pits closed",
+        session_flags=0x00008000,
+        pits_open=True,
+    )
+    assert ctx["pits_closed"] is False
+
+
+def test_build_pit_context_pits_closed_when_not_open():
+    ctx = build_pit_context(
+        player=0,
+        positions=[1, 2],
+        est_time=[0.0, 5.0],
+        lap_est=90.0,
+        drivers={1: {"CarNumber": "7"}},
+        pace_idxs=set(),
+        flag="yellow",
+        flag_context="Full course caution — hold position",
+        session_flags=0x00004000,
+        pits_open=False,
+    )
+    assert ctx["pits_closed"] is True
+
+
+def test_caution_outlook_suppressed_short_green_run():
+    cfg = {"show_field_context": True, "green_run_caution_bias_laps": 15}
+    hist = {"green_run_laps": 3, "was_yellow": False}
+    outlook = {"summary": "Messy field \u2014 yellow could come soon"}
+    out = _format_intel_secondary(
+        hist, {}, cfg,
+        caution_outlook=outlook,
+        on_green=True,
+        green_run_ok=False,
+    )
+    assert out is None
+
+
+def test_stay_out_caution_nudge_requires_long_green():
+    snap = _snapshot(window_open=True, laps_margin=8.0, add=18.0)
+    ctx = _ctx()
+    strat = _win_strategy(
+        fuel_window=True, must_stop=False, fuel_critical=False, tire_window=False)
+    outlook = {"likelihood": "HIGH"}
+    cfg = {**_CFG, "show_field_context": False, "green_run_caution_bias_laps": 15}
+    common = dict(
+        snapshot=snap,
+        ctx=ctx,
+        cfg=cfg,
+        field_intel={"reentry": {"v": "CLEAN"}},
+        strategy=strat,
+        caution_outlook=outlook,
+        pit_menu=_FULL_PIT_MENU,
+    )
+    short = advise_pit_strategy(
+        **common,
+        caution_hist={"green_run_laps": 3},
+    )
+    assert "caution may save a stop" not in short.rationale.lower()
+
+    long_run = advise_pit_strategy(
+        **common,
+        caution_hist={"green_run_laps": 20},
+    )
+    assert "caution may save a stop" in long_run.rationale.lower()
 
 
 def test_caution_tracker_rising_edge():

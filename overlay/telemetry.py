@@ -68,6 +68,17 @@ def _int_or_none(val) -> int | None:
         return None
 
 
+def _bool_or_none(val) -> bool | None:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    try:
+        return bool(int(val))
+    except (TypeError, ValueError):
+        return None
+
+
 def resolve_tire_inventory(
     telemetry: dict,
     cfg: dict,
@@ -159,6 +170,7 @@ def read_pit_advisor_telemetry(ir, car_info: dict | None = None) -> dict:
         "car_last": _read_ir(ir, "CarIdxLastLapTime"),
         "car_flags": _read_ir(ir, "CarIdxSessionFlags"),
         "session_flags": _int_or_none(_read_ir(ir, "SessionFlags")) or 0,
+        "pits_open": _bool_or_none(_read_ir(ir, "PitsOpen")),
         "session_laps_remain_ex": _float_or_none(_read_ir(ir, "SessionLapsRemainEx")),
         "session_laps_remain": _float_or_none(_read_ir(ir, "SessionLapsRemain")),
         "session_time_remain": _float_or_none(_read_ir(ir, "SessionTimeRemain")),

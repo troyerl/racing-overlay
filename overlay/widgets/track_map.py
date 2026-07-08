@@ -2959,6 +2959,12 @@ class TrackMapWidget(QWidget):
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
             self._corner_hit.append((rect, idx))
 
+    @staticmethod
+    def _car_draw_sort_key(car) -> tuple[bool, bool]:
+        speaking = len(car) >= 8 and bool(car[7])
+        is_player = len(car) >= 5 and bool(car[4])
+        return (speaking, is_player)
+
     def _draw_cars(self, p: QPainter, tx, mc: dict,
                    car_pts: dict[int, QPointF]) -> None:
         cc = tx(self._centroid)
@@ -2972,7 +2978,7 @@ class TrackMapWidget(QWidget):
         rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
         marker_slots = self._marker_slots_by_idx()
         show_status = mc.get("show_car_status", True)
-        for car in sorted(self.cars, key=lambda c: c[4]):
+        for car in sorted(self.cars, key=self._car_draw_sort_key):
             speaking = is_pace = False
             status_kind = None
             if len(car) >= 12:

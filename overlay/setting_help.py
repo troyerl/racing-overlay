@@ -228,7 +228,8 @@ HELP_OVERRIDES: dict[str, str] = {
     "fuel_calc.show_title": "When on, shows the title bar across the top. When off, hides it.",
     "fuel_calc.show_pill": "When on, shows the pit-window open/closed status pill. When off, hides it.",
     "fuel_calc.show_add": "When on, shows the large fuel-to-add box. When off, hides it.",
-    "fuel_calc.show_stats": "When on, shows the AVG/MAX/MIN fuel-use grid. When off, hides it.",
+    "fuel_calc.show_stats": "When on, shows the AVG/HIGH/LOW burn grid (HIGH = "
+    "worst burn, LOW = best economy). When off, hides it.",
     "fuel_calc.show_time": "When on, shows the time-until-empty summary box. When off, hides it.",
     "fuel_calc.show_laps": "When on, shows the laps-until-empty summary box. When off, hides it.",
     "fuel_calc.show_live_burn": "When on, shows live fuel burn rate. When off, uses lap averages only.",

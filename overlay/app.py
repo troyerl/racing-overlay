@@ -397,7 +397,7 @@ class AdvancedSimHUD:
 
     @staticmethod
     def _needs_fuel_lap_tracking(en: dict) -> bool:
-        return en.get("fuel_calc") or (
+        return en.get("fuel_calc") or en.get("pit_advisor") or (
             en.get("laptime_log") and config.laptime_log_has_column("fuel"))
 
     def _clear_weather_hist(self) -> None:
@@ -3537,7 +3537,17 @@ class AdvancedSimHUD:
             elif sf & self._FLAG_FIVE_TO_GO:
                 base = "5 to go"
             elif sf & self._FLAG_CAUTION_WAVING:
-                base = "Caution waving — pits closed"
+                pits_open = None
+                try:
+                    pits_open = self.ir["PitsOpen"]
+                except (TypeError, ValueError, KeyError):
+                    pass
+                if pits_open is True:
+                    base = "Caution waving — pits open"
+                elif pits_open is False:
+                    base = "Caution waving — pits closed"
+                else:
+                    base = "Caution waving — pits closed"
             elif sf & self._FLAG_CAUTION:
                 base = "Full course caution — hold position"
             elif sf & self._FLAG_YELLOW_WAVING:
@@ -4303,6 +4313,7 @@ class AdvancedSimHUD:
             flag_context=ctx,
             session_flags=telem.get("session_flags")
             or getattr(self, "_last_session_flags", 0),
+            pits_open=telem.get("pits_open"),
         )
         cur_lap = telem.get("lap")
         sess_time = telem.get("session_time")
@@ -4312,8 +4323,6 @@ class AdvancedSimHUD:
             lap=cur_lap,
             session_time=sess_time,
         )
-        if self._caution_tracker.fuel_ema_reset:
-            self._fc_use.clear()
         caution_hist = self._caution_tracker.as_dict()
         pit_loss = pstrat.resolve_pit_loss(pacfg, self._pit, player)
         laps_rem = telem.get("session_laps_remain_ex")

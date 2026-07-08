@@ -22,6 +22,7 @@ def test_read_pit_advisor_telemetry_minimal():
     assert out["fuel_level"] == 42.0
     assert out["fuel_max"] == 100.0
     assert out["tire_corners"]["lf"]["wear"] == 0.55
+    assert out["pits_open"] is None
     assert out["positions"] is None
 
 

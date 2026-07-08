@@ -301,6 +301,13 @@ def _nearest_with_numbers(
     return best_ahead, behind_gap, _num(ahead_idx), _num(behind_idx)
 
 
+def _green_run_long_enough(caution_hist: dict, cfg: dict) -> bool:
+    min_laps = int(cfg.get("green_run_caution_bias_laps", 15) or 0)
+    if min_laps <= 0:
+        return True
+    return (caution_hist.get("green_run_laps") or 0) >= min_laps
+
+
 def build_pit_context(
     *,
     player: int | None,
@@ -312,6 +319,7 @@ def build_pit_context(
     flag: str | None,
     flag_context: str | None,
     session_flags: int,
+    pits_open: bool | None = None,
 ) -> dict:
     position = None
     if player is not None and positions and player < len(positions):
@@ -322,9 +330,12 @@ def build_pit_context(
     gap_ahead, gap_behind, car_ahead, car_behind = _nearest_with_numbers(
         est_time, player, lap_est, drivers, pace_idxs)
 
-    pits_closed = bool(session_flags & _FLAG_CAUTION_WAVING)
-    if flag_context and "pits closed" in flag_context.lower():
-        pits_closed = True
+    if pits_open is not None:
+        pits_closed = not bool(pits_open)
+    else:
+        pits_closed = bool(session_flags & _FLAG_CAUTION_WAVING)
+        if flag_context and "pits closed" in flag_context.lower():
+            pits_closed = True
 
     return {
         "position": position,
@@ -1487,6 +1498,8 @@ def _format_intel_secondary(
     *,
     caution_outlook: dict | None = None,
     tire_snapshot: dict | None = None,
+    on_green: bool = True,
+    green_run_ok: bool = True,
 ) -> str | None:
     if not cfg.get("show_field_context", True):
         inv_only = cfg.get("show_tire_inventory", True) and tire_snapshot
@@ -1495,16 +1508,18 @@ def _format_intel_secondary(
             return inv_txt
         return None
     parts: list[str] = []
-    if caution_outlook and caution_outlook.get("summary"):
+    show_outlook = on_green and green_run_ok
+    if show_outlook and caution_outlook and caution_outlook.get("summary"):
         parts.append(caution_outlook["summary"])
     elif caution:
         cc = caution.get("caution_count", 0)
         if cc:
             n = int(cc)
             parts.append(f"{n} caution{'s' if n != 1 else ''} so far")
-        gr = caution.get("green_run_laps", 0)
-        if gr and not caution.get("was_yellow", False):
-            parts.append(f"{int(gr)} laps since yellow")
+        if show_outlook:
+            gr = caution.get("green_run_laps", 0)
+            if gr and not caution.get("was_yellow", False):
+                parts.append(f"{int(gr)} laps since yellow")
     if field:
         faster = field.get("ahead_faster_count", 0) or 0
         if faster:
@@ -1611,10 +1626,13 @@ def advise_pit_strategy(
     pra = field_intel.get("pra", 0.0) or 0.0
     reentry_v = (field_intel.get("reentry") or {}).get("v", "CLEAN")
     lost_lead = (field_intel.get("caution_impact") or {}).get("lost_lead", 0) or 0
+    green_run_ok = _green_run_long_enough(caution_hist, cfg)
     intel_sec = _format_intel_secondary(
         caution_hist, field_intel, cfg,
         caution_outlook=caution_outlook,
         tire_snapshot=tire_snapshot,
+        on_green=not ctx.get("caution"),
+        green_run_ok=green_run_ok,
     )
     field_note = _FIELD_FUEL_NOTE
     fuel_crit = strategy.get("fuel_critical", _fuel_critical(snapshot, cfg))
@@ -1840,7 +1858,8 @@ def advise_pit_strategy(
     comfortable_margin = isinstance(margin, (int, float)) and margin >= caution_wait_min
     if (win_open and outlook == "HIGH"
             and comfortable_margin and not must_stop
-            and reentry_v == "CLEAN" and not tire_window):
+            and reentry_v == "CLEAN" and not tire_window
+            and not ctx.get("caution") and green_run_ok):
         return PitAdvice(
             PitRec.MARGINAL, _REC_LABELS[PitRec.MARGINAL],
             "Stay out a lap \u2014 caution may save a stop",

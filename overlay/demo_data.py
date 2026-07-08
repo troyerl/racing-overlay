@@ -586,6 +586,12 @@ class FakeIRSDK:
             # Start at 14:00 and let the sim clock advance with real time.
             return (14 * 3600.0 + (time.time() - self._start)) % 86400.0
 
+        if key == "PitsOpen":
+            sf = self["SessionFlags"]
+            if sf & 0x00008000:
+                return False
+            return True
+
         if key == "SessionFlags":
             # Cycle through the states so the dash flag indicator is visible in
             # demo: caution -> red -> blue -> debris -> white -> black ->

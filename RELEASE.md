@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.2 - 2026-07-07
+
+- **Fuel calc units and clarity.** Add box and USAGE/REFUEL stats now respect
+  **Settings → Units → Imperial** (gallons). Column headers show units; burn
+  rows are labeled **HIGH/LOW** instead of MAX/MIN so laps-on-fuel is easier
+  to read.
+- **Fuel calc history fix.** Pit advisor no longer wipes per-lap burn history on
+  yellow→green; fuel projections stay stable across cautions.
+- **Map speaking z-order.** Drivers on team radio render above overlapping car
+  dots so the green ring and mic badge stay visible.
+- **Pit advisor pits open.** Uses iRacing **PitsOpen** telemetry instead of
+  inferring closed pits from the caution-waving flag — fixes HOLD advice when
+  pits are open under yellow.
+- **Pit advisor green-run gating.** Caution outlook and “caution may save a stop”
+  nudges only appear on green after **green_run_caution_bias_laps** (default 15).
+
 ## 1.60.1 - 2026-07-07
 
 - **Performance panel GPU on Windows.** Hardened PDH GPU engine sampling
