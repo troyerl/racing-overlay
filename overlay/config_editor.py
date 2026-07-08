@@ -1891,19 +1891,24 @@ class ConfigEditor(QWidget):
         overlay_on = bool(self.working.get("start_overlay_on_launch", False))
         w_ov, sw_ov = self._opt_toggle(
             LABEL_OVERRIDES["start_overlay_on_launch"], overlay_on)
-        w_ov.setToolTip(help_for(["start_overlay_on_launch"]))
+        w_ov.setToolTip(help_for(
+            ["start_overlay_on_launch"], False,
+            LABEL_OVERRIDES["start_overlay_on_launch"]))
         sw_ov.toggled.connect(self._set_start_overlay_on_launch)
         v.addWidget(w_ov)
 
         w_login, sw_login = self._opt_toggle(
             LABEL_OVERRIDES["start_at_login"], login_on)
-        w_login.setToolTip(help_for(["start_at_login"]))
+        w_login.setToolTip(help_for(
+            ["start_at_login"], False, LABEL_OVERRIDES["start_at_login"]))
         # Login shortcut is Windows-only; leave the row visible but disabled.
         if not sys.platform.startswith("win"):
             w_login.setEnabled(False)
             sw_login.setEnabled(False)
             w_login.setToolTip(
-                help_for(["start_at_login"]) + " (Windows only.)")
+                help_for(["start_at_login"], False,
+                         LABEL_OVERRIDES["start_at_login"])
+                + " (Windows only.)")
         sw_login.toggled.connect(self._set_start_at_login)
         v.addWidget(w_login)
         return card

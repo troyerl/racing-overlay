@@ -5,6 +5,11 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.6 - 2026-07-08
+
+- **Settings App Launch card.** Opening Settings → App no longer crashes: Launch
+  toggle tooltips now pass the required `help_for` arguments.
+
 ## 1.60.5 - 2026-07-08
 
 - **Start overlay on launch.** Settings → App → Launch can start widgets as soon
