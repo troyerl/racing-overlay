@@ -248,6 +248,8 @@ class AdvancedSimHUD:
         self._track_zones: dict = {}
         self._delta_last_lap_time: float | None = None
         self._delta_prev_lap: int | None = None
+        self._delta_pit_hold: bool = False
+        self._delta_was_on_pit: bool = False
         self._lap_wetness_start: float | None = None
         self._weather_track_hist: deque | None = None
         self._weather_sample_counter = 0
@@ -384,8 +386,11 @@ class AdvancedSimHUD:
     @staticmethod
     def _needs_sector_timer(en: dict) -> bool:
         scfg = config.CFG.get("sector_timing", {})
+        dash = config.CFG.get("dash", {})
         return (
             en.get("sector_timing")
+            or en.get("delta_bar")
+            or dash.get("show_delta_bar")
             or (en.get("laptime_log") and config.laptime_log_has_column("sectors"))
             or (en.get("map") and scfg.get("highlight_active_sector_on_map"))
         )
@@ -1270,6 +1275,8 @@ class AdvancedSimHUD:
             self._closing_session_uid = sess_uid
             self._delta_last_lap_time = None
             self._delta_prev_lap = None
+            self._delta_pit_hold = False
+            self._delta_was_on_pit = False
             self._sector_timer.reset_session()
             self._ll_personal_best = None
             self._clear_weather_hist()
@@ -1332,8 +1339,26 @@ class AdvancedSimHUD:
                     class_pos = self.ir["CarIdxClassPosition"]
                 except (TypeError, ValueError, KeyError):
                     class_pos = None
+            results_pos = results_cls = None
+            laps_complete: dict[int, int] = {}
+            try:
+                state = int(self.ir["SessionState"])
+            except (TypeError, ValueError, KeyError):
+                state = 4
+            if state >= 5:
+                results_pos, results_cls, laps_complete = self._race_results_positions()
+            proj_class_pos = (results_cls if results_cls and any(results_cls)
+                              else class_pos)
+            proj_positions = (results_pos if results_pos and any(results_pos)
+                              else positions)
+            started = self._irating_started_flags(
+                drivers, proj_class_pos, proj_positions, laps_complete)
             self._irating_deltas = irating_calc.project_deltas_by_class(
-                drivers, class_pos, positions, self._pace_idxs)
+                drivers, class_pos, positions, self._pace_idxs,
+                started_by_idx=started,
+                results_class_positions=results_cls,
+                results_positions=results_pos,
+            )
 
         if en["radar"]:
             self._update_radar(player, lap_pct, surface, car_left_right,
@@ -1349,10 +1374,10 @@ class AdvancedSimHUD:
         if en["map"]:
             self._update_map(player, lap_pct, surface, drivers, positions,
                              car_lap, radio_speaker, on_pit_arr, car_flags)
-        if en["dash"]:
-            self._update_dash(player, positions, car_lap)
         if self._needs_sector_timer(en):
             self._advance_sector_timer(player, lap_pct)
+        if en["dash"]:
+            self._update_dash(player, positions, car_lap)
         if en["sector_timing"]:
             self._update_sector_widget()
         if self._needs_fuel_lap_tracking(en):
@@ -1727,6 +1752,10 @@ class AdvancedSimHUD:
             "best_lap": self._lap_for(idx, self._car_best) if cols.get("best_lap") else "",
             "is_player": is_player,
             "in_pit": surface[idx] in (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS),
+            "inactive": tr.is_standings_inactive(
+                surface[idx] if surface and idx < len(surface) else None,
+                self._lap_pct[idx] if self._lap_pct and idx < len(self._lap_pct)
+                else None),
             "lapping": lapping,
             "lap_ahead": lap_ahead,
             "speaking": radio_speaker is not None and idx == radio_speaker,
@@ -2553,6 +2582,94 @@ class AdvancedSimHUD:
             self._grid_positions_cache = pos
             self._grid_class_positions_cache = cls
         return pos, cls
+
+    def _race_results_positions(
+        self,
+    ) -> tuple[list[int] | None, list[int] | None, dict[int, int]]:
+        """Race results from SessionInfo ResultsPositions (checkered / official)."""
+        pos: list[int] | None = None
+        cls: list[int] | None = None
+        laps_complete: dict[int, int] = {}
+        try:
+            sn = int(self.ir["SessionNum"])
+            info = self.ir["SessionInfo"]
+            sessions = info.get("Sessions") if isinstance(info, dict) else None
+            if not sessions or sn < 0 or sn >= len(sessions):
+                return None, None, laps_complete
+            session = sessions[sn]
+            if not isinstance(session, dict):
+                return None, None, laps_complete
+            results = session.get("ResultsPositions")
+            if not results:
+                return None, None, laps_complete
+            max_idx = 0
+            entries: list[tuple[int, int | None, int | None, int]] = []
+            for r in results:
+                if not isinstance(r, dict):
+                    continue
+                idx = r.get("CarIdx")
+                if idx is None:
+                    continue
+                idx = int(idx)
+                max_idx = max(max_idx, idx)
+                lc = r.get("LapsComplete", r.get("LapsDriven", 0))
+                try:
+                    lc_val = int(lc or 0)
+                except (TypeError, ValueError):
+                    lc_val = 0
+                entries.append((idx, r.get("Position"), r.get("ClassPosition"), lc_val))
+            if not entries:
+                return None, None, laps_complete
+            n = max(max_idx + 1, 64)
+            pos = [0] * n
+            cls = [0] * n
+            for idx, p, cp, lc_val in entries:
+                laps_complete[idx] = max(laps_complete.get(idx, 0), lc_val)
+                if p is not None and int(p) > 0:
+                    pos[idx] = int(p)
+                if cp is not None and int(cp) > 0:
+                    cls[idx] = int(cp)
+                elif p is not None and int(p) > 0:
+                    cls[idx] = int(p)
+            if not any(pos):
+                pos = None
+                cls = None
+        except (TypeError, ValueError, KeyError):
+            pass
+        return pos, cls, laps_complete
+
+    def _irating_started_flags(
+        self,
+        drivers: dict[int, dict],
+        class_positions,
+        positions,
+        laps_complete: dict[int, int] | None,
+    ) -> dict[int, bool]:
+        """Per CarIdx whether the driver started (vs registered DNS)."""
+        lap_completed_arr = None
+        try:
+            lap_completed_arr = self.ir["CarIdxLapCompleted"]
+        except (TypeError, ValueError, KeyError):
+            pass
+        laps_complete = laps_complete or {}
+        started: dict[int, bool] = {}
+        for idx, d in drivers.items():
+            if idx in self._pace_idxs or d.get("IsSpectator"):
+                continue
+            if laps_complete.get(idx, 0) > 0:
+                started[idx] = True
+                continue
+            if (lap_completed_arr and idx < len(lap_completed_arr)
+                    and isinstance(lap_completed_arr[idx], int)
+                    and lap_completed_arr[idx] > 0):
+                started[idx] = True
+                continue
+            started[idx] = _coerce_int(
+                (class_positions[idx] if class_positions and idx < len(class_positions)
+                 else None)
+                or (positions[idx] if positions and idx < len(positions) else None)
+            ) > 0
+        return started
 
     def _positions_from_best_lap(self, live: list | None) -> list[int] | None:
         """Provisional qual order from best lap times when results aren't ready."""
@@ -3817,6 +3934,8 @@ class AdvancedSimHUD:
             dash_data["cur_lap"] = self.ir["LapCurrentLapTime"]
         if self._dash_uses_metric("delta"):
             dash_data["delta"] = self.ir["LapDeltaToSessionBest"]
+        if config.CFG.get("dash", {}).get("show_delta_bar"):
+            dash_data["delta"] = self._delta_bar_value(positions)
         if irating is not None:
             dash_data["irating"] = irating
         if irating_delta is not None:
@@ -3957,9 +4076,20 @@ class AdvancedSimHUD:
 
     # --- delta bar / flags / pit service / sector timing -------------------
 
-    def _update_delta_bar(self, player=None, positions=None) -> None:
-        """Feed the live delta against the configured reference lap."""
-        mode = config.CFG["delta_bar"].get("mode", "session_best")
+    def _track_delta_pit_hold(self, on_pit: bool, sector_idx_before: int,
+                              sector_idx_after: int) -> None:
+        """Suppress live delta on pit road and until first sector after exit."""
+        if on_pit:
+            self._delta_pit_hold = True
+            self._delta_was_on_pit = True
+        elif self._delta_was_on_pit:
+            self._delta_pit_hold = True
+            self._delta_was_on_pit = False
+        if self._delta_pit_hold and sector_idx_after > sector_idx_before:
+            self._delta_pit_hold = False
+
+    def _resolve_lap_delta(self, mode: str, positions=None) -> float | None:
+        """Whole-lap delta for the configured reference mode."""
         delta = None
         if mode == "last_lap":
             cur = self.ir["LapCurrentLapTime"]
@@ -3988,8 +4118,18 @@ class AdvancedSimHUD:
                    "optimal": "LapDeltaToOptimalLap"}.get(
                        mode, "LapDeltaToSessionBest")
             delta = self.ir[key]
+        return delta if isinstance(delta, (int, float)) else None
+
+    def _delta_bar_value(self, positions=None) -> float | None:
+        if self._delta_pit_hold:
+            return None
+        mode = config.CFG["delta_bar"].get("mode", "session_best")
+        return self._resolve_lap_delta(mode, positions)
+
+    def _update_delta_bar(self, player=None, positions=None) -> None:
+        """Feed the live delta against the configured reference lap."""
+        delta_val = self._delta_bar_value(positions)
         widget = self.delta_bar_widget
-        delta_val = delta if isinstance(delta, (int, float)) else None
         prev = getattr(widget, "data", None) or {}
         if (delta_val == prev.get("delta")
                 and not getattr(widget, "_animating", False)):
@@ -4036,12 +4176,18 @@ class AdvancedSimHUD:
     def _advance_sector_timer(self, player, lap_pct) -> None:
         """Advance sector splits from lap distance (no widget paint)."""
         self._sector_timer.set_boundaries(self._sector_starts())
+        prev_idx = self._sector_timer.idx
         pct = None
         if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
                 and 0 <= player < len(lap_pct)):
             pct = lap_pct[player]
         self._sector_timer.update(pct, self.ir["LapCurrentLapTime"],
                                   self.ir["LapLastLapTime"])
+        try:
+            on_pit = bool(self.ir["OnPitRoad"])
+        except (TypeError, ValueError, KeyError):
+            on_pit = False
+        self._track_delta_pit_hold(on_pit, prev_idx, self._sector_timer.idx)
         scfg = config.CFG.get("sector_timing", {})
         if (scfg.get("highlight_active_sector_on_map", False)
                 and self._visible_widgets.get("map") and self._sector_timer.starts):

@@ -401,6 +401,10 @@ class BaseTable(QWidget):
     def _draw_row_divider(self, p, x, y, w) -> None:
         _draw_row_divider_chrome(p, x, y, w, self.section)
 
+    def _row_dimmed(self, row) -> bool:
+        return bool(row.get("in_pit") or (
+            row.get("inactive") and self.section == "standings"))
+
     def _draw_row(self, p, row, i, x, y, w, h):
         if row.get("empty"):  # blank placeholder used to keep the player centered
             return
@@ -463,6 +467,8 @@ class BaseTable(QWidget):
                 p, row_rect, "threat" if row.get("lap_ahead") else "lapped")
         elif row.get("in_pit"):
             self._draw_row_tint(p, row_rect, "pit_row")
+        elif row.get("inactive") and self.section == "standings":
+            self._draw_row_tint(p, row_rect, "inactive_row")
         elif row.get("speaking"):
             self._draw_row_tint(p, row_rect, "speaking_row")
         elif i % 2 == 1 and tc["alt_row_shading"]:
@@ -487,7 +493,7 @@ class BaseTable(QWidget):
             name_bold = tc.get("name_font_bold", True)
             if row.get("speaking"):
                 p.setPen(col("badge_speaking_bg"))
-            elif row.get("in_pit"):
+            elif self._row_dimmed(row):
                 p.setPen(col("muted"))
             else:
                 p.setPen(col("text"))
@@ -797,18 +803,18 @@ class BaseTable(QWidget):
         # No background pill -- just the car number, prefixed with '#'.
         cell = QRectF(x, y + h * 0.2, nw, h * 0.6)
         num = str(row.get("car_number", "")).strip()
-        p.setPen(col("muted") if row.get("in_pit") else col("text"))
+        p.setPen(col("muted") if self._row_dimmed(row) else col("text"))
         p.setFont(tabfont(fs * 0.9, bold=_data_font_bold()))
         p.drawText(cell, Qt.AlignmentFlag.AlignCenter, f"#{num}" if num else "")
 
     def _draw_laptime(self, p, row, key, x, y, lw, h, fs):
-        p.setPen(col("muted") if row.get("in_pit") else col("text"))
+        p.setPen(col("muted") if self._row_dimmed(row) else col("text"))
         p.setFont(tabfont(fs * 0.92, bold=_data_font_bold()))
         p.drawText(QRectF(x, y, lw, h), Qt.AlignmentFlag.AlignCenter,
                    row.get(key) or "\u2014")
 
     def _draw_text_cell(self, p, row, key, x, y, w, h, fs):
-        p.setPen(col("muted") if row.get("in_pit") else col("text"))
+        p.setPen(col("muted") if self._row_dimmed(row) else col("text"))
         p.setFont(tfont(fs * 0.88, bold=_data_font_bold()))
         p.drawText(QRectF(x, y, max(10.0, w), h),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,

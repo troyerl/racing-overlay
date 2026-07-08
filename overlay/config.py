@@ -111,6 +111,7 @@ _TABLE_STYLE: dict = {
         "header_bg": "#0b0e12bb",
         "footer_bg": "#0f1216",
         "pit_row": "#8b93a118",
+        "inactive_row": "#8b93a128",
         # Lapped-traffic row tints: "threat" (red) = a car a lap ahead that
         # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
         # Rendered as a soft left-to-right gradient wash in the relative table.

@@ -5,6 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.3 - 2026-07-07
+
+- **Standings inactive rows.** Drivers in the garage or disconnected are greyed
+  out in the standings table (muted text + `inactive_row` tint). On-track, pit,
+  and off-track rows are unchanged.
+- **iRating projection fix.** Registered field size now includes DNS and
+  non-starters so projected deltas match iRacing more closely mid-race.
+- **Dash delta bar after pit exit.** Whole-lap delta is held through pit road
+  and until the first sector after exit so stale SDK delta does not flash on
+  rejoin.
+- **Dash layout polish.** Flag and delta bars span the full dash width; the
+  center ring is centered on the full panel (including the position box); mph
+  spacing matches the ring-to-iRating gap on the stats side.
+
 ## 1.60.2 - 2026-07-07
 
 - **Fuel calc units and clarity.** Add box and USAGE/REFUEL stats now respect

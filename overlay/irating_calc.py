@@ -2,7 +2,7 @@
 
 iRacing does not expose projected iRating in telemetry. This implements the
 community SOF formula (same as Turbo87/irating-rs and iRacing's Excel calc):
-current class position is treated as the finish order — estimates only.
+finish order and registered field size (including DNS) drive the estimate.
 """
 
 from __future__ import annotations
@@ -92,15 +92,33 @@ def _rank(idx: int, class_positions, positions) -> int:
     return 0
 
 
+def _driver_started(
+    idx: int,
+    class_positions,
+    positions,
+    started_by_idx: dict[int, bool] | None,
+) -> bool:
+    if started_by_idx is not None and idx in started_by_idx:
+        return started_by_idx[idx]
+    return _rank(idx, class_positions, positions) > 0
+
+
 def project_deltas_by_class(
     drivers: dict[int, dict],
     class_positions,
     positions,
     pace_idxs: set[int],
+    *,
+    started_by_idx: dict[int, bool] | None = None,
+    results_class_positions=None,
+    results_positions=None,
 ) -> dict[int, int]:
     """CarIdx -> projected iRating change, computed per CarClassID."""
     if not drivers:
         return {}
+
+    rank_class = results_class_positions if results_class_positions else class_positions
+    rank_overall = results_positions if results_positions else positions
 
     by_class: dict[int, list[int]] = defaultdict(list)
     for idx in drivers:
@@ -123,8 +141,10 @@ def project_deltas_by_class(
         non_starters = []
         for idx in idxs:
             ir = int(drivers[idx]["IRating"])
-            rank = _rank(idx, class_positions, positions)
-            if rank > 0:
+            if _driver_started(idx, class_positions, positions, started_by_idx):
+                rank = _rank(idx, rank_class, rank_overall)
+                if rank <= 0:
+                    rank = 10_000
                 starters.append((idx, rank, ir))
             else:
                 non_starters.append((idx, ir))

@@ -534,9 +534,8 @@ class DashWidget(QWidget):
         panels_bottom = h * 0.80   # the strip pill straddles below this line
 
         # Thin flag bar across the top; always reserve its strip (+ a small gap)
-        # so the layout stays put whether or not a flag is showing. Its right
-        # edge is finalized below to stop at the incident container, leaving the
-        # position box clear.
+        # so the layout stays put whether or not a flag is showing. Drawn full
+        # width over the position box at the end of paintEvent.
         flag_top = None
         flag_bar_h = 0.0
         if c.get("show_flags", True):
@@ -546,13 +545,14 @@ class DashWidget(QWidget):
             panels_top += flag_bar_h + h * 0.03   # small gap below the bar
 
         # Optional delta bar across the top; reserve space above the panels.
+        delta_bar_geom = None
         if c.get("show_delta_bar", False):
             db_h = h * 0.05
-            self._draw_delta_bar(p, QRectF(m, panels_top, (w - m) - m, db_h * 0.7),
-                                 c, d)
+            delta_bar_geom = (panels_top, db_h * 0.7)
             panels_top += db_h
         left_left = m
         right_edge = w - m
+        bar_w = right_edge - left_left
 
         total = panels_bottom - panels_top
         top_h = (total - gp) * 0.42
@@ -567,12 +567,10 @@ class DashWidget(QWidget):
             p9_rect = QRectF(right_edge - p9_w, panels_top, p9_w, top_h)
             top_right = p9_rect.left() - hg
 
-        # Finalize the flag bar so it spans only to the incident container's edge
-        # (the top container's right edge), keeping the position box clear.
+        # Flag bar spans the full dash width (including over the position box).
         flag_rect = None
         if flag_top is not None:
-            flag_rect = QRectF(left_left, flag_top, top_right - left_left,
-                               flag_bar_h)
+            flag_rect = QRectF(left_left, flag_top, bar_w, flag_bar_h)
 
         top_rect = QRectF(left_left, panels_top, top_right - left_left, top_h)
         bot_rect = QRectF(left_left, panels_top + top_h + gp,
@@ -583,15 +581,18 @@ class DashWidget(QWidget):
         if show_pos:
             self._draw_position(p, p9_rect, d)
 
-        # Ring medallion: sits on the seam between the two panels (biased upward)
-        # so it doesn't crowd the strip pill below.
-        ring_cx = left_left + (right_edge - left_left) * 0.46
-        ring_cy = panels_top + top_h + gp / 2
+        # Ring medallion: centered on the full dash panel area (includes position box).
+        ring_cx = (left_left + right_edge) / 2
+        ring_cy = panels_top + total / 2
         ring_d = total * 0.80
         ring_half = ring_d / 2
-        pad = h * 0.035
-        gapL = ring_cx - ring_half - pad
-        gapR = ring_cx + ring_half + pad
+        bpad = bot_rect.height() * 0.14
+        stat_h = bot_rect.height() - bpad * 2
+        base_pad = h * 0.035
+        left_pad = self._ring_left_clearance(ring_cx, ring_half, base_pad,
+                                             bot_rect, bpad, stat_h, c, d)
+        gapL = ring_cx - ring_half - left_pad
+        gapR = ring_cx + ring_half + base_pad
 
         # --- top container contents (shift bar | status) -----------------
         ipad = top_rect.height() * 0.22
@@ -609,7 +610,6 @@ class DashWidget(QWidget):
                               c.get("top_right", "incidents"), d)
 
         # --- bottom container contents (primary | stats) -----------------
-        bpad = bot_rect.height() * 0.14
         if c.get("primary_left", "lap_count") not in (None, "none") \
                 or c.get("primary_right", "speed") not in (None, "none"):
             self._draw_primary(p, QRectF(bot_rect.left() + bpad,
@@ -645,6 +645,11 @@ class DashWidget(QWidget):
         if flag_rect is not None:
             self._draw_flag(p, flag_rect, c, d.get("flag"), ring_cx,
                             d.get("flag_context"))
+
+        if delta_bar_geom is not None:
+            delta_top, delta_bar_h = delta_bar_geom
+            self._draw_delta_bar(
+                p, QRectF(left_left, delta_top, bar_w, delta_bar_h), c, d)
 
     # -- flag bar ----------------------------------------------------------
     def _draw_flag(self, p, rect, c, flag, center_x=None, context=None) -> None:
@@ -938,6 +943,28 @@ class DashWidget(QWidget):
         if delta < 0:
             return self._col("irating_delta_down")
         return self._col("muted")
+
+    def _ring_left_clearance(self, ring_cx, ring_half, base_pad,
+                             bot_rect, bpad, stat_h, c, d) -> float:
+        """Match mph clearance to the ring-to-iRating gap on the stats side."""
+        keys = [c.get("stat_left", "tires"), c.get("stat_right", "fuel_stack")]
+        keys = [k for k in keys if k not in (None, "none")]
+        if "irating" not in keys:
+            return base_pad
+
+        gapR = ring_cx + ring_half + base_pad
+        stats_w = max(0.0, bot_rect.right() - bpad - gapR)
+        if stats_w <= 0:
+            return base_pad
+
+        n = len(keys)
+        cell_gap = stats_w * 0.06
+        cw = (stats_w - cell_gap * (n - 1)) / n
+        idx = keys.index("irating")
+        val_px = stat_h * 0.24
+        ir_w = self._irating_pair_width(d, val_px, stat_h)
+        offset_in_stats = idx * (cw + cell_gap) + max(0.0, (cw - ir_w) / 2)
+        return base_pad + offset_in_stats
 
     def _stat_icon_gap(self, h: float) -> float:
         return h * 0.20

@@ -173,6 +173,15 @@ def car_status_text(surface_val, on_pit: bool | None = None) -> str:
     return "OUT"
 
 
+def is_standings_inactive(surface_val, lap_pct_val=None) -> bool:
+    """True when a driver is in the garage or disconnected (standings grey-out)."""
+    if surface_val == oc.TRK_NOT_IN_WORLD:
+        return True
+    if lap_pct_val is not None and lap_pct_val < 0:
+        return True
+    return False
+
+
 def car_flag_text(flags_val) -> str:
     if not flags_val or not isinstance(flags_val, (int, float)):
         return "\u2014"
