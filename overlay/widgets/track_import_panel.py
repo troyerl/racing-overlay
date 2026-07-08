@@ -53,7 +53,9 @@ class TrackImportV2Panel(QFrame):
             "exit merge line (blue) on the overlay map. Optional yellow entry "
             "blend is for tracks that have a distinct commit lane — skip it "
             "when they don't. Scroll to zoom, Middle-click drag or Shift-drag "
-            "to pan; pit end and merge start stay linked. "
+            "to pan; drag handles to adjust points. Clear all pit or clear the "
+            "current phase to start over on one segment. Pit end and merge start "
+            "stay linked. "
             "Corner labels are edited in Track metadata below. "
             "Save loop uploads geometry without pit; Save track requires pit "
             "road + merge. In demo mode the map previews your upload for this "
@@ -96,10 +98,14 @@ class TrackImportV2Panel(QFrame):
         reset_view = QPushButton("Reset view")
         reset_view.setCursor(Qt.CursorShape.PointingHandCursor)
         reset_view.clicked.connect(self._reset_pit_view)
-        clear = QPushButton("Clear pit")
-        clear.setObjectName("warn")
-        clear.setCursor(Qt.CursorShape.PointingHandCursor)
-        clear.clicked.connect(self._clear_pit)
+        self._clear_phase_btn = QPushButton("Clear phase")
+        self._clear_phase_btn.setObjectName("warn")
+        self._clear_phase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._clear_phase_btn.clicked.connect(self._clear_pit_phase)
+        clear_all = QPushButton("Clear all pit")
+        clear_all.setObjectName("warn")
+        clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
+        clear_all.clicked.connect(self._clear_pit_all)
         save_loop = QPushButton("Save loop")
         save_loop.setCursor(Qt.CursorShape.PointingHandCursor)
         save_loop.clicked.connect(self._save_loop)
@@ -109,7 +115,8 @@ class TrackImportV2Panel(QFrame):
         btn_row.addWidget(self._load_pit_btn)
         btn_row.addWidget(undo)
         btn_row.addWidget(reset_view)
-        btn_row.addWidget(clear)
+        btn_row.addWidget(self._clear_phase_btn)
+        btn_row.addWidget(clear_all)
         btn_row.addStretch(1)
         btn_row.addWidget(save_loop)
         btn_row.addWidget(save)
@@ -276,11 +283,26 @@ class TrackImportV2Panel(QFrame):
             return
         self._overlay.map_widget.reset_pit_edit_view()
 
-    def _clear_pit(self) -> None:
+    def _clear_pit_all(self) -> None:
         if self._overlay is None or not hasattr(self._overlay, "map_widget"):
             return
         self._overlay.map_widget.clear_pit_edit()
+        self._overlay.map_widget.clear_pit()
         self._sync_from_overlay()
+        self._report("Cleared all pit geometry — redraw on the map.", flash=False)
+
+    def _clear_pit_phase(self) -> None:
+        if self._overlay is None:
+            return
+        phase = self._current_phase()
+        if hasattr(self._overlay, "clear_pit_edit_phase"):
+            self._overlay.clear_pit_edit_phase(phase)
+        elif hasattr(self._overlay, "map_widget"):
+            self._overlay.map_widget.clear_pit_edit_phase(phase)
+        self._sync_from_overlay()
+        label = {"entry": "entry", "road": "pit road", "merge": "merge"}.get(
+            phase, phase)
+        self._report(f"Cleared {label} points.", flash=False)
 
     def _save_loop(self) -> None:
         if self._overlay is None:
@@ -373,6 +395,14 @@ class TrackImportV2Panel(QFrame):
         self._road_btn.setEnabled(edit_enabled)
         self._merge_btn.setEnabled(edit_enabled)
         self._load_pit_btn.setEnabled(edit_enabled and has_saved_pit)
+        phase_counts = {
+            "entry": state.get("entry_count", 0),
+            "road": state.get("road_count", 0),
+            "merge": state.get("merge_count", 0),
+        }
+        phase = state.get("pit_edit_phase", "road")
+        self._clear_phase_btn.setEnabled(
+            edit_enabled and phase_counts.get(phase, 0) > 0)
         if edit_enabled:
             self._sync_from_overlay()
         elif in_sim:

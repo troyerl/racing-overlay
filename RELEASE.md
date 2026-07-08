@@ -5,6 +5,16 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.7 - 2026-07-08
+
+- **Pit lane map editing.** Enabling pit edit (or corner / start-finish edit) makes
+  the map panel accept mouse and scroll again while the rest of the overlay stays
+  click-through — zoom, pan, and drag handles work without `--no-clickthrough`.
+- **Per-phase pit camera.** Auto-fit focuses on the active phase (entry, pit road,
+  or merge) so a distant optional entry no longer shrinks handles or breaks zoom.
+- **Clear pit controls.** Track Scan adds **Clear all pit** (edit buffers + saved
+  preview) and **Clear phase** (wipe only the selected segment).
+
 ## 1.60.6 - 2026-07-08
 
 - **Settings App Launch card.** Opening Settings → App no longer crashes: Launch

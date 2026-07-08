@@ -140,6 +140,8 @@ class AdvancedSimHUD:
         self._demo_ir = None       # lazily created synthetic source for edit mode
         self._demo_active = False
         self._settings_window = None
+        self._map_authoring_depth = 0
+        self._map_click_through_saved: bool | None = None
 
         # Repaint + re-apply widget visibility when the config changes (editor UI).
         config.on_change(self._on_config_change)
@@ -458,9 +460,34 @@ class AdvancedSimHUD:
         self.click_through = not bool(enabled)
         for win in self.panels:
             win.set_click_through(self.click_through)
+        # Map authoring (pit/corner/SF) needs the map panel interactive even
+        # when the rest of the overlay stays click-through.
+        if self._map_authoring_depth > 0:
+            map_win = self._win_by_key.get("map")
+            if map_win is not None:
+                map_win.set_click_through(False)
         # Edit mode reveals panels even when the sim isn't connected so the
         # layout can be arranged offline (see _apply_visibility).
         self._apply_visibility()
+
+    def _set_map_authoring_interactive(self, on: bool) -> None:
+        """Ref-count map panel mouse capture for pit/corner/SF authoring."""
+        map_win = self._win_by_key.get("map")
+        if map_win is None:
+            return
+        if on:
+            if self._map_authoring_depth == 0:
+                self._map_click_through_saved = map_win.click_through
+                map_win.set_click_through(False)
+            self._map_authoring_depth += 1
+            return
+        if self._map_authoring_depth <= 0:
+            return
+        self._map_authoring_depth -= 1
+        if self._map_authoring_depth == 0:
+            if self._map_click_through_saved is not None:
+                map_win.set_click_through(self._map_click_through_saved)
+            self._map_click_through_saved = None
 
     def toggle_edit_mode(self) -> bool:
         self.set_edit_mode(not self.edit_mode_enabled())
@@ -722,11 +749,14 @@ class AdvancedSimHUD:
 
     def set_corner_edit_mode(self, enabled: bool) -> None:
         """Toggle drag-to-move corner labels on the map widget."""
+        was = self.map_widget.corner_edit_mode
         if enabled:
             self.set_pit_edit_mode(False)
             self.set_sf_edit_mode(False)
         self.map_widget.set_corner_edit(
             enabled, self._save_corners_authoring if enabled else None)
+        if bool(enabled) != was:
+            self._set_map_authoring_interactive(enabled)
 
     def _uncheck_sf_edit_toggle(self) -> None:
         w = self._settings_window
@@ -737,6 +767,7 @@ class AdvancedSimHUD:
 
     def set_sf_edit_mode(self, enabled: bool) -> None:
         """Toggle drag-to-move start/finish along the racing loop."""
+        was = self.map_widget.sf_edit_mode
         if enabled:
             self.set_pit_edit_mode(False)
             self.set_corner_edit_mode(False)
@@ -744,6 +775,8 @@ class AdvancedSimHUD:
                 "Drag the white start/finish line along the track")
         self.map_widget.set_sf_edit(
             enabled, self._save_sf_authoring if enabled else None)
+        if bool(enabled) != was:
+            self._set_map_authoring_interactive(enabled)
 
     def _save_sf_authoring(self) -> bool:
         """Persist manually placed start/finish lap fraction."""
@@ -883,6 +916,7 @@ class AdvancedSimHUD:
 
     def set_pit_edit_mode(self, enabled: bool, phase: str = "road") -> None:
         """Toggle manual pit authoring clicks on the live map."""
+        was = self.map_widget.pit_edit_mode
         if enabled:
             self.set_corner_edit_mode(False)
             self.set_sf_edit_mode(False)
@@ -897,6 +931,12 @@ class AdvancedSimHUD:
             enabled, self._save_pit_authoring if enabled else None)
         if enabled:
             self.map_widget.set_pit_edit_phase(phase)
+        if bool(enabled) != was:
+            self._set_map_authoring_interactive(enabled)
+
+    def clear_pit_edit_phase(self, phase: str) -> None:
+        """Clear one pit-edit phase on the map (entry, road, or merge)."""
+        self.map_widget.clear_pit_edit_phase(phase)
 
     def _save_pit_authoring(self) -> None:
         """Refresh in-progress pit preview after a handle drag (no file write)."""

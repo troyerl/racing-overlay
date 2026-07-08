@@ -1117,6 +1117,21 @@ class TrackMapWidget(QWidget):
         self._pit_drag_idx = None
         self.update()
 
+    def clear_pit_edit_phase(self, phase: str) -> None:
+        """Drop points for one pit-edit phase (entry, road, or merge)."""
+        phase = (phase or "road").strip().lower()
+        if phase == "entry":
+            self._pit_edit_entry = []
+        elif phase == "road":
+            self._pit_edit_road = []
+            self._pit_edit_merge = []
+        elif phase == "merge":
+            self._pit_edit_merge = []
+        else:
+            return
+        self._pit_drag_idx = None
+        self.update()
+
     def pop_last_pit_edit_point(self) -> None:
         if self.pit_edit_phase == "merge" and self._pit_edit_merge:
             self._pit_edit_merge.pop()
@@ -2141,10 +2156,13 @@ class TrackMapWidget(QWidget):
                 if seg:
                     fit.extend(model(pt) for pt in seg)
             if self.pit_edit_mode:
-                for seg in (self._pit_edit_entry, self._pit_edit_road,
-                            self._pit_edit_merge):
-                    if seg:
-                        fit.extend(model(pt) for pt in seg)
+                phase_seg = {
+                    "entry": self._pit_edit_entry,
+                    "road": self._pit_edit_road,
+                    "merge": self._pit_edit_merge,
+                }.get(self.pit_edit_phase, self._pit_edit_road)
+                if phase_seg:
+                    fit.extend(model(pt) for pt in phase_seg)
             xs = [m[0] for m in fit]
             ys = [m[1] for m in fit]
             minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
@@ -2631,7 +2649,8 @@ class TrackMapWidget(QWidget):
         """In-progress entry (yellow), pit road (red), and merge (blue)."""
         mc = _mcfg()
         self._pit_hit = []
-        r = max(4.0, mc.get("asphalt_width", 12) * 0.35)
+        base_r = max(4.0, mc.get("asphalt_width", 12) * 0.35)
+        r = max(8.0, base_r * math.sqrt(max(self._pit_edit_zoom, 1.0)))
 
         def _polyline(pts, color_key: str, width: float):
             if len(pts) < 2:

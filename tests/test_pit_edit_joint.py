@@ -199,3 +199,50 @@ def test_middle_click_drag_pans_without_adding_points(qapp):
     assert not w._pit_pan_active
     assert len(w._pit_edit_road) == n_road
     assert len(w._pit_edit_merge) == n_merge
+
+
+def test_fit_ignores_distant_entry_when_editing_road(qapp):
+    """Active-phase fit: entry far from pit road must not shrink road edit view."""
+    w = _widget()
+    w.pit_edit_mode = True
+    w.pit_edit_phase = "road"
+    w.load_pit_edit(
+        [(0.2, 0.4), (0.5, 0.42)],
+        [(0.5, 0.42), (0.9, 0.48)],
+        entry=[(-5.0, 5.0), (-4.5, 4.8)],
+    )
+    _force_paint(w, qapp)
+    scale_road_only = w._pit_edit_base_scale
+
+    w.pit_edit_phase = "entry"
+    _force_paint(w, qapp)
+    scale_entry = w._pit_edit_base_scale
+    assert scale_entry < scale_road_only * 0.5
+
+    w.pit_edit_phase = "road"
+    _force_paint(w, qapp)
+    assert w._pit_edit_base_scale == pytest.approx(scale_road_only, rel=1e-4)
+
+
+def test_clear_pit_edit_phase_entry_leaves_road_merge(qapp):
+    w = _widget()
+    w.load_pit_edit(
+        [(0.2, 0.4), (0.5, 0.42)],
+        [(0.5, 0.42), (0.9, 0.48)],
+        entry=[(0.1, 0.3), (0.2, 0.35)],
+    )
+    w.clear_pit_edit_phase("entry")
+    assert w._pit_edit_entry == []
+    assert len(w._pit_edit_road) == 2
+    assert len(w._pit_edit_merge) == 2
+
+
+def test_clear_pit_edit_phase_road_clears_merge(qapp):
+    w = _widget()
+    w.load_pit_edit(
+        [(0.2, 0.4), (0.5, 0.42)],
+        [(0.5, 0.42), (0.9, 0.48)],
+    )
+    w.clear_pit_edit_phase("road")
+    assert w._pit_edit_road == []
+    assert w._pit_edit_merge == []
