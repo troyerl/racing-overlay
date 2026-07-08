@@ -264,6 +264,7 @@ class AdvancedSimHUD:
         self._lap_compare_snap_key = None
         self._caution_tracker = pstrat.CautionTracker()
         self._visible_widgets: dict[str, bool] = {}
+        self._cfg_section_snap: dict = {}
         # Throttled WeekendInfo cache for header/footer slots.
         self._weekend_cache: dict = {}
         self._weekend_counter = 0
@@ -512,10 +513,10 @@ class AdvancedSimHUD:
             elif not want and win.isVisible():
                 win.hide()
 
-    def _on_config_change(self, _cfg) -> None:
+    def _on_config_change(self, cfg) -> None:
         self._refresh_visible_widgets()
         self._apply_visibility()
-        self._repaint_all()
+        self._repaint_config_sections(cfg)
 
     def _apply_layout(self, persist_clamps: bool = True) -> None:
         """Reload the active context's layout onto every panel window."""
@@ -1166,16 +1167,72 @@ class AdvancedSimHUD:
         self._league_id_cache = lid
         return lid
 
+    def _widget_by_key(self) -> dict:
+        return {
+            "standings": self.standings_widget,
+            "relative": self.relative_widget,
+            "radar": self.radar_widget,
+            "map": self.map_widget,
+            "dash": self.dash_widget,
+            "laptime_log": self.laptime_widget,
+            "fuel_calc": self.fuel_widget,
+            "inputs": self.inputs_widget,
+            "delta_bar": self.delta_bar_widget,
+            "flags": self.flags_widget,
+            "sector_timing": self.sector_widget,
+            "lap_compare": self.lap_compare_widget,
+            "tire_panel": self.tire_panel_widget,
+            "pit_board": self.pit_board_widget,
+            "weather_panel": self.weather_panel_widget,
+            "leaderboard_strip": self.leaderboard_strip_widget,
+            "radio_tower": self.radio_tower_widget,
+            "ers_hybrid": self.ers_hybrid_widget,
+            "system_panel": self.system_panel_widget,
+            "pit_advisor": self.pit_advisor_widget,
+        }
+
+    @staticmethod
+    def _cfg_section_snapshot(cfg: dict) -> dict:
+        snap: dict = {}
+        for k, v in cfg.items():
+            if isinstance(v, dict):
+                snap[k] = repr(v)
+            else:
+                snap[k] = v
+        return snap
+
+    _CFG_GLOBAL_KEYS = frozenset({
+        "font_family", "tabular_font_family", "fonts",
+    })
+
+    def _repaint_config_sections(self, cfg: dict) -> None:
+        """Repaint only widgets whose config section changed."""
+        prev = self._cfg_section_snap
+        snap = self._cfg_section_snapshot(cfg)
+        self._cfg_section_snap = snap
+        if not prev:
+            self._repaint_all()
+            return
+        changed = {k for k in set(prev) | set(snap) if prev.get(k) != snap.get(k)}
+        if not changed:
+            return
+        if changed & self._CFG_GLOBAL_KEYS:
+            self._repaint_all()
+            self.map_widget._invalidate_static_cache()
+            return
+        widgets = self._widget_by_key()
+        painted = False
+        for key in _WIDGET_KEYS:
+            if key in changed and key in widgets:
+                widgets[key].update()
+                painted = True
+        if "map" in changed:
+            self.map_widget._invalidate_static_cache()
+        if not painted:
+            self._repaint_all()
+
     def _repaint_all(self) -> None:
-        for w in (self.standings_widget, self.relative_widget,
-                  self.radar_widget, self.map_widget, self.dash_widget,
-                  self.laptime_widget, self.fuel_widget, self.inputs_widget,
-                  self.delta_bar_widget, self.flags_widget,
-                  self.sector_widget, self.lap_compare_widget,
-                  self.tire_panel_widget, self.pit_board_widget,
-                  self.weather_panel_widget, self.leaderboard_strip_widget,
-                  self.radio_tower_widget, self.ers_hybrid_widget,
-                  self.system_panel_widget, self.pit_advisor_widget):
+        for w in self._widget_by_key().values():
             w.update()
 
     def open_settings(self) -> None:
@@ -4267,13 +4324,16 @@ class AdvancedSimHUD:
                     secondary = secondary or "Pit limiter active"
             except (TypeError, ValueError, KeyError):
                 pass
-        self.flags_widget.set_data({
+        payload = {
             "flag": flag,
             "flag_context": ctx,
             "secondary": secondary,
             "incident_warn": incident_warn,
             "edit": self.edit_mode_enabled(),
-        })
+        }
+        if payload == getattr(self.flags_widget, "data", None):
+            return
+        self.flags_widget.set_data(payload)
 
     def _advance_sector_timer(self, player, lap_pct) -> None:
         """Advance sector splits from lap distance (no widget paint)."""
@@ -4305,6 +4365,10 @@ class AdvancedSimHUD:
             self.ir["LapCurrentLapTime"], self.ir["LapLastLapTime"],
             self.ir["LapBestLapTime"],
             show_delta=scfg.get("show_sector_delta", False))
+        key = tele.sector_timing_snap_key(snap)
+        if key == getattr(self, "_sector_snap_key", None):
+            return
+        self._sector_snap_key = key
         self.sector_widget.set_data(snap)
 
     def _track_fuel_per_lap(self) -> None:
@@ -4695,10 +4759,13 @@ class AdvancedSimHUD:
             temp=cfg.get("show_temp", True),
             pressure=cfg.get("show_pressure", False),
         )
-        self.tire_panel_widget.set_data({
+        payload = {
             "corners": corners,
             "edit": self.edit_mode_enabled(),
-        })
+        }
+        if payload == getattr(self.tire_panel_widget, "data", None):
+            return
+        self.tire_panel_widget.set_data(payload)
 
     def _update_pit_board(self) -> None:
         cfg = config.CFG.get("pit_board", {})
@@ -4892,14 +4959,19 @@ class AdvancedSimHUD:
                 "speed_mph": speed_mph,
                 "is_player": idx == player,
             })
-        self.leaderboard_strip_widget.set_data({
+        payload = {
             "rows": rows,
             "edit": self.edit_mode_enabled(),
-        })
+        }
+        if payload == getattr(self.leaderboard_strip_widget, "data", None):
+            return
+        self.leaderboard_strip_widget.set_data(payload)
 
     def _update_ers_hybrid(self) -> None:
         snap = hy.snapshot(self.ir)
         snap["edit"] = self.edit_mode_enabled()
+        if snap == getattr(self.ers_hybrid_widget, "data", None):
+            return
         self.ers_hybrid_widget.set_data(snap)
 
 

@@ -294,3 +294,62 @@ def fuel_payload_key(data: dict) -> tuple:
                rows.get(k, {}).get("refuel"))
               for k in ("avg", "max", "min")),
     )
+
+
+_DASH_EASE_KEYS = ("rpm", "throttle", "brake", "clutch")
+
+
+def dash_discrete_key(data: dict) -> tuple:
+    """Hashable dash snapshot excluding continuous easing inputs."""
+    if not data:
+        return ()
+    skip = set(_DASH_EASE_KEYS)
+    items = []
+    for k, v in sorted(data.items()):
+        if k in skip:
+            continue
+        if isinstance(v, float):
+            items.append((k, round(v, 2)))
+        else:
+            items.append((k, v))
+    return tuple(items)
+
+
+def dash_easing_moved(prev: dict | None, data: dict, eps: float = 0.003) -> bool:
+    """True when eased pedal/RPM targets moved enough to warrant a repaint kick."""
+    if not prev:
+        return True
+    for k in _DASH_EASE_KEYS:
+        a, b = prev.get(k), data.get(k)
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            if abs(float(a) - float(b)) > eps:
+                return True
+        elif a != b:
+            return True
+    return False
+
+
+def _time_centis(v) -> object:
+    if isinstance(v, (int, float)):
+        return round(float(v), 2)
+    return v
+
+
+def sector_timing_snap_key(snap: dict) -> tuple:
+    """Hashable sector-timing snapshot (lap clocks rounded to centiseconds)."""
+    sectors = []
+    for s in snap.get("sectors") or []:
+        sectors.append((
+            _time_centis(s.get("time")),
+            s.get("status"),
+            s.get("active"),
+            _time_centis(s.get("delta")) if s.get("delta") is not None else None,
+        ))
+    return (
+        _time_centis(snap.get("cur_lap")),
+        _time_centis(snap.get("last_lap")),
+        _time_centis(snap.get("best_lap")),
+        _time_centis(snap.get("predicted_lap")),
+        snap.get("active_idx"),
+        tuple(sectors),
+    )

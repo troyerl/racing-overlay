@@ -193,6 +193,9 @@ class RadarWidget(QWidget):
         car = QRectF(cx - car_w / 2, cy - car_h / 2, car_w, car_h)
         p.drawRoundedRect(car, car_w * 0.4, car_w * 0.4)
 
+        if self._animating:
+            self.update()
+
     @staticmethod
     def _feather_mask(pp, w, h, vertical):
         # Multiply a perpendicular fade onto whatever is already drawn so the

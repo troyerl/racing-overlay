@@ -75,7 +75,6 @@ class InputTraceWidget(QWidget):
         gear = self.data.get("gear")
         last = self._hist[-1] if self._hist else None
         if last is not None and last[1:5] == sample_vals and last[8] == gear:
-            self.update()
             return
         self._hist.append((t, sample_vals[0], sample_vals[1], sample_vals[2],
                            sample_vals[3], abs_on, hb, torque, gear))

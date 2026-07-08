@@ -197,6 +197,31 @@ class FakeIRSDK:
         positions = [0] * self.num_cars
         for rank, idx in enumerate(order, start=1):
             positions[idx] = rank
+        leader = max(totals)
+        pace_pct = ((time.time() - self._start) * 0.012) % 1.0
+        player_frac = pcts[self.player_idx]
+        pbase = 0.5 + 0.5 * math.sin(player_frac * 2 * math.pi * 3 - 1.2)
+        player_lap = int(totals[self.player_idx]) + 1
+        jit = (((player_lap * 37) % 7) - 3) / 3.0
+        player_ms = (max(65.0, min(258.0,
+                                    90.0 + 150.0 * pbase
+                                    + 6.0 * jit * (1.0 - pbase))) / 3.6)
+        speeds = [
+            max(12.0, player_ms * self._speed[i]
+                + 4.0 * math.sin(t * 0.35 + self._phase[i]))
+            for i in range(self.num_cars)
+        ]
+        last_lap = [
+            self.lap_time / self._speed[i] + 0.6 * math.sin(t * 0.2 + self._phase[i])
+            for i in range(self.num_cars)
+        ]
+        best_lap = [self.lap_time / self._speed[i] - 0.45
+                    for i in range(self.num_cars)]
+        session_flags = [0] * self.num_cars
+        if (t % 30.0) < 5.0:
+            session_flags[2] = 0x00100000
+        if 10.0 < (t % 30.0) < 15.0:
+            session_flags[1] = 0x00010000
         self._frame = {
             "t": t,
             "totals": totals,
@@ -204,6 +229,18 @@ class FakeIRSDK:
             "on_pit": on_pit,
             "lap_counts": lap_counts,
             "positions": positions,
+            "pcts_pace": pcts + [pace_pct],
+            "on_pit_pace": on_pit + [False],
+            "positions_pace": positions + [0],
+            "est_time_pace": [p * self.lap_time for p in pcts] + [0.0],
+            "surface_pace": [
+                oc.TRK_IN_PIT_STALL if on else oc.TRK_ON_TRACK for on in on_pit
+            ] + [oc.TRK_ON_TRACK],
+            "f2_time": [(leader - tot) * self.lap_time for tot in totals],
+            "speed": speeds,
+            "last_lap_times": last_lap,
+            "best_lap_times": best_lap,
+            "session_flags_pace": session_flags + [0],
         }
 
     def _fuel_burn_per_sec(self) -> float:
@@ -215,7 +252,8 @@ class FakeIRSDK:
         return self.num_cars
 
     def _pace_lap_pct(self) -> float:
-        return ((time.time() - self._start) * 0.012) % 1.0
+        self._ensure_frame()
+        return self._frame["pcts_pace"][-1]
 
     # --- pyirsdk-compatible surface ----------------------------------------
 
@@ -362,14 +400,16 @@ class FakeIRSDK:
             return self.player_idx
 
         if key == "CarIdxLapDistPct":
-            pcts = self._lap_pct()
-            return pcts + [self._pace_lap_pct()]
+            self._ensure_frame()
+            return self._frame["pcts_pace"]
 
         if key == "CarIdxEstTime":
-            return [p * self.lap_time for p in self._lap_pct()] + [0.0]
+            self._ensure_frame()
+            return self._frame["est_time_pace"]
 
         if key == "CarIdxOnPitRoad":
-            return self._on_pit_list() + [False]
+            self._ensure_frame()
+            return self._frame["on_pit_pace"]
 
         if key == "OnPitRoad":
             return self._on_pit_list()[self.player_idx]
@@ -379,28 +419,23 @@ class FakeIRSDK:
             return 0x10 if self._on_pit_list()[self.player_idx] else 0
 
         if key == "CarIdxTrackSurface":
-            base = [oc.TRK_IN_PIT_STALL if on else oc.TRK_ON_TRACK
-                    for on in self._on_pit_list()]
-            return base + [oc.TRK_ON_TRACK]
+            self._ensure_frame()
+            return self._frame["surface_pace"]
 
         if key == "CarIdxPosition":
             self._ensure_frame()
-            return self._frame["positions"] + [0]
+            return self._frame["positions_pace"]
 
         if key == "CarIdxLap":
             return self._lap_counts()
 
         if key == "CarIdxSpeed":
-            # Approximate start/finish speed (m/s) for the scoring pylon MPH column.
-            t = time.time() - self._start
-            return [max(12.0, self._engine()[0] * self._speed[i]
-                        + 4.0 * math.sin(t * 0.35 + self._phase[i]))
-                    for i in range(self.num_cars)]
+            self._ensure_frame()
+            return self._frame["speed"]
 
         if key == "CarIdxF2Time":
-            totals = self._total_laps()
-            leader = max(totals)
-            return [(leader - t) * self.lap_time for t in totals]
+            self._ensure_frame()
+            return self._frame["f2_time"]
 
         if key == "CarIdxClassPosition":
             return self["CarIdxPosition"]  # single-class demo field
@@ -409,16 +444,12 @@ class FakeIRSDK:
             return 4  # racing — enables iRating projection in demo
 
         if key == "CarIdxLastLapTime":
-            # A plausible last lap per car: the demo pace scaled around lap_time,
-            # nudged by a slow wobble so the values tick over time.
-            t = time.time() - self._start
-            return [self.lap_time / self._speed[i]
-                    + 0.6 * math.sin(t * 0.2 + self._phase[i])
-                    for i in range(self.num_cars)]
+            self._ensure_frame()
+            return self._frame["last_lap_times"]
 
         if key == "CarIdxBestLapTime":
-            return [self.lap_time / self._speed[i] - 0.45
-                    for i in range(self.num_cars)]
+            self._ensure_frame()
+            return self._frame["best_lap_times"]
 
         if key == "RadioTransmitCarIdx":
             # Cycle through a few cars so the speaking badge is visible in demo.
@@ -453,13 +484,8 @@ class FakeIRSDK:
             return base + 3.0 * math.sin(t * 0.08 + hash(key) % 7)
 
         if key == "CarIdxSessionFlags":
-            t = time.time() - self._start
-            flags = [0] * self.num_cars
-            if (t % 30.0) < 5.0:
-                flags[2] = 0x00100000  # meatball on car 2
-            if 10.0 < (t % 30.0) < 15.0:
-                flags[1] = 0x00010000  # black on car 1
-            return flags + [0]
+            self._ensure_frame()
+            return self._frame["session_flags_pace"]
 
         if key == "LapDeltaToBestLap":
             t = time.time() - self._start

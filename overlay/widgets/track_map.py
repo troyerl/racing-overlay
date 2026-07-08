@@ -21,7 +21,7 @@ import os
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QElapsedTimer, QTimer
 from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QMouseEvent, QPainter,
-                         QPainterPath, QPen, QWheelEvent)
+                         QPainterPath, QPen, QPixmap, QWheelEvent)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
@@ -836,6 +836,8 @@ class TrackMapWidget(QWidget):
         self._layout_oy = 0.0
         self._layout_mirror = False
         self._layout_rot = 0
+        self._static_pix: QPixmap | None = None
+        self._static_key: tuple | None = None
         # Manual pit authoring (Track Scan v2): road then merge segments.
         self.pit_edit_mode = False
         self.pit_edit_phase = "road"
@@ -872,6 +874,50 @@ class TrackMapWidget(QWidget):
             self._cfg_rot = rot
             self._cfg_mirror = mirror
             self._car_anim.clear()
+        self._invalidate_static_cache()
+
+    def _invalidate_static_cache(self) -> None:
+        self._static_pix = None
+        self._static_key = None
+
+    def _use_static_cache(self) -> bool:
+        return (bool(self.path) and not self.pit_edit_mode
+                and not self.corner_edit_mode and not self.sf_edit_mode)
+
+    def _map_style_token(self, mc: dict) -> tuple:
+        cols = mc.get("colors") or {}
+        return (
+            mc.get("show_panel"), mc.get("show_infield"),
+            mc.get("asphalt_width"), mc.get("outline_width"),
+            mc.get("show_pit"), mc.get("show_pit_blends"),
+            mc.get("show_sector_boundaries"), mc.get("show_drs_zones"),
+            mc.get("show_p2p_zones"), mc.get("show_corners"),
+            mc.get("show_start_finish"),
+            tuple(sorted((k, cols.get(k)) for k in cols)),
+            self._cfg_rot, self._cfg_mirror,
+        )
+
+    def _static_cache_key(self) -> tuple:
+        w, h = self.width(), self.height()
+        if w < 1 or h < 1:
+            return ()
+        dpr = self.devicePixelRatioF()
+        mc = _mcfg()
+        corners = self.display_corners()
+        return (
+            int(w * dpr), int(h * dpr), dpr,
+            id(self.path), len(self.path or []), self.start_finish,
+            id(self.pit_path), id(self.pit_in), id(self.pit_out),
+            self.pit_span, tuple(self.sector_boundaries),
+            tuple(tuple(z) for z in self.drs_zones),
+            tuple(tuple(z) for z in self.p2p_zones),
+            self._map_style_token(mc),
+            tuple(corners) if corners else (),
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self._invalidate_static_cache()
+        super().resizeEvent(event)
 
     def _invalidate_corner_cache(self) -> None:
         self._display_corners_cache = None
@@ -927,6 +973,7 @@ class TrackMapWidget(QWidget):
             self.player_xy = None
             self._invalidate_route()
         self._invalidate_corner_cache()
+        self._invalidate_static_cache()
         self.update()
 
     def set_num_turns(self, n) -> None:
@@ -945,6 +992,7 @@ class TrackMapWidget(QWidget):
             self._auto_corners = detect_corners(self.path, self.start_finish,
                                                 target=self.num_turns)
             self._invalidate_corner_cache()
+            self._invalidate_static_cache()
             self.update()
 
     def set_track_is_oval(self, is_oval: bool) -> None:
@@ -953,6 +1001,7 @@ class TrackMapWidget(QWidget):
             return
         self._track_is_oval = bool(is_oval)
         self._invalidate_corner_cache()
+        self._invalidate_static_cache()
         self.update()
 
     @staticmethod
@@ -976,6 +1025,7 @@ class TrackMapWidget(QWidget):
         """Replace the displayed corner list (manual authoring)."""
         self.corners = [_parse_corner(c) for c in (corners or [])]
         self._invalidate_corner_cache()
+        self._invalidate_static_cache()
         self.update()
 
     def regenerate_corners(self) -> None:
@@ -1158,6 +1208,7 @@ class TrackMapWidget(QWidget):
         """Set (or clear) the real pit-lane geometry: model-space (x, y) points."""
         self.pit_path = self._clean_poly(path)
         self._invalidate_route()
+        self._invalidate_static_cache()
         self.update()
 
     def set_pit_blends(self, pit_in, pit_out) -> None:
@@ -1165,6 +1216,7 @@ class TrackMapWidget(QWidget):
         self.pit_in = self._clean_poly(pit_in)
         self.pit_out = self._clean_poly(pit_out)
         self._invalidate_route()
+        self._invalidate_static_cache()
         self.update()
 
     def set_pit_route_pct(self, in_pct, out_pct) -> None:
@@ -1668,6 +1720,7 @@ class TrackMapWidget(QWidget):
             return
         self.drs_zones = drs
         self.p2p_zones = p2p
+        self._invalidate_static_cache()
         self.update()
 
     def set_active_sector(self, idx: int | None, starts=None) -> None:
@@ -1682,16 +1735,30 @@ class TrackMapWidget(QWidget):
         self.update()
 
     def set_cars(self, cars) -> None:
-        if cars == self.cars and not self._car_animating:
-            return
+        prev = self.cars
         self.cars = cars
-        self.update()
+        if self._car_targets_moved(prev, cars) or self._car_animating:
+            self.update()
+
+    @staticmethod
+    def _car_targets_moved(prev: list, cars: list, eps: float = 0.0008) -> bool:
+        if len(prev) != len(cars):
+            return True
+        for a, b in zip(prev, cars):
+            if a[0] != b[0]:
+                return True
+            if abs(float(a[1]) - float(b[1])) > eps:
+                return True
+            if a[2:] != b[2:]:
+                return True
+        return False
 
     def set_sector_boundaries(self, starts) -> None:
         starts = list(starts or [])
         if starts == self.sector_boundaries:
             return
         self.sector_boundaries = starts
+        self._invalidate_static_cache()
         self.update()
 
     def set_traffic_markers(self, markers: dict | None) -> None:
@@ -2113,6 +2180,40 @@ class TrackMapWidget(QWidget):
             p.setPen(_mcol_def("hint_text", "#ffffff"))
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, self._hint_text)
 
+    def _paint_static_map(self, p, rect, tx, mc, qpath) -> None:
+        """Track geometry that changes only on resize, config, or track edits."""
+        if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
+            draw_card(p, rect.width(), rect.height(), "map")
+        if mc.get("show_infield", True):
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(_mcol("infield"))
+            p.drawPath(qpath)
+        asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 12))
+        asphalt.setCapStyle(Qt.PenCapStyle.RoundCap)
+        asphalt.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(asphalt)
+        p.drawPath(qpath)
+        p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 6)))
+        p.drawPath(qpath)
+        if mc.get("show_pit", True) and (self.pit_path or self.pit_in
+                                         or self.pit_out
+                                         or self.pit_span is not None):
+            self._draw_pit(p, tx)
+        if self.pit_edit_mode:
+            self._draw_pit_edit(p, tx)
+        if mc.get("show_sector_boundaries", True):
+            self._draw_sector_boundaries(p, tx)
+        if mc.get("show_drs_zones", False) and self.drs_zones:
+            self._draw_zones(p, tx, self.drs_zones, "drs_zone")
+        if mc.get("show_p2p_zones", False) and self.p2p_zones:
+            self._draw_zones(p, tx, self.p2p_zones, "p2p_zone")
+        corners = self.display_corners()
+        if mc.get("show_corners", True):
+            self._draw_corners(p, tx, corners)
+        if mc.get("show_start_finish", True):
+            self._draw_start_finish(p, tx)
+
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         p = QPainter(self)
         try:
@@ -2122,11 +2223,10 @@ class TrackMapWidget(QWidget):
             rect = QRectF(self.rect())
 
             mc = _mcfg()
-            # Rounded card behind the map so it matches the dash/table panels.
-            if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
-                draw_card(p, rect.width(), rect.height(), "map")
 
             if not self.path:
+                if mc.get("show_panel", True) and "bg_top" in mc["colors"]:
+                    draw_card(p, rect.width(), rect.height(), "map")
                 p.setFont(tfont(min(rect.width(), rect.height()) * 0.06, bold=False))
                 p.setPen(col("muted", "map"))
                 p.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.placeholder)
@@ -2197,40 +2297,28 @@ class TrackMapWidget(QWidget):
                 qpath.lineTo(tx(pt))
             qpath.closeSubpath()
 
-            # Background only fills the infield enclosed by the track loop.
-            if mc.get("show_infield", True):
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(_mcol("infield"))
-                p.drawPath(qpath)
+            if self._use_static_cache():
+                key = self._static_cache_key()
+                if self._static_pix is None or key != self._static_key:
+                    dpr = self.devicePixelRatioF()
+                    pw = max(1, int(rect.width() * dpr))
+                    ph = max(1, int(rect.height() * dpr))
+                    pm = QPixmap(pw, ph)
+                    pm.setDevicePixelRatio(dpr)
+                    pm.fill(Qt.GlobalColor.transparent)
+                    sp = QPainter(pm)
+                    sp.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    sp.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+                    self._paint_static_map(sp, rect, tx, mc, qpath)
+                    sp.end()
+                    self._static_pix = pm
+                    self._static_key = key
+                p.drawPixmap(0, 0, self._static_pix)
+            else:
+                self._paint_static_map(p, rect, tx, mc, qpath)
 
-            asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 12))
-            asphalt.setCapStyle(Qt.PenCapStyle.RoundCap)
-            asphalt.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            p.setBrush(Qt.BrushStyle.NoBrush)
-            p.setPen(asphalt)
-            p.drawPath(qpath)
-            p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 6)))
-            p.drawPath(qpath)
-
-            if mc.get("show_pit", True) and (self.pit_path or self.pit_in
-                                             or self.pit_out
-                                             or self.pit_span is not None):
-                self._draw_pit(p, tx)
-            if self.pit_edit_mode:
-                self._draw_pit_edit(p, tx)
-            if mc.get("show_sector_boundaries", True):
-                self._draw_sector_boundaries(p, tx)
-            if mc.get("show_drs_zones", False) and self.drs_zones:
-                self._draw_zones(p, tx, self.drs_zones, "drs_zone")
-            if mc.get("show_p2p_zones", False) and self.p2p_zones:
-                self._draw_zones(p, tx, self.p2p_zones, "p2p_zone")
             if self._active_sector is not None:
                 self._draw_active_sector(p, tx)
-            corners = self.display_corners()
-            if mc.get("show_corners", True):
-                self._draw_corners(p, tx, corners)
-            if mc.get("show_start_finish", True):
-                self._draw_start_finish(p, tx)
             car_pts, self._car_animating = self._build_smooth_car_screen_points(tx, mc)
             self._draw_cars(p, tx, mc, car_pts)
             if mc.get("show_traffic_markers", True):

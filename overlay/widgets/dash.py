@@ -48,6 +48,7 @@ from PyQt6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPainterPath, QP
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
+from .. import telemetry as tele
 from .. import traffic as tr
 from . import icons
 from .chrome import col, draw_dark_cell, draw_panel_rect, draw_row_divider
@@ -409,9 +410,13 @@ class DashWidget(QWidget):
         if flag != self._flag_shown:  # a new flag (re)starts the pulse window
             self._flag_shown = flag
             self._flag_since_ms = self._clock.elapsed()
-        changed = data != self.data
+        prev = self.data
         self.data = data
-        if changed or self._animating:
+        discrete = tele.dash_discrete_key(data)
+        prev_discrete = tele.dash_discrete_key(prev) if prev else None
+        if (discrete != prev_discrete
+                or tele.dash_easing_moved(prev, data)
+                or self._animating):
             self.update()
 
     def _dt(self) -> float:
@@ -657,6 +662,9 @@ class DashWidget(QWidget):
             delta_top, delta_bar_h = delta_bar_geom
             self._draw_delta_bar(
                 p, QRectF(left_left, delta_top, bar_w, delta_bar_h), c, d)
+
+        if self._animating:
+            self.update()
 
     # -- flag bar ----------------------------------------------------------
     def _draw_flag(self, p, rect, c, flag, center_x=None, context=None) -> None:

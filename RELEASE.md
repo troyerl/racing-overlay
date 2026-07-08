@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.9 - 2026-07-08
+
+- **Lower CPU and memory use.** Widgets repaint less often without dropping
+  animations: dash and radar ease via self-scheduled paint loops, inputs skip
+  no-op updates, and dash/sector/flags/tire/ERS/leaderboard feeds dedupe
+  unchanged telemetry before repainting.
+- **Map static cache.** Track asphalt, pit, zones, corners, and start/finish
+  render to a cached pixmap; only car dots, traffic markers, wind, and overlays
+  redraw each frame. Car targets use a small lap-% epsilon so easing still runs
+  smoothly.
+- **Targeted settings repaints.** Live config tweaks update only the affected
+  widget section instead of all 19 panels; global font changes still refresh
+  everything.
+- **Demo telemetry reuse.** Fake iRacing arrays are built once per tick and
+  reused across reads, cutting allocations in layout/demo mode.
+
 ## 1.60.8 - 2026-07-08
 
 - **Map player on pit lane.** Your car dot stays obvious on pit road and during

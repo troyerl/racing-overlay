@@ -1,5 +1,6 @@
 """Delta bar modes, inputs history, and flag context formatters."""
 
+from overlay import telemetry as tele
 from overlay import traffic as tr
 from overlay.app import AdvancedSimHUD
 
@@ -170,6 +171,21 @@ def test_flag_context_checkered_shows_position():
             cfg.pop("show_finish_position", None)
         else:
             cfg["show_finish_position"] = old
+
+
+def test_sector_timing_snap_key_rounds_clock():
+    snap = {
+        "cur_lap": 32.4567,
+        "last_lap": 32.1,
+        "best_lap": 31.9,
+        "predicted_lap": 32.44,
+        "active_idx": 1,
+        "sectors": [{"time": 10.123, "status": "running", "active": True,
+                     "delta": 0.001}],
+    }
+    k1 = tele.sector_timing_snap_key(snap)
+    k2 = tele.sector_timing_snap_key(dict(snap, cur_lap=32.4554))
+    assert k1 == k2
 
 
 def test_inputs_shift_gear_changes_in_history():
