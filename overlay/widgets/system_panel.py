@@ -28,9 +28,9 @@ def format_network_value(chan_quality, chan_latency, wifi: dict | None, *,
                          compact: bool = False) -> str:
     """Format the NET row: iRacing channel when available, else OS WiFi."""
     parts: list[str] = []
-    if chan_quality is not None:
+    if chan_quality is not None and float(chan_quality) > 0:
         parts.append(f"{int(round(float(chan_quality)))}%")
-    if chan_latency is not None:
+    if chan_latency is not None and float(chan_latency) > 0:
         parts.append(f"{int(round(float(chan_latency)))} ms")
     if parts:
         return " \u00b7 ".join(parts)

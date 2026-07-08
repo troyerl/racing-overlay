@@ -227,6 +227,15 @@ def weather_snapshot(ir, weekend: dict, *, cfg: dict | None = None) -> dict:
     return out
 
 
+def channel_usable(quality, latency) -> bool:
+    """True when iRacing online channel telemetry is meaningful (not offline zeros)."""
+    if quality is not None and float(quality) > 0:
+        return True
+    if latency is not None and float(latency) > 0:
+        return True
+    return False
+
+
 def perf_snapshot(ir, *, cfg: dict | None = None) -> dict:
     """Build system-panel FPS and online channel fields from telemetry."""
     cfg = cfg or {}
@@ -243,13 +252,13 @@ def perf_snapshot(ir, *, cfg: dict | None = None) -> dict:
     if cfg.get("show_network", True):
         try:
             q = _float_or_none(ir["ChanQuality"])
-            if q is not None:
+            if q is not None and q > 0:
                 out["chan_quality"] = max(0.0, min(100.0, q))
         except (TypeError, ValueError, KeyError):
             pass
         try:
             lat = _float_or_none(ir["ChanLatency"])
-            if lat is not None:
+            if lat is not None and lat > 0:
                 out["chan_latency"] = max(0.0, lat)
         except (TypeError, ValueError, KeyError):
             pass

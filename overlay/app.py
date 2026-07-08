@@ -4521,9 +4521,8 @@ class AdvancedSimHUD:
         snap["mem_pct"] = mem_pct
         snap["gpu_pct"] = gpu_pct
         if cfg.get("show_network", True):
-            has_chan = (snap.get("chan_quality") is not None
-                        or snap.get("chan_latency") is not None)
-            if not has_chan:
+            if not tele.channel_usable(
+                    snap.get("chan_quality"), snap.get("chan_latency")):
                 wifi = sysstats.wifi_signal()
                 if wifi:
                     snap["wifi"] = wifi

@@ -48,6 +48,27 @@ def test_perf_snapshot_empty_when_ir_missing():
     assert tele.perf_snapshot(None) == {}
 
 
+def test_perf_snapshot_omits_zero_channel():
+    ir = FakeIR({"FrameRate": 60.0, "ChanQuality": 0.0, "ChanLatency": 0.0})
+    snap = tele.perf_snapshot(ir, cfg={"show_fps": True, "show_network": True})
+    assert snap["fps"] == 60
+    assert "chan_quality" not in snap
+    assert "chan_latency" not in snap
+
+
+def test_channel_usable():
+    assert tele.channel_usable(97.0, 28.0) is True
+    assert tele.channel_usable(None, 28.0) is True
+    assert tele.channel_usable(97.0, None) is True
+    assert tele.channel_usable(0.0, 0.0) is False
+    assert tele.channel_usable(None, 0.0) is False
+
+
+def test_format_network_value_zero_latency_uses_wifi():
+    assert format_network_value(0.0, 0.0, {"quality_pct": 82}) == "WiFi 82%"
+    assert format_network_value(None, 0.0, {"quality_pct": 82}) == "WiFi 82%"
+
+
 def test_format_network_value_prefers_channel():
     assert format_network_value(98.0, 32.0, {"quality_pct": 80}) == "98% \u00b7 32 ms"
 

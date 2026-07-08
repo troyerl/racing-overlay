@@ -23,6 +23,8 @@ Each function returns a float in 0..100, or None when it can't be determined.
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import subprocess
 import sys
@@ -184,94 +186,17 @@ def _proc_mem() -> float | None:
 
 _win_gpu_sampler = None
 
-
-class _WinGpuSampler:
-    """Persistent PDH query for GPU engine utilisation (Windows 10+)."""
-
-    _COUNTER = "\\GPU Engine(*)\\Utilization Percentage"
-    _PDH_FMT_DOUBLE = 0x00000200
-    _ERROR_SUCCESS = 0
-
-    def __init__(self) -> None:
-        import ctypes
-        from ctypes import wintypes
-
-        self._pdh = ctypes.windll.pdh
-        self._query = wintypes.HANDLE()
-        self._counters: list = []
-        self._value_type = type("PDH_FMT_COUNTERVALUE", (ctypes.Structure,), {
-            "_fields_": [("CStatus", wintypes.DWORD),
-                         ("doubleValue", ctypes.c_double)],
-        })
-        self._ready = self._open()
-
-    def _open(self) -> bool:
-        import ctypes
-        from ctypes import wintypes
-
-        pdh = self._pdh
-        if pdh.PdhOpenQueryW(None, 0, ctypes.byref(self._query)) != self._ERROR_SUCCESS:
-            return False
-        size = wintypes.DWORD(0)
-        pdh.PdhExpandCounterPathW(self._COUNTER, None, ctypes.byref(size), 0)
-        if size.value <= 1:
-            return False
-        buf = ctypes.create_unicode_buffer(size.value)
-        if pdh.PdhExpandCounterPathW(self._COUNTER, buf, ctypes.byref(size), 0) != 0:
-            return False
-        paths = [p for p in buf.value.split("\0") if p]
-        for path in paths:
-            counter = wintypes.HANDLE()
-            if pdh.PdhAddEnglishCounterW(self._query, path, 0,
-                                         ctypes.byref(counter)) == 0:
-                self._counters.append(counter)
-        if not self._counters:
-            return False
-        pdh.PdhCollectQueryData(self._query)
-        time.sleep(0.1)
-        pdh.PdhCollectQueryData(self._query)
-        return True
-
-    def read(self) -> float | None:
-        if not self._ready:
-            return None
-        import ctypes
-        from ctypes import wintypes
-
-        pdh = self._pdh
-        if pdh.PdhCollectQueryData(self._query) != self._ERROR_SUCCESS:
-            return None
-        peak = 0.0
-        found = False
-        for counter in self._counters:
-            val = self._value_type()
-            size = wintypes.DWORD(ctypes.sizeof(val))
-            if pdh.PdhGetFormattedCounterValue(
-                    counter, self._PDH_FMT_DOUBLE, ctypes.byref(size),
-                    ctypes.byref(val)) != self._ERROR_SUCCESS:
-                continue
-            peak = max(peak, float(val.doubleValue))
-            found = True
-        if not found:
-            return None
-        return max(0.0, min(100.0, peak))
-
-    def close(self) -> None:
-        if self._query.value:
-            self._pdh.PdhCloseQuery(self._query)
+_PDH_FMT_DOUBLE = 0x00000200
+_PDH_MORE_DATA = 0x800007D2
+_PDH_ERROR_SUCCESS = 0
 
 
-def _win_gpu_percent() -> float | None:
-    global _win_gpu_sampler
-    try:
-        if _win_gpu_sampler is None:
-            _win_gpu_sampler = _WinGpuSampler()
-        return _win_gpu_sampler.read()
-    except Exception:
-        return None
+def _machine_prefix() -> str:
+    host = os.environ.get("COMPUTERNAME", "").strip()
+    return f"\\\\{host}" if host else ""
 
 
-def _linux_gpu_percent() -> float | None:
+def _nvidia_smi_gpu_percent() -> float | None:
     if not shutil.which("nvidia-smi"):
         return None
     try:
@@ -290,7 +215,219 @@ def _linux_gpu_percent() -> float | None:
         return None
 
 
+class _WinGpuSampler:
+    """Persistent PDH query for GPU engine utilisation (Windows 10+)."""
+
+    _ENGINE_PATTERNS = (
+        r"\GPU Engine(*)\Utilization Percentage",
+    )
+
+    def __init__(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        self._pdh = ctypes.WinDLL("pdh.dll")
+        self._query = wintypes.HANDLE()
+        self._counters: list[tuple[str, object]] = []
+        self._value_type = type("PDH_FMT_COUNTERVALUE", (ctypes.Structure,), {
+            "_fields_": [("CStatus", wintypes.DWORD),
+                         ("doubleValue", ctypes.c_double)],
+        })
+        self._bind_pdh()
+        self._ready = self._open()
+
+    def _bind_pdh(self) -> None:
+        import ctypes
+        from ctypes import wintypes
+
+        pdh = self._pdh
+        ULONG_PTR = getattr(wintypes, "ULONG_PTR", ctypes.c_void_p)
+
+        pdh.PdhOpenQueryW.argtypes = [
+            wintypes.LPCWSTR, ULONG_PTR, ctypes.POINTER(wintypes.HANDLE)]
+        pdh.PdhOpenQueryW.restype = wintypes.DWORD
+
+        add_eng = getattr(pdh, "PdhAddEnglishCounterW", None)
+        add_std = pdh.PdhAddCounterW
+        self._add_counter = add_eng if add_eng is not None else add_std
+        self._add_counter.argtypes = [
+            wintypes.HANDLE, wintypes.LPCWSTR, ULONG_PTR,
+            ctypes.POINTER(wintypes.HANDLE)]
+        self._add_counter.restype = wintypes.DWORD
+
+        pdh.PdhCollectQueryData.argtypes = [wintypes.HANDLE]
+        pdh.PdhCollectQueryData.restype = wintypes.DWORD
+
+        pdh.PdhCloseQuery.argtypes = [wintypes.HANDLE]
+        pdh.PdhCloseQuery.restype = wintypes.DWORD
+
+        pdh.PdhExpandWildCardPathW.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPWSTR,
+            ctypes.POINTER(wintypes.DWORD), wintypes.DWORD]
+        pdh.PdhExpandWildCardPathW.restype = wintypes.DWORD
+
+        pdh.PdhGetFormattedCounterValue.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+            ctypes.c_void_p]
+        pdh.PdhGetFormattedCounterValue.restype = wintypes.DWORD
+
+    def _expand_wildcard(self, pattern: str) -> list[str]:
+        import ctypes
+        from ctypes import wintypes
+
+        pdh = self._pdh
+        size = wintypes.DWORD(0)
+        st = pdh.PdhExpandWildCardPathW(None, pattern, None, ctypes.byref(size), 0)
+        if st not in (_PDH_MORE_DATA, _PDH_ERROR_SUCCESS) or size.value == 0:
+            return []
+        buf = ctypes.create_unicode_buffer(size.value)
+        st = pdh.PdhExpandWildCardPathW(None, pattern, buf, ctypes.byref(size), 0)
+        if st != _PDH_ERROR_SUCCESS:
+            return []
+        return [p for p in buf[:].split("\x00") if p and "(*)" not in p]
+
+    def _open(self) -> bool:
+        import ctypes
+        from ctypes import wintypes
+
+        pdh = self._pdh
+        if pdh.PdhOpenQueryW(None, 0, ctypes.byref(self._query)) != _PDH_ERROR_SUCCESS:
+            return False
+
+        prefix = _machine_prefix()
+        patterns = list(self._ENGINE_PATTERNS)
+        if prefix:
+            patterns.append(prefix + self._ENGINE_PATTERNS[0])
+
+        paths: list[str] = []
+        seen: set[str] = set()
+        for pat in patterns:
+            for path in self._expand_wildcard(pat):
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+
+        for path in paths:
+            counter = wintypes.HANDLE()
+            if self._add_counter(self._query, path, 0,
+                                 ctypes.byref(counter)) == _PDH_ERROR_SUCCESS:
+                self._counters.append((path, counter))
+
+        if not self._counters:
+            return False
+
+        pdh.PdhCollectQueryData(self._query)
+        time.sleep(0.1)
+        pdh.PdhCollectQueryData(self._query)
+        return True
+
+    def read(self) -> float | None:
+        if not self._ready:
+            return None
+        import ctypes
+        from ctypes import wintypes
+
+        pdh = self._pdh
+        if pdh.PdhCollectQueryData(self._query) != _PDH_ERROR_SUCCESS:
+            return None
+        peak = 0.0
+        found = False
+        for _path, counter in self._counters:
+            val = self._value_type()
+            fmt_type = wintypes.DWORD(0)
+            if pdh.PdhGetFormattedCounterValue(
+                    counter, _PDH_FMT_DOUBLE, ctypes.byref(fmt_type),
+                    ctypes.byref(val)) != _PDH_ERROR_SUCCESS:
+                continue
+            if val.CStatus != _PDH_ERROR_SUCCESS:
+                continue
+            peak = max(peak, float(val.doubleValue))
+            found = True
+        if not found:
+            return None
+        return max(0.0, min(100.0, peak))
+
+    def close(self) -> None:
+        if self._query.value:
+            self._pdh.PdhCloseQuery(self._query)
+
+
+def _win_gpu_percent() -> float | None:
+    global _win_gpu_sampler
+    try:
+        if _win_gpu_sampler is None:
+            _win_gpu_sampler = _WinGpuSampler()
+        if not _win_gpu_sampler._ready:
+            _win_gpu_sampler = _WinGpuSampler()
+        val = _win_gpu_sampler.read()
+        if val is not None:
+            return val
+        return _nvidia_smi_gpu_percent()
+    except Exception:
+        return _nvidia_smi_gpu_percent()
+
+
+def _linux_gpu_percent() -> float | None:
+    return _nvidia_smi_gpu_percent()
+
+
+def _win_wifi_netsh() -> dict | None:
+    """Fallback WiFi signal via netsh when wlanapi is unavailable."""
+    try:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        out = subprocess.check_output(
+            ["netsh", "wlan", "show", "interfaces"],
+            timeout=1.5,
+            text=True,
+            stderr=subprocess.DEVNULL,
+            creationflags=flags,
+        )
+    except Exception:
+        return None
+
+    best: dict | None = None
+    block: dict[str, str] = {}
+    for line in out.splitlines():
+        if not line.strip():
+            cand = _parse_netsh_wifi_block(block)
+            if cand and (best is None or cand["quality_pct"] > best["quality_pct"]):
+                best = cand
+            block = {}
+            continue
+        if ":" in line:
+            key, _, val = line.partition(":")
+            block[key.strip().lower()] = val.strip()
+    cand = _parse_netsh_wifi_block(block)
+    if cand and (best is None or cand["quality_pct"] > best["quality_pct"]):
+        best = cand
+    return best
+
+
+def _parse_netsh_wifi_block(block: dict[str, str]) -> dict | None:
+    if block.get("state", "").lower() != "connected":
+        return None
+    sig_raw = block.get("signal", "").rstrip("%").strip()
+    try:
+        pct = int(sig_raw)
+    except ValueError:
+        return None
+    if pct <= 0:
+        return None
+    rssi = None
+    m = re.search(r"(-?\d+)\s*dBm", block.get("signal", ""), re.I)
+    if m:
+        rssi = int(m.group(1))
+    return {"rssi_dbm": rssi, "quality_pct": pct}
+
+
 def _win_wifi_signal() -> dict | None:
+    sig = _win_wifi_wlanapi()
+    if sig is not None:
+        return sig
+    return _win_wifi_netsh()
+
+
+def _win_wifi_wlanapi() -> dict | None:
     try:
         import ctypes
         from ctypes import wintypes
@@ -356,7 +493,7 @@ def _win_wifi_signal() -> dict | None:
                         rssi = int(ctypes.c_int.from_address(data_ptr.value).value)
                     finally:
                         wlan.WlanFreeMemory(data_ptr)
-                    if rssi == 0:
+                    if rssi >= 0:
                         continue
                     quality = _rssi_to_quality(rssi)
                     if best is None or quality > best["quality_pct"]:

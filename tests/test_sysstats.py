@@ -46,6 +46,8 @@ def test_macos_gpu_percent_returns_none():
 
 def test_win_gpu_percent_uses_sampler(monkeypatch):
     class FakeSampler:
+        _ready = True
+
         def read(self):
             return 55.0
 
@@ -53,6 +55,43 @@ def test_win_gpu_percent_uses_sampler(monkeypatch):
     with mock.patch.object(sysstats.sys, "platform", "win32"):
         with mock.patch.object(sysstats, "_WinGpuSampler", FakeSampler):
             assert sysstats.gpu_percent() == 55.0
+
+
+def test_win_gpu_percent_falls_back_to_nvidia_smi(monkeypatch):
+    class FakeSampler:
+        _ready = False
+
+        def read(self):
+            return None
+
+    monkeypatch.setattr(sysstats, "_win_gpu_sampler", None)
+    with mock.patch.object(sysstats.sys, "platform", "win32"):
+        with mock.patch.object(sysstats, "_WinGpuSampler", FakeSampler):
+            with mock.patch.object(sysstats, "_nvidia_smi_gpu_percent", return_value=42.0):
+                assert sysstats.gpu_percent() == 42.0
+
+
+def test_parse_netsh_wifi_block():
+    block = {"state": "connected", "signal": "85%"}
+    assert sysstats._parse_netsh_wifi_block(block) == {
+        "quality_pct": 85, "rssi_dbm": None}
+
+
+def test_parse_netsh_wifi_block_disconnected():
+    assert sysstats._parse_netsh_wifi_block({"state": "disconnected", "signal": "85%"}) is None
+
+
+def test_win_wifi_netsh_parses_interfaces():
+    sample = (
+        "\n"
+        "    Name                   : Wi-Fi\n"
+        "    State                  : connected\n"
+        "    Signal                 : 78%\n"
+        "\n"
+    )
+    with mock.patch.object(sysstats.subprocess, "check_output", return_value=sample):
+        sig = sysstats._win_wifi_netsh()
+    assert sig == {"quality_pct": 78, "rssi_dbm": None}
 
 
 def test_wifi_signal_never_raises():

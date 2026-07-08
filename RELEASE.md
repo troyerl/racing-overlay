@@ -5,6 +5,16 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.60.1 - 2026-07-07
+
+- **Performance panel GPU on Windows.** Hardened PDH GPU engine sampling
+  (`PdhExpandWildCardPathW`, machine-prefix paths) and added **nvidia-smi**
+  fallback when PDH returns nothing — fixes GPU stuck at 0% on NVIDIA systems.
+- **Performance panel network row.** Offline/stale `ChanLatency=0` no longer
+  blocks WiFi fallback; network shows OS WiFi signal (or `--` when wired) instead
+  of a misleading lone `0 ms`. Windows also tries **netsh** when wlanapi is
+  unavailable.
+
 ## 1.60.0 - 2026-07-07
 
 - **Pit advisor widget.** New Session panel recommends when to pit on green and
