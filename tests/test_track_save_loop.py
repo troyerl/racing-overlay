@@ -17,8 +17,22 @@ class _FakeMap:
     def display_corners(self):
         return [{"pct": 0.25, "label": 1}]
 
-    def pit_edit_snapshot(self):
+    def pit_edit_snapshot(self, lane: int | None = None):
         return [], [], []
+
+
+class _FakeMapWithPit(_FakeMap):
+    def pit_edit_snapshot(self, lane: int | None = None):
+        if lane == 2:
+            return [], [], []
+        return [], [(0.2, 0.4), (0.5, 0.42)], [(0.5, 0.42), (0.9, 0.48)]
+
+
+class _FakeMapDualPit(_FakeMapWithPit):
+    def pit_edit_snapshot(self, lane: int | None = None):
+        if lane == 2:
+            return [], [(0.15, 0.55), (0.45, 0.56)], [(0.45, 0.56), (0.85, 0.54)]
+        return super().pit_edit_snapshot(lane=1)
 
 
 def _author_hud(tmp_path, **kwargs) -> AdvancedSimHUD:
@@ -30,11 +44,13 @@ def _author_hud(tmp_path, **kwargs) -> AdvancedSimHUD:
     hud._v2_loop_doc = None
     hud._pit_speed_ms = 0.0
     hud._pit_lane_speed_pct = 1.0
+    hud._pit_lane_speed_pct_2 = 1.0
     hud.tracks_dir = str(tmp_path)
     hud.demo = kwargs.get("demo", False)
     hud._session_demo_track_id = None
     hud.map_widget = _FakeMap()
     hud._track_sync = MagicMock()
+    hud.map_widget.flash_hint = MagicMock()
     return hud
 
 
@@ -59,9 +75,59 @@ def test_save_loop_v2_writes_without_pit(tmp_path, monkeypatch):
 def test_save_loop_v2_uploads_when_author(tmp_path, monkeypatch):
     hud = _author_hud(tmp_path)
     monkeypatch.setattr(track_store, "can_write", lambda: True)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: False)
     ok, _msg = hud.save_loop_v2()
     assert ok is True
     hud._track_sync.upload_local_async.assert_called_once_with(str(tmp_path), 451)
+
+
+def test_save_loop_v2_blocked_when_track_in_cloud(tmp_path, monkeypatch):
+    hud = _author_hud(tmp_path)
+    monkeypatch.setattr(track_store, "can_write", lambda: True)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: True)
+    ok, msg = hud.save_loop_v2()
+    assert ok is False
+    assert "already in the shared library" in msg
+    assert not (tmp_path / "451.json").is_file()
+    hud._track_sync.upload_local_async.assert_not_called()
+    hud.map_widget.flash_hint.assert_called_once()
+
+
+def test_save_loop_v2_proceeds_when_cloud_check_unknown(tmp_path, monkeypatch):
+    hud = _author_hud(tmp_path)
+    monkeypatch.setattr(track_store, "can_write", lambda: True)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: None)
+    ok, _msg = hud.save_loop_v2()
+    assert ok is True
+    assert (tmp_path / "451.json").is_file()
+    hud._track_sync.upload_local_async.assert_called_once()
+
+
+def test_save_manual_track_v2_blocked_when_track_in_cloud(tmp_path, monkeypatch):
+    hud = _author_hud(tmp_path)
+    hud.map_widget = _FakeMapWithPit()
+    hud.map_widget.flash_hint = MagicMock()
+    monkeypatch.setattr(track_store, "can_write", lambda: True)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: True)
+    ok, msg = hud.save_manual_track_v2()
+    assert ok is False
+    assert "already in the shared library" in msg
+    assert not (tmp_path / "451.json").is_file()
+    hud._track_sync.upload_local_async.assert_not_called()
+    hud.map_widget.flash_hint.assert_called_once()
+
+
+def test_save_manual_track_v2_saves_when_not_in_cloud(tmp_path, monkeypatch):
+    hud = _author_hud(tmp_path)
+    hud.map_widget = _FakeMapWithPit()
+    hud._apply_pit_meta = MagicMock()
+    monkeypatch.setattr(track_store, "can_write", lambda: True)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: False)
+    ok, msg = hud.save_manual_track_v2()
+    assert ok is True
+    assert (tmp_path / "451.json").is_file()
+    assert "pit_path" in json.loads((tmp_path / "451.json").read_text())
+    hud._track_sync.upload_local_async.assert_called_once()
 
 
 def test_save_manual_track_v2_requires_pit(tmp_path):
@@ -69,6 +135,20 @@ def test_save_manual_track_v2_requires_pit(tmp_path):
     ok, msg = hud.save_manual_track_v2()
     assert ok is False
     assert "pit road" in msg
+
+
+def test_save_manual_track_v2_writes_lane2_when_drawn(tmp_path, monkeypatch):
+    hud = _author_hud(tmp_path)
+    hud.map_widget = _FakeMapDualPit()
+    hud._apply_pit_meta = MagicMock()
+    monkeypatch.setattr(track_store, "can_write", lambda: False)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: False)
+    ok, msg = hud.save_manual_track_v2()
+    assert ok is True
+    doc = json.loads((tmp_path / "451.json").read_text())
+    assert "pit_path_2" in doc
+    assert "pit_span_2" in doc
+    assert "lane 2" in msg
 
 
 def test_upload_doc_loop_only_unsets_pit(monkeypatch):
@@ -84,6 +164,7 @@ def test_upload_doc_loop_only_unsets_pit(monkeypatch):
     update = mock_col.update_one.call_args[0][1]
     assert "$unset" in update
     assert "pit_path" in update["$unset"]
+    assert "pit_path_2" in update["$unset"]
 
 
 def test_local_is_loop_only():

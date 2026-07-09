@@ -100,7 +100,13 @@ _COLLECTION = "tracks"
 _SETTINGS_COLLECTION = "app_settings"
 _PIT_GEOM_KEYS = (
     "pit_path", "pit_in", "pit_out", "pit_span", "pit_in_pct", "pit_out_pct",
+    "pit_path_2", "pit_in_2", "pit_out_2", "pit_span_2",
+    "pit_in_pct_2", "pit_out_pct_2",
 )
+_PIT_GEOM_SEG_KEYS = ("pit_path", "pit_in", "pit_out",
+                      "pit_path_2", "pit_in_2", "pit_out_2")
+_PIT_GEOM_PCT_KEYS = ("pit_span", "pit_in_pct", "pit_out_pct",
+                      "pit_span_2", "pit_in_pct_2", "pit_out_pct_2")
 _SETTINGS_DOC_ID = "global"
 _APP_SETTINGS_CACHE = "_app_settings.json"
 
@@ -267,8 +273,10 @@ def normalize(doc: dict) -> dict:
                     if isinstance(c, dict) and "pct" in c and "label" in c],
         "schema": doc.get("schema", 1),
     }
-    for key in ("pit_span", "pit_speed", "pit_lane_speed_pct", "source", "learned",
-                "pit_source", "pit_in_pct", "pit_out_pct", "num_turns",
+    for key in ("pit_span", "pit_speed", "pit_lane_speed_pct", "pit_lane_speed_pct_2",
+                "source", "learned",
+                "pit_source", "pit_in_pct", "pit_out_pct", "pit_in_pct_2",
+                "pit_out_pct_2", "num_turns",
                 "import_version", "map_rotation", "map_mirror"):
         if doc.get(key) is not None:
             out[key] = doc[key]
@@ -277,11 +285,15 @@ def normalize(doc: dict) -> dict:
     if aliases and canonical is not None:
         out["alias_track_ids"] = _normalize_alias_ids(aliases, canonical)
     # The pit-lane geometry plus its entry/exit blend lines (open polylines).
-    for key in ("pit_path", "pit_in", "pit_out"):
+    for key in _PIT_GEOM_SEG_KEYS:
         seg = doc.get(key)
         if isinstance(seg, list) and len(seg) >= 2:
             out[key] = [[round(float(x), 9), round(float(y), 9)]
                         for x, y in seg]
+    for key in ("pit_span", "pit_span_2"):
+        span = doc.get(key)
+        if isinstance(span, (list, tuple)) and len(span) == 2:
+            out[key] = [round(float(span[0]), 5), round(float(span[1]), 5)]
     out["updated_at"] = datetime.now(timezone.utc).isoformat()
     return out
 
@@ -447,6 +459,31 @@ def fetch_track(track_id) -> dict | None:
             return doc
         return None
     except Exception:
+        return None
+
+
+def cloud_track_exists(track_id) -> bool | None:
+    """True if track is in the shared cloud, False if absent, None if unknown.
+
+    Uses the lightweight manifest when available; falls back to ``fetch_track``.
+    Returns None on network / config errors so offline authors can still save.
+    """
+    if track_id is None or not read_available():
+        return None
+    try:
+        manifest = remote_manifest()
+        if manifest is not None:
+            for tid in track_id_variants(track_id):
+                if tid in manifest:
+                    return True
+            return False
+        doc = fetch_track(track_id)
+        if doc:
+            return True
+        return None
+    except Exception as exc:
+        log.warning("cloud track existence check failed: %s: %s",
+                    type(exc).__name__, exc)
         return None
 
 

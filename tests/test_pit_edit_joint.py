@@ -124,9 +124,8 @@ def test_joint_handle_single_hit(qapp):
     w.load_pit_edit([(0.2, 0.4), (0.5, 0.42)], [(0.5, 0.42), (0.9, 0.48)])
     w.pit_edit_mode = True
     w._pit_hit = []
-    # Simulate handle layout at origin for hit test wiring.
-    w._pit_hit.append((QRectF(-10, -10, 20, 20), "joint", 0))
-    assert w._pit_handle_at(QPointF(0, 0)) == ("joint", 0)
+    w._pit_hit.append((QRectF(-10, -10, 20, 20), 1, "joint", 0))
+    assert w._pit_handle_at(QPointF(0, 0)) == (1, "joint", 0)
 
 
 def _force_paint(w, qapp, size=(400, 300)):
@@ -293,3 +292,35 @@ def test_first_road_click_seeds_from_entry_end(qapp):
         QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton))
     assert len(w._pit_edit_road) == 2
     assert w._pit_edit_road[0] == w._pit_edit_entry[-1]
+
+
+def test_lane2_sync_pit_joint_on_load(qapp):
+    w = _widget()
+    w.load_pit_edit(
+        [(0.2, 0.4), (0.5, 0.42), (0.8, 0.44)],
+        [(0.1, 0.5), (0.9, 0.48)],
+        lane=2,
+    )
+    assert w._pit_edit_merge_2[0] == w._pit_edit_road_2[-1]
+
+
+def test_lane2_clear_phase_entry_leaves_road_merge(qapp):
+    w = _widget()
+    w.load_pit_edit(
+        [(0.2, 0.4), (0.5, 0.42)],
+        [(0.5, 0.42), (0.9, 0.48)],
+        entry=[(0.1, 0.3), (0.2, 0.35)],
+        lane=2,
+    )
+    w.clear_pit_edit_phase("entry", lane=2)
+    assert w._pit_edit_entry_2 == []
+    assert len(w._pit_edit_road_2) == 2
+    assert len(w._pit_edit_merge_2) == 2
+
+
+def test_lane2_set_pit_edit_phase_road_seeds_from_entry(qapp):
+    w = _widget()
+    w.pit_edit_lane = 2
+    w.load_pit_edit([], [], entry=[(0.1, 0.3), (0.2, 0.35)], lane=2)
+    w.set_pit_edit_phase("road")
+    assert w._pit_edit_road_2 == [(0.2, 0.35)]

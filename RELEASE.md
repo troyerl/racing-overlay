@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.62.0 - 2026-07-09
+
+- **Dual pit lanes (Bristol-style).** Tracks can now carry an optional second pit
+  road with its own entry, lane, and merge. Track Scan adds a **Lane 1 / Lane 2**
+  toggle; lane 2 is optional at save time and draws in green/cyan while editing.
+  On the map, pit cars pick the lane whose lap-% interval matches (or the nearer
+  pit path when intervals overlap). Single-lane tracks are unchanged.
+- **Skip save when track is already in cloud.** Save loop / Save track no longer
+  writes locally or uploads when that TrackID already exists in the shared library
+  — you get a flash hint and the save is skipped instead of overwriting.
+
 ## 1.61.0 - 2026-07-09
 
 - **Map layout on preset switch.** Switching profiles no longer flashes the map at

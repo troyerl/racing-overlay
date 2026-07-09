@@ -459,7 +459,11 @@ def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
                       pit_span=None, pit_speed: float = 0.0,
                       num_turns=None, pit_path=None, pit_in=None,
                       pit_out=None, pit_in_pct=None, pit_out_pct=None,
-                      pit_lane_speed_pct=None, learned: bool = False) -> bool:
+                      pit_lane_speed_pct=None, learned: bool = False,
+                      pit_span_2=None, pit_path_2=None, pit_in_2=None,
+                      pit_out_2=None, pit_in_pct_2=None,
+                      pit_out_pct_2=None,
+                      pit_lane_speed_pct_2=None) -> bool:
     """Create tracks/<id>.json from in-memory state when no local file exists.
 
     Authoring edits patch the on-disk file; this ensures one exists when the
@@ -493,9 +497,19 @@ def ensure_track_file(tracks_dir: str, track_id, points, *, name: str = "",
     for key, seg in (("pit_path", pit_path), ("pit_in", pit_in), ("pit_out", pit_out)):
         if isinstance(seg, list) and len(seg) >= 2:
             data[key] = [[round(float(x), 7), round(float(y), 7)] for x, y in seg]
-    for key, val in (("pit_in_pct", pit_in_pct), ("pit_out_pct", pit_out_pct)):
+    for key, val in (("pit_in_pct", pit_in_pct), ("pit_out_pct", pit_out_pct),
+                     ("pit_in_pct_2", pit_in_pct_2), ("pit_out_pct_2", pit_out_pct_2)):
         if val is not None:
             data[key] = round(float(val), 5)
+    if pit_span_2 is not None:
+        data["pit_span_2"] = [round(float(pit_span_2[0]), 5),
+                              round(float(pit_span_2[1]), 5)]
+    for key, seg in (("pit_path_2", pit_path_2), ("pit_in_2", pit_in_2),
+                     ("pit_out_2", pit_out_2)):
+        if isinstance(seg, list) and len(seg) >= 2:
+            data[key] = [[round(float(x), 7), round(float(y), 7)] for x, y in seg]
+    if pit_lane_speed_pct_2 is not None and float(pit_lane_speed_pct_2) != 1.0:
+        data["pit_lane_speed_pct_2"] = round(float(pit_lane_speed_pct_2), 4)
     os.makedirs(tracks_dir, exist_ok=True)
     tmp = f"{path}.tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -578,7 +592,8 @@ def load_track(path: str, n: int = 720):
         meta["pit_speed"] = float(data["pit_speed"])
     if data.get("pit_lane_speed_pct") is not None:
         meta["pit_lane_speed_pct"] = float(data["pit_lane_speed_pct"])
-    for key in ("pit_path", "pit_in", "pit_out"):
+    for key in ("pit_path", "pit_in", "pit_out",
+                "pit_path_2", "pit_in_2", "pit_out_2"):
         seg = data.get(key)
         if isinstance(seg, list) and len(seg) >= 2:
             meta[key] = [(float(a), float(b)) for a, b in seg]
@@ -586,9 +601,15 @@ def load_track(path: str, n: int = 720):
         seg = data.get("pit_lane_points")
         if isinstance(seg, list) and len(seg) >= 2:
             meta["pit_path"] = [(float(a), float(b)) for a, b in seg]
-    for key in ("pit_in_pct", "pit_out_pct"):
+    for key in ("pit_span_2",):
+        span = data.get(key)
+        if isinstance(span, (list, tuple)) and len(span) == 2:
+            meta[key] = (float(span[0]), float(span[1]))
+    for key in ("pit_in_pct", "pit_out_pct", "pit_in_pct_2", "pit_out_pct_2"):
         if data.get(key) is not None:
             meta[key] = float(data[key])
+    if data.get("pit_lane_speed_pct_2") is not None:
+        meta["pit_lane_speed_pct_2"] = float(data["pit_lane_speed_pct_2"])
     if data.get("num_turns"):
         meta["num_turns"] = int(data["num_turns"])
     if data.get("pit_source"):
@@ -777,6 +798,14 @@ class TrackMapWidget(QWidget):
         # place cars onto the route by their CarIdxLapDistPct.
         self.pit_in_pct: float | None = None
         self.pit_out_pct: float | None = None
+        # Optional second pit lane (Bristol-style dual pit roads).
+        self.pit_span_2: tuple[float, float] | None = None
+        self.pit_path_2: list[tuple[float, float]] | None = None
+        self.pit_in_2: list[tuple[float, float]] | None = None
+        self.pit_out_2: list[tuple[float, float]] | None = None
+        self.pit_in_pct_2: float | None = None
+        self.pit_out_pct_2: float | None = None
+        self.pit_lane_speed_pct_2: float = 1.0
         # "schematic" = fixed pit geometry from image import; cars follow polylines.
         self.pit_source: str = ""
         # Per-car lap % when OnPitRoad dropped (schematic exit placement).
@@ -790,6 +819,9 @@ class TrackMapWidget(QWidget):
         self._route_pts: list[tuple[float, float]] | None = None
         self._route_cum: list[float] = []
         self._route_blends: bool = True  # whether the cached route includes blends
+        self._route_pts_2: list[tuple[float, float]] | None = None
+        self._route_cum_2: list[float] = []
+        self._route_blends_2: bool = True
         # Wind: bearing the wind blows FROM (radians, clockwise from North) and
         # its speed in m/s. None until telemetry provides it.
         self.wind_dir: float | None = None
@@ -841,12 +873,16 @@ class TrackMapWidget(QWidget):
         # Manual pit authoring (Track Scan v2): road then merge segments.
         self.pit_edit_mode = False
         self.pit_edit_phase = "road"
+        self.pit_edit_lane = 1
         self._pit_edit_entry: list[tuple[float, float]] = []
         self._pit_edit_road: list[tuple[float, float]] = []
         self._pit_edit_merge: list[tuple[float, float]] = []
-        self._pit_drag_idx: tuple[str, int] | None = None
+        self._pit_edit_entry_2: list[tuple[float, float]] = []
+        self._pit_edit_road_2: list[tuple[float, float]] = []
+        self._pit_edit_merge_2: list[tuple[float, float]] = []
+        self._pit_drag_idx: tuple[int, str, int] | None = None
         self._pit_edit_cb = None
-        self._pit_hit: list[tuple[QRectF, str, int]] = []
+        self._pit_hit: list[tuple[QRectF, int, str, int]] = []
         self._pit_edit_zoom = 1.0
         self._pit_edit_pan = (0.0, 0.0)
         self._pit_edit_base_scale = 1.0
@@ -908,7 +944,8 @@ class TrackMapWidget(QWidget):
             int(w * dpr), int(h * dpr), dpr,
             id(self.path), len(self.path or []), self.start_finish,
             id(self.pit_path), id(self.pit_in), id(self.pit_out),
-            self.pit_span, tuple(self.sector_boundaries),
+            id(self.pit_path_2), id(self.pit_in_2), id(self.pit_out_2),
+            self.pit_span, self.pit_span_2, tuple(self.sector_boundaries),
             tuple(tuple(z) for z in self.drs_zones),
             tuple(tuple(z) for z in self.p2p_zones),
             self._map_style_token(mc),
@@ -1108,64 +1145,84 @@ class TrackMapWidget(QWidget):
         return (math.hypot(a[0] - b[0], a[1] - b[1])
                 <= _PIT_JOINT_EPS)
 
-    def _pit_has_joint(self) -> bool:
-        return (len(self._pit_edit_road) >= 1 and len(self._pit_edit_merge) >= 1
-                and self._pit_points_coincide(self._pit_edit_road[-1],
-                                              self._pit_edit_merge[0]))
+    def _pit_edit_bufs(self, lane: int = 1):
+        if lane == 2:
+            return (self._pit_edit_entry_2, self._pit_edit_road_2,
+                    self._pit_edit_merge_2)
+        return self._pit_edit_entry, self._pit_edit_road, self._pit_edit_merge
 
-    def _pit_has_entry_joint(self) -> bool:
-        return (len(self._pit_edit_entry) >= 1 and len(self._pit_edit_road) >= 1
-                and self._pit_points_coincide(self._pit_edit_entry[-1],
-                                              self._pit_edit_road[0]))
+    def set_pit_edit_lane(self, lane: int) -> None:
+        lane = 2 if lane == 2 else 1
+        if lane == self.pit_edit_lane:
+            return
+        self.pit_edit_lane = lane
+        self._pit_drag_idx = None
+        if self.pit_edit_phase == "road":
+            self._seed_road_from_entry(lane)
+        self.update()
 
-    def _sync_pit_joint(self) -> None:
+    def _pit_has_joint(self, lane: int = 1) -> bool:
+        entry, road, merge = self._pit_edit_bufs(lane)
+        return (len(road) >= 1 and len(merge) >= 1
+                and self._pit_points_coincide(road[-1], merge[0]))
+
+    def _pit_has_entry_joint(self, lane: int = 1) -> bool:
+        entry, road, merge = self._pit_edit_bufs(lane)
+        return (len(entry) >= 1 and len(road) >= 1
+                and self._pit_points_coincide(entry[-1], road[0]))
+
+    def _sync_pit_joint(self, lane: int = 1) -> None:
         """Keep merge start tied to pit-road end."""
-        if self._pit_edit_road and self._pit_edit_merge:
-            self._pit_edit_merge[0] = self._pit_edit_road[-1]
+        entry, road, merge = self._pit_edit_bufs(lane)
+        if road and merge:
+            merge[0] = road[-1]
 
-    def _sync_pit_entry_joint(self) -> None:
+    def _sync_pit_entry_joint(self, lane: int = 1) -> None:
         """Keep pit-road start tied to entry end when linked."""
-        if self._pit_has_entry_joint():
-            self._pit_edit_road[0] = self._pit_edit_entry[-1]
+        if self._pit_has_entry_joint(lane):
+            entry, road, merge = self._pit_edit_bufs(lane)
+            road[0] = entry[-1]
 
-    def _seed_road_from_entry(self) -> None:
-        if self._pit_edit_entry and not self._pit_edit_road:
-            self._pit_edit_road.append(self._pit_edit_entry[-1])
+    def _seed_road_from_entry(self, lane: int = 1) -> None:
+        entry, road, merge = self._pit_edit_bufs(lane)
+        if entry and not road:
+            road.append(entry[-1])
 
     def _set_pit_edit_point(self, phase: str, idx: int,
-                            x: float, y: float) -> None:
+                            x: float, y: float, *, lane: int = 1) -> None:
         """Move one pit-edit handle; joint endpoints stay linked."""
+        entry, road, merge = self._pit_edit_bufs(lane)
         if phase == "joint":
-            if self._pit_edit_road:
-                self._pit_edit_road[-1] = (x, y)
-            if self._pit_edit_merge:
-                self._pit_edit_merge[0] = (x, y)
+            if road:
+                road[-1] = (x, y)
+            if merge:
+                merge[0] = (x, y)
             return
         if phase == "entry_joint":
-            if self._pit_edit_entry:
-                self._pit_edit_entry[-1] = (x, y)
-            if self._pit_edit_road:
-                self._pit_edit_road[0] = (x, y)
+            if entry:
+                entry[-1] = (x, y)
+            if road:
+                road[0] = (x, y)
             return
         if phase == "entry":
-            pts = self._pit_edit_entry
+            pts = entry
         elif phase == "road":
-            pts = self._pit_edit_road
+            pts = road
         else:
-            pts = self._pit_edit_merge
+            pts = merge
         if not (0 <= idx < len(pts)):
             return
         pts[idx] = (x, y)
-        if phase == "entry" and idx == len(self._pit_edit_entry) - 1:
-            if self._pit_edit_road:
-                self._pit_edit_road[0] = (x, y)
-        elif phase == "road" and idx == 0 and self._pit_edit_entry:
-            self._pit_edit_entry[-1] = (x, y)
-        elif phase == "road" and idx == len(self._pit_edit_road) - 1:
-            if self._pit_edit_merge:
-                self._pit_edit_merge[0] = (x, y)
-        elif phase == "merge" and idx == 0 and self._pit_edit_road:
-            self._pit_edit_road[-1] = (x, y)
+        if phase == "entry" and idx == len(entry) - 1:
+            if road:
+                road[0] = (x, y)
+        elif phase == "road" and idx == 0 and entry:
+            entry[-1] = (x, y)
+        elif phase == "road" and idx == len(road) - 1:
+            if merge:
+                merge[0] = (x, y)
+        elif phase == "merge" and idx == 0 and road:
+            road[-1] = (x, y)
 
     def set_pit_edit_phase(self, phase: str) -> None:
         phase = (phase or "road").strip().lower()
@@ -1173,51 +1230,60 @@ class TrackMapWidget(QWidget):
             phase = "road"
         self.pit_edit_phase = phase
         if phase == "road":
-            self._seed_road_from_entry()
+            self._seed_road_from_entry(self.pit_edit_lane)
         self.update()
 
-    def pit_edit_snapshot(self) -> tuple[list, list, list]:
-        return (list(self._pit_edit_entry), list(self._pit_edit_road),
-                list(self._pit_edit_merge))
+    def pit_edit_snapshot(self, lane: int | None = None) -> tuple[list, list, list]:
+        if lane is None:
+            lane = self.pit_edit_lane
+        entry, road, merge = self._pit_edit_bufs(lane)
+        return list(entry), list(road), list(merge)
 
-    def load_pit_edit(self, road, merge, entry=None) -> None:
-        self._pit_edit_entry = [(float(x), float(y)) for x, y in (entry or [])]
-        self._pit_edit_road = [(float(x), float(y)) for x, y in (road or [])]
-        self._pit_edit_merge = [(float(x), float(y)) for x, y in (merge or [])]
-        self._sync_pit_joint()
+    def load_pit_edit(self, road, merge, entry=None, *, lane: int = 1) -> None:
+        entry_buf, road_buf, merge_buf = self._pit_edit_bufs(lane)
+        entry_buf[:] = [(float(x), float(y)) for x, y in (entry or [])]
+        road_buf[:] = [(float(x), float(y)) for x, y in (road or [])]
+        merge_buf[:] = [(float(x), float(y)) for x, y in (merge or [])]
+        self._sync_pit_joint(lane)
         self.update()
 
     def clear_pit_edit(self) -> None:
-        self._pit_edit_entry = []
-        self._pit_edit_road = []
-        self._pit_edit_merge = []
+        for lane in (1, 2):
+            entry, road, merge = self._pit_edit_bufs(lane)
+            entry.clear()
+            road.clear()
+            merge.clear()
         self._pit_drag_idx = None
         self.update()
 
-    def clear_pit_edit_phase(self, phase: str) -> None:
+    def clear_pit_edit_phase(self, phase: str, lane: int | None = None) -> None:
         """Drop points for one pit-edit phase (entry, road, or merge)."""
+        lane = self.pit_edit_lane if lane is None else (2 if lane == 2 else 1)
         phase = (phase or "road").strip().lower()
+        entry, road, merge = self._pit_edit_bufs(lane)
         if phase == "entry":
-            self._pit_edit_entry = []
+            entry.clear()
         elif phase == "road":
-            self._pit_edit_road = []
-            self._pit_edit_merge = []
+            road.clear()
+            merge.clear()
         elif phase == "merge":
-            self._pit_edit_merge = []
+            merge.clear()
         else:
             return
         self._pit_drag_idx = None
         self.update()
 
     def pop_last_pit_edit_point(self) -> None:
-        if self.pit_edit_phase == "merge" and self._pit_edit_merge:
-            self._pit_edit_merge.pop()
-        elif self.pit_edit_phase == "entry" and self._pit_edit_entry:
-            self._pit_edit_entry.pop()
+        lane = self.pit_edit_lane
+        entry, road, merge = self._pit_edit_bufs(lane)
+        if self.pit_edit_phase == "merge" and merge:
+            merge.pop()
+        elif self.pit_edit_phase == "entry" and entry:
+            entry.pop()
         elif self.pit_edit_phase == "road":
-            self._pit_edit_road.pop()
-            self._sync_pit_joint()
-            self._sync_pit_entry_joint()
+            road.pop()
+            self._sync_pit_joint(lane)
+            self._sync_pit_entry_joint(lane)
         self.update()
 
     def set_pit(self, span, speed_ms: float = 0.0) -> None:
@@ -1251,6 +1317,37 @@ class TrackMapWidget(QWidget):
         """Set the lap-% extent (divergence -> rejoin) of the full pit route."""
         self.pit_in_pct = float(in_pct) if in_pct is not None else None
         self.pit_out_pct = float(out_pct) if out_pct is not None else None
+
+    def set_pit_path_2(self, path) -> None:
+        self.pit_path_2 = self._clean_poly(path)
+        self._invalidate_route(2)
+        self._invalidate_static_cache()
+        self.update()
+
+    def set_pit_blends_2(self, pit_in, pit_out) -> None:
+        self.pit_in_2 = self._clean_poly(pit_in)
+        self.pit_out_2 = self._clean_poly(pit_out)
+        self._invalidate_route(2)
+        self._invalidate_static_cache()
+        self.update()
+
+    def set_pit_route_pct_2(self, in_pct, out_pct) -> None:
+        self.pit_in_pct_2 = float(in_pct) if in_pct is not None else None
+        self.pit_out_pct_2 = float(out_pct) if out_pct is not None else None
+
+    def set_pit_span_2(self, span) -> None:
+        self.pit_span_2 = (float(span[0]), float(span[1])) if span else None
+        self._invalidate_static_cache()
+        self.update()
+
+    def _pit_lane_saved_geom(self, lane: int):
+        if lane == 2:
+            return (self.pit_in_2, self.pit_path_2, self.pit_out_2,
+                    self.pit_in_pct_2, self.pit_out_pct_2, self.pit_span_2,
+                    self.pit_lane_speed_pct_2)
+        return (self.pit_in, self.pit_path, self.pit_out,
+                self.pit_in_pct, self.pit_out_pct, self.pit_span,
+                self.pit_lane_speed_pct)
 
     def set_pit_source(self, source: str | None) -> None:
         """Mark pit geometry origin: '' learned, 'schematic' from image import."""
@@ -1353,16 +1450,16 @@ class TrackMapWidget(QWidget):
         return span_pct * _arc_length(
             [(float(p[0]), float(p[1])) for p in self.path], closed=True)
 
-    def _pit_lane_bounds(self) -> tuple[float | None, float | None]:
+    def _pit_lane_bounds(self, lane: int = 1) -> tuple[float | None, float | None]:
         """Lap-% extent of the pit lane polyline, preferring authored ``pit_span``."""
-        if not self.pit_path or len(self.pit_path) < 2:
-            lane = self.pit_span
-            return (lane[0], lane[1]) if lane else (None, None)
-        path_lo = self._loop_pct_at(self.pit_path[0])
-        path_hi = self._loop_pct_at(self.pit_path[-1])
-        lane = self.pit_span
-        if lane and path_lo is not None and path_hi is not None:
-            lane_lo, lane_hi = lane
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
+        if not pit_path or len(pit_path) < 2:
+            return (pit_span[0], pit_span[1]) if pit_span else (None, None)
+        path_lo = self._loop_pct_at(pit_path[0])
+        path_hi = self._loop_pct_at(pit_path[-1])
+        if pit_span and path_lo is not None and path_hi is not None:
+            lane_lo, lane_hi = pit_span
             if lane_lo is not None and self._pct_in_interval(
                     lane_lo, path_lo, path_hi):
                 path_lo = lane_lo
@@ -1371,17 +1468,18 @@ class TrackMapWidget(QWidget):
                 path_hi = lane_hi
         return path_lo, path_hi
 
-    def _pit_lane_mapping_interval(self) -> tuple[float | None, float | None]:
+    def _pit_lane_mapping_interval(self, lane: int = 1) -> tuple[float | None, float | None]:
         """Lap-% extent for mapping ``OnPitRoad`` cars along ``pit_path``.
 
         Ovals often store a ``pit_span`` that wraps most of the lap; using it for
         placement clamps ``t`` early. Prefer raw path projection when the span is
         wide; otherwise use ``pit_span`` (narrow span, wide projection case).
         """
-        lane = self.pit_span
-        lane_lo = lane[0] if lane else None
-        lane_hi = lane[1] if lane else None
-        path_lo, path_hi = self._pit_lane_bounds()
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
+        lane_lo = pit_span[0] if pit_span else None
+        lane_hi = pit_span[1] if pit_span else None
+        path_lo, path_hi = self._pit_lane_bounds(lane)
         if lane_lo is None or lane_hi is None:
             return path_lo, path_hi
         span = (lane_hi - lane_lo) % 1.0
@@ -1389,34 +1487,39 @@ class TrackMapWidget(QWidget):
             return path_lo, path_hi
         return lane_lo, lane_hi
 
-    def _pit_route_mapping_interval(self) -> tuple[float | None, float | None]:
+    def _pit_route_mapping_interval(self, lane: int = 1) -> tuple[float | None, float | None]:
         """Lap-% extent for mapping OnPitRoad cars: pit_in_pct → pit_out_pct."""
-        lo, hi = self.pit_in_pct, self.pit_out_pct
-        if lo is not None and hi is not None:
-            return lo, hi
-        return self._pit_lane_mapping_interval()
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
+        if pit_in_pct is not None and pit_out_pct is not None:
+            return pit_in_pct, pit_out_pct
+        return self._pit_lane_mapping_interval(lane)
 
-    def _pit_path_handoff_point(self) -> tuple[float, float] | None:
+    def _pit_path_handoff_point(self, lane: int = 1) -> tuple[float, float] | None:
         """Pit-road entry point where pit_in meets pit_path."""
-        if self.pit_in and len(self.pit_in) >= 1:
-            p = self.pit_in[-1]
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
+        if pit_in and len(pit_in) >= 1:
+            p = pit_in[-1]
             return (float(p[0]), float(p[1]))
-        if self.pit_path and len(self.pit_path) >= 1:
-            p = self.pit_path[0]
+        if pit_path and len(pit_path) >= 1:
+            p = pit_path[0]
             return (float(p[0]), float(p[1]))
         return None
 
-    def _pit_path_needs_reverse(self) -> bool:
+    def _pit_path_needs_reverse(self, lane: int = 1) -> bool:
         """True when pit_path[-1] is closer to the entry handoff than pit_path[0]."""
-        if not self.pit_path or len(self.pit_path) < 2:
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
+        if not pit_path or len(pit_path) < 2:
             return False
-        handoff = self._pit_path_handoff_point()
+        handoff = self._pit_path_handoff_point(lane)
         if handoff is None:
             return False
         from tools.schematic_to_track import _dist
 
-        p0 = (float(self.pit_path[0][0]), float(self.pit_path[0][1]))
-        p1 = (float(self.pit_path[-1][0]), float(self.pit_path[-1][1]))
+        p0 = (float(pit_path[0][0]), float(pit_path[0][1]))
+        p1 = (float(pit_path[-1][0]), float(pit_path[-1][1]))
         return _dist(p1, handoff) < _dist(p0, handoff)
 
     def _pit_path_pos_for_route_pct(
@@ -1424,23 +1527,27 @@ class TrackMapWidget(QWidget):
         pct: float,
         lo: float,
         hi: float,
+        *,
+        lane: int = 1,
     ) -> tuple[float, float] | None:
         """Place on pit_path using route lap-% order (pit_in → pit_out)."""
-        if not self.pit_path or len(self.pit_path) < 2:
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, speed_pct = (
+            self._pit_lane_saved_geom(lane))
+        if not pit_path or len(pit_path) < 2:
             return None
         span_pct = (hi - lo) % 1.0
         if span_pct <= 1e-6:
             return None
         linear = ((pct - lo) % 1.0) / span_pct
-        segments = [self.pit_path]
+        segments = [pit_path]
         pit_arc = self._pit_arc_length(segments)
         loop_arc = self._loop_arc_between(lo, hi)
-        scale = self.pit_lane_speed_pct
+        scale = speed_pct
         if pit_arc > 1e-9 and loop_arc > 1e-9:
             t = min(1.0, max(0.0, linear * (loop_arc / pit_arc) * scale))
         else:
             t = min(1.0, max(0.0, linear * scale))
-        if self._pit_path_needs_reverse():
+        if self._pit_path_needs_reverse(lane):
             t = 1.0 - t
         return self._pos_on_polyline_chain(segments, t)
 
@@ -1515,9 +1622,12 @@ class TrackMapWidget(QWidget):
         self,
         pct: float,
         route_pos: tuple[float, float],
+        *,
+        lane: int = 1,
     ) -> tuple[float, float]:
         """Ease between the racing line and pit route near entry/exit handoffs."""
-        lo, hi = self.pit_in_pct, self.pit_out_pct
+        pit_in, pit_path, pit_out, lo, hi, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
         track = self._loop_point_at_pct(pct)
         if lo is None or hi is None or track is None:
             return route_pos
@@ -1536,17 +1646,17 @@ class TrackMapWidget(QWidget):
         return route_pos
 
     def _pos_for_schematic_route(self, idx: int, pct: float, on_route: bool,
-                                 on_pit_road: bool, *, raw: bool = False):
+                                 on_pit_road: bool, *, raw: bool = False,
+                                 pit_lane: int = 1):
         """Place a car on authored pit polylines (schematic tracks only)."""
         if not on_route or not is_schematic_pit_source(self.pit_source):
             return None
-        lo = self.pit_in_pct
-        hi = self.pit_out_pct
-        lane = self.pit_span
-        lane_lo = lane[0] if lane else None
-        lane_hi = lane[1] if lane else None
-        path_lo, path_hi = self._pit_lane_bounds()
-        route_lo, route_hi = self._pit_route_mapping_interval()
+        pit_in, pit_path, pit_out, lo, hi, pit_span, _speed = (
+            self._pit_lane_saved_geom(pit_lane))
+        lane_lo = pit_span[0] if pit_span else None
+        lane_hi = pit_span[1] if pit_span else None
+        path_lo, path_hi = self._pit_lane_bounds(pit_lane)
+        route_lo, route_hi = self._pit_route_mapping_interval(pit_lane)
         entry_end = lane_lo if lane_lo is not None else path_lo
         exit_pct = self._schematic_exit_pcts.get(idx)
         if exit_pct is None:
@@ -1554,29 +1664,31 @@ class TrackMapWidget(QWidget):
 
         # Exit blend: pit lane end -> rejoin (off pit road, latched in demo).
         if (not on_pit_road and hi is not None and exit_pct is not None
-                and self.pit_out and len(self.pit_out) >= 2
+                and pit_out and len(pit_out) >= 2
                 and self._pct_in_interval(pct, exit_pct, hi)):
-            pos = self._pit_phase_pos(pct, exit_pct, hi, [self.pit_out])
+            pos = self._pit_phase_pos(pct, exit_pct, hi, [pit_out])
             if pos is not None:
-                return pos if raw else self._feather_schematic_pos(pct, pos)
+                return (pos if raw
+                        else self._feather_schematic_pos(pct, pos, lane=pit_lane))
 
         # Entry blend: pit_in_pct -> pit lane start on pit_in only.
         if (lo is not None and entry_end is not None
-                and self.pit_in and len(self.pit_in) >= 2
+                and pit_in and len(pit_in) >= 2
                 and self._pct_in_interval(pct, lo, entry_end)):
-            pos = self._pit_phase_pos(pct, lo, entry_end, [self.pit_in])
+            pos = self._pit_phase_pos(pct, lo, entry_end, [pit_in])
             if pos is not None:
-                return pos if raw else self._feather_schematic_pos(pct, pos)
+                return (pos if raw
+                        else self._feather_schematic_pos(pct, pos, lane=pit_lane))
 
         # Pit lane: while OnPitRoad (after entry blend), always use pit_path.
-        # S/F membership gaps in pit_span must not fall through to the racing line.
-        if on_pit_road and self.pit_path and len(self.pit_path) >= 2:
+        if on_pit_road and pit_path and len(pit_path) >= 2:
             rlo, rhi = route_lo, route_hi
             if rlo is None or rhi is None:
                 rlo = lo if lo is not None else lane_lo
                 rhi = hi if hi is not None else lane_hi
             if rlo is not None and rhi is not None:
-                pos = self._pit_path_pos_for_route_pct(pct, rlo, rhi)
+                pos = self._pit_path_pos_for_route_pct(
+                    pct, rlo, rhi, lane=pit_lane)
                 if pos is not None:
                     return pos
         return None
@@ -1589,11 +1701,13 @@ class TrackMapWidget(QWidget):
         on_pit: bool,
         in_entry: bool,
         in_exit: bool,
+        pit_lane: int = 1,
     ) -> float:
         """0 = racing line only, 1 = pit route only (schematic entry/exit ramps)."""
         if not is_schematic_pit_source(self.pit_source):
             return 1.0 if on_route else 0.0
-        lo, hi = self.pit_in_pct, self.pit_out_pct
+        pit_in, pit_path, pit_out, lo, hi, pit_span, _speed = (
+            self._pit_lane_saved_geom(pit_lane))
         if lo is None or hi is None:
             return 1.0 if on_route else 0.0
         if not on_route and not on_pit:
@@ -1637,47 +1751,71 @@ class TrackMapWidget(QWidget):
         self.pit_out = None
         self.pit_in_pct = None
         self.pit_out_pct = None
+        self.pit_span_2 = None
+        self.pit_path_2 = None
+        self.pit_in_2 = None
+        self.pit_out_2 = None
+        self.pit_in_pct_2 = None
+        self.pit_out_pct_2 = None
+        self.pit_lane_speed_pct_2 = 1.0
         self.pit_source = ""
         self._schematic_exit_pcts = {}
         self.player_xy = None
         self._invalidate_route()
         self.update()
 
-    def _invalidate_route(self) -> None:
-        self._route_pts = None
-        self._route_cum = []
+    def _invalidate_route(self, lane: int | None = None) -> None:
+        if lane in (None, 1):
+            self._route_pts = None
+            self._route_cum = []
+        if lane in (None, 2):
+            self._route_pts_2 = None
+            self._route_cum_2 = []
 
-    def _ensure_route(self) -> None:
-        """(Re)build the concatenated pit route and the cumulative arc length at
-        each point, used to place cars along it. With blends enabled the route is
-        entry blend + lane + exit blend; with them off it's just the pit lane, so
-        a car only rides it while actually on pit road."""
+    def _ensure_route(self, lane: int = 1) -> None:
+        """(Re)build the concatenated pit route and cumulative arc length."""
         blends = _mcfg().get("show_pit_blends", True)
-        if self._route_pts is not None and self._route_blends == blends:
-            return
-        self._route_blends = blends
-        segs = ((self.pit_in, self.pit_path, self.pit_out) if blends
-                else (None, self.pit_path, None))
+        if lane == 2:
+            if self._route_pts_2 is not None and self._route_blends_2 == blends:
+                return
+            self._route_blends_2 = blends
+            pit_in, pit_path, pit_out = self.pit_in_2, self.pit_path_2, self.pit_out_2
+            route_pts, route_cum = self._route_pts_2, self._route_cum_2
+        else:
+            if self._route_pts is not None and self._route_blends == blends:
+                return
+            self._route_blends = blends
+            pit_in, pit_path, pit_out = self.pit_in, self.pit_path, self.pit_out
+            route_pts, route_cum = self._route_pts, self._route_cum
+        segs = ((pit_in, pit_path, pit_out) if blends
+                else (None, pit_path, None))
         pts: list[tuple[float, float]] = []
         for seg in segs:
             if not seg:
                 continue
-            # Avoid duplicating the shared joint point between segments.
             if pts and seg and pts[-1] == seg[0]:
                 pts.extend(seg[1:])
             else:
                 pts.extend(seg)
-        self._route_pts = pts if len(pts) >= 2 else None
+        built = pts if len(pts) >= 2 else None
         cum = [0.0]
-        if self._route_pts:
-            for a, b in zip(self._route_pts, self._route_pts[1:]):
+        if built:
+            for a, b in zip(built, built[1:]):
                 cum.append(cum[-1] + math.hypot(b[0] - a[0], b[1] - a[1]))
-        self._route_cum = cum
+        if lane == 2:
+            self._route_pts_2 = built
+            self._route_cum_2 = cum
+        else:
+            self._route_pts = built
+            self._route_cum = cum
 
-    def _pos_on_route(self, t: float):
+    def _pos_on_route(self, t: float, lane: int = 1):
         """Model-space point at arc-length fraction t in [0, 1] of the route."""
-        self._ensure_route()
-        pts, cum = self._route_pts, self._route_cum
+        self._ensure_route(lane)
+        if lane == 2:
+            pts, cum = self._route_pts_2, self._route_cum_2
+        else:
+            pts, cum = self._route_pts, self._route_cum
         if not pts:
             return None
         total = cum[-1]
@@ -1693,21 +1831,18 @@ class TrackMapWidget(QWidget):
                         a[1] + (b[1] - a[1]) * local)
         return pts[-1]
 
-    def _route_t_for_pct(self, pct: float):
-        """Map a car's lap pct onto an arc-length fraction of the pit route.
-
-        Uses the route's lap-% extent (pit_in_pct -> pit_out_pct), falling back
-        to pit_span when the blend extents aren't known (older tracks). With
-        blends off the route is just the lane, so map over pit_span instead.
-        """
+    def _route_t_for_pct(self, pct: float, lane: int = 1):
+        """Map a car's lap pct onto an arc-length fraction of the pit route."""
+        pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, _speed = (
+            self._pit_lane_saved_geom(lane))
         if _mcfg().get("show_pit_blends", True):
-            lo, hi = self.pit_in_pct, self.pit_out_pct
+            lo, hi = pit_in_pct, pit_out_pct
         else:
             lo = hi = None
         if lo is None or hi is None:
-            if self.pit_span is None:
+            if pit_span is None:
                 return None
-            lo, hi = self.pit_span
+            lo, hi = pit_span
         span = (hi - lo) % 1.0
         if span <= 1e-6:
             return None
@@ -1829,7 +1964,11 @@ class TrackMapWidget(QWidget):
                            schematic: bool, *, pct_override: float | None = None) -> QPointF | None:
         """Screen position of a car dot (shared by car draw + traffic markers)."""
         in_entry = in_exit = False
-        if len(car) >= 12:
+        pit_lane = 1
+        if len(car) >= 13:
+            (idx, pct, _label, _color, is_player, on_route, on_pit,
+             _speaking, _is_pace, _sk, in_entry, in_exit, pit_lane) = car
+        elif len(car) >= 12:
             (idx, pct, _label, _color, is_player, on_route, on_pit,
              _speaking, _is_pace, _sk, in_entry, in_exit) = car
         elif len(car) >= 10:
@@ -1853,18 +1992,22 @@ class TrackMapWidget(QWidget):
             on_pit=on_pit,
             in_entry=in_entry,
             in_exit=in_exit,
+            pit_lane=pit_lane,
         )
         route_pos = None
         if schematic and weight > 0:
             route_pos = self._pos_for_schematic_route(
-                idx, pct, True, on_pit, raw=True)
+                idx, pct, True, on_pit, raw=True, pit_lane=pit_lane)
         elif on_route and weight > 0:
             if is_player and self.player_xy is not None:
                 route_pos = self.player_xy
-            elif self.pit_path and len(self.pit_path) >= 2:
-                t = self._route_t_for_pct(pct)
-                if t is not None:
-                    route_pos = self._pos_on_route(t)
+            else:
+                _in, pit_path, _out, _ip, _op, _span, _sp = (
+                    self._pit_lane_saved_geom(pit_lane))
+                if pit_path and len(pit_path) >= 2:
+                    t = self._route_t_for_pct(pct, pit_lane)
+                    if t is not None:
+                        route_pos = self._pos_on_route(t, pit_lane)
         if route_pos is not None and weight > 0:
             model = (route_pos if weight >= 1.0
                      else self._blend_xy(track_pos, route_pos, weight))
@@ -2280,15 +2423,17 @@ class TrackMapWidget(QWidget):
                 return x, y
 
             fit = [model(pt) for pt in self.path]
-            for seg in (self.pit_path, self.pit_in, self.pit_out):
+            for seg in (self.pit_path, self.pit_in, self.pit_out,
+                        self.pit_path_2, self.pit_in_2, self.pit_out_2):
                 if seg:
                     fit.extend(model(pt) for pt in seg)
             if self.pit_edit_mode:
+                entry, road, merge = self._pit_edit_bufs(self.pit_edit_lane)
                 phase_seg = {
-                    "entry": self._pit_edit_entry,
-                    "road": self._pit_edit_road,
-                    "merge": self._pit_edit_merge,
-                }.get(self.pit_edit_phase, self._pit_edit_road)
+                    "entry": entry,
+                    "road": road,
+                    "merge": merge,
+                }.get(self.pit_edit_phase, road)
                 if phase_seg:
                     fit.extend(model(pt) for pt in phase_seg)
             xs = [m[0] for m in fit]
@@ -2407,23 +2552,50 @@ class TrackMapWidget(QWidget):
         # Prefer the real recorded pit-lane geometry; fall back to the inward
         # offset approximation of pit_span when no geometry is available.
         hide_saved = self.pit_edit_mode
-        show_in = not (hide_saved and self._pit_edit_entry)
-        show_road = not (hide_saved and self._pit_edit_road)
-        show_out = not (hide_saved and self._pit_edit_merge)
-        if self.pit_path and len(self.pit_path) >= 2 and show_road:
-            # Blend lines first, so the lane reads on top where they join. Entry
-            # is yellow, exit is blue; both hidden when show_pit_blends is off.
+        entry1, road1, merge1 = self._pit_edit_bufs(1)
+        entry2, road2, merge2 = self._pit_edit_bufs(2)
+        show_lane1 = not (hide_saved and (road1 or merge1 or entry1))
+        show_lane2 = not (hide_saved and (road2 or merge2 or entry2))
+        drew_geom = False
+        if show_lane1 and self.pit_path and len(self.pit_path) >= 2:
+            self._draw_saved_pit_lane(
+                p, tx, hide_saved, entry1, road1, merge1,
+                self.pit_path, self.pit_in, self.pit_out)
+            drew_geom = True
+        if show_lane2 and self.pit_path_2 and len(self.pit_path_2) >= 2:
+            self._draw_saved_pit_lane(
+                p, tx, hide_saved, entry2, road2, merge2,
+                self.pit_path_2, self.pit_in_2, self.pit_out_2,
+                road_color="#55d4aa", entry_color="#c8f0a0",
+                merge_color="#5ad0ff")
+            drew_geom = True
+        if drew_geom or self.pit_span is None:
+            return
+        self._draw_pit_span_fallback(p, tx)
+
+    def _draw_saved_pit_lane(
+        self, p, tx, hide_saved, edit_entry, edit_road, edit_merge,
+        pit_path, pit_in, pit_out, *,
+        road_color: str | None = None,
+        entry_color: str | None = None,
+        merge_color: str | None = None,
+    ) -> None:
+        show_in = not (hide_saved and edit_entry)
+        show_road = not (hide_saved and edit_road)
+        show_out = not (hide_saved and edit_merge)
+        if pit_path and len(pit_path) >= 2 and show_road:
             if _mcfg().get("show_pit_blends", True):
-                if show_in and self.pit_in and len(self.pit_in) >= 2:
-                    self._draw_pit_blend(p, tx, self.pit_in, "pit_blend",
-                                         "#ffd23a")
-                if show_out and self.pit_out and len(self.pit_out) >= 2:
-                    self._draw_pit_blend(p, tx, self.pit_out, "pit_blend_out",
-                                         "#3aa0ff")
-            self._draw_pit_path(p, tx)
-            return
-        if self.pit_span is None:
-            return
+                if show_in and pit_in and len(pit_in) >= 2:
+                    self._draw_pit_blend(
+                        p, tx, pit_in, "pit_blend",
+                        entry_color or "#ffd23a")
+                if show_out and pit_out and len(pit_out) >= 2:
+                    self._draw_pit_blend(
+                        p, tx, pit_out, "pit_blend_out",
+                        merge_color or "#3aa0ff")
+            self._draw_pit_path(p, tx, pit_path, road_color=road_color)
+
+    def _draw_pit_span_fallback(self, p: QPainter, tx) -> None:
         n = len(self.path)
         if n < 3:
             return
@@ -2469,25 +2641,27 @@ class TrackMapWidget(QWidget):
         anchor = QPointF(entry.x() - dx / ln * 22.0, entry.y() - dy / ln * 22.0)
         self._draw_pit_label(p, anchor)
 
-    def _draw_pit_path(self, p: QPainter, tx) -> None:
-        """Draw the real pit lane: an asphalt underlay plus a dashed pit line,
-        following the recorded route from track-exit to track-rejoin."""
+    def _draw_pit_path(self, p: QPainter, tx, pit_path=None,
+                       road_color: str | None = None) -> None:
+        """Draw the real pit lane: asphalt underlay plus dashed centre line."""
+        pit_path = pit_path if pit_path is not None else self.pit_path
+        if not pit_path or len(pit_path) < 2:
+            return
         mc = _mcfg()
-        pts = [tx(q) for q in self.pit_path]
+        pts = [tx(q) for q in pit_path]
         lane = QPainterPath()
         lane.moveTo(pts[0])
         for q in pts[1:]:
             lane.lineTo(q)
         p.setOpacity(_pit_lane_opacity())
-        # Asphalt underlay so it reads as a real road surface like the track.
         base = QPen(_mcol("asphalt"), max(3.0, mc.get("asphalt_width", 12) * 0.6))
         base.setCapStyle(Qt.PenCapStyle.RoundCap)
         base.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(base)
         p.drawPath(lane)
-        # Dashed pit-colored centre line on top.
-        pen = QPen(_mcol("pit"), 2.2)
+        pit_col = QColor(road_color) if road_color else _mcol("pit")
+        pen = QPen(pit_col, 2.2)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -2774,41 +2948,68 @@ class TrackMapWidget(QWidget):
             stroke_w=1.2 if is_player else 1.0)
 
     def _draw_pit_edit(self, p: QPainter, tx) -> None:
-        """In-progress entry (yellow), pit road (red), and merge (blue)."""
+        """In-progress entry, pit road, and merge for one or both lanes."""
         mc = _mcfg()
         self._pit_hit = []
         base_r = max(4.0, mc.get("asphalt_width", 12) * 0.35)
         r = max(8.0, base_r * math.sqrt(max(self._pit_edit_zoom, 1.0)))
 
-        def _polyline(pts, color_key: str, width: float):
+        lane_styles = (
+            (1, QColor(255, 210, 58), QColor(255, 90, 90), QColor(90, 160, 255), 1.0),
+            (2, QColor(200, 240, 120), QColor(70, 210, 170),
+             QColor(100, 200, 255), 0.82),
+        )
+        for lane, entry_col, road_col, merge_col, alpha_scale in lane_styles:
+            entry, road, merge = self._pit_edit_bufs(lane)
+            if not (entry or road or merge):
+                continue
+            active = lane == self.pit_edit_lane
+            if not active:
+                entry_col = QColor(entry_col.red(), entry_col.green(),
+                                   entry_col.blue(), int(180 * alpha_scale))
+                road_col = QColor(road_col.red(), road_col.green(),
+                                  road_col.blue(), int(180 * alpha_scale))
+                merge_col = QColor(merge_col.red(), merge_col.green(),
+                                   merge_col.blue(), int(180 * alpha_scale))
+            self._draw_pit_edit_lane(
+                p, tx, lane, entry, road, merge, r,
+                entry_col, road_col, merge_col, active)
+
+    def _draw_pit_edit_lane(
+        self, p, tx, lane, entry, road, merge, r,
+        entry_col, road_col, merge_col, active: bool,
+    ) -> None:
+        mc = _mcfg()
+
+        def _polyline(pts, color: QColor, width: float):
             if len(pts) < 2:
                 return
             path = QPainterPath()
             path.moveTo(tx(pts[0]))
             for pt in pts[1:]:
                 path.lineTo(tx(pt))
-            pen = QPen(_mcol(color_key), width)
+            pen = QPen(color, width)
             pen.setCapStyle(Qt.PenCapStyle.RoundCap)
             pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
             p.setBrush(Qt.BrushStyle.NoBrush)
             p.setPen(pen)
             p.drawPath(path)
 
-        _polyline(self._pit_edit_entry, "pit_blend",
-                  max(2.5, mc.get("asphalt_width", 12) * 0.45))
-        _polyline(self._pit_edit_road, "pit", max(3.0, mc.get("asphalt_width", 12) * 0.55))
-        _polyline(self._pit_edit_merge, "pit_blend_out",
-                  max(2.5, mc.get("asphalt_width", 12) * 0.45))
+        road_w = max(3.0, mc.get("asphalt_width", 12) * (0.6 if active else 0.5))
+        blend_w = max(2.5, mc.get("asphalt_width", 12) * (0.45 if active else 0.38))
+        _polyline(entry, entry_col, blend_w)
+        _polyline(road, road_col, road_w)
+        _polyline(merge, merge_col, blend_w)
 
-        joint = self._pit_has_joint()
-        joint_pt = (self._pit_edit_road[-1] if joint else None)
-        entry_joint = self._pit_has_entry_joint()
-        entry_joint_pt = (self._pit_edit_entry[-1] if entry_joint else None)
+        joint = self._pit_has_joint(lane)
+        joint_pt = road[-1] if joint else None
+        entry_joint = self._pit_has_entry_joint(lane)
+        entry_joint_pt = entry[-1] if entry_joint else None
 
         for phase, pts, col in (
-            ("entry", self._pit_edit_entry, QColor(255, 210, 58)),
-            ("road", self._pit_edit_road, QColor(255, 90, 90)),
-            ("merge", self._pit_edit_merge, QColor(90, 160, 255)),
+            ("entry", entry, entry_col),
+            ("road", road, road_col),
+            ("merge", merge, merge_col),
         ):
             for idx, pt in enumerate(pts):
                 if (entry_joint and entry_joint_pt is not None
@@ -2821,33 +3022,33 @@ class TrackMapWidget(QWidget):
                     continue
                 sp = tx(pt)
                 rect = QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r)
-                self._pit_hit.append((rect, phase, idx))
-                active = (self._pit_drag_idx == (phase, idx))
+                self._pit_hit.append((rect, lane, phase, idx))
+                dragging = self._pit_drag_idx == (lane, phase, idx)
                 p.setPen(QPen(col.darker(120), 1.5))
-                p.setBrush(col if active else QColor(col.red(), col.green(),
-                                                     col.blue(), 200))
+                p.setBrush(col if dragging or active else QColor(
+                    col.red(), col.green(), col.blue(), 170))
                 p.drawEllipse(rect)
 
         if entry_joint and entry_joint_pt is not None:
-            jcol = QColor(255, 210, 80)
+            jcol = entry_col.lighter(108)
             sp = tx(entry_joint_pt)
             rect = QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r)
-            self._pit_hit.append((rect, "entry_joint", 0))
-            active = self._pit_drag_idx == ("entry_joint", 0)
+            self._pit_hit.append((rect, lane, "entry_joint", 0))
+            dragging = self._pit_drag_idx == (lane, "entry_joint", 0)
             p.setPen(QPen(jcol.darker(120), 1.5))
-            p.setBrush(jcol if active else QColor(jcol.red(), jcol.green(),
-                                                  jcol.blue(), 220))
+            p.setBrush(jcol if dragging or active else QColor(
+                jcol.red(), jcol.green(), jcol.blue(), 200))
             p.drawEllipse(rect)
 
         if joint and joint_pt is not None:
-            jcol = QColor(255, 170, 50)
+            jcol = QColor(255, 170, 50) if lane == 1 else QColor(120, 220, 180)
             sp = tx(joint_pt)
             rect = QRectF(sp.x() - r, sp.y() - r, 2 * r, 2 * r)
-            self._pit_hit.append((rect, "joint", 0))
-            active = self._pit_drag_idx == ("joint", 0)
+            self._pit_hit.append((rect, lane, "joint", 0))
+            dragging = self._pit_drag_idx == (lane, "joint", 0)
             p.setPen(QPen(jcol.darker(120), 1.5))
-            p.setBrush(jcol if active else QColor(jcol.red(), jcol.green(),
-                                                  jcol.blue(), 220))
+            p.setBrush(jcol if dragging or active else QColor(
+                jcol.red(), jcol.green(), jcol.blue(), 200))
             p.drawEllipse(rect)
 
     def _screen_to_layout(self, pos: QPointF) -> tuple[float, float]:
@@ -2874,10 +3075,10 @@ class TrackMapWidget(QWidget):
             x = -x
         return x, y
 
-    def _pit_handle_at(self, pos: QPointF) -> tuple[str, int] | None:
-        for rect, phase, idx in self._pit_hit:
+    def _pit_handle_at(self, pos: QPointF) -> tuple[int, str, int] | None:
+        for rect, lane, phase, idx in self._pit_hit:
             if rect.contains(pos):
-                return phase, idx
+                return lane, phase, idx
         return None
 
     def _model_delta(self, dsx: float, dsy: float) -> tuple[float, float]:
@@ -2955,18 +3156,20 @@ class TrackMapWidget(QWidget):
                 event.accept()
                 return
             x, y = self._screen_to_model(event.position())
+            lane = self.pit_edit_lane
+            entry, road, merge = self._pit_edit_bufs(lane)
             if self.pit_edit_phase == "entry":
-                self._pit_edit_entry.append((x, y))
+                entry.append((x, y))
             elif self.pit_edit_phase == "road":
-                if not self._pit_edit_road and self._pit_edit_entry:
-                    self._pit_edit_road.append(self._pit_edit_entry[-1])
-                self._pit_edit_road.append((x, y))
-                if self._pit_edit_merge:
-                    self._sync_pit_joint()
+                if not road and entry:
+                    road.append(entry[-1])
+                road.append((x, y))
+                if merge:
+                    self._sync_pit_joint(lane)
             else:
-                if not self._pit_edit_merge and self._pit_edit_road:
-                    self._pit_edit_merge.append(self._pit_edit_road[-1])
-                self._pit_edit_merge.append((x, y))
+                if not merge and road:
+                    merge.append(road[-1])
+                merge.append((x, y))
             self.update()
             event.accept()
             return
@@ -2994,9 +3197,9 @@ class TrackMapWidget(QWidget):
             event.accept()
             return
         if self._pit_drag_idx is not None:
-            phase, idx = self._pit_drag_idx
+            lane, phase, idx = self._pit_drag_idx
             x, y = self._screen_to_model(event.position())
-            self._set_pit_edit_point(phase, idx, x, y)
+            self._set_pit_edit_point(phase, idx, x, y, lane=lane)
             self.update()
             event.accept()
             return

@@ -53,14 +53,16 @@ class TrackImportV2Panel(QFrame):
             "While on track in iRacing, draw or adjust the pit road (red) and "
             "exit merge line (blue) on the overlay map. Optional yellow entry "
             "blend is for tracks that have a distinct commit lane — skip it "
-            "when they don't. Scroll to zoom, Middle-click drag or Shift-drag "
-            "to pan; drag handles to adjust points. Clear a phase from the "
-            "dropdown or clear all pit to start over. Entry end and pit road "
-            "start stay linked (like pit road end and merge start). "
+            "when they don't. For dual pit roads (e.g. Bristol), switch to "
+            "Lane 2 and draw entry / road / merge there too — lane 2 is "
+            "optional at save time. Scroll to zoom, Middle-click drag or "
+            "Shift-drag to pan; drag handles to adjust points. Clear a phase "
+            "from the dropdown or clear all pit to start over. Entry end and "
+            "pit road start stay linked (like pit road end and merge start). "
             "Corner labels are edited in Track metadata below. "
             "Save loop uploads geometry without pit; Save track requires pit "
-            "road + merge. In demo mode the map previews your upload for this "
-            "session only.")
+            "road + merge on lane 1. In demo mode the map previews your upload "
+            "for this session only.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(hint)
@@ -84,6 +86,19 @@ class TrackImportV2Panel(QFrame):
             self._phase_group.addButton(btn)
             phase_row.addWidget(btn)
         phase_row.addStretch(1)
+        lane_lbl = QLabel("Lane")
+        lane_lbl.setObjectName("rowLabel")
+        phase_row.addWidget(lane_lbl)
+        self._lane_group = QButtonGroup(self)
+        self._lane1_btn = QPushButton("Lane 1")
+        self._lane2_btn = QPushButton("Lane 2")
+        for btn, lane in ((self._lane1_btn, 1), (self._lane2_btn, 2)):
+            btn.setCheckable(True)
+            btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, ln=lane: self._set_lane(ln))
+            self._lane_group.addButton(btn)
+            phase_row.addWidget(btn)
+        self._lane1_btn.setChecked(True)
         self._pit_edit_sw = QCheckBox("Enable")
         self._pit_edit_sw.toggled.connect(self._pit_edit_toggled)
         phase_row.addWidget(self._pit_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -102,8 +117,11 @@ class TrackImportV2Panel(QFrame):
         clear_row = QHBoxLayout()
         clear_row.setSpacing(6)
         self._clear_phase_combo = QComboBox()
-        self._clear_phase_combo.setMinimumWidth(140)
-        self._phase_clear_keys = ("entry", "road", "merge")
+        self._clear_phase_combo.setMinimumWidth(180)
+        self._phase_clear_keys = (
+            (1, "entry"), (1, "road"), (1, "merge"),
+            (2, "entry"), (2, "road"), (2, "merge"),
+        )
         self._clear_phase_btn = QPushButton("Clear selected")
         self._clear_phase_btn.setObjectName("warn")
         self._clear_phase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -252,11 +270,23 @@ class TrackImportV2Panel(QFrame):
             return "merge"
         return "road"
 
+    def _current_lane(self) -> int:
+        return 2 if self._lane2_btn.isChecked() else 1
+
+    def _set_lane(self, lane: int) -> None:
+        if self._overlay is None or not hasattr(self._overlay, "set_pit_edit_mode"):
+            return
+        on = self._pit_edit_sw.isChecked()
+        self._overlay.set_pit_edit_mode(on, self._current_phase(), lane=lane)
+        self._lane1_btn.setChecked(lane == 1)
+        self._lane2_btn.setChecked(lane == 2)
+        self._sync_from_overlay()
+
     def _set_phase(self, phase: str) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_edit_mode"):
             return
         on = self._pit_edit_sw.isChecked()
-        self._overlay.set_pit_edit_mode(on, phase)
+        self._overlay.set_pit_edit_mode(on, phase, lane=self._current_lane())
         self._entry_btn.setChecked(phase == "entry")
         self._road_btn.setChecked(phase == "road")
         self._merge_btn.setChecked(phase == "merge")
@@ -265,7 +295,8 @@ class TrackImportV2Panel(QFrame):
     def _pit_edit_toggled(self, on: bool) -> None:
         if self._overlay is None or not hasattr(self._overlay, "set_pit_edit_mode"):
             return
-        self._overlay.set_pit_edit_mode(on, self._current_phase())
+        self._overlay.set_pit_edit_mode(on, self._current_phase(),
+                                       lane=self._current_lane())
         self._sync_from_overlay()
 
     def _load_saved_pit(self) -> None:
@@ -299,59 +330,66 @@ class TrackImportV2Panel(QFrame):
         self._sync_from_overlay()
         self._report("Cleared all pit geometry — redraw on the map.", flash=False)
 
-    def _phase_clear_label(self, phase: str, count: int) -> str:
+    def _phase_clear_label(self, lane: int, phase: str, count: int) -> str:
         names = {"entry": "Entry", "road": "Pit road", "merge": "Merge"}
         name = names.get(phase, phase)
-        return f"{name} ({count} pt{'s' if count != 1 else ''})"
+        prefix = f"Lane {lane} · " if lane == 2 else ""
+        return f"{prefix}{name} ({count} pt{'s' if count != 1 else ''})"
+
+    def _phase_counts(self, state: dict) -> dict[tuple[int, str], int]:
+        return {
+            (1, "entry"): state.get("entry_count", 0),
+            (1, "road"): state.get("road_count", 0),
+            (1, "merge"): state.get("merge_count", 0),
+            (2, "entry"): state.get("entry_count_2", 0),
+            (2, "road"): state.get("road_count_2", 0),
+            (2, "merge"): state.get("merge_count_2", 0),
+        }
 
     def _refresh_clear_phase_combo(self, state: dict) -> None:
-        counts = {
-            "entry": state.get("entry_count", 0),
-            "road": state.get("road_count", 0),
-            "merge": state.get("merge_count", 0),
-        }
-        active = state.get("pit_edit_phase", "road")
+        counts = self._phase_counts(state)
+        active = (state.get("pit_edit_lane", 1), state.get("pit_edit_phase", "road"))
         prev = self._clear_phase_combo.currentData()
         self._clear_phase_combo.blockSignals(True)
         self._clear_phase_combo.clear()
-        for phase in self._phase_clear_keys:
+        for key in self._phase_clear_keys:
+            lane, phase = key
             self._clear_phase_combo.addItem(
-                self._phase_clear_label(phase, counts[phase]), phase)
+                self._phase_clear_label(lane, phase, counts[key]), key)
         pick = prev if prev in self._phase_clear_keys else active
-        idx = self._phase_clear_keys.index(pick)
-        self._clear_phase_combo.setCurrentIndex(idx)
+        if pick in self._phase_clear_keys:
+            idx = self._phase_clear_keys.index(pick)
+            self._clear_phase_combo.setCurrentIndex(idx)
         self._clear_phase_combo.blockSignals(False)
-        self._clear_phase_btn.setEnabled(
-            counts.get(self._clear_phase_combo.currentData(), 0) > 0)
+        cur = self._clear_phase_combo.currentData()
+        self._clear_phase_btn.setEnabled(counts.get(cur, 0) > 0 if cur else False)
 
-    def _clear_phase_selection(self) -> str:
+    def _clear_phase_selection(self) -> tuple[int, str]:
         data = self._clear_phase_combo.currentData()
-        return data if data in self._phase_clear_keys else "road"
+        if isinstance(data, tuple) and len(data) == 2:
+            lane, phase = data
+            if lane in (1, 2) and phase in ("entry", "road", "merge"):
+                return lane, phase
+        return self._current_lane(), "road"
 
     def _clear_pit_phase(self) -> None:
         if self._overlay is None:
             return
-        phase = self._clear_phase_selection()
+        lane, phase = self._clear_phase_selection()
         state = (self._overlay.pit_edit_state()
                  if hasattr(self._overlay, "pit_edit_state") else {})
-        counts = {
-            "entry": state.get("entry_count", 0),
-            "road": state.get("road_count", 0),
-            "merge": state.get("merge_count", 0),
-        }
-        if counts.get(phase, 0) <= 0:
-            label = {"entry": "Entry", "road": "Pit road", "merge": "Merge"}.get(
-                phase, phase)
+        counts = self._phase_counts(state)
+        if counts.get((lane, phase), 0) <= 0:
+            label = self._phase_clear_label(lane, phase, 0).split(" (")[0]
             self._report(f"{label} has no points to clear.", flash=False)
             return
         if hasattr(self._overlay, "clear_pit_edit_phase"):
-            self._overlay.clear_pit_edit_phase(phase)
+            self._overlay.clear_pit_edit_phase(phase, lane=lane)
         elif hasattr(self._overlay, "map_widget"):
-            self._overlay.map_widget.clear_pit_edit_phase(phase)
+            self._overlay.map_widget.clear_pit_edit_phase(phase, lane=lane)
         self._sync_from_overlay()
-        label = {"entry": "entry", "road": "pit road", "merge": "merge"}.get(
-            phase, phase)
-        self._report(f"Cleared {label} points.", flash=False)
+        label = self._phase_clear_label(lane, phase, 0).split(" (")[0]
+        self._report(f"Cleared {label.lower()} points.", flash=False)
 
     def _save_loop(self) -> None:
         if self._overlay is None:
@@ -410,10 +448,16 @@ class TrackImportV2Panel(QFrame):
         ne = state.get("entry_count", 0)
         nr = state.get("road_count", 0)
         nm = state.get("merge_count", 0)
+        ne2 = state.get("entry_count_2", 0)
+        nr2 = state.get("road_count_2", 0)
+        nm2 = state.get("merge_count_2", 0)
         phase = state.get("pit_edit_phase", "road")
+        lane = state.get("pit_edit_lane", 1)
         self._entry_btn.setChecked(phase == "entry")
         self._road_btn.setChecked(phase == "road")
         self._merge_btn.setChecked(phase == "merge")
+        self._lane1_btn.setChecked(lane == 1)
+        self._lane2_btn.setChecked(lane == 2)
         if not state.get("has_loop"):
             return
         tid = state.get("authoring_track_id")
@@ -421,9 +465,13 @@ class TrackImportV2Panel(QFrame):
         in_sim = state.get("in_sim")
         mode = "In session" if in_sim else "Authoring"
         entry_bits = f"Entry: {ne} pts · " if ne else ""
+        lane2_bits = ""
+        if nr2 or nm2 or ne2:
+            e2 = f"Entry: {ne2} · " if ne2 else ""
+            lane2_bits = f" · Lane 2: {e2}road {nr2}, merge {nm2}"
         base = self._status.text().split("\n")[0] if self._status.text() else ""
-        line = (f"{mode} · {suffix} · {entry_bits}"
-                f"Pit road: {nr} pts · Merge: {nm} pts.")
+        line = (f"{mode} · {suffix} · Lane {lane} · {entry_bits}"
+                f"Pit road: {nr} pts · Merge: {nm} pts{lane2_bits}.")
         if base.startswith("Saved "):
             self._status.setText(f"{base}\n{line}")
         else:
@@ -443,7 +491,10 @@ class TrackImportV2Panel(QFrame):
         self._entry_btn.setEnabled(edit_enabled)
         self._road_btn.setEnabled(edit_enabled)
         self._merge_btn.setEnabled(edit_enabled)
-        self._load_pit_btn.setEnabled(edit_enabled and has_saved_pit)
+        self._lane1_btn.setEnabled(edit_enabled)
+        self._lane2_btn.setEnabled(edit_enabled)
+        self._load_pit_btn.setEnabled(
+            edit_enabled and (has_saved_pit or state.get("has_saved_pit_2")))
         self._clear_phase_combo.setEnabled(edit_enabled)
         if edit_enabled:
             self._refresh_clear_phase_combo(state)
