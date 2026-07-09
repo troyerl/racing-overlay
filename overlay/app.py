@@ -1456,6 +1456,7 @@ class AdvancedSimHUD:
         return self._demo_ir
 
     def process_telemetry_tick(self) -> None:
+        self._tick_stage = "init"
         connected = bool(self._sdk is not None
                          and (self._sdk.is_connected or self._sdk.startup()))
         # Reveal/hide the overlay as iRacing connects or disconnects.
@@ -1650,59 +1651,89 @@ class AdvancedSimHUD:
                 results_positions=results_pos,
             )
 
-        if en["radar"]:
-            self._update_radar(player, lap_pct, surface, car_left_right,
-                               est_time, lap_est, drivers)
-        if en["standings"]:
-            self._update_standings(positions, drivers, surface, car_f2, player,
-                                   lap_est, car_lap, sess_time, radio_speaker,
-                                   est_time, on_pit_arr, car_flags)
-        if en["relative"]:
-            self._update_relative(player, est_time, surface, drivers, positions,
-                                  car_lap, lap_est, sess_time, radio_speaker,
-                                  car_f2, on_pit_arr, car_flags)
-        if en["map"]:
-            self._update_map(player, lap_pct, surface, drivers, positions,
-                             car_lap, radio_speaker, on_pit_arr, car_flags)
-        if self._needs_sector_timer(en):
-            self._advance_sector_timer(player, lap_pct)
-        if en["dash"]:
-            self._update_dash(player, positions, car_lap)
-        if en["sector_timing"]:
-            self._update_sector_widget()
-        if self._needs_fuel_lap_tracking(en):
-            self._track_fuel_per_lap()
-        if en["laptime_log"]:
-            self._update_laptime_log(player)
-        if en["fuel_calc"]:
-            self._update_fuel_calc()
-        if en["inputs"]:
-            self._update_inputs()
-        if en["delta_bar"]:
-            self._update_delta_bar(player, positions)
-        if en["flags"]:
-            self._update_flags(player, positions, est_time, lap_est, drivers)
-        if self._needs_lap_engine(en):
-            self._update_lap_engine(player, lap_pct)
-        if en["lap_compare"]:
-            self._update_lap_compare_widget()
-        if en["tire_panel"]:
-            self._update_tire_panel()
-        if en["pit_board"]:
-            self._update_pit_board()
-        if en["weather_panel"]:
-            self._update_weather_panel()
-        if en["leaderboard_strip"]:
-            self._update_leaderboard_strip(positions, drivers, car_f2,
-                                           lap_est, player, car_lap)
-        if en["radio_tower"]:
-            self._update_radio_tower(positions, drivers, player, radio_speaker)
-        if en["ers_hybrid"]:
-            self._update_ers_hybrid()
-        if en["system_panel"]:
-            self._update_system_panel()
-        if en["pit_advisor"]:
-            self._update_pit_advisor()
+        try:
+            if en["radar"]:
+                self._tick_stage = "radar"
+                self._update_radar(player, lap_pct, surface, car_left_right,
+                                   est_time, lap_est, drivers)
+            if en["standings"]:
+                self._tick_stage = "standings"
+                self._update_standings(positions, drivers, surface, car_f2, player,
+                                       lap_est, car_lap, sess_time, radio_speaker,
+                                       est_time, on_pit_arr, car_flags)
+            if en["relative"]:
+                self._tick_stage = "relative"
+                self._update_relative(player, est_time, surface, drivers, positions,
+                                      car_lap, lap_est, sess_time, radio_speaker,
+                                      car_f2, on_pit_arr, car_flags)
+            if en["map"]:
+                self._tick_stage = "map"
+                self._update_map(player, lap_pct, surface, drivers, positions,
+                                 car_lap, radio_speaker, on_pit_arr, car_flags)
+            if self._needs_sector_timer(en):
+                self._tick_stage = "sector_timer"
+                self._advance_sector_timer(player, lap_pct)
+            if en["dash"]:
+                self._tick_stage = "dash"
+                self._update_dash(player, positions, car_lap)
+            if en["sector_timing"]:
+                self._tick_stage = "sector_timing"
+                self._update_sector_widget()
+            if self._needs_fuel_lap_tracking(en):
+                self._tick_stage = "fuel_lap"
+                self._track_fuel_per_lap()
+            if en["laptime_log"]:
+                self._tick_stage = "laptime_log"
+                self._update_laptime_log(player)
+            if en["fuel_calc"]:
+                self._tick_stage = "fuel_calc"
+                self._update_fuel_calc()
+            if en["inputs"]:
+                self._tick_stage = "inputs"
+                self._update_inputs()
+            if en["delta_bar"]:
+                self._tick_stage = "delta_bar"
+                self._update_delta_bar(player, positions)
+            if en["flags"]:
+                self._tick_stage = "flags"
+                self._update_flags(player, positions, est_time, lap_est, drivers)
+            if self._needs_lap_engine(en):
+                self._tick_stage = "lap_engine"
+                self._update_lap_engine(player, lap_pct)
+            if en["lap_compare"]:
+                self._tick_stage = "lap_compare"
+                self._update_lap_compare_widget()
+            if en["tire_panel"]:
+                self._tick_stage = "tire_panel"
+                self._update_tire_panel()
+            if en["pit_board"]:
+                self._tick_stage = "pit_board"
+                self._update_pit_board()
+            if en["weather_panel"]:
+                self._tick_stage = "weather_panel"
+                self._update_weather_panel()
+            if en["leaderboard_strip"]:
+                self._tick_stage = "leaderboard_strip"
+                self._update_leaderboard_strip(positions, drivers, car_f2,
+                                               lap_est, player, car_lap)
+            if en["radio_tower"]:
+                self._tick_stage = "radio_tower"
+                self._update_radio_tower(positions, drivers, player, radio_speaker)
+            if en["ers_hybrid"]:
+                self._tick_stage = "ers_hybrid"
+                self._update_ers_hybrid()
+            if en["system_panel"]:
+                self._tick_stage = "system_panel"
+                self._update_system_panel()
+            if en["pit_advisor"]:
+                self._tick_stage = "pit_advisor"
+                self._update_pit_advisor()
+        except Exception:
+            stage = getattr(self, "_tick_stage", "?")
+            log.exception("telemetry tick failed during widget update (%s)", stage)
+            raise
+        finally:
+            self._tick_stage = None
 
     @staticmethod
     def _empty_row(tag: str) -> dict:
@@ -5287,6 +5318,13 @@ def main() -> int:
         return 0
 
     import signal
+    import traceback
+
+    def _excepthook(exc_type, exc, tb) -> None:
+        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _excepthook
 
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     keepalive = QTimer()

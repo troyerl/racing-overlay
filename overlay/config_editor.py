@@ -1581,8 +1581,15 @@ class OrderEditor(QWidget):
 
 
 class ConfigEditor(QWidget):
+    _demo_track_missing = pyqtSignal(int)
+    _demo_track_saved = pyqtSignal(bool, int, str)
+
     def __init__(self, parent=None, overlay=None):
         super().__init__(parent)
+        self._demo_track_missing.connect(
+            lambda tid: self._flash(
+                f"Track {tid} not found in the cloud library"))
+        self._demo_track_saved.connect(self._on_demo_track_save_local)
         # Optional overlay controller (the running HUD) so the settings window
         # can start/stop the widgets. None when launched standalone.
         self._overlay = overlay
@@ -3140,16 +3147,14 @@ class ConfigEditor(QWidget):
     def _save_demo_track_worker(self, tid: int) -> None:
         doc = track_store.fetch_track(tid)
         if not doc:
-            QTimer.singleShot(
-                0, lambda: self._flash(
-                    f"Track {tid} not found in the cloud library"))
+            self._demo_track_missing.emit(tid)
             return
         name = str(doc.get("name") or "")
         ok = track_store.save_app_settings({
             "demo_track_id": tid,
             "demo_track_name": name,
         })
-        QTimer.singleShot(0, lambda: self._on_demo_track_save_local(ok, tid, name))
+        self._demo_track_saved.emit(ok, tid, name)
 
     def _on_demo_track_save_local(self, ok: bool, tid: int, name: str) -> None:
         if not ok:

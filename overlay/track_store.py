@@ -812,15 +812,26 @@ class TrackSync(QObject):
     # True when author save succeeded.
     app_settingsSaved = pyqtSignal(bool)
 
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._fetch_inflight: set[str] = set()
+
     def fetch_async(self, track_id) -> None:
         if not read_available():
             return
+        key = str(track_id)
+        if key in self._fetch_inflight:
+            return
+        self._fetch_inflight.add(key)
         threading.Thread(target=self._fetch, args=(track_id,),
                          daemon=True).start()
 
     def _fetch(self, track_id) -> None:
-        doc = fetch_track(track_id)
-        self.fetched.emit(track_id, doc)
+        try:
+            doc = fetch_track(track_id)
+            self.fetched.emit(track_id, doc)
+        finally:
+            self._fetch_inflight.discard(str(track_id))
 
     def sync_down_async(self, tracks_dir: str, force: bool = False) -> None:
         """Background: refresh the whole local cache from the cloud on startup."""

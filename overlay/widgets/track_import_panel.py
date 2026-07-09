@@ -34,9 +34,13 @@ class TrackImportV2Panel(QFrame):
 
     saved = pyqtSignal(str)
     notified = pyqtSignal(str)
+    importFailed = pyqtSignal(str)
+    importReady = pyqtSignal(object, object, str)
 
     def __init__(self, overlay=None, parent=None):
         super().__init__(parent)
+        self.importFailed.connect(lambda m: self._finish_import(False, m))
+        self.importReady.connect(self._on_import_ready)
         self.setObjectName("enableCard")
         self._overlay = overlay
         self._html_path: str | None = None
@@ -265,15 +269,17 @@ class TrackImportV2Panel(QFrame):
             try:
                 ok, msg, doc, tid = self._overlay.parse_loop_v2(path)
             except Exception as exc:
-                QTimer.singleShot(0, lambda: self._finish_import(False, str(exc)))
+                self.importFailed.emit(str(exc))
                 return
             if not ok:
-                QTimer.singleShot(0, lambda m=msg: self._finish_import(False, m))
+                self.importFailed.emit(msg)
                 return
-            QTimer.singleShot(
-                0, lambda d=doc, t=tid, p=path: self._apply_import(d, t, p))
+            self.importReady.emit(doc, tid, path)
 
         threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_import_ready(self, doc: dict, tid: int, path: str) -> None:
+        self._apply_import(doc, tid, path)
 
     def _apply_import(self, doc: dict, tid: int, path: str) -> None:
         try:

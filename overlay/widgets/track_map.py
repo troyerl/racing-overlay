@@ -2357,15 +2357,15 @@ class TrackMapWidget(QWidget):
             draw_card(p, rect.width(), rect.height(), "map")
         if mc.get("show_infield", True):
             p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(_mcol("infield"))
+            p.setBrush(_mcol_def("infield", "#0f1216c8"))
             p.drawPath(qpath)
-        asphalt = QPen(_mcol("asphalt"), mc.get("asphalt_width", 12))
+        asphalt = QPen(_mcol_def("asphalt", "#333a42"), mc.get("asphalt_width", 12))
         asphalt.setCapStyle(Qt.PenCapStyle.RoundCap)
         asphalt.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(asphalt)
         p.drawPath(qpath)
-        p.setPen(QPen(_mcol("outline"), mc.get("outline_width", 6)))
+        p.setPen(QPen(_mcol_def("outline", "#8b93a1"), mc.get("outline_width", 6)))
         p.drawPath(qpath)
         if mc.get("show_pit", True) and (self.pit_path or self.pit_in
                                          or self.pit_out
@@ -2623,7 +2623,7 @@ class TrackMapWidget(QWidget):
         lane.moveTo(pts[0])
         for q in pts[1:]:
             lane.lineTo(q)
-        pen = QPen(_mcol("pit"), 2.2)
+        pen = QPen(_mcol_def("pit", "#ff4d4d"), 2.2)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
         pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
@@ -2654,13 +2654,14 @@ class TrackMapWidget(QWidget):
         for q in pts[1:]:
             lane.lineTo(q)
         p.setOpacity(_pit_lane_opacity())
-        base = QPen(_mcol("asphalt"), max(3.0, mc.get("asphalt_width", 12) * 0.6))
+        base = QPen(_mcol_def("asphalt", "#333a42"),
+                    max(3.0, mc.get("asphalt_width", 12) * 0.6))
         base.setCapStyle(Qt.PenCapStyle.RoundCap)
         base.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.setPen(base)
         p.drawPath(lane)
-        pit_col = QColor(road_color) if road_color else _mcol("pit")
+        pit_col = QColor(road_color) if road_color else _mcol_def("pit", "#ff4d4d")
         pen = QPen(pit_col, 2.2)
         pen.setStyle(Qt.PenStyle.DashLine)
         pen.setCapStyle(Qt.PenCapStyle.FlatCap)
@@ -2711,10 +2712,10 @@ class TrackMapWidget(QWidget):
         x = min(max(2.0, anchor.x() - w / 2), self.width() - w - 2.0)
         y = min(max(2.0, anchor.y() - h / 2), self.height() - h - 2.0)
         rect = QRectF(x, y, w, h)
-        p.setBrush(_mcol("pit"))
+        p.setBrush(_mcol_def("pit", "#ff4d4d"))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(rect, 4, 4)
-        p.setPen(_mcol("pit_text"))
+        p.setPen(_mcol_def("pit_text", "#ffffff"))
         p.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
 
     def _wind_radius(self, rect: QRectF) -> float:
@@ -2757,7 +2758,7 @@ class TrackMapWidget(QWidget):
         and speed readout."""
         center, r = self._wind_center(screen_pts, rect)
         cx, cy = center.x(), center.y()
-        col = _mcol("wind")
+        col = _mcol_def("wind", "#9fd0ff")
 
         p.setBrush(QColor(10, 13, 17, 190))
         p.setPen(QPen(QColor(255, 255, 255, 40), 1))
@@ -2801,7 +2802,7 @@ class TrackMapWidget(QWidget):
         p.setBrush(QColor(10, 13, 17, 190))
         p.setPen(Qt.PenStyle.NoPen)
         p.drawRoundedRect(lr, 2, 2)
-        p.setPen(_mcol("wind_text"))
+        p.setPen(_mcol_def("wind_text", "#eaf3ff"))
         p.drawText(lr, Qt.AlignmentFlag.AlignCenter, text)
 
         if _mcfg().get("show_expanded_weather", False):
@@ -2820,7 +2821,7 @@ class TrackMapWidget(QWidget):
                 p.setBrush(QColor(10, 13, 17, 190))
                 p.setPen(Qt.PenStyle.NoPen)
                 p.drawRoundedRect(lr2, 2, 2)
-                p.setPen(_mcol("wind_text"))
+                p.setPen(_mcol_def("wind_text", "#eaf3ff"))
                 y = lr2.top() + 2
                 for line in lines:
                     p.drawText(QRectF(lr2.left(), y, lr2.width(), fm2.height() + 1),
@@ -2877,7 +2878,7 @@ class TrackMapWidget(QWidget):
         key = f"status_{kind}"
         colors = _mcfg().get("colors", {})
         if key in colors:
-            return _mcol(key)
+            return _mcol_def(key, "#ff9416")
         if kind in ("black", "dq", "furled", "meatball"):
             return _mcol_def(f"status_{kind}", "#ff9416")
         return None
@@ -3342,7 +3343,7 @@ class TrackMapWidget(QWidget):
                 p.drawRoundedRect(rect, 4, 4)
             else:
                 draw_dark_cell(p, rect, "map", radius=4)
-            p.setPen(_mcol("corner_text"))
+            p.setPen(_mcol_def("corner_text", "#d6dce2"))
             p.drawText(rect, Qt.AlignmentFlag.AlignCenter, label)
             self._corner_hit.append((rect, idx))
 
@@ -3385,7 +3386,7 @@ class TrackMapWidget(QWidget):
         off = mc.get("asphalt_width", 12) * 0.85 + 3.0
         # Pit-car styling is the same for every car -- resolve it once.
         pit_opacity = max(0.05, min(1.0, mc.get("pit_dot_opacity", 0.45)))
-        pit_fill = _mcol("pit_car")
+        pit_fill = _mcol_def("pit_car", "#6e747d")
         dot_frac = mc.get("dot_radius_frac", 0.05) or 0.05
         if dot_frac <= 0:
             dot_frac = 0.05

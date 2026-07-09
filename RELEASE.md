@@ -5,6 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.63.0 - 2026-07-09
+
+- **Demo mode paint stability.** Map painting tolerates partial `map.colors`
+  overrides (no more `KeyError` on missing keys like `pit_car` or `corner_text`).
+  Uncaught exceptions now print a full traceback to the terminal, and telemetry
+  tick failures log which widget was updating.
+- **Thread-safe settings workers.** HTML loop import and Community demo track
+  save marshal results back to the GUI via Qt signals instead of calling
+  `QTimer.singleShot` from background threads (fixes timer warnings and
+  intermittent crashes).
+- **Demo cloud fetch dedup.** Repeated requests for the same TrackID while a
+  cloud fetch is already in flight are skipped, reducing terminal spam and
+  load when demo track settings change.
+
 ## 1.62.0 - 2026-07-09
 
 - **Dual pit lanes (Bristol-style).** Tracks can now carry an optional second pit
