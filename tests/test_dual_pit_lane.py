@@ -6,6 +6,8 @@ import math
 from unittest.mock import MagicMock
 
 import pytest
+from PyQt6.QtCore import QRect
+from PyQt6.QtGui import QPaintEvent
 from PyQt6.QtWidgets import QApplication
 
 from overlay.app import AdvancedSimHUD
@@ -77,3 +79,18 @@ def test_schematic_placement_uses_lane2_route(qapp):
         0.6, hud._pit_in_pct_2, hud._pit_out_pct_2, lane=2)
     assert lane2_mid is not None
     assert math.hypot(pt.x() - lane2_mid[0], pt.y() - lane2_mid[1]) < 0.05
+
+
+def test_draw_cars_paints_13_tuple_without_error(qapp):
+    """Regression: _draw_cars must unpack 13-field car tuples from _update_map."""
+    hud = _hud_with_lanes()
+    w = hud.map_widget
+    w.resize(320, 240)
+    w.set_cars([
+        (0, 0.25, "1", "#4af", True, False, False,
+         False, False, None, False, False, 1),
+        (3, 0.6, "42", "#fff", False, True, True,
+         False, False, None, False, False, 2),
+    ])
+    ev = QPaintEvent(QRect(0, 0, 320, 240))
+    w.paintEvent(ev)

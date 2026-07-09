@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.63.1 - 2026-07-09
+
+- **Fix: map car dots missing.** Dual-pit-lane added a 13th field to each car
+  tuple, but map painting still unpacked only 12 values — causing a paint error
+  that hid every car dot (player and opponents). `_draw_cars` now handles the
+  full tuple; regression test added.
+
 ## 1.63.0 - 2026-07-09
 
 - **Demo mode paint stability.** Map painting tolerates partial `map.colors`

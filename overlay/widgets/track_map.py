@@ -3396,7 +3396,11 @@ class TrackMapWidget(QWidget):
         for car in sorted(self.cars, key=self._car_draw_sort_key):
             speaking = is_pace = False
             status_kind = None
-            if len(car) >= 12:
+            if len(car) >= 13:
+                (idx, pct, label, color, is_player, on_route, on_pit,
+                 speaking, is_pace, status_kind, _in_entry, _in_exit,
+                 _pit_lane) = car
+            elif len(car) >= 12:
                 (idx, pct, label, color, is_player, on_route, on_pit,
                  speaking, is_pace, status_kind, _in_entry, _in_exit) = car
             elif len(car) >= 10:
