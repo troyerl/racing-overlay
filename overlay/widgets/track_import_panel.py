@@ -8,6 +8,7 @@ from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -53,9 +54,9 @@ class TrackImportV2Panel(QFrame):
             "exit merge line (blue) on the overlay map. Optional yellow entry "
             "blend is for tracks that have a distinct commit lane — skip it "
             "when they don't. Scroll to zoom, Middle-click drag or Shift-drag "
-            "to pan; drag handles to adjust points. Clear all pit or clear the "
-            "current phase to start over on one segment. Pit end and merge start "
-            "stay linked. "
+            "to pan; drag handles to adjust points. Clear a phase from the "
+            "dropdown or clear all pit to start over. Entry end and pit road "
+            "start stay linked (like pit road end and merge start). "
             "Corner labels are edited in Track metadata below. "
             "Save loop uploads geometry without pit; Save track requires pit "
             "road + merge. In demo mode the map previews your upload for this "
@@ -98,10 +99,17 @@ class TrackImportV2Panel(QFrame):
         reset_view = QPushButton("Reset view")
         reset_view.setCursor(Qt.CursorShape.PointingHandCursor)
         reset_view.clicked.connect(self._reset_pit_view)
-        self._clear_phase_btn = QPushButton("Clear phase")
+        clear_row = QHBoxLayout()
+        clear_row.setSpacing(6)
+        self._clear_phase_combo = QComboBox()
+        self._clear_phase_combo.setMinimumWidth(140)
+        self._phase_clear_keys = ("entry", "road", "merge")
+        self._clear_phase_btn = QPushButton("Clear selected")
         self._clear_phase_btn.setObjectName("warn")
         self._clear_phase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_phase_btn.clicked.connect(self._clear_pit_phase)
+        clear_row.addWidget(self._clear_phase_combo)
+        clear_row.addWidget(self._clear_phase_btn)
         clear_all = QPushButton("Clear all pit")
         clear_all.setObjectName("warn")
         clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -115,7 +123,7 @@ class TrackImportV2Panel(QFrame):
         btn_row.addWidget(self._load_pit_btn)
         btn_row.addWidget(undo)
         btn_row.addWidget(reset_view)
-        btn_row.addWidget(self._clear_phase_btn)
+        btn_row.addLayout(clear_row)
         btn_row.addWidget(clear_all)
         btn_row.addStretch(1)
         btn_row.addWidget(save_loop)
@@ -291,10 +299,51 @@ class TrackImportV2Panel(QFrame):
         self._sync_from_overlay()
         self._report("Cleared all pit geometry — redraw on the map.", flash=False)
 
+    def _phase_clear_label(self, phase: str, count: int) -> str:
+        names = {"entry": "Entry", "road": "Pit road", "merge": "Merge"}
+        name = names.get(phase, phase)
+        return f"{name} ({count} pt{'s' if count != 1 else ''})"
+
+    def _refresh_clear_phase_combo(self, state: dict) -> None:
+        counts = {
+            "entry": state.get("entry_count", 0),
+            "road": state.get("road_count", 0),
+            "merge": state.get("merge_count", 0),
+        }
+        active = state.get("pit_edit_phase", "road")
+        prev = self._clear_phase_combo.currentData()
+        self._clear_phase_combo.blockSignals(True)
+        self._clear_phase_combo.clear()
+        for phase in self._phase_clear_keys:
+            self._clear_phase_combo.addItem(
+                self._phase_clear_label(phase, counts[phase]), phase)
+        pick = prev if prev in self._phase_clear_keys else active
+        idx = self._phase_clear_keys.index(pick)
+        self._clear_phase_combo.setCurrentIndex(idx)
+        self._clear_phase_combo.blockSignals(False)
+        self._clear_phase_btn.setEnabled(
+            counts.get(self._clear_phase_combo.currentData(), 0) > 0)
+
+    def _clear_phase_selection(self) -> str:
+        data = self._clear_phase_combo.currentData()
+        return data if data in self._phase_clear_keys else "road"
+
     def _clear_pit_phase(self) -> None:
         if self._overlay is None:
             return
-        phase = self._current_phase()
+        phase = self._clear_phase_selection()
+        state = (self._overlay.pit_edit_state()
+                 if hasattr(self._overlay, "pit_edit_state") else {})
+        counts = {
+            "entry": state.get("entry_count", 0),
+            "road": state.get("road_count", 0),
+            "merge": state.get("merge_count", 0),
+        }
+        if counts.get(phase, 0) <= 0:
+            label = {"entry": "Entry", "road": "Pit road", "merge": "Merge"}.get(
+                phase, phase)
+            self._report(f"{label} has no points to clear.", flash=False)
+            return
         if hasattr(self._overlay, "clear_pit_edit_phase"):
             self._overlay.clear_pit_edit_phase(phase)
         elif hasattr(self._overlay, "map_widget"):
@@ -395,14 +444,11 @@ class TrackImportV2Panel(QFrame):
         self._road_btn.setEnabled(edit_enabled)
         self._merge_btn.setEnabled(edit_enabled)
         self._load_pit_btn.setEnabled(edit_enabled and has_saved_pit)
-        phase_counts = {
-            "entry": state.get("entry_count", 0),
-            "road": state.get("road_count", 0),
-            "merge": state.get("merge_count", 0),
-        }
-        phase = state.get("pit_edit_phase", "road")
-        self._clear_phase_btn.setEnabled(
-            edit_enabled and phase_counts.get(phase, 0) > 0)
+        self._clear_phase_combo.setEnabled(edit_enabled)
+        if edit_enabled:
+            self._refresh_clear_phase_combo(state)
+        else:
+            self._clear_phase_btn.setEnabled(False)
         if edit_enabled:
             self._sync_from_overlay()
         elif in_sim:

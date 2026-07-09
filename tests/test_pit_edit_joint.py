@@ -246,3 +246,50 @@ def test_clear_pit_edit_phase_road_clears_merge(qapp):
     w.clear_pit_edit_phase("road")
     assert w._pit_edit_road == []
     assert w._pit_edit_merge == []
+
+
+def test_sync_pit_entry_joint_on_load(qapp):
+    w = _widget()
+    w.load_pit_edit(
+        [(0.2, 0.35), (0.5, 0.42)],
+        [(0.5, 0.42), (0.9, 0.48)],
+        entry=[(0.1, 0.3), (0.2, 0.35)],
+    )
+    assert w._pit_has_entry_joint()
+    assert w._pit_edit_road[0] == w._pit_edit_entry[-1]
+
+
+def test_set_pit_edit_phase_road_seeds_from_entry(qapp):
+    w = _widget()
+    w.load_pit_edit([], [], entry=[(0.1, 0.3), (0.2, 0.35)])
+    w.set_pit_edit_phase("road")
+    assert w._pit_edit_road == [(0.2, 0.35)]
+
+
+def test_set_pit_edit_point_entry_joint_moves_both(qapp):
+    w = _widget()
+    w.load_pit_edit(
+        [(0.2, 0.4), (0.5, 0.42)],
+        [(0.5, 0.42), (0.9, 0.48)],
+        entry=[(0.1, 0.3), (0.2, 0.35)],
+    )
+    w._set_pit_edit_point("entry_joint", 0, 0.22, 0.36)
+    assert w._pit_edit_entry[-1] == (0.22, 0.36)
+    assert w._pit_edit_road[0] == (0.22, 0.36)
+
+
+def test_first_road_click_seeds_from_entry_end(qapp):
+    w = _pit_edit_ready(qapp)
+    w.pit_edit_phase = "road"
+    w.load_pit_edit([], [], entry=[(0.1, 0.3), (0.2, 0.35)])
+    w._layout_scale = 200.0
+    w._layout_ox = 50.0
+    w._layout_oy = 40.0
+    w._pit_edit_base_scale = 200.0
+    w._pit_edit_base_ox = 50.0
+    w._pit_edit_base_oy = 40.0
+    pos = QPointF(200, 150)
+    w.mousePressEvent(_mouse_event(
+        QEvent.Type.MouseButtonPress, pos, Qt.MouseButton.LeftButton))
+    assert len(w._pit_edit_road) == 2
+    assert w._pit_edit_road[0] == w._pit_edit_entry[-1]

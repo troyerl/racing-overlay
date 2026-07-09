@@ -327,6 +327,7 @@ METRICS: dict = {
     "incidents": ("INC", _f_inc),
     "last_lap": ("LAST", _f_clock("last_lap")),
     "best_lap": ("BEST", _f_clock("best_lap")),
+    "my_session_best": ("SBEST", _f_clock("my_session_best")),
     "cur_lap": ("TIME", _f_clock("cur_lap")),
     "delta": ("DELTA", _f_delta),
     "irating": ("iR", _f_irating),
@@ -360,7 +361,7 @@ METRICS: dict = {
 METRIC_KEYS: list = list(METRICS.keys())
 
 # Time-style metrics hide their text label in the strip (the icon is enough).
-_TIME_KEYS = {"last_lap", "best_lap", "cur_lap"}
+_TIME_KEYS = {"last_lap", "best_lap", "my_session_best", "cur_lap"}
 
 
 def _m_label(key: str) -> str:
@@ -416,6 +417,7 @@ class DashWidget(QWidget):
         prev_discrete = tele.dash_discrete_key(prev) if prev else None
         if (discrete != prev_discrete
                 or tele.dash_easing_moved(prev, data)
+                or tele.dash_live_moved(prev, data)
                 or self._animating):
             self.update()
 

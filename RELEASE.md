@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.61.0 - 2026-07-09
+
+- **Map layout on preset switch.** Switching profiles no longer flashes the map at
+  the wrong size for a moment — layout applies first, the static cache is
+  invalidated, and repaints wait until panel geometry has settled.
+- **Clear pit phase.** Track Scan uses a phase dropdown (Entry / Pit road / Merge
+  with point counts) plus **Clear selected**. Saved pit preview geometry no longer
+  ghosts over what you are editing, and clearing a phase wipes both edit buffers
+  and the live preview.
+- **Entry ↔ pit road link.** Optional yellow entry end and pit road start stay
+  joined (like pit road end and merge start): switching to Pit road seeds from
+  entry, the first road click continues from entry end, and a shared handle drags
+  both points.
+- **My session best lap.** New **My session best** metric for dash slots and
+  standings/relative header/footer — your fastest lap this session
+  (`CarIdxBestLapTime`), distinct from personal best and lobby session best.
+  Slot labels clarify personal best vs session best (lobby).
+
 ## 1.60.9 - 2026-07-08
 
 - **Lower CPU and memory use.** Widgets repaint less often without dropping

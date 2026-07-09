@@ -36,6 +36,38 @@ def test_dash_easing_moved_detects_pedal_change():
     assert tele.dash_easing_moved(prev, nxt)
 
 
+def test_dash_discrete_key_excludes_delta():
+    a = {"gear": 3, "delta": 0.10, "rpm": 5000.0, "throttle": 0.5}
+    b = {"gear": 3, "delta": 0.50, "rpm": 5000.0, "throttle": 0.5}
+    assert tele.dash_discrete_key(a) == tele.dash_discrete_key(b)
+
+
+def test_dash_live_moved_detects_delta_change():
+    prev = {"gear": 3, "delta": 0.10, "rpm": 5000.0, "throttle": 0.5}
+    nxt = {"gear": 3, "delta": 0.11, "rpm": 5000.0, "throttle": 0.5}
+    assert tele.dash_live_moved(prev, nxt)
+
+
+def test_dash_delta_live_moved_triggers_update(qapp):
+    w = DashWidget()
+    updates: list[int] = []
+    orig = w.update
+
+    def counted_update():
+        updates.append(1)
+        orig()
+
+    w.update = counted_update  # type: ignore[method-assign]
+    base = {
+        "gear": 4, "rpm": 6000.0, "throttle": 0.5, "brake": 0.0, "clutch": 0.0,
+        "delta": 0.10,
+    }
+    w.set_data(base)
+    assert len(updates) == 1
+    w.set_data(dict(base, delta=0.11))
+    assert len(updates) == 2
+
+
 def test_dash_set_data_skips_when_only_easing_within_epsilon(qapp):
     w = DashWidget()
     updates: list[int] = []

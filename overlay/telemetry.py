@@ -297,13 +297,14 @@ def fuel_payload_key(data: dict) -> tuple:
 
 
 _DASH_EASE_KEYS = ("rpm", "throttle", "brake", "clutch")
+_DASH_LIVE_KEYS = ("delta", "delta_best", "delta_optimal")
 
 
 def dash_discrete_key(data: dict) -> tuple:
-    """Hashable dash snapshot excluding continuous easing inputs."""
+    """Hashable dash snapshot excluding continuous easing/live inputs."""
     if not data:
         return ()
-    skip = set(_DASH_EASE_KEYS)
+    skip = set(_DASH_EASE_KEYS) | set(_DASH_LIVE_KEYS)
     items = []
     for k, v in sorted(data.items()):
         if k in skip:
@@ -327,6 +328,35 @@ def dash_easing_moved(prev: dict | None, data: dict, eps: float = 0.003) -> bool
         elif a != b:
             return True
     return False
+
+
+def dash_live_moved(prev: dict | None, data: dict, eps: float = 0.005) -> bool:
+    """True when live delta fields moved enough to repaint the dash delta bar."""
+    if not prev:
+        return True
+    for k in _DASH_LIVE_KEYS:
+        a, b = prev.get(k), data.get(k)
+        if a is None and b is None:
+            continue
+        if a is None or b is None:
+            return True
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            if abs(float(a) - float(b)) > eps:
+                return True
+        elif a != b:
+            return True
+    return False
+
+
+def delta_value_moved(prev, new, eps: float = 0.005) -> bool:
+    """True when a standalone delta reading changed meaningfully."""
+    if prev is None and new is None:
+        return False
+    if prev is None or new is None:
+        return True
+    if isinstance(prev, (int, float)) and isinstance(new, (int, float)):
+        return abs(float(prev) - float(new)) > eps
+    return prev != new
 
 
 def _time_centis(v) -> object:

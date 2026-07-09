@@ -99,6 +99,38 @@ def test_delta_bar_pit_hold_returns_none(monkeypatch):
     assert hud.delta_bar_widget.d["delta"] is None
 
 
+def test_update_delta_bar_epsilon_passes_small_change():
+    calls: list[dict] = []
+    widget = type("W", (), {
+        "data": {"delta": 0.10},
+        "_animating": False,
+        "set_data": lambda s, d: calls.append(d),
+    })()
+    hud = _hud(
+        ir=_FakeIR({"LapDeltaToSessionBest": 0.11}),
+        _delta_pit_hold=False,
+        delta_bar_widget=widget,
+    )
+    hud._update_delta_bar()
+    assert calls and abs(calls[-1]["delta"] - 0.11) < 0.001
+
+
+def test_update_delta_bar_none_transition_triggers_set_data():
+    calls: list[dict] = []
+    widget = type("W", (), {
+        "data": {"delta": None},
+        "_animating": False,
+        "set_data": lambda s, d: calls.append(d),
+    })()
+    hud = _hud(
+        ir=_FakeIR({"LapDeltaToSessionBest": 0.25}),
+        _delta_pit_hold=False,
+        delta_bar_widget=widget,
+    )
+    hud._update_delta_bar()
+    assert calls and calls[-1]["delta"] == 0.25
+
+
 def test_needs_sector_timer_dash_and_delta_bar(monkeypatch):
     from overlay import config
     from overlay.app import AdvancedSimHUD
@@ -205,3 +237,15 @@ def test_inputs_shift_gear_changes_in_history():
 
 def test_engine_warning_text_limiter():
     assert "LIM" in tr.engine_warning_text(tr.ENGINE_LIM)
+
+
+def test_my_session_best_slot_value():
+    hud = _hud(ir=_FakeIR({
+        "PlayerCarIdx": 2,
+        "CarIdxBestLapTime": [0.0, 91.2, 88.5, 0.0],
+        "LapBestLapTime": 87.1,
+    }))
+    assert hud._slot_value(
+        "my_session_best", None, None, 2, None, None, 0, "relative") == "1:28.500"
+    assert hud._slot_value(
+        "best_lap", None, None, 2, None, None, 0, "relative") == "1:27.100"

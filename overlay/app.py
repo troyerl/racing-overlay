@@ -539,7 +539,8 @@ class AdvancedSimHUD:
         self._apply_layout()
         self._refresh_visible_widgets()
         self._apply_visibility()
-        self._repaint_all()
+        self.map_widget._invalidate_static_cache()
+        QTimer.singleShot(0, self._repaint_all)
 
     def _on_context_change(self, _ctx) -> None:
         """Swap panels to the race or garage layout for the active preset."""
@@ -548,7 +549,8 @@ class AdvancedSimHUD:
         self._apply_layout(persist_clamps=False)
         self._refresh_visible_widgets()
         self._apply_visibility()
-        self._repaint_all()
+        self.map_widget._invalidate_static_cache()
+        QTimer.singleShot(0, self._repaint_all)
 
     def current_car(self) -> tuple[str, str]:
         """The player's current (car_path, display_name), or ("", "") if unknown.
@@ -930,14 +932,28 @@ class AdvancedSimHUD:
             self._uncheck_sf_edit_toggle()
         self.map_widget.set_pit_edit(
             enabled, self._save_pit_authoring if enabled else None)
-        if enabled:
-            self.map_widget.set_pit_edit_phase(phase)
+        self.map_widget.set_pit_edit_phase(phase)
         if bool(enabled) != was:
             self._set_map_authoring_interactive(enabled)
 
     def clear_pit_edit_phase(self, phase: str) -> None:
         """Clear one pit-edit phase on the map (entry, road, or merge)."""
+        phase = (phase or "road").strip().lower()
         self.map_widget.clear_pit_edit_phase(phase)
+        mw = self.map_widget
+        if phase == "entry":
+            self._pit_in = []
+            mw.set_pit_blends(None, mw.pit_out)
+        elif phase == "road":
+            self._pit_path = []
+            self._pit_out = []
+            mw.set_pit_path(None)
+            mw.set_pit_blends(mw.pit_in, None)
+        elif phase == "merge":
+            self._pit_out = []
+            mw.set_pit_blends(mw.pit_in, None)
+        labels = {"entry": "entry", "road": "pit road", "merge": "merge"}
+        mw.flash_hint(f"Cleared {labels.get(phase, phase)} points")
 
     def _save_pit_authoring(self) -> None:
         """Refresh in-progress pit preview after a handle drag (no file write)."""
@@ -1351,7 +1367,12 @@ class AdvancedSimHUD:
                         or en["leaderboard_strip"] or en["radio_tower"])
         map_use_pos = (en["map"]
                        and config.CFG["map"].get("car_label", "number") == "position")
-        need_pos = need_order or map_use_pos or en["leaderboard_strip"] or en["radio_tower"]
+        delta_mode = config.CFG.get("delta_bar", {}).get("mode")
+        need_leader_last = (delta_mode == "leader_last"
+                            and (en.get("delta_bar")
+                                 or config.CFG.get("dash", {}).get("show_delta_bar")))
+        need_pos = (need_order or map_use_pos or en["leaderboard_strip"]
+                    or en["radio_tower"] or need_leader_last)
         # Each array is only read if some visible widget consumes it.
         positions = None
         self._class_positions = None
@@ -1441,8 +1462,7 @@ class AdvancedSimHUD:
                                                         sections=("relative",))) or \
                 (en["standings"] and config.any_table_column(
                     "last_lap", "qual_best", sections=("standings",))) or \
-                (en["delta_bar"]
-                 and config.CFG["delta_bar"].get("mode") == "leader_last") or \
+                (need_leader_last) or \
                 en["pit_advisor"]:
             self._car_last = self.ir["CarIdxLastLapTime"]
         if (en["relative"] and config.any_table_column("best_lap", "qual_best",
@@ -2561,6 +2581,17 @@ class AdvancedSimHUD:
             return f"{t:.0f}{config.temp_unit()}" if t is not None else "\u2014"
         if key == "best_lap":
             return self._fmt_laptime(ir["LapBestLapTime"])
+        if key == "my_session_best":
+            try:
+                player = int(ir["PlayerCarIdx"])
+                best = ir["CarIdxBestLapTime"]
+                if best and 0 <= player < len(best):
+                    t = best[player]
+                    if t and t > 0:
+                        return self._fmt_laptime(t)
+            except (TypeError, ValueError, KeyError):
+                pass
+            return "\u2014"
         if key == "session_best":
             best = ir["CarIdxBestLapTime"]
             vals = [t for t in best if t and t > 0] if best else []
@@ -4089,6 +4120,17 @@ class AdvancedSimHUD:
             dash_data["last_lap"] = self.ir["LapLastLapTime"]
         if self._dash_uses_metric("best_lap"):
             dash_data["best_lap"] = self.ir["LapBestLapTime"]
+        if self._dash_uses_metric("my_session_best"):
+            try:
+                player = int(self.ir["PlayerCarIdx"])
+                best = self.ir["CarIdxBestLapTime"]
+                if best and 0 <= player < len(best):
+                    t = best[player]
+                    dash_data["my_session_best"] = float(t) if t and t > 0 else None
+                else:
+                    dash_data["my_session_best"] = None
+            except (TypeError, ValueError, KeyError):
+                dash_data["my_session_best"] = None
         if self._dash_uses_metric("cur_lap"):
             dash_data["cur_lap"] = self.ir["LapCurrentLapTime"]
         if self._dash_uses_metric("delta"):
@@ -4290,7 +4332,7 @@ class AdvancedSimHUD:
         delta_val = self._delta_bar_value(positions)
         widget = self.delta_bar_widget
         prev = getattr(widget, "data", None) or {}
-        if (delta_val == prev.get("delta")
+        if (not tele.delta_value_moved(prev.get("delta"), delta_val)
                 and not getattr(widget, "_animating", False)):
             return
         widget.set_data({"delta": delta_val})

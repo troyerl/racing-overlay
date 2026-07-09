@@ -19,6 +19,7 @@ from PyQt6.QtGui import QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from .. import telemetry as tele
 from .chrome import col, draw_card, panel_pad
 from .fonts import data_font_bold, tabfont
 from .formats import signed_delta
@@ -39,8 +40,11 @@ class DeltaBarWidget(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_data(self, data: dict) -> None:
-        self.data = data or {}
-        self.update()
+        data = data or {}
+        prev_delta = (self.data or {}).get("delta")
+        self.data = data
+        if tele.delta_value_moved(prev_delta, data.get("delta")) or self._animating:
+            self.update()
 
     def _cfg(self) -> dict:
         return config.CFG[_SECTION]

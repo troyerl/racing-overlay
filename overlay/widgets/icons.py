@@ -45,6 +45,7 @@ _CODEPOINTS: dict[str, int] = {
     # timing metrics
     "last_lap": 0xF2F2,       # stopwatch
     "best_lap": 0xF091,       # trophy
+    "my_session_best": 0xF2F2,  # stopwatch
     "cur_lap": 0xF2F2,        # stopwatch
     "delta": 0xF252,          # hourglass-half
     "incidents": 0xF071,      # triangle-exclamation
@@ -60,6 +61,7 @@ _CODEPOINTS: dict[str, int] = {
     "session_time": 0xF017,   # clock
     "race_time": 0xF017,      # clock
     "session_best": 0xF091,   # trophy
+    "my_session_best": 0xF2F2,  # stopwatch
     "track_name": 0xF018,     # road
     "local_time": 0xF017,     # clock
     "sim_time": 0xF185,       # sun
