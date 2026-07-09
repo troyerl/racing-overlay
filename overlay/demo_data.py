@@ -694,7 +694,7 @@ class FakeIRSDK:
         if key == "FuelLevelPct":
             return self["FuelLevel"] / 60.0
 
-        if key == "LapDeltaToSessionBest":
+        if key == "LapDeltaToSessionBest" or key == "LapDeltaToSessionBestLap":
             t = time.time() - self._start
             return math.sin(t * 0.6) * 0.45  # gentle +/- swing
 

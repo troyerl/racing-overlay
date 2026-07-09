@@ -51,12 +51,49 @@ def test_delta_bar_leader_last_mode(monkeypatch):
     assert abs(hud.delta_bar_widget.d["delta"] - 3.5) < 0.01
 
 
+def test_read_lap_delta_uses_session_best_lap_key():
+    ir = _FakeIR({"LapDeltaToSessionBestLap": 0.33,
+                  "LapDeltaToSessionBestLap_OK": True})
+    assert abs(tele.read_lap_delta(ir, "session_best") - 0.33) < 0.001
+
+
+def test_read_lap_delta_legacy_alias_still_works():
+    ir = _FakeIR({"LapDeltaToSessionBest": 0.5})
+    assert abs(tele.read_lap_delta(ir, "session_best") - 0.5) < 0.001
+
+
+def test_read_lap_delta_missing_key_returns_none():
+    ir = _FakeIR({"Lap": 1})
+    assert tele.read_lap_delta(ir, "session_best") is None
+
+
+def test_read_lap_delta_ok_false_returns_none():
+    ir = _FakeIR({
+        "LapDeltaToSessionBestLap": 0.5,
+        "LapDeltaToSessionBestLap_OK": False,
+    })
+    assert tele.read_lap_delta(ir, "session_best") is None
+
+
+def test_needs_lap_pct_for_delta(monkeypatch):
+    from overlay import config
+    from overlay.app import AdvancedSimHUD
+
+    monkeypatch.setitem(config.CFG.setdefault("dash", {}), "show_delta_bar", True)
+    en = {"delta_bar": False, "dash": True}
+    assert AdvancedSimHUD._needs_lap_pct_for_delta(en)
+    monkeypatch.setitem(config.CFG["dash"], "show_delta_bar", False)
+    en["delta_bar"] = True
+    assert AdvancedSimHUD._needs_lap_pct_for_delta(en)
+
+
 def test_delta_pit_hold_while_on_pit(monkeypatch):
     from overlay import config
 
     monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 0.5}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 0.5,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=False,
         _delta_was_on_pit=False,
     )
@@ -70,7 +107,8 @@ def test_delta_pit_hold_suppresses_until_sector(monkeypatch):
 
     monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 0.5}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 0.5,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=False,
         _delta_was_on_pit=True,
     )
@@ -87,7 +125,8 @@ def test_pit_hold_clears_on_lap_rollover(monkeypatch):
 
     monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 0.5}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 0.5,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=False,
         _delta_was_on_pit=True,
     )
@@ -124,7 +163,8 @@ def test_resolve_lap_delta_coerces_sdk_scalar(monkeypatch):
 
     monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": _Wrapper(0.42)}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": _Wrapper(0.42),
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=False,
     )
     assert abs(hud._resolve_lap_delta("session_best") - 0.42) < 0.001
@@ -155,7 +195,8 @@ def test_update_delta_bar_feeds_on_first_tick():
         "set_data": lambda s, d: calls.append(d),
     })()
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 0.5}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 0.5,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=True,
         delta_bar_widget=widget,
     )
@@ -168,7 +209,8 @@ def test_delta_bar_pit_hold_returns_none(monkeypatch):
 
     monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 2.0}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 2.0,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=True,
         delta_bar_widget=type("W", (), {
             "data": {"delta": 2.0},
@@ -188,7 +230,8 @@ def test_update_delta_bar_epsilon_passes_small_change():
         "set_data": lambda s, d: calls.append(d),
     })()
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 0.11}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 0.11,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=False,
         delta_bar_widget=widget,
     )
@@ -204,7 +247,8 @@ def test_update_delta_bar_none_transition_triggers_set_data():
         "set_data": lambda s, d: calls.append(d),
     })()
     hud = _hud(
-        ir=_FakeIR({"LapDeltaToSessionBest": 0.25}),
+        ir=_FakeIR({"LapDeltaToSessionBestLap": 0.25,
+                    "LapDeltaToSessionBestLap_OK": True}),
         _delta_pit_hold=False,
         delta_bar_widget=widget,
     )
@@ -243,7 +287,8 @@ def test_dash_delta_bar_without_strip_metric(monkeypatch):
             "Brake": 0.0,
             "Speed": 50.0,
             "Lap": 5,
-            "LapDeltaToSessionBest": 1.23,
+            "LapDeltaToSessionBestLap": 1.23,
+            "LapDeltaToSessionBestLap_OK": True,
         }),
         _delta_pit_hold=False,
         _demo_active=False,

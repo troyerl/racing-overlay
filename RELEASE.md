@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.63.3 - 2026-07-09
+
+- **Fix: live delta bars frozen in test drive.** The overlay read
+  `LapDeltaToSessionBest`, but iRacing exposes `LapDeltaToSessionBestLap` — so
+  both the standalone delta bar and dash strip always showed `--.--` while the
+  in-sim delta worked. A centralized `read_lap_delta()` reader now uses the
+  correct SDK keys, honors `*_OK` validity flags when present, and feeds both
+  widgets.
+- **Lap-% for delta consumers.** `CarIdxLapDistPct` is read whenever a delta bar
+  is enabled (standalone or dash), so pit-hold release and sector timing work
+  even when other widgets are hidden.
+
 ## 1.63.2 - 2026-07-09
 
 - **Fix: delta bars stuck with no time or bar movement.** Pit-hold logic could

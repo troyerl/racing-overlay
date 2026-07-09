@@ -417,6 +417,11 @@ class AdvancedSimHUD:
         return bool(en.get("delta_bar") or dash.get("show_delta_bar"))
 
     @staticmethod
+    def _needs_lap_pct_for_delta(en: dict) -> bool:
+        dash = config.CFG.get("dash", {})
+        return bool(en.get("delta_bar") or dash.get("show_delta_bar"))
+
+    @staticmethod
     def _needs_lap_engine(en: dict) -> bool:
         return en.get("lap_compare") or (
             en.get("dash") and config.dash_metric_in_use("lap_corners"))
@@ -1521,7 +1526,8 @@ class AdvancedSimHUD:
         need_lap_pct = (
             en["radar"] or en["map"] or en["standings"]
             or en["relative"] or self._needs_lap_engine(en)
-            or self._needs_sector_timer(en))
+            or self._needs_sector_timer(en)
+            or self._needs_lap_pct_for_delta(en))
         lap_pct = self.ir["CarIdxLapDistPct"] if need_lap_pct else None
         # Used by the tables to tell genuine lapped traffic from same-lap cars.
         self._lap_pct = lap_pct
@@ -4392,7 +4398,7 @@ class AdvancedSimHUD:
         if self._dash_uses_metric("cur_lap"):
             dash_data["cur_lap"] = self.ir["LapCurrentLapTime"]
         if self._dash_uses_metric("delta"):
-            dash_data["delta"] = self.ir["LapDeltaToSessionBest"]
+            dash_data["delta"] = tele.read_lap_delta(self.ir, "session_best")
         if config.CFG.get("dash", {}).get("show_delta_bar"):
             dash_data["delta"] = self._delta_bar_value(positions)
         if irating is not None:
@@ -4421,9 +4427,9 @@ class AdvancedSimHUD:
         if self._dash_uses_metric("fuel_burn"):
             dash_data["fuel_burn"] = self.ir["FuelUsePerHour"]
         if self._dash_uses_metric("delta_best"):
-            dash_data["delta_best"] = self.ir["LapDeltaToBestLap"]
+            dash_data["delta_best"] = tele.read_lap_delta(self.ir, "best_lap")
         if self._dash_uses_metric("delta_optimal"):
-            dash_data["delta_optimal"] = self.ir["LapDeltaToOptimalLap"]
+            dash_data["delta_optimal"] = tele.read_lap_delta(self.ir, "optimal")
         if self._dash_uses_metric("time_remain"):
             dash_data["time_remain"] = self._session_time_remain()
         if self._dash_uses_metric("class_pos") and player is not None:
@@ -4609,11 +4615,7 @@ class AdvancedSimHUD:
                 if (leader_last and leader_last > 0 and cur and cur > 0):
                     return cur - leader_last
             return None
-        key = {"session_best": "LapDeltaToSessionBest",
-               "best_lap": "LapDeltaToBestLap",
-               "optimal": "LapDeltaToOptimalLap"}.get(
-                   mode, "LapDeltaToSessionBest")
-        return self._ir_float(key)
+        return tele.read_lap_delta(self.ir, mode)
 
     def _delta_bar_value(self, positions=None) -> float | None:
         if self._delta_pit_hold:

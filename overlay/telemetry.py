@@ -363,6 +363,50 @@ def as_float(val) -> float | None:
     return f
 
 
+DELTA_VARS: dict[str, tuple[str, ...]] = {
+    "session_best": ("LapDeltaToSessionBestLap", "LapDeltaToSessionBest"),
+    "best_lap": ("LapDeltaToBestLap",),
+    "optimal": ("LapDeltaToOptimalLap", "LapDeltaToSessionOptimalLap"),
+}
+
+DELTA_OK_VARS: dict[str, str] = {
+    "LapDeltaToSessionBestLap": "LapDeltaToSessionBestLap_OK",
+    "LapDeltaToSessionBest": "LapDeltaToSessionBestLap_OK",
+    "LapDeltaToBestLap": "LapDeltaToBestLap_OK",
+    "LapDeltaToOptimalLap": "LapDeltaToOptimalLap_OK",
+    "LapDeltaToSessionOptimalLap": "LapDeltaToSessionOptimalLap_OK",
+}
+
+
+def _delta_ok(ir, value_key: str) -> bool:
+    ok_key = DELTA_OK_VARS.get(value_key)
+    if ok_key is None:
+        return True
+    try:
+        ok = ir[ok_key]
+    except (TypeError, ValueError, KeyError):
+        return True
+    if ok is None:
+        return True
+    return bool(ok)
+
+
+def read_lap_delta(ir, mode: str) -> float | None:
+    """Read whole-lap delta from iRacing SDK (session/best/optimal modes)."""
+    keys = DELTA_VARS.get(mode, DELTA_VARS["session_best"])
+    for key in keys:
+        try:
+            raw = ir[key]
+        except (TypeError, ValueError, KeyError):
+            continue
+        if not _delta_ok(ir, key):
+            return None
+        val = as_float(raw)
+        if val is not None:
+            return val
+    return None
+
+
 def delta_value_moved(prev, new, eps: float = 0.005) -> bool:
     """True when a standalone delta reading changed meaningfully."""
     if prev is None and new is None:
