@@ -67,8 +67,12 @@ def parse_track_id_from_html(
     *,
     html_path: str | None = None,
     html_text: str | None = None,
+    regex_only: bool = False,
 ) -> int | None:
-    """Read iRacing TrackID from a members page ``id=\"track-map-123\"`` wrapper."""
+    """Read iRacing TrackID from a members page ``id=\"track-map-123\"`` wrapper.
+
+    When ``regex_only`` is True, skip BeautifulSoup (fast path for file browse).
+    """
     if html_text is None:
         if not html_path:
             return None
@@ -77,6 +81,9 @@ def parse_track_id_from_html(
     m = _TRACK_MAP_ID_ATTR_RE.search(html_text)
     if m:
         return int(m.group(1))
+
+    if regex_only:
+        return None
 
     try:
         _require_v2_deps()

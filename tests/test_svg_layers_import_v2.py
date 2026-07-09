@@ -145,6 +145,15 @@ def test_v2_parse_track_id_from_html():
     assert parse_track_id_from_html(html_text=_fixture("compound_oval.html")) is None
 
 
+def test_v2_parse_track_id_regex_only():
+    from tools.svg_layers_to_track_v2 import parse_track_id_from_html
+
+    assert parse_track_id_from_html(
+        html_text=_fixture("rudskogen_pit.html"), regex_only=True) == 451
+    assert parse_track_id_from_html(
+        html_text=_fixture("compound_oval.html"), regex_only=True) is None
+
+
 def test_v2_chicagoland_sf_direction_and_turn_labels():
     from bs4 import BeautifulSoup
 

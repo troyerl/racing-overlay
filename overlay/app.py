@@ -814,8 +814,10 @@ class AdvancedSimHUD:
             self.map_widget.flash_hint("Could not save corner labels")
         return ok
 
-    def import_loop_v2(self, html_path: str) -> tuple[bool, str]:
-        """Import racing loop from members HTML (v2); pit drawn manually on map."""
+    def parse_loop_v2(
+        self, html_path: str,
+    ) -> tuple[bool, str, dict | None, int | None]:
+        """Thread-safe: parse members HTML into a loop doc (no Qt widgets)."""
         try:
             from tools.svg_layers_to_track_v2 import (
                 import_track_source_v2,
@@ -833,7 +835,7 @@ class AdvancedSimHUD:
             else:
                 msg = ("Missing HTML import deps — run: pip install -r requirements.txt")
             log.warning("v2 loop import failed: %s (%s)", msg, exc)
-            return False, msg
+            return False, msg, None, None
 
         tid = parse_track_id_from_html(html_path=html_path)
         if tid is None:
@@ -842,7 +844,7 @@ class AdvancedSimHUD:
             msg = ("No TrackID — save members HTML with id=\"track-map-123\" "
                    "(outer track-map div), or join a track in iRacing.")
             log.warning("v2 loop import skipped: %s", msg)
-            return False, msg
+            return False, msg, None, None
 
         try:
             doc = import_track_source_v2(
@@ -853,8 +855,14 @@ class AdvancedSimHUD:
             log.exception("v2 loop import failed")
             msg = str(exc)
             log.warning("v2 loop import failed: %s", msg)
-            return False, msg
+            return False, msg, None, None
 
+        return True, "", doc, tid
+
+    def apply_loop_v2_import(
+        self, doc: dict, tid: int, html_path: str,
+    ) -> tuple[bool, str]:
+        """GUI thread: load a parsed loop doc onto the map."""
         stem = os.path.splitext(os.path.basename(html_path))[0]
         self._v2_authoring_track_id = tid
         self._v2_authoring_name = stem or str(tid)
@@ -865,6 +873,13 @@ class AdvancedSimHUD:
                f"Save loop to upload now, or draw pit road + merge and Save track.")
         log.info("v2 loop import OK for TrackID %s (%d pts)", tid, n)
         return True, msg
+
+    def import_loop_v2(self, html_path: str) -> tuple[bool, str]:
+        """Import racing loop from members HTML (v2); pit drawn manually on map."""
+        ok, msg, doc, tid = self.parse_loop_v2(html_path)
+        if not ok:
+            return False, msg
+        return self.apply_loop_v2_import(doc, tid, html_path)
 
     def _apply_loop_v2_doc(self, doc: dict) -> None:
         """Load loop-only v2 import onto the map; clear pit for manual authoring."""

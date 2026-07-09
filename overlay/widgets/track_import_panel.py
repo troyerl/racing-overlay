@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -21,7 +22,7 @@ from PyQt6.QtWidgets import (
 def _parse_html_track_id(path: str) -> int | None:
     try:
         from tools.svg_layers_to_track_v2 import parse_track_id_from_html
-        return parse_track_id_from_html(html_path=path)
+        return parse_track_id_from_html(html_path=path, regex_only=True)
     except ImportError:
         return None
     except (OSError, ValueError):
@@ -40,6 +41,7 @@ class TrackImportV2Panel(QFrame):
         self._overlay = overlay
         self._html_path: str | None = None
         self._html_track_id: int | None = None
+        self._import_busy = False
 
         v = QVBoxLayout(self)
         v.setContentsMargins(15, 11, 15, 12)
@@ -173,11 +175,11 @@ class TrackImportV2Panel(QFrame):
         self._path_lbl = QLabel("No HTML file chosen")
         self._path_lbl.setObjectName("enableHint")
         self._path_lbl.setWordWrap(True)
-        browse = QPushButton("Choose HTML…")
-        browse.setCursor(Qt.CursorShape.PointingHandCursor)
-        browse.clicked.connect(self._browse)
+        self._browse_btn = QPushButton("Choose HTML…")
+        self._browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._browse_btn.clicked.connect(self._browse)
         row.addWidget(self._path_lbl, 1)
-        row.addWidget(browse, 0)
+        row.addWidget(self._browse_btn, 0)
         v.addLayout(row)
 
         self._import_btn = QPushButton("Import loop")
@@ -232,10 +234,18 @@ class TrackImportV2Panel(QFrame):
                 "No track-map-### id in HTML — save the outer members "
                 "track-map div from DevTools.")
             return
-        self._report(f"Importing {os.path.basename(path)}…", flash=False)
-        self._import_loop()
+        self._report(
+            f"Ready — click Import loop to load {os.path.basename(path)}.",
+            flash=False)
+
+    def _set_import_busy(self, busy: bool) -> None:
+        self._import_busy = busy
+        self._browse_btn.setEnabled(not busy)
+        self._import_btn.setEnabled(not busy and self._can_import())
 
     def _import_loop(self) -> None:
+        if self._import_busy:
+            return
         if not self._html_path:
             self._report("Choose an HTML file first.")
             return
@@ -248,20 +258,38 @@ class TrackImportV2Panel(QFrame):
             return
 
         path = self._html_path
+        self._set_import_busy(True)
+        self._report(f"Importing {os.path.basename(path)}…", flash=False)
 
-        def _run() -> None:
+        def _worker() -> None:
             try:
-                ok, msg = self._overlay.import_loop_v2(path)
+                ok, msg, doc, tid = self._overlay.parse_loop_v2(path)
             except Exception as exc:
-                ok, msg = False, str(exc)
-            self._status.setText(msg)
-            self.notified.emit(msg if msg else ("Import failed" if not ok else ""))
-            if ok:
-                self.saved.emit(msg)
-                self._sync_from_overlay()
-            self.refresh()
+                QTimer.singleShot(0, lambda: self._finish_import(False, str(exc)))
+                return
+            if not ok:
+                QTimer.singleShot(0, lambda m=msg: self._finish_import(False, m))
+                return
+            QTimer.singleShot(
+                0, lambda d=doc, t=tid, p=path: self._apply_import(d, t, p))
 
-        QTimer.singleShot(0, _run)
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _apply_import(self, doc: dict, tid: int, path: str) -> None:
+        try:
+            ok, msg = self._overlay.apply_loop_v2_import(doc, tid, path)
+        except Exception as exc:
+            ok, msg = False, str(exc)
+        self._finish_import(ok, msg)
+
+    def _finish_import(self, ok: bool, msg: str) -> None:
+        self._set_import_busy(False)
+        self._status.setText(msg)
+        self.notified.emit(msg if msg else ("Import failed" if not ok else ""))
+        if ok:
+            self.saved.emit(msg)
+            self._sync_from_overlay()
+        self.refresh()
 
     def _current_phase(self) -> str:
         if self._entry_btn.isChecked():
@@ -485,7 +513,10 @@ class TrackImportV2Panel(QFrame):
         in_sim = bool(state.get("in_sim"))
         has_saved_pit = bool(state.get("has_saved_pit"))
 
-        self._import_btn.setEnabled(self._can_import())
+        self._import_btn.setEnabled(
+            not self._import_busy and self._can_import())
+        if hasattr(self, "_browse_btn"):
+            self._browse_btn.setEnabled(not self._import_busy)
         edit_enabled = has_loop
         self._pit_edit_sw.setEnabled(edit_enabled)
         self._entry_btn.setEnabled(edit_enabled)
