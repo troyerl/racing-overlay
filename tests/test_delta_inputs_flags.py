@@ -82,6 +82,87 @@ def test_delta_pit_hold_suppresses_until_sector(monkeypatch):
     assert abs(hud._delta_bar_value() - 0.5) < 0.01
 
 
+def test_pit_hold_clears_on_lap_rollover(monkeypatch):
+    from overlay import config
+
+    monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
+    hud = _hud(
+        ir=_FakeIR({"LapDeltaToSessionBest": 0.5}),
+        _delta_pit_hold=False,
+        _delta_was_on_pit=True,
+    )
+    hud._track_delta_pit_hold(False, 2, 2)
+    assert hud._delta_pit_hold
+    assert hud._delta_bar_value() is None
+    hud._track_delta_pit_hold(False, 2, 0, lap_rolled=True)
+    assert not hud._delta_pit_hold
+    assert abs(hud._delta_bar_value() - 0.5) < 0.01
+
+
+def test_as_float_coerces_numeric_wrappers():
+    class _Wrapper:
+        def __init__(self, v):
+            self._v = v
+
+        def __float__(self):
+            return self._v
+
+    assert tele.as_float(_Wrapper(1.25)) == 1.25
+    assert tele.as_float("2.5") == 2.5
+    assert tele.as_float(float("nan")) is None
+
+
+def test_resolve_lap_delta_coerces_sdk_scalar(monkeypatch):
+    from overlay import config
+
+    class _Wrapper:
+        def __init__(self, v):
+            self._v = v
+
+        def __float__(self):
+            return self._v
+
+    monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "session_best")
+    hud = _hud(
+        ir=_FakeIR({"LapDeltaToSessionBest": _Wrapper(0.42)}),
+        _delta_pit_hold=False,
+    )
+    assert abs(hud._resolve_lap_delta("session_best") - 0.42) < 0.001
+
+
+def test_last_lap_mode_without_laptime_log(monkeypatch):
+    from overlay import config
+
+    monkeypatch.setitem(config.CFG.setdefault("delta_bar", {}), "mode", "last_lap")
+    widget = type("W", (), {"set_data": lambda s, d: setattr(s, "d", d)})()
+    hud = _hud(
+        ir=_FakeIR({"Lap": 4, "LapLastLapTime": 92.5, "LapCurrentLapTime": 95.0}),
+        _delta_prev_lap=3,
+        _delta_pit_hold=False,
+        delta_bar_widget=widget,
+    )
+    hud._update_delta_last_lap_ref()
+    assert hud._delta_last_lap_time == 92.5
+    hud._update_delta_bar()
+    assert abs(widget.d["delta"] - 2.5) < 0.01
+
+
+def test_update_delta_bar_feeds_on_first_tick():
+    calls: list[dict] = []
+    widget = type("W", (), {
+        "data": {},
+        "_animating": False,
+        "set_data": lambda s, d: calls.append(d),
+    })()
+    hud = _hud(
+        ir=_FakeIR({"LapDeltaToSessionBest": 0.5}),
+        _delta_pit_hold=True,
+        delta_bar_widget=widget,
+    )
+    hud._update_delta_bar()
+    assert calls == [{"delta": None}]
+
+
 def test_delta_bar_pit_hold_returns_none(monkeypatch):
     from overlay import config
 

@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.63.2 - 2026-07-09
+
+- **Fix: delta bars stuck with no time or bar movement.** Pit-hold logic could
+  stay latched after leaving pit road (especially late in a lap), keeping both
+  the standalone delta bar and the dash strip at `--.--` / empty. Hold now
+  clears on lap rollover and after a safety timeout off pit road.
+- **Delta telemetry hardening.** SDK delta values are coerced via `as_float()`
+  so pyirsdk/numpy scalars are not rejected as invalid.
+- **`last_lap` mode without laptime log.** Last-lap reference time is tracked
+  whenever the delta bar is active, not only when the laptime log widget is shown.
+
 ## 1.63.1 - 2026-07-09
 
 - **Fix: map car dots missing.** Dual-pit-lane added a 13th field to each car

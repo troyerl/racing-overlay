@@ -262,6 +262,7 @@ class AdvancedSimHUD:
         self._delta_prev_lap: int | None = None
         self._delta_pit_hold: bool = False
         self._delta_was_on_pit: bool = False
+        self._delta_pit_hold_since: float | None = None
         self._lap_wetness_start: float | None = None
         self._weather_track_hist: deque | None = None
         self._weather_sample_counter = 0
@@ -407,6 +408,13 @@ class AdvancedSimHUD:
             or (en.get("laptime_log") and config.laptime_log_has_column("sectors"))
             or (en.get("map") and scfg.get("highlight_active_sector_on_map"))
         )
+
+    @staticmethod
+    def _needs_delta_last_lap_ref(en: dict) -> bool:
+        if config.CFG.get("delta_bar", {}).get("mode") != "last_lap":
+            return False
+        dash = config.CFG.get("dash", {})
+        return bool(en.get("delta_bar") or dash.get("show_delta_bar"))
 
     @staticmethod
     def _needs_lap_engine(en: dict) -> bool:
@@ -1569,6 +1577,7 @@ class AdvancedSimHUD:
             self._delta_prev_lap = None
             self._delta_pit_hold = False
             self._delta_was_on_pit = False
+            self._delta_pit_hold_since = None
             self._sector_timer.reset_session()
             self._ll_personal_best = None
             self._clear_weather_hist()
@@ -1673,6 +1682,8 @@ class AdvancedSimHUD:
             if self._needs_sector_timer(en):
                 self._tick_stage = "sector_timer"
                 self._advance_sector_timer(player, lap_pct)
+            if self._needs_delta_last_lap_ref(en):
+                self._update_delta_last_lap_ref()
             if en["dash"]:
                 self._tick_stage = "dash"
                 self._update_dash(player, positions, car_lap)
@@ -4524,28 +4535,65 @@ class AdvancedSimHUD:
 
     # --- delta bar / flags / pit service / sector timing -------------------
 
+    _DELTA_PIT_HOLD_TIMEOUT_SEC = 45.0
+
+    def _ir_float(self, key: str) -> float | None:
+        try:
+            return tele.as_float(self.ir[key])
+        except (TypeError, ValueError, KeyError):
+            return None
+
+    def _update_delta_last_lap_ref(self) -> None:
+        """Track last completed lap time for delta_bar last_lap mode."""
+        try:
+            lap = int(self.ir["Lap"])
+        except (TypeError, ValueError, KeyError):
+            return
+        if self._delta_prev_lap is None:
+            self._delta_prev_lap = lap
+            return
+        if lap > self._delta_prev_lap:
+            last = self._player_last_lap_time()
+            if last is not None:
+                self._delta_last_lap_time = last
+            self._delta_prev_lap = lap
+        elif lap < self._delta_prev_lap:
+            self._delta_prev_lap = lap
+
     def _track_delta_pit_hold(self, on_pit: bool, sector_idx_before: int,
-                              sector_idx_after: int) -> None:
+                              sector_idx_after: int, *,
+                              lap_rolled: bool = False) -> None:
         """Suppress live delta on pit road and until first sector after exit."""
         if on_pit:
             self._delta_pit_hold = True
             self._delta_was_on_pit = True
+            self._delta_pit_hold_since = None
         elif self._delta_was_on_pit:
             self._delta_pit_hold = True
             self._delta_was_on_pit = False
-        if self._delta_pit_hold and sector_idx_after > sector_idx_before:
-            self._delta_pit_hold = False
+            self._delta_pit_hold_since = time.time()
+        if self._delta_pit_hold:
+            if sector_idx_after > sector_idx_before:
+                self._delta_pit_hold = False
+                self._delta_pit_hold_since = None
+            elif lap_rolled and not on_pit:
+                self._delta_pit_hold = False
+                self._delta_pit_hold_since = None
+            elif (not on_pit and self._delta_pit_hold_since is not None
+                  and time.time() - self._delta_pit_hold_since
+                  > self._DELTA_PIT_HOLD_TIMEOUT_SEC):
+                self._delta_pit_hold = False
+                self._delta_pit_hold_since = None
 
     def _resolve_lap_delta(self, mode: str, positions=None) -> float | None:
         """Whole-lap delta for the configured reference mode."""
-        delta = None
         if mode == "last_lap":
-            cur = self.ir["LapCurrentLapTime"]
-            if (isinstance(cur, (int, float)) and cur > 0
-                    and isinstance(self._delta_last_lap_time, (int, float))
-                    and self._delta_last_lap_time > 0):
-                delta = cur - self._delta_last_lap_time
-        elif mode == "leader_last":
+            cur = self._ir_float("LapCurrentLapTime")
+            ref = tele.as_float(self._delta_last_lap_time)
+            if cur and cur > 0 and ref and ref > 0:
+                return cur - ref
+            return None
+        if mode == "leader_last":
             leader_idx = None
             if positions:
                 for idx, pos in enumerate(positions):
@@ -4554,19 +4602,18 @@ class AdvancedSimHUD:
                         break
             if leader_idx is not None:
                 times = self._car_last
-                cur = self.ir["LapCurrentLapTime"]
-                if (times and leader_idx < len(times)
-                        and isinstance(times[leader_idx], (int, float))
-                        and times[leader_idx] > 0
-                        and isinstance(cur, (int, float)) and cur > 0):
-                    delta = cur - times[leader_idx]
-        else:
-            key = {"session_best": "LapDeltaToSessionBest",
-                   "best_lap": "LapDeltaToBestLap",
-                   "optimal": "LapDeltaToOptimalLap"}.get(
-                       mode, "LapDeltaToSessionBest")
-            delta = self.ir[key]
-        return delta if isinstance(delta, (int, float)) else None
+                cur = self._ir_float("LapCurrentLapTime")
+                leader_last = None
+                if times and leader_idx < len(times):
+                    leader_last = tele.as_float(times[leader_idx])
+                if (leader_last and leader_last > 0 and cur and cur > 0):
+                    return cur - leader_last
+            return None
+        key = {"session_best": "LapDeltaToSessionBest",
+               "best_lap": "LapDeltaToBestLap",
+               "optimal": "LapDeltaToOptimalLap"}.get(
+                   mode, "LapDeltaToSessionBest")
+        return self._ir_float(key)
 
     def _delta_bar_value(self, positions=None) -> float | None:
         if self._delta_pit_hold:
@@ -4579,10 +4626,11 @@ class AdvancedSimHUD:
         delta_val = self._delta_bar_value(positions)
         widget = self.delta_bar_widget
         prev = getattr(widget, "data", None) or {}
-        if (not tele.delta_value_moved(prev.get("delta"), delta_val)
-                and not getattr(widget, "_animating", False)):
-            return
-        widget.set_data({"delta": delta_val})
+        never_fed = not prev
+        if (never_fed
+                or tele.delta_value_moved(prev.get("delta"), delta_val)
+                or getattr(widget, "_animating", False)):
+            widget.set_data({"delta": delta_val})
 
     def _update_flags(self, player=None, positions=None, est_time=None,
                       lap_est=0.0, drivers=None) -> None:
@@ -4628,17 +4676,23 @@ class AdvancedSimHUD:
         """Advance sector splits from lap distance (no widget paint)."""
         self._sector_timer.set_boundaries(self._sector_starts())
         prev_idx = self._sector_timer.idx
+        prev_pct = self._sector_timer._prev_pct
         pct = None
         if (isinstance(lap_pct, (list, tuple)) and isinstance(player, int)
                 and 0 <= player < len(lap_pct)):
             pct = lap_pct[player]
         self._sector_timer.update(pct, self.ir["LapCurrentLapTime"],
                                   self.ir["LapLastLapTime"])
+        lap_rolled = (
+            isinstance(pct, (int, float)) and pct >= 0
+            and prev_pct is not None and pct + 0.5 < prev_pct
+        )
         try:
             on_pit = bool(self.ir["OnPitRoad"])
         except (TypeError, ValueError, KeyError):
             on_pit = False
-        self._track_delta_pit_hold(on_pit, prev_idx, self._sector_timer.idx)
+        self._track_delta_pit_hold(
+            on_pit, prev_idx, self._sector_timer.idx, lap_rolled=lap_rolled)
         scfg = config.CFG.get("sector_timing", {})
         if (scfg.get("highlight_active_sector_on_map", False)
                 and self._visible_widgets.get("map") and self._sector_timer.starts):

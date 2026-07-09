@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from . import config
 
 TIRE_CORNERS = (
@@ -346,6 +348,19 @@ def dash_live_moved(prev: dict | None, data: dict, eps: float = 0.005) -> bool:
         elif a != b:
             return True
     return False
+
+
+def as_float(val) -> float | None:
+    """Coerce iRacing/pyirsdk scalars to a finite float, or None."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(f) or math.isinf(f):
+        return None
+    return f
 
 
 def delta_value_moved(prev, new, eps: float = 0.005) -> bool:
