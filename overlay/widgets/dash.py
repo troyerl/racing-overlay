@@ -360,13 +360,17 @@ METRICS: dict = {
 # Order used to populate dropdowns in the settings editor.
 METRIC_KEYS: list = list(METRICS.keys())
 
-# Time-style metrics hide their text label in the strip (the icon is enough).
-_TIME_KEYS = {"last_lap", "best_lap", "my_session_best", "cur_lap"}
-
 
 def _m_label(key: str) -> str:
     lbl = METRICS.get(key, METRICS["none"])[0]
     return lbl() if callable(lbl) else lbl
+
+
+def _display_label(key: str) -> str:
+    """Text label for a metric, or empty when an icon replaces it."""
+    if icons.glyph(key):
+        return ""
+    return _m_label(key)
 
 
 def _m_value(key: str, d: dict):
@@ -376,7 +380,14 @@ def _m_value(key: str, d: dict):
 def _m_lines(key: str, d: dict) -> list:
     """Stacked rows for cell rendering: [(sub-label, value), ...]."""
     v = _m_value(key, d)
-    return v if isinstance(v, list) else [(_m_label(key), v)]
+    if isinstance(v, list):
+        # Drop a redundant metric-name row label when the icon already names it.
+        metric_lbl = _m_label(key)
+        if (icons.glyph(key) and v and metric_lbl
+                and str(v[0][0]).upper() == str(metric_lbl).upper()):
+            return [("", v[0][1]), *v[1:]]
+        return v
+    return [(_display_label(key), v)]
 
 
 def _m_str(key: str, d: dict) -> str:
@@ -853,11 +864,11 @@ class DashWidget(QWidget):
         show_l = left_key not in (None, "none")
         show_r = right_key not in (None, "none")
 
-        # left = small group (icon + label + value); right = icon + label + value.
-        l_lbl = _m_label(left_key) if show_l else ""
+        # left = icon + value (label only if no icon); right same.
+        l_lbl = _display_label(left_key) if show_l else ""
         l_val = _m_str(left_key, d) if show_l and left_key != "irating" else ""
         l_glyph = icons.glyph(left_key) if show_l else ""
-        r_lbl = _m_label(right_key) if show_r else ""
+        r_lbl = _display_label(right_key) if show_r else ""
         r_val = _m_str(right_key, d) if show_r and right_key != "irating" else ""
         r_glyph = icons.glyph(right_key) if show_r else ""
 
@@ -1307,7 +1318,7 @@ class DashWidget(QWidget):
         lbl_f = self._lbl_font(sh * 0.34)
         gap = sh * 0.18
         for i, key in enumerate(items):
-            label = "" if key in _TIME_KEYS else _m_label(key)
+            label = _display_label(key)
             glyph = icons.glyph(key)
             if key == "irating":
                 val_px = sh * 0.34

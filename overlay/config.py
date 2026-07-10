@@ -467,9 +467,11 @@ DEFAULTS: dict = {
         "flag_pulse_seconds": 1.5,
         "flag_blink_hz": 2.5,
         # A thin horizontal delta bar across the top (faster = green to the
-        # right, slower = red to the left). delta_bar_range is the seconds at
+        # right, slower = red to the left). delta_bar_mode is independent of
+        # the standalone Delta Bar widget. delta_bar_range is the seconds at
         # full deflection.
         "show_delta_bar": False,
+        "delta_bar_mode": "session_best",
         "delta_bar_range": 1.0,
         # Every content slot below picks any metric (or "none" to hide it):
         # speed, rpm, gear, position, car_number, lap_count, laps_left, lap, fuel,
@@ -776,9 +778,10 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         "asphalt_width": 12,
         "outline_width": 6,
-        # Car dot size. 0.05 is the default size; raise/lower to scale every car
-        # dot (and the player's glow ring) up or down proportionally.
+        # Car dot sizes. 0.05 is the default; raise/lower to scale. Player and
+        # field cars are independent (player glow follows player size).
         "dot_radius_frac": 0.05,
+        "other_dot_radius_frac": 0.05,
         "show_infield": True,
         "show_corners": True,
         # Auto-number corners from the track shape when the track file has no

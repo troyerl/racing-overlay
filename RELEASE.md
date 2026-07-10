@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.64.0 - 2026-07-10
+
+- **Dash delta reference (independent).** Dash settings gain a Reference lap
+  control (`delta_bar_mode`) for the dash delta bar and delta metric slot,
+  separate from the standalone Delta Bar widget.
+- **Dash metric icons.** Metrics that used text labels (RPM, OIL, AHD, etc.)
+  now show Font Awesome icons instead; numeric values stay.
+- **Fuel calc labels.** Stats grid rows are MAX/MIN (was HIGH/LOW); USAGE and
+  REFUEL headers and cell values no longer append Gal/L (gauge/add box still
+  show units).
+- **Smoother map and tables with large fields.** Map car labels and layout
+  work are cheaper at ~40 cars; animation repaints are capped ~30 Hz. Dense
+  standings/relative tables snap sooner and ease faster.
+- **Independent other-car map dots.** New Other cars dot size slider; My car
+  dot size only affects you.
+
 ## 1.63.3 - 2026-07-09
 
 - **Fix: live delta bars frozen in test drive.** The overlay read

@@ -405,21 +405,33 @@ class AdvancedSimHUD:
             en.get("sector_timing")
             or en.get("delta_bar")
             or dash.get("show_delta_bar")
+            or (en.get("dash") and config.dash_metric_in_use("delta"))
             or (en.get("laptime_log") and config.laptime_log_has_column("sectors"))
             or (en.get("map") and scfg.get("highlight_active_sector_on_map"))
         )
 
     @staticmethod
     def _needs_delta_last_lap_ref(en: dict) -> bool:
-        if config.CFG.get("delta_bar", {}).get("mode") != "last_lap":
-            return False
         dash = config.CFG.get("dash", {})
-        return bool(en.get("delta_bar") or dash.get("show_delta_bar"))
+        dash_wants = (
+            (dash.get("show_delta_bar")
+             or config.dash_metric_in_use("delta"))
+            and dash.get("delta_bar_mode", "session_best") == "last_lap"
+        )
+        bar_wants = (
+            en.get("delta_bar")
+            and config.CFG.get("delta_bar", {}).get("mode") == "last_lap"
+        )
+        return bool(dash_wants or bar_wants)
 
     @staticmethod
     def _needs_lap_pct_for_delta(en: dict) -> bool:
         dash = config.CFG.get("dash", {})
-        return bool(en.get("delta_bar") or dash.get("show_delta_bar"))
+        return bool(
+            en.get("delta_bar")
+            or dash.get("show_delta_bar")
+            or (en.get("dash") and config.dash_metric_in_use("delta"))
+        )
 
     @staticmethod
     def _needs_lap_engine(en: dict) -> bool:
@@ -4397,10 +4409,20 @@ class AdvancedSimHUD:
                 dash_data["my_session_best"] = None
         if self._dash_uses_metric("cur_lap"):
             dash_data["cur_lap"] = self.ir["LapCurrentLapTime"]
+        dash_cfg = config.CFG.get("dash", {})
+        dash_delta_mode = dash_cfg.get("delta_bar_mode", "session_best")
         if self._dash_uses_metric("delta"):
-            dash_data["delta"] = tele.read_lap_delta(self.ir, "session_best")
-        if config.CFG.get("dash", {}).get("show_delta_bar"):
-            dash_data["delta"] = self._delta_bar_value(positions)
+            if self._delta_pit_hold:
+                dash_data["delta"] = None
+            else:
+                dash_data["delta"] = self._resolve_lap_delta(
+                    dash_delta_mode, positions)
+        if dash_cfg.get("show_delta_bar"):
+            if self._delta_pit_hold:
+                dash_data["delta"] = None
+            else:
+                dash_data["delta"] = self._resolve_lap_delta(
+                    dash_delta_mode, positions)
         if irating is not None:
             dash_data["irating"] = irating
         if irating_delta is not None:

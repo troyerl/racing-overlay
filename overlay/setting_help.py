@@ -149,8 +149,10 @@ HELP_OVERRIDES: dict[str, str] = {
     "90° steps. Does not rotate the wind compass.",
     "map.mirror": "Flips the map horizontally. Useful when the imported track "
     "orientation does not match your preference.",
-    "map.dot_radius_frac": "Car dot size relative to the map panel. "
-    "Raise to enlarge all car markers.",
+    "map.dot_radius_frac": "Your car's dot size relative to the map panel. "
+    "Does not change other cars.",
+    "map.other_dot_radius_frac": "Other cars' (and pace car) dot size relative "
+    "to the map panel. Does not change your car.",
     "map.show_infield": "Fills the area inside the track loop with the infield color.",
     "map.show_corners": "Shows numbered corner labels on the track map.",
     "map.auto_corners": "Auto-detects corners from track shape when the file "
@@ -233,8 +235,8 @@ HELP_OVERRIDES: dict[str, str] = {
     "fuel_calc.show_title": "When on, shows the title bar across the top. When off, hides it.",
     "fuel_calc.show_pill": "When on, shows the pit-window open/closed status pill. When off, hides it.",
     "fuel_calc.show_add": "When on, shows the large fuel-to-add box. When off, hides it.",
-    "fuel_calc.show_stats": "When on, shows the AVG/HIGH/LOW burn grid (HIGH = "
-    "worst burn, LOW = best economy). When off, hides it.",
+    "fuel_calc.show_stats": "When on, shows the AVG/MAX/MIN burn grid (MAX = "
+    "worst burn, MIN = best economy). When off, hides it.",
     "fuel_calc.show_time": "When on, shows the time-until-empty summary box. When off, hides it.",
     "fuel_calc.show_laps": "When on, shows the laps-until-empty summary box. When off, hides it.",
     "fuel_calc.show_live_burn": "When on, shows live fuel burn rate. When off, uses lap averages only.",
@@ -277,6 +279,7 @@ HELP_OVERRIDES: dict[str, str] = {
     "dash.flag_pulse_seconds": "How long the flag banner pulses when a new flag appears (seconds).",
     "dash.flag_blink_hz": "Flash rate (Hz) for flag pulse and green-flag wave.",
     "dash.show_delta_bar": "When on, shows the thin live delta bar across the top of the dash. Live delta on the out lap begins at the first sector line after leaving pits.",
+    "dash.delta_bar_mode": "Which lap the dash delta bar (and delta metric slot) compares against. Independent of the standalone Delta Bar widget. Live delta on the out lap begins at the first sector line after leaving pits.",
     "dash.delta_bar_range": "Seconds of delta that push the dash delta bar to full width.",
     "dash.center_mode": DASH_SLOT_HELP["center_mode"],
     "dash.top_right": DASH_SLOT_HELP["top_right"],

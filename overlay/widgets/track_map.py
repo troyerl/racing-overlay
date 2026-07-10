@@ -840,6 +840,13 @@ class TrackMapWidget(QWidget):
         }
         self._car_anim: dict[int, dict] = {}
         self._car_animating = False
+        self._anim_min_interval_ms = 33  # ~30 Hz while easing car dots
+        self._last_anim_sched_ms = 0
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setSingleShot(True)
+        self._anim_timer.timeout.connect(self.update)
+        self._layout_cache_key: tuple | None = None
+        self._layout_bbox: tuple[float, float, float, float] | None = None
         mcfg0 = _mcfg()
         self._cfg_rot = int(round((mcfg0.get("rotation", 0) or 0) / 90.0)) * 90 % 360
         self._cfg_mirror = bool(mcfg0.get("mirror", False))
@@ -915,6 +922,8 @@ class TrackMapWidget(QWidget):
     def _invalidate_static_cache(self) -> None:
         self._static_pix = None
         self._static_key = None
+        self._layout_cache_key = None
+        self._layout_bbox = None
 
     def _use_static_cache(self) -> bool:
         return (bool(self.path) and not self.pit_edit_mode
@@ -2084,14 +2093,21 @@ class TrackMapWidget(QWidget):
                 delta = wrap_lap_delta(pct, st["pct"])
                 if abs(delta) > 0.35:
                     st["pct"] = pct
+                    pt = target
+                    moving = False
+                elif abs(delta) <= 1e-5:
+                    st["pct"] = pct
+                    pt = target
+                    moving = False
                 else:
                     st["pct"] = (st["pct"] + ease(0.0, delta, dt, tau)) % 1.0
-                pt = self._resolve_car_point(
-                    tx, car, cc, off, schematic, pct_override=st["pct"])
-                if pt is None:
-                    pt = target
-                moving = (abs(wrap_lap_delta(pct, st["pct"])) > 1e-5
-                          or math.hypot(pt.x() - target.x(), pt.y() - target.y()) > 0.35)
+                    pt = self._resolve_car_point(
+                        tx, car, cc, off, schematic, pct_override=st["pct"])
+                    if pt is None:
+                        pt = target
+                    moving = (abs(wrap_lap_delta(pct, st["pct"])) > 1e-5
+                              or math.hypot(pt.x() - target.x(),
+                                            pt.y() - target.y()) > 0.35)
             else:
                 pt, moving = self._smooth_marker_point(
                     st["pt"], target, dt, tau=tau, snap=120.0)
@@ -2409,6 +2425,17 @@ class TrackMapWidget(QWidget):
             # model space so the bounding-box fit, cars, corners and pit all follow.
             rot = int(round((mc.get("rotation", 0) or 0) / 90.0)) * 90 % 360
             mirror = bool(mc.get("mirror", False))
+            pad = self._layout_pad(mc)
+            pit_zoom = self._pit_edit_zoom if self.pit_edit_mode else 1.0
+            pit_pan = self._pit_edit_pan if self.pit_edit_mode else (0.0, 0.0)
+            layout_key = (
+                id(self.path), len(self.path),
+                id(self.pit_path), id(self.pit_in), id(self.pit_out),
+                id(self.pit_path_2), id(self.pit_in_2), id(self.pit_out_2),
+                rot, mirror, float(rect.width()), float(rect.height()), pad,
+                self.pit_edit_mode, self.pit_edit_phase, self.pit_edit_lane,
+                pit_zoom, pit_pan[0], pit_pan[1],
+            )
 
             def model(pt):
                 x, y = pt[0], pt[1]
@@ -2422,31 +2449,42 @@ class TrackMapWidget(QWidget):
                     x, y = -y, x
                 return x, y
 
-            fit = [model(pt) for pt in self.path]
-            for seg in (self.pit_path, self.pit_in, self.pit_out,
-                        self.pit_path_2, self.pit_in_2, self.pit_out_2):
-                if seg:
-                    fit.extend(model(pt) for pt in seg)
-            if self.pit_edit_mode:
-                entry, road, merge = self._pit_edit_bufs(self.pit_edit_lane)
-                phase_seg = {
-                    "entry": entry,
-                    "road": road,
-                    "merge": merge,
-                }.get(self.pit_edit_phase, road)
-                if phase_seg:
-                    fit.extend(model(pt) for pt in phase_seg)
-            xs = [m[0] for m in fit]
-            ys = [m[1] for m in fit]
-            minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
-            pad = self._layout_pad(mc)
-            avail_w = rect.width() - 2 * pad
-            avail_h = rect.height() - 2 * pad
-            span_x = (maxx - minx) or 1e-6
-            span_y = (maxy - miny) or 1e-6
-            scale = min(avail_w / span_x, avail_h / span_y)
-            ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
-            oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
+            if layout_key == self._layout_cache_key and self._layout_bbox is not None:
+                minx, maxx, miny, maxy = self._layout_bbox
+                avail_w = rect.width() - 2 * pad
+                avail_h = rect.height() - 2 * pad
+                span_x = (maxx - minx) or 1e-6
+                span_y = (maxy - miny) or 1e-6
+                scale = min(avail_w / span_x, avail_h / span_y)
+                ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
+                oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
+            else:
+                fit = [model(pt) for pt in self.path]
+                for seg in (self.pit_path, self.pit_in, self.pit_out,
+                            self.pit_path_2, self.pit_in_2, self.pit_out_2):
+                    if seg:
+                        fit.extend(model(pt) for pt in seg)
+                if self.pit_edit_mode:
+                    entry, road, merge = self._pit_edit_bufs(self.pit_edit_lane)
+                    phase_seg = {
+                        "entry": entry,
+                        "road": road,
+                        "merge": merge,
+                    }.get(self.pit_edit_phase, road)
+                    if phase_seg:
+                        fit.extend(model(pt) for pt in phase_seg)
+                xs = [m[0] for m in fit]
+                ys = [m[1] for m in fit]
+                minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+                self._layout_bbox = (minx, maxx, miny, maxy)
+                self._layout_cache_key = layout_key
+                avail_w = rect.width() - 2 * pad
+                avail_h = rect.height() - 2 * pad
+                span_x = (maxx - minx) or 1e-6
+                span_y = (maxy - miny) or 1e-6
+                scale = min(avail_w / span_x, avail_h / span_y)
+                ox = pad + (avail_w - span_x * scale) / 2 - minx * scale
+                oy = pad + (avail_h - span_y * scale) / 2 - miny * scale
             self._pit_edit_base_scale = scale
             self._pit_edit_base_ox = ox
             self._pit_edit_base_oy = oy
@@ -2464,13 +2502,9 @@ class TrackMapWidget(QWidget):
                 mx, my = model(pt)
                 return QPointF(mx * scale + ox, my * scale + oy)
 
-            qpath = QPainterPath()
-            qpath.moveTo(tx(self.path[0]))
-            for pt in self.path[1:]:
-                qpath.lineTo(tx(pt))
-            qpath.closeSubpath()
-
-            if self._use_static_cache():
+            use_cache = self._use_static_cache()
+            qpath = None
+            if use_cache:
                 key = self._static_cache_key()
                 if (self._static_pix is not None and key == self._static_key):
                     dpr = self.devicePixelRatioF()
@@ -2481,6 +2515,11 @@ class TrackMapWidget(QWidget):
                         self._invalidate_static_cache()
                         key = self._static_cache_key()
                 if self._static_pix is None or key != self._static_key:
+                    qpath = QPainterPath()
+                    qpath.moveTo(tx(self.path[0]))
+                    for pt in self.path[1:]:
+                        qpath.lineTo(tx(pt))
+                    qpath.closeSubpath()
                     dpr = self.devicePixelRatioF()
                     pw = max(1, int(rect.width() * dpr))
                     ph = max(1, int(rect.height() * dpr))
@@ -2496,6 +2535,11 @@ class TrackMapWidget(QWidget):
                     self._static_key = key
                 p.drawPixmap(0, 0, self._static_pix)
             else:
+                qpath = QPainterPath()
+                qpath.moveTo(tx(self.path[0]))
+                for pt in self.path[1:]:
+                    qpath.lineTo(tx(pt))
+                qpath.closeSubpath()
                 self._paint_static_map(p, rect, tx, mc, qpath)
 
             if self._active_sector is not None:
@@ -2514,7 +2558,13 @@ class TrackMapWidget(QWidget):
             if p.isActive():
                 p.end()
         if self._car_animating:
-            self.update()
+            now = self._clock.elapsed()
+            wait = self._anim_min_interval_ms - (now - self._last_anim_sched_ms)
+            if wait <= 0:
+                self._last_anim_sched_ms = now
+                self.update()
+            elif not self._anim_timer.isActive():
+                self._anim_timer.start(max(1, int(wait)))
 
     def _paint_extras(self, p: QPainter, rect: QRectF) -> None:
         """Hook for subclasses to draw overlays in the same paint pass."""
@@ -2911,12 +2961,21 @@ class TrackMapWidget(QWidget):
     @staticmethod
     def _draw_stroked_center_text(p: QPainter, rect: QRectF, text: str, *,
                                   fill: QColor, stroke: QColor,
-                                  stroke_w: float = 1.0) -> None:
-        """Bold centered label readable on any dot color."""
+                                  stroke_w: float = 1.0,
+                                  rich: bool = True) -> None:
+        """Bold centered label readable on any dot color.
+
+        Player/pace use a full 8-offset stroke; other cars use 4 cardinal
+        offsets to keep dense fields cheap.
+        """
         align = Qt.AlignmentFlag.AlignCenter
         w = max(0.5, stroke_w)
-        for ox, oy in ((-w, -w), (-w, w), (w, -w), (w, w),
-                       (-w, 0), (w, 0), (0, -w), (0, w)):
+        if rich:
+            offsets = ((-w, -w), (-w, w), (w, -w), (w, w),
+                       (-w, 0), (w, 0), (0, -w), (0, w))
+        else:
+            offsets = ((-w, 0), (w, 0), (0, -w), (0, w))
+        for ox, oy in offsets:
             p.setPen(stroke)
             p.drawText(rect.translated(ox, oy), align, text)
         p.setPen(fill)
@@ -2946,7 +3005,8 @@ class TrackMapWidget(QWidget):
             stroke = QColor(0, 0, 0, 220)
         self._draw_stroked_center_text(
             p, rect, draw_label, fill=fill, stroke=stroke,
-            stroke_w=1.2 if is_player else 1.0)
+            stroke_w=1.2 if is_player else 1.0,
+            rich=is_player or is_pace)
 
     def _draw_pit_edit(self, p: QPainter, tx) -> None:
         """In-progress entry, pit road, and merge for one or both lanes."""
@@ -3387,10 +3447,14 @@ class TrackMapWidget(QWidget):
         # Pit-car styling is the same for every car -- resolve it once.
         pit_opacity = max(0.05, min(1.0, mc.get("pit_dot_opacity", 0.45)))
         pit_fill = _mcol_def("pit_car", "#6e747d")
-        dot_frac = mc.get("dot_radius_frac", 0.05) or 0.05
-        if dot_frac <= 0:
-            dot_frac = 0.05
-        rad_scale = max(0.2, min(4.0, dot_frac / 0.05))
+        def _dot_scale(key: str) -> float:
+            frac = mc.get(key, 0.05) or 0.05
+            if frac <= 0:
+                frac = 0.05
+            return max(0.2, min(4.0, frac / 0.05))
+
+        player_scale = _dot_scale("dot_radius_frac")
+        other_scale = _dot_scale("other_dot_radius_frac")
         marker_slots = self._marker_slots_by_idx()
         show_status = mc.get("show_car_status", True)
         for car in sorted(self.cars, key=self._car_draw_sort_key):
@@ -3423,7 +3487,7 @@ class TrackMapWidget(QWidget):
             if c is None:
                 continue
             in_pit_lane = on_route or on_pit
-            r = (12.5 if is_player else 9.0) * rad_scale
+            r = (12.5 * player_scale) if is_player else (9.0 * other_scale)
             if is_player and in_pit_lane:
                 r *= 1.15
             slot = marker_slots.get(idx)

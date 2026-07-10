@@ -55,6 +55,10 @@ SLOT_ITEMS: dict[str, tuple[str, str]] = {
 # When a row jumps farther than this many slots, snap instead of sliding through
 # intermediate rows (avoids cars crossing each other on big reorder).
 _ROW_SNAP_SLOTS = 1.25
+# Dense tables (full-field leaderboards) snap sooner and ease faster.
+_DENSE_ROW_COUNT = 20
+_DENSE_ROW_SNAP_SLOTS = 0.5
+_DENSE_ROW_EASE_TAU = 0.08
 
 
 def _tcfg() -> dict:
@@ -336,7 +340,11 @@ class BaseTable(QWidget):
         dt = self._dt()
         keys_now = set()
         animating = False
+        dense = n >= _DENSE_ROW_COUNT
         tau = float(tc.get("row_ease_tau", 0.16) or 0.16)
+        if dense:
+            tau = min(tau, _DENSE_ROW_EASE_TAU)
+        snap_slots = _DENSE_ROW_SNAP_SLOTS if dense else _ROW_SNAP_SLOTS
         fade_tau = float(tc.get("fade_ease_tau", 0.12) or 0.12)
         for tgt, row in enumerate(rows):
             key = row.get("key", tgt)
@@ -353,7 +361,7 @@ class BaseTable(QWidget):
                 st = {"idx": float(tgt), "opacity": 0.0}
                 self._anim[key] = st
             target = float(tgt)
-            if abs(st["idx"] - target) > _ROW_SNAP_SLOTS:
+            if abs(st["idx"] - target) > snap_slots:
                 st["idx"] = target
             else:
                 st["idx"] = ease(st["idx"], target, dt, tau)
@@ -383,9 +391,11 @@ class BaseTable(QWidget):
             self._draw_row(p, row, tgt, pad, y, w - 2 * pad, row_h)
             if opacity < 0.99:
                 p.restore()
+            sliding = dense and abs(st["idx"] - float(tgt)) > 0.02
             if (tc.get("row_dividers", True) and prev_draw_idx is not None
                     and abs(st["idx"] - prev_draw_idx) <= 1.05
-                    and not row.get("empty")):
+                    and not row.get("empty")
+                    and not sliding):
                 self._draw_row_divider(p, pad, y, w - 2 * pad)
             if not row.get("empty"):
                 prev_draw_idx = st["idx"]

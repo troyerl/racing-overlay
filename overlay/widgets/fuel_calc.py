@@ -46,7 +46,7 @@ _CENTER = Qt.AlignmentFlag.AlignCenter
 
 _STAT_COLS = ("usage", "laps", "pits", "refuel")
 _STAT_ROWS = ("avg", "max", "min")
-_STAT_ROW_LABELS = {"avg": "AVG", "max": "HIGH", "min": "LOW"}
+_STAT_ROW_LABELS = {"avg": "AVG", "max": "MAX", "min": "MIN"}
 
 
 def _cfg() -> dict:
@@ -62,20 +62,20 @@ def _fmt1(x) -> str:
 
 
 def _stat_headers() -> dict[str, str]:
-    u = config.fuel_unit()
     return {
-        "usage": f"USAGE ({u}/lap)",
+        "usage": "USAGE",
         "laps": "LAPS",
         "pits": "PITS",
-        "refuel": f"REFUEL ({u})",
+        "refuel": "REFUEL",
     }
 
 
 def _fmt_fuel(x) -> str:
+    """Stats-grid fuel amount (converted units, no unit suffix)."""
     v = config.conv_fuel(x)
     if v is None:
         return "\u2013"
-    return f"{v:.1f}{config.fuel_unit()}"
+    return f"{v:.1f}"
 
 
 def _fmt_stat_cell(col: str, val) -> str:
@@ -304,7 +304,7 @@ class FuelCalcWidget(QWidget):
         cap_txt = f"{capc:.0f}{config.fuel_unit()}" if capc is not None else "\u2014"
         p.drawText(QRectF(x, bar.bottom() + 1, w, h * 0.4), _VC_RIGHT, cap_txt)
 
-    # -- the avg/high/low burn grid -----------------------------------------
+    # -- the avg/max/min burn grid ------------------------------------------
     def _draw_stats(self, p, d, x, y, w, h) -> None:
         rows = d.get("rows") or {}
         headers = _stat_headers()

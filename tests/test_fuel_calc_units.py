@@ -42,15 +42,17 @@ def test_build_fuel_snapshot_usage_and_laps_ordering():
 
 def test_fmt_fuel_imperial(monkeypatch):
     monkeypatch.setitem(config.CFG, "units", "imperial")
-    assert fc_mod._fmt_fuel(45.0) == "11.9Gal"
-    assert fc_mod._stat_headers()["usage"] == "USAGE (Gal/lap)"
-    assert fc_mod._stat_headers()["refuel"] == "REFUEL (Gal)"
+    assert fc_mod._fmt_fuel(45.0) == "11.9"
+    assert fc_mod._stat_headers()["usage"] == "USAGE"
+    assert fc_mod._stat_headers()["refuel"] == "REFUEL"
+    assert fc_mod._STAT_ROW_LABELS["max"] == "MAX"
+    assert fc_mod._STAT_ROW_LABELS["min"] == "MIN"
 
 
 def test_fmt_fuel_metric(monkeypatch):
     monkeypatch.setitem(config.CFG, "units", "metric")
-    assert fc_mod._fmt_fuel(45.0) == "45.0L"
-    assert fc_mod._stat_headers()["usage"] == "USAGE (L/lap)"
+    assert fc_mod._fmt_fuel(45.0) == "45.0"
+    assert fc_mod._stat_headers()["usage"] == "USAGE"
 
 
 def test_needs_fuel_lap_tracking_includes_pit_advisor():

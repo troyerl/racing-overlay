@@ -80,6 +80,29 @@ _CODEPOINTS: dict[str, int] = {
     "irating_up": 0xF062,     # arrow-up
     "irating_down": 0xF063,   # arrow-down
     "irating": 0xF201,        # chart-line
+    # dash metrics that previously used text-only labels
+    "tires_4": 0xF1CD,        # life-ring
+    "tire_temp": 0xF2C9,      # temperature-half
+    "fuel_pct": 0xF52F,       # gas-pump
+    "fuel_burn": 0xF52F,      # gas-pump
+    "delta_best": 0xF091,     # trophy
+    "delta_optimal": 0xF252,  # hourglass-half
+    "time_remain": 0xF253,    # hourglass-end
+    "class_pos": 0xF292,      # hashtag
+    "incidents_team": 0xF0C0, # users
+    "incidents_limit": 0xF071,  # triangle-exclamation
+    "dc_brake_bias": 0xF1DE,  # sliders
+    "dc_tc": 0xF3ED,          # shield-halved
+    "dc_abs": 0xF3ED,         # shield-halved
+    "dc_fuel_mix": 0xF0C3,    # flask
+    "dc_tire_set": 0xF1CD,    # life-ring
+    "engine_warn": 0xF06A,    # circle-exclamation
+    "oil_temp": 0xF613,       # oil-can
+    "water_temp": 0xF043,     # droplet
+    "voltage": 0xF0E7,        # bolt
+    "gap_ahead": 0xF062,      # arrow-up
+    "gap_behind": 0xF063,     # arrow-down
+    "lap_corners": 0xF5EB,    # turn-right
 }
 
 _family: str | None = None

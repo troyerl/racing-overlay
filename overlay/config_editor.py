@@ -82,6 +82,9 @@ ENUMS = {
     "car_label": ["number", "position"],
     "delta_mode": ["previous", "best", "personal_best"],
     "mode": ["session_best", "best_lap", "optimal", "last_lap", "leader_last"],
+    "delta_bar_mode": [
+        "session_best", "best_lap", "optimal", "last_lap", "leader_last",
+    ],
     "reference_mode": ["best", "last_lap"],
     "rotation": [0, 90, 180, 270],
     "font_family": FONT_CHOICES,
@@ -203,6 +206,7 @@ LABEL_OVERRIDES = {
     "delta_bar.mode": "Reference lap",
     "delta_bar.range": "Full-scale delta (seconds)",
     "delta_bar.show_value": "Show numeric delta",
+    "dash.delta_bar_mode": "Reference lap",
     "flags.idle_text": "Text when no flag is flying",
     "sector_timing.sectors": "Sector count (fallback)",
     "sector_timing.row_height_px": "LAST/BEST row height (px, 0 = auto)",
@@ -292,7 +296,8 @@ LABEL_OVERRIDES = {
     "show_sector_boundaries": "Show sector boundaries",
     "show_traffic_markers": "Show ahead/behind/leader icons",
     "marker_hold_seconds": "Marker switch delay (seconds)",
-    "dot_radius_frac": "Car dot size",
+    "dot_radius_frac": "My car dot size",
+    "other_dot_radius_frac": "Other cars dot size",
     "pit_blend": "Pit entry line",
     "pit_blend_out": "Pit exit line",
     "standings.pin_podium": "Always show P1–P3 in first 3 rows",
@@ -592,7 +597,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "show_flags", "flag_green_seconds", "flag_pulse",
             "flag_pulse_seconds", "flag_blink_hz",
         ]),
-        ("Delta bar", ["show_delta_bar", "delta_bar_range"]),
+        ("Delta bar", ["show_delta_bar", "delta_bar_mode", "delta_bar_range"]),
         ("Metrics & slots", [
             "show_position", "top_right", "primary_left", "primary_right",
             "stat_left", "stat_right", "strip_left", "strip_center",
@@ -749,7 +754,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Traffic & markers", [
             "lap_proximity_pct", "marker_hold_seconds", "car_label",
-            "dot_radius_frac",
+            "dot_radius_frac", "other_dot_radius_frac",
         ]),
         ("Pit lane", [
             "show_pit", "show_pit_blends", "show_pit_speed", "pit_lane_opacity",
@@ -1111,7 +1116,7 @@ def _num_range(path: list, default):
     """Guess a friendly (lo, hi, step) slider range from a key name + value."""
     key = str(path[-1]).lower()
     is_float = isinstance(default, float)
-    if key == "dot_radius_frac":
+    if key in ("dot_radius_frac", "other_dot_radius_frac"):
         # A fine, small-valued range (0.05 == default size) rather than 0..1.
         lo, hi, step = 0.01, 0.15, 0.005
     elif any(s in key for s in ("frac", "opacity")) or key.endswith("_pct") or "tau" in key:
