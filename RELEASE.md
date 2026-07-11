@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.67.2 - 2026-07-11
+
+- **Fix: garage while spectating.** Profile switches on IsGarageVisible as well
+  as IsInGarage, so the garage layout applies when you are not in the car.
+- **Fix: spectator widgets.** Focus car uses CamCarIdx (and DriverCarIdx) when
+  PlayerCarIdx is invalid (-1); Relative/Map keep painting; radio tower shows
+  transmitters without a local ego car.
+
 ## 1.67.1 - 2026-07-11
 
 - **Fix: mid-race restart.** Opening the app during a session loads the map

@@ -79,3 +79,97 @@ def test_preview_pin_cleared_when_telemetry_disagrees():
     assert config.effective_context() == "garage"
 
     config.set_preview_context(None)
+
+
+def test_garage_visible_without_in_garage():
+    """Spectators: garage UI open but car physics not in garage."""
+    config.set_preview_context(None)
+    config.set_context("race", notify=False)
+    hud = _hud(ir={"IsInGarage": False, "IsGarageVisible": True})
+    hud._maybe_auto_switch_preset = lambda: None  # type: ignore
+    AdvancedSimHUD._update_context(hud)
+    assert config.active_context() == "garage"
+    config.set_preview_context(None)
+
+
+def test_race_when_neither_garage_flag():
+    config.set_preview_context(None)
+    config.set_context("garage", notify=False)
+    hud = _hud(ir={"IsInGarage": False, "IsGarageVisible": False})
+    hud._maybe_auto_switch_preset = lambda: None  # type: ignore
+    AdvancedSimHUD._update_context(hud)
+    assert config.active_context() == "race"
+    config.set_preview_context(None)
+
+
+def test_focus_car_idx_prefers_player_then_cam():
+    hud = _hud(ir={"PlayerCarIdx": 2, "CamCarIdx": 5}, _driver_car_idx=7)
+    assert hud._focus_car_idx() == 2
+    hud.ir = {"PlayerCarIdx": -1, "CamCarIdx": 5}
+    assert hud._focus_car_idx() == 5
+    hud.ir = {"PlayerCarIdx": -1, "CamCarIdx": -1}
+    hud._driver_car_idx = 7
+    assert hud._focus_car_idx() == 7
+    hud._driver_car_idx = None
+    assert hud._focus_car_idx() is None
+
+
+def test_car_idx_or_none_rejects_negative():
+    hud = _hud()
+    assert hud._car_idx_or_none(-1) is None
+    assert hud._car_idx_or_none(0) == 0
+    assert hud._car_idx_or_none(3) == 3
+
+
+def test_leader_car_idx():
+    hud = _hud()
+    assert hud._leader_car_idx([0, 3, 1, 2]) == 2
+    assert hud._leader_car_idx([0, 0, 0]) is None
+
+
+def test_radio_tower_shows_speaker_without_player():
+    hud = _hud()
+
+    class _W:
+        data = None
+
+        def set_data(self, d):
+            self.data = d
+
+    hud.radio_tower_widget = _W()
+    hud.edit_mode_enabled = lambda: False  # type: ignore
+    hud._is_pro_driver_name = lambda n: False  # type: ignore
+    hud._group_badge_fields = lambda n: ("", "")  # type: ignore
+    hud._driver_for_row = lambda idx, player, drivers: {  # type: ignore
+        "UserName": "Caller", "CarNumber": "9"}
+    hud._update_radio_tower([1, 2, 3], {}, None, 1)
+    assert hud.radio_tower_widget.data["rows"]
+    assert hud.radio_tower_widget.data["rows"][0]["name"] == "Caller"
+    assert hud.radio_tower_widget.data["rows"][0]["is_player"] is False
+
+
+def test_update_map_continues_without_focus():
+    """Spectating: no focus car still loads weather/zones (past the old early return)."""
+    hud = _hud(ir={"WindDir": 0, "WindVel": 0, "CarIdxOnPitRoad": [False, False]})
+    hud._ensure_track = lambda *a, **k: None  # type: ignore
+    hud._pit_latch_seed_pending = False
+    hud._track_zones = {}
+    zones = []
+
+    class _Map:
+        def set_wind(self, *a):
+            pass
+
+        def set_weather(self, *a):
+            pass
+
+        def set_track_zones(self, **k):
+            zones.append(True)
+            raise RuntimeError("stop-after-zones")
+
+    hud.map_widget = _Map()
+    try:
+        hud._update_map(None, [0.1, 0.2], [3, 3], {})
+    except RuntimeError as exc:
+        assert "stop-after-zones" in str(exc)
+    assert zones == [True]

@@ -656,6 +656,14 @@ class FakeIRSDK:
             # garage-vs-track profile switch is observable in the demo.
             return ((time.time() - self._start) % 60.0) < 10.0
 
+        if key == "IsGarageVisible":
+            # Match IsInGarage so spectators/out-of-car garage UI is covered.
+            return self["IsInGarage"]
+
+        if key == "CamCarIdx":
+            # Camera focus cycles so spectator Relative/Map have a center car.
+            return int((time.time() - self._start) // 4.0) % self.num_cars
+
         if key == "PlayerCarMyIncidentCount":
             return 11
 

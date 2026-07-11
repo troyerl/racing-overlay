@@ -698,13 +698,19 @@ class AdvancedSimHUD:
             self._finish_profile_loading()
 
     def _update_context(self) -> None:
-        """Pick the 'garage' or 'race' profile from telemetry (iRacing's
-        IsInGarage). Switching only happens on a change, which recomputes the
-        live config and re-applies widget visibility."""
-        try:
-            in_garage = bool(self.ir["IsInGarage"])
-        except Exception:
-            in_garage = False
+        """Pick the 'garage' or 'race' profile from telemetry.
+
+        ``IsInGarage`` is true when the player's car has garage physics running.
+        Spectators / out-of-car clients often have that false while the garage
+        UI is open — ``IsGarageVisible`` covers that case.
+        """
+        def _flag(key: str) -> bool:
+            try:
+                return bool(self.ir[key])
+            except Exception:
+                return False
+
+        in_garage = _flag("IsInGarage") or _flag("IsGarageVisible")
         ctx = "garage" if in_garage else "race"
         if ctx != config.active_context():
             config.set_context(ctx)
@@ -1644,6 +1650,49 @@ class AdvancedSimHUD:
         except (TypeError, ValueError):
             return None
 
+    def _car_idx_or_none(self, value) -> int | None:
+        """Car index usable as an array subscript (rejects missing / negative)."""
+        idx = self._int_or_none(value)
+        if idx is None or idx < 0:
+            return None
+        return idx
+
+    def _focus_car_idx(self) -> int | None:
+        """Car to center Relative/Map on: ego car, else camera focus, else YAML.
+
+        Spectators often have ``PlayerCarIdx == -1`` while ``CamCarIdx`` tracks
+        the car they are watching.
+        """
+        try:
+            p = self._car_idx_or_none(self.ir["PlayerCarIdx"])
+        except (TypeError, ValueError, KeyError):
+            p = None
+        if p is not None:
+            return p
+        try:
+            c = self._car_idx_or_none(self.ir["CamCarIdx"])
+        except (TypeError, ValueError, KeyError):
+            c = None
+        if c is not None:
+            return c
+        if self._driver_car_idx is not None and self._driver_car_idx >= 0:
+            return self._driver_car_idx
+        return None
+
+    def _leader_car_idx(self, positions) -> int | None:
+        """CarIdx currently in P1, or None."""
+        if not positions:
+            return None
+        for idx, pos in enumerate(positions):
+            if idx in self._pace_idxs:
+                continue
+            try:
+                if pos and int(pos) == 1:
+                    return idx
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def _drivers(self, player=None) -> dict[int, dict]:
         """CarIdx -> driver dict, cached and refreshed about twice a second."""
         self._driver_refresh_counter += 1
@@ -1805,7 +1854,7 @@ class AdvancedSimHUD:
         if not any(en.values()):
             return
 
-        player = self._int_or_none(self.ir["PlayerCarIdx"])
+        player = self._focus_car_idx()
         need_order = (en["standings"] or en["relative"] or en["dash"]
                       or en["leaderboard_strip"] or en["radio_tower"])
         need_drivers = (en["standings"] or en["relative"] or en["map"] or en["dash"]
@@ -2972,7 +3021,11 @@ class AdvancedSimHUD:
                          positions, car_lap, lap_est, sess_time,
                          radio_speaker=None, car_f2=None, on_pit=None,
                          car_flags=None) -> None:
-        if player is None or not est_time or not surface:
+        if not est_time or not surface:
+            return
+        # Spectators may have no ego car; center on camera focus (caller) or P1.
+        center = player if player is not None else self._leader_car_idx(positions)
+        if center is None or center >= len(est_time) or est_time[center] is None:
             return
         if lap_est <= 0:
             lap_est = self._lap_est(est_time)
@@ -2980,12 +3033,12 @@ class AdvancedSimHUD:
         rcfg = config.CFG["relative"]
         cols = self._visible_cols("relative")
         pit_mode = rcfg.get("pit_mode", "laps_since")
-        me = est_time[player]
+        me = est_time[center]
         rels = []
         for idx, t in enumerate(est_time):
-            if idx == player or t is None or idx in self._pace_idxs:
+            if idx == center or t is None or idx in self._pace_idxs:
                 continue
-            if not self._relative_include(idx, surface, positions, player):
+            if not self._relative_include(idx, surface, positions, center):
                 continue
             delta = t - me
             half = lap_est / 2.0
@@ -3001,23 +3054,23 @@ class AdvancedSimHUD:
         behind = sorted((r for r in rels if r[0] <= 0), key=lambda r: -r[0])[:n_behind]
 
         rows = []
-        # Pad the top so the player stays in the center slot even when there
+        # Pad the top so the focus car stays in the center slot even when there
         # aren't n_ahead cars in front (e.g. when leading).
         if rcfg.get("center_on_player", True):
             for k in range(n_ahead - len(ahead)):
                 rows.append(self._empty_row(f"rel_top{k}"))
         for delta, idx in reversed(ahead):
             rows.append(self._build_relative_row(
-                idx, delta, drivers, positions, surface, car_lap, player, False,
+                idx, delta, drivers, positions, surface, car_lap, center, False,
                 cols, sess_time, pit_mode, radio_speaker, est_time, car_f2,
                 on_pit, car_flags, lap_est))
         rows.append(self._build_relative_row(
-            player, 0.0, drivers, positions, surface, car_lap, player, True,
+            center, 0.0, drivers, positions, surface, car_lap, center, True,
             cols, sess_time, pit_mode, radio_speaker, est_time, car_f2,
             on_pit, car_flags, lap_est))
         for delta, idx in behind:
             rows.append(self._build_relative_row(
-                idx, delta, drivers, positions, surface, car_lap, player, False,
+                idx, delta, drivers, positions, surface, car_lap, center, False,
                 cols, sess_time, pit_mode, radio_speaker, est_time, car_f2,
                 on_pit, car_flags, lap_est))
         if rcfg.get("center_on_player", True):
@@ -3026,7 +3079,7 @@ class AdvancedSimHUD:
 
         payload = {
             "rows": rows,
-            "slots": self._slot_values("relative", drivers, positions, player,
+            "slots": self._slot_values("relative", drivers, positions, center,
                                        car_lap, lap_est),
         }
         if payload == self.relative_widget.data:
@@ -4141,19 +4194,20 @@ class AdvancedSimHUD:
                     radio_speaker=None,
                     on_pit_arr=None, car_flags=None) -> None:
         # Load the track outline even when car telemetry isn't ready yet (common
-        # on mid-race app restart); car dots still need player/lap%/surface.
+        # on mid-race app restart); car dots need lap%/surface (focus optional).
         self._ensure_track(player, lap_pct)
-        if player is None or not lap_pct or not surface:
+        if not lap_pct or not surface:
             return
 
         mcfg = config.CFG["map"]
-        # Resolve the player's model-space position once (GPS or dead reckoning)
-        # so the learner and the pit capture share a single, consistent frame.
-        self._update_player_pos(lap_pct[player])
-        # In demo mode the pit lane is synthesized once (see _load_demo_track);
-        # skip live learning so it isn't overwritten by the demo's fake pit dips.
-        if mcfg.get("show_pit", True) and not self.demo:
-            self._update_pit_route(player, lap_pct)
+        # Resolve the focus car's model-space position when we have one (GPS or
+        # dead reckoning) so the learner and the pit capture share a frame.
+        if player is not None and 0 <= player < len(lap_pct):
+            self._update_player_pos(lap_pct[player])
+            # In demo mode the pit lane is synthesized once (see _load_demo_track);
+            # skip live learning so it isn't overwritten by the demo's fake pit dips.
+            if mcfg.get("show_pit", True) and not self.demo:
+                self._update_pit_route(player, lap_pct)
         if mcfg.get("show_wind", True):
             self.map_widget.set_wind(self.ir["WindDir"], self.ir["WindVel"])
         else:
@@ -4180,8 +4234,10 @@ class AdvancedSimHUD:
 
         if on_pit_arr is None:
             on_pit_arr = self.ir["CarIdxOnPitRoad"]
-        if self._pit_latch_seed_pending:
+        if self._pit_latch_seed_pending and player is not None:
             self._seed_pit_latches(lap_pct, on_pit_arr, player)
+            self._pit_latch_seed_pending = False
+        elif self._pit_latch_seed_pending and player is None:
             self._pit_latch_seed_pending = False
         pit_surf = (oc.TRK_IN_PIT_STALL, oc.TRK_APPROACHING_PITS)
         use_pos = config.CFG["map"].get("car_label", "number") == "position"
@@ -5664,7 +5720,10 @@ class AdvancedSimHUD:
                             radio_speaker) -> None:
         edit = self.edit_mode_enabled()
         rows = []
+        # Show whoever is transmitting — does not require a local ego car
+        # (spectators often have PlayerCarIdx == -1).
         if (radio_speaker is not None
+                and radio_speaker >= 0
                 and radio_speaker not in self._pace_idxs):
             pos = ""
             if positions and 0 <= radio_speaker < len(positions):
@@ -5672,14 +5731,14 @@ class AdvancedSimHUD:
                 if raw and raw > 0:
                     pos = raw
             d = self._driver_for_row(radio_speaker, player, drivers or {})
-            user_name = d.get("UserName", "")
+            user_name = d.get("UserName", "") or f"Car {radio_speaker}"
             g_icon, g_color = self._group_badge_fields(user_name)
             rows.append({
                 "position": pos,
                 "car_number": d.get("CarNumber", ""),
                 "name": user_name,
                 "active": True,
-                "is_player": radio_speaker == player,
+                "is_player": (player is not None and radio_speaker == player),
                 "is_pro": self._is_pro_driver_name(user_name),
                 "group_icon": g_icon,
                 "group_color": g_color,
