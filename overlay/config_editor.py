@@ -63,6 +63,7 @@ from PyQt6.QtWidgets import (
 from . import config, constants, paths, track_store, version
 from . import demo_data
 from . import driver_groups as dgroups
+from . import event_result_import
 from . import setting_help
 from .busy_dialog import BusySpinnerDialog
 
@@ -2272,10 +2273,9 @@ class ConfigEditor(QWidget):
             return page
 
         if key == "__scan__":
-            note = QLabel("Authoring tools \u2014 you see these because you have "
-                          "write access. Import a members HTML track map, draw "
-                          "pit road and merge on the overlay, then save. Corner "
-                          "labels and start/finish can be edited on the map.")
+            note = QLabel(
+                "Join a session (or import HTML), draw pit on the map, then "
+                "save. Metadata edits the loaded track.")
             note.setObjectName("subtitle")
             note.setWordWrap(True)
             v.addWidget(note)
@@ -2353,10 +2353,9 @@ class ConfigEditor(QWidget):
         v.setSpacing(8)
         t = QLabel("Track metadata")
         t.setObjectName("enableTitle")
-        hint = QLabel("Corner count, pit speed limit, pit lane speed %, and label "
-                      "positions. Pit speeds are set manually here (not learned "
-                      "from driving). Drag corner numbers on the map when edit "
-                      "is enabled; release to save.")
+        hint = QLabel(
+            "Pit speeds, corner count, and Track ID aliases for the loaded "
+            "track. Speeds are set here (not learned from driving).")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
         v.addWidget(t)
@@ -2404,7 +2403,7 @@ class ConfigEditor(QWidget):
         v.addLayout(turn_row)
 
         alias_row = QHBoxLayout()
-        alias_lbl = QLabel("Also used for Track IDs")
+        alias_lbl = QLabel("Track ID aliases")
         alias_lbl.setObjectName("rowLabel")
         self._alias_track_ids_edit = QLineEdit()
         self._alias_track_ids_edit.setPlaceholderText("e.g. 53")
@@ -2419,34 +2418,22 @@ class ConfigEditor(QWidget):
         v.addLayout(alias_row)
 
         edit_row = QHBoxLayout()
-        edit_texts = QVBoxLayout()
-        edit_texts.setSpacing(1)
         edit_title = QLabel("Edit corner labels on map")
         edit_title.setObjectName("rowLabel")
-        edit_hint = QLabel("Drag corner numbers on the track map to reposition "
-                           "them; release to save.")
-        edit_hint.setObjectName("enableHint")
-        edit_hint.setWordWrap(True)
-        edit_texts.addWidget(edit_title)
-        edit_texts.addWidget(edit_hint)
-        edit_row.addLayout(edit_texts, 1)
+        edit_title.setToolTip(
+            "Drag corner numbers on the track map; release to save.")
+        edit_row.addWidget(edit_title, 1)
         self._corner_edit_sw = ToggleSwitch(accent=TAB_COLORS["Track Scan"])
         self._corner_edit_sw.toggled.connect(self._corner_edit_toggled)
         edit_row.addWidget(self._corner_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
         v.addLayout(edit_row)
 
         sf_row = QHBoxLayout()
-        sf_texts = QVBoxLayout()
-        sf_texts.setSpacing(1)
         sf_title = QLabel("Edit start/finish on map")
         sf_title.setObjectName("rowLabel")
-        sf_hint = QLabel("Drag the white start/finish line along the track; "
-                          "release to save.")
-        sf_hint.setObjectName("enableHint")
-        sf_hint.setWordWrap(True)
-        sf_texts.addWidget(sf_title)
-        sf_texts.addWidget(sf_hint)
-        sf_row.addLayout(sf_texts, 1)
+        sf_title.setToolTip(
+            "Drag the white start/finish line along the track; release to save.")
+        sf_row.addWidget(sf_title, 1)
         self._sf_edit_sw = ToggleSwitch(accent=TAB_COLORS["Track Scan"])
         self._sf_edit_sw.toggled.connect(self._sf_edit_toggled)
         sf_row.addWidget(self._sf_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -3289,8 +3276,15 @@ class ConfigEditor(QWidget):
         m_rem.setObjectName("danger")
         m_rem.setCursor(Qt.CursorShape.PointingHandCursor)
         m_rem.clicked.connect(self._dg_member_remove)
+        m_imp = QPushButton("Import from results\u2026")
+        m_imp.setCursor(Qt.CursorShape.PointingHandCursor)
+        m_imp.setToolTip(
+            "Load display names from an iRacing event_result JSON file and "
+            "add any that are not already in this group.")
+        m_imp.clicked.connect(self._dg_member_import_results)
         mbtns.addWidget(m_add)
         mbtns.addWidget(m_rem)
+        mbtns.addWidget(m_imp)
         mbtns.addStretch(1)
         v.addLayout(mbtns)
 
@@ -3442,6 +3436,48 @@ class ConfigEditor(QWidget):
         self._dg_groups_local[gi]["members"] = members
         self._persist_driver_groups()
         self._load_driver_groups_into_ui(self._dg_groups_local)
+
+    def _pick_event_result_names(self) -> list[str] | None:
+        """File dialog + parse; None if cancelled or failed."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import event results", "",
+            "Event result JSON (*.json);;All files (*)")
+        if not path:
+            return None
+        try:
+            names = event_result_import.parse_event_result_names(path)
+        except (OSError, ValueError, TypeError) as exc:
+            QMessageBox.warning(
+                self, "Import from results",
+                f"Could not read event result file:\n{exc}")
+            return None
+        if not names:
+            QMessageBox.warning(
+                self, "Import from results",
+                "No driver names found in that file.")
+            return None
+        return names
+
+    def _dg_member_import_results(self) -> None:
+        gi = self._dg_selected_group
+        if gi < 0 or gi >= len(self._dg_groups_local):
+            self._dg_status.setText("Select or create a group first.")
+            return
+        names = self._pick_event_result_names()
+        if names is None:
+            return
+        members = list(self._dg_groups_local[gi].get("members") or [])
+        merged, added, skipped = event_result_import.merge_driver_entries(
+            members, names)
+        self._dg_groups_local[gi]["members"] = merged
+        self._dg_groups_local = dgroups.normalize_driver_groups(
+            self._dg_groups_local)
+        self._persist_driver_groups()
+        self._load_driver_groups_into_ui(self._dg_groups_local)
+        msg = (f"Added {added}, skipped {skipped} duplicate"
+               f"{'s' if skipped != 1 else ''}.")
+        self._dg_status.setText(msg)
+        self._flash(msg)
 
     def _persist_driver_groups(self) -> None:
         groups = dgroups.normalize_driver_groups(self._dg_groups_local)
@@ -3620,8 +3656,15 @@ class ConfigEditor(QWidget):
         rem_btn.setObjectName("danger")
         rem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         rem_btn.clicked.connect(self._pro_driver_remove)
+        imp_btn = QPushButton("Import from results\u2026")
+        imp_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        imp_btn.setToolTip(
+            "Load display names from an iRacing event_result JSON file and "
+            "add any that are not already listed. Save to cloud when ready.")
+        imp_btn.clicked.connect(self._pro_driver_import_results)
         btns.addWidget(add_btn)
         btns.addWidget(rem_btn)
+        btns.addWidget(imp_btn)
         btns.addStretch(1)
         v.addLayout(btns)
 
@@ -3712,6 +3755,21 @@ class ConfigEditor(QWidget):
         self._pro_alias_edit.clear()
         self._load_pro_drivers_into_ui({"pro_drivers": self._pro_drivers_local})
         self._flash("Driver removed (not saved yet)")
+
+    def _pro_driver_import_results(self) -> None:
+        names = self._pick_event_result_names()
+        if names is None:
+            return
+        merged, added, skipped = event_result_import.merge_driver_entries(
+            self._pro_drivers_local, names)
+        self._pro_drivers_local = merged
+        self._load_pro_drivers_into_ui({"pro_drivers": self._pro_drivers_local})
+        msg = (f"Added {added}, skipped {skipped} duplicate"
+               f"{'s' if skipped != 1 else ''} "
+               f"(not saved yet \u2014 use Save to cloud).")
+        if hasattr(self, "_pro_status"):
+            self._pro_status.setText(msg)
+        self._flash(msg)
 
     def _save_pro_drivers_admin(self) -> None:
         drivers = track_store.normalize_pro_drivers(self._pro_drivers_local)

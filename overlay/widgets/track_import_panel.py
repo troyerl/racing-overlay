@@ -29,6 +29,14 @@ def _parse_html_track_id(path: str) -> int | None:
         return None
 
 
+def _caption(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setObjectName("enableHint")
+    lbl.setWordWrap(True)
+    lbl.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+    return lbl
+
+
 class TrackImportV2Panel(QFrame):
     """Track Scan card: edit pit/merge on map in session, or import loop from HTML."""
 
@@ -49,41 +57,46 @@ class TrackImportV2Panel(QFrame):
 
         v = QVBoxLayout(self)
         v.setContentsMargins(15, 11, 15, 12)
-        v.setSpacing(8)
+        v.setSpacing(10)
 
-        t = QLabel("Edit track on map")
+        # --- Edit pit on map ---
+        t = QLabel("Edit pit on map")
         t.setObjectName("enableTitle")
         v.addWidget(t)
-
         hint = QLabel(
-            "While on track in iRacing, draw or adjust the pit road (red) and "
-            "exit merge line (blue) on the overlay map. Optional yellow entry "
-            "blend is for tracks that have a distinct commit lane — skip it "
-            "when they don't. For dual pit roads (e.g. Bristol), switch to "
-            "Lane 2 and draw entry / road / merge there too — lane 2 is "
-            "optional at save time. Scroll to zoom, Middle-click drag or "
-            "Shift-drag to pan; drag handles to adjust points. Clear a phase "
-            "from the dropdown or clear all pit to start over. Entry end and "
-            "pit road start stay linked (like pit road end and merge start). "
-            "Corner labels are edited in Track metadata below. "
-            "Save loop uploads geometry without pit; Save pit updates pit lane "
-            "on an existing local/cloud track (entry auto-links to pit-road "
-            "start); Save track requires pit road + merge on lane 1 and is for "
-            "first publish only (blocked if the TrackID is already in the "
-            "shared library). In demo mode the map previews your upload "
-            "for this session only.")
+            "Turn on edit, pick a phase, then click points on the overlay map. "
+            "Lane 2 is optional (dual pits).")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
+        hint.setToolTip(
+            "Yellow entry is optional when there is no distinct commit lane. "
+            "Scroll to zoom; middle-click or Shift-drag to pan; drag handles "
+            "to adjust. Entry end links to pit-road start (and road end to "
+            "merge start). Corner labels are edited in Track metadata below.")
         v.addWidget(hint)
 
+        edit_row = QHBoxLayout()
+        edit_lbl = QLabel("Edit pit on map")
+        edit_lbl.setObjectName("rowLabel")
+        edit_row.addWidget(edit_lbl, 1)
+        self._pit_edit_sw = QCheckBox("Enable")
+        self._pit_edit_sw.setToolTip("Enable drawing / adjusting pit geometry on the map.")
+        self._pit_edit_sw.toggled.connect(self._pit_edit_toggled)
+        edit_row.addWidget(self._pit_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
+        v.addLayout(edit_row)
+
         phase_row = QHBoxLayout()
-        phase_lbl = QLabel("Pit phases")
+        phase_lbl = QLabel("Phase")
         phase_lbl.setObjectName("rowLabel")
         phase_row.addWidget(phase_lbl)
         self._phase_group = QButtonGroup(self)
         self._entry_btn = QPushButton("Entry (optional)")
+        self._entry_btn.setToolTip(
+            "Optional yellow entry / commit lane. Skip when the track has none.")
         self._road_btn = QPushButton("Pit road")
+        self._road_btn.setToolTip("Main pit road (red). Required for Save track.")
         self._merge_btn = QPushButton("Merge")
+        self._merge_btn.setToolTip("Exit merge line (blue). Required for Save track.")
         for btn, phase in (
             (self._entry_btn, "entry"),
             (self._road_btn, "road"),
@@ -95,25 +108,28 @@ class TrackImportV2Panel(QFrame):
             self._phase_group.addButton(btn)
             phase_row.addWidget(btn)
         phase_row.addStretch(1)
+        v.addLayout(phase_row)
+
+        lane_row = QHBoxLayout()
         lane_lbl = QLabel("Lane")
         lane_lbl.setObjectName("rowLabel")
-        phase_row.addWidget(lane_lbl)
+        lane_row.addWidget(lane_lbl)
         self._lane_group = QButtonGroup(self)
         self._lane1_btn = QPushButton("Lane 1")
         self._lane2_btn = QPushButton("Lane 2")
+        self._lane2_btn.setToolTip(
+            "Second pit road (e.g. Bristol). Optional at save time.")
         for btn, lane in ((self._lane1_btn, 1), (self._lane2_btn, 2)):
             btn.setCheckable(True)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda _=False, ln=lane: self._set_lane(ln))
             self._lane_group.addButton(btn)
-            phase_row.addWidget(btn)
+            lane_row.addWidget(btn)
         self._lane1_btn.setChecked(True)
-        self._pit_edit_sw = QCheckBox("Enable")
-        self._pit_edit_sw.toggled.connect(self._pit_edit_toggled)
-        phase_row.addWidget(self._pit_edit_sw, 0, Qt.AlignmentFlag.AlignVCenter)
-        v.addLayout(phase_row)
+        lane_row.addStretch(1)
+        v.addLayout(lane_row)
 
-        btn_row = QHBoxLayout()
+        tool_row = QHBoxLayout()
         self._load_pit_btn = QPushButton("Load saved pit")
         self._load_pit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._load_pit_btn.clicked.connect(self._load_saved_pit)
@@ -123,6 +139,16 @@ class TrackImportV2Panel(QFrame):
         reset_view = QPushButton("Reset view")
         reset_view.setCursor(Qt.CursorShape.PointingHandCursor)
         reset_view.clicked.connect(self._reset_pit_view)
+        tool_row.addWidget(self._load_pit_btn)
+        tool_row.addWidget(undo)
+        tool_row.addWidget(reset_view)
+        tool_row.addStretch(1)
+        v.addLayout(tool_row)
+
+        # --- Clear ---
+        clear_title = QLabel("Clear")
+        clear_title.setObjectName("rowLabel")
+        v.addWidget(clear_title)
         clear_row = QHBoxLayout()
         clear_row.setSpacing(6)
         self._clear_phase_combo = QComboBox()
@@ -135,31 +161,52 @@ class TrackImportV2Panel(QFrame):
         self._clear_phase_btn.setObjectName("warn")
         self._clear_phase_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._clear_phase_btn.clicked.connect(self._clear_pit_phase)
-        clear_row.addWidget(self._clear_phase_combo)
-        clear_row.addWidget(self._clear_phase_btn)
         clear_all = QPushButton("Clear all pit")
         clear_all.setObjectName("warn")
         clear_all.setCursor(Qt.CursorShape.PointingHandCursor)
         clear_all.clicked.connect(self._clear_pit_all)
+        clear_row.addWidget(self._clear_phase_combo, 1)
+        clear_row.addWidget(self._clear_phase_btn)
+        clear_row.addWidget(clear_all)
+        v.addLayout(clear_row)
+
+        # --- Save ---
+        save_title = QLabel("Save")
+        save_title.setObjectName("rowLabel")
+        v.addWidget(save_title)
+        save_row = QHBoxLayout()
+        save_row.setSpacing(10)
+
+        def _save_col(btn: QPushButton, caption: str) -> QVBoxLayout:
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(btn)
+            col.addWidget(_caption(caption))
+            return col
+
         save_loop = QPushButton("Save loop")
         save_loop.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_loop.setToolTip(
+            "Upload racing-line geometry without pit. Safe when the track "
+            "already exists in the shared library.")
         save_loop.clicked.connect(self._save_loop)
         save_pit = QPushButton("Save pit")
         save_pit.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_pit.setToolTip(
+            "Update pit lane on an existing local/cloud track. Entry "
+            "auto-links to pit-road start.")
         save_pit.clicked.connect(self._save_pit)
         save = QPushButton("Save track")
         save.setCursor(Qt.CursorShape.PointingHandCursor)
+        save.setToolTip(
+            "First publish only: requires pit road + merge on lane 1. "
+            "Blocked if this TrackID is already in the shared library. "
+            "In demo mode the map previews the upload for this session only.")
         save.clicked.connect(self._save_track)
-        btn_row.addWidget(self._load_pit_btn)
-        btn_row.addWidget(undo)
-        btn_row.addWidget(reset_view)
-        btn_row.addLayout(clear_row)
-        btn_row.addWidget(clear_all)
-        btn_row.addStretch(1)
-        btn_row.addWidget(save_loop)
-        btn_row.addWidget(save_pit)
-        btn_row.addWidget(save)
-        v.addLayout(btn_row)
+        save_row.addLayout(_save_col(save_loop, "Racing line only"), 1)
+        save_row.addLayout(_save_col(save_pit, "Update pit on existing track"), 1)
+        save_row.addLayout(_save_col(save, "First publish (loop + pit)"), 1)
+        v.addLayout(save_row)
 
         self._status = QLabel("")
         self._status.setObjectName("enableHint")
@@ -171,22 +218,23 @@ class TrackImportV2Panel(QFrame):
         sep.setObjectName("cardSep")
         v.addWidget(sep)
 
-        import_title = QLabel("Import loop from HTML (optional)")
-        import_title.setObjectName("rowLabel")
+        import_title = QLabel("Import loop from HTML")
+        import_title.setObjectName("enableTitle")
         v.addWidget(import_title)
-
         import_hint = QLabel(
-            "Replace the racing line from a members-site track page. TrackID is "
-            "read from id=\"track-map-123\" in the HTML.")
+            "Optional. Choose a members track HTML page, then Import loop.")
         import_hint.setObjectName("enableHint")
         import_hint.setWordWrap(True)
+        import_hint.setToolTip(
+            "TrackID is read from id=\"track-map-123\" on the outer members "
+            "track-map div.")
         v.addWidget(import_hint)
 
         row = QHBoxLayout()
         self._path_lbl = QLabel("No HTML file chosen")
         self._path_lbl.setObjectName("enableHint")
         self._path_lbl.setWordWrap(True)
-        self._browse_btn = QPushButton("Choose HTML…")
+        self._browse_btn = QPushButton("Choose HTML\u2026")
         self._browse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._browse_btn.clicked.connect(self._browse)
         row.addWidget(self._path_lbl, 1)
@@ -231,7 +279,7 @@ class TrackImportV2Panel(QFrame):
             return
         ext = os.path.splitext(path)[1].lower()
         if ext not in (".html", ".htm"):
-            self._report("V2 import requires a .html / .htm members page.")
+            self._report("Import requires a .html / .htm members page.")
             return
         self._html_path = path
         self._html_track_id = _parse_html_track_id(path)
@@ -270,7 +318,7 @@ class TrackImportV2Panel(QFrame):
 
         path = self._html_path
         self._set_import_busy(True)
-        self._report(f"Importing {os.path.basename(path)}…", flash=False)
+        self._report(f"Importing {os.path.basename(path)}\u2026", flash=False)
 
         def _worker() -> None:
             try:
@@ -572,7 +620,8 @@ class TrackImportV2Panel(QFrame):
         if edit_enabled:
             self._sync_from_overlay()
         elif in_sim:
-            self._status.setText("Track loading — pit editor enables when the loop is ready.")
+            self._status.setText(
+                "Track loading — pit editor enables when the loop is ready.")
         elif not self._status.text():
             self._status.setText(
                 "Join a session on track to edit, or import a loop from HTML.")

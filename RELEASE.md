@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.67.3 - 2026-07-11
+
+- **Import drivers from results.** Professional drivers and driver-group members
+  can import display names from an iRacing `event_result` JSON file; duplicates
+  (name or alias) are skipped.
+- **Track Scan settings clarity.** Pit edit, clear, and save are grouped with
+  short captions; metadata and HTML import copy is tightened.
+
 ## 1.67.2 - 2026-07-11
 
 - **Fix: garage while spectating.** Profile switches on IsGarageVisible as well
