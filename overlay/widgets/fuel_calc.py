@@ -157,9 +157,19 @@ class FuelCalcWidget(QWidget):
         gap = h * 0.02
         sumw = sum(wt for _k, wt in blocks)
         avail = (content_bottom - content_top) - gap * (len(blocks) - 1)
+        # Provisional weighted heights, then shrink-wrap the stats grid so the
+        # PIT strip sits just under the table instead of under empty stats space.
+        heights = {key: avail * wt / sumw for key, wt in blocks}
+        if "stats" in heights:
+            needed = self._stats_content_height(heights["stats"])
+            if needed < heights["stats"]:
+                freed = heights["stats"] - needed
+                heights["stats"] = needed
+                if "strip" in heights:
+                    heights["strip"] += freed
         cy = content_top
-        for key, wt in blocks:
-            bh = avail * wt / sumw
+        for key, _wt in blocks:
+            bh = heights[key]
             if key == "title":
                 title_h = bh
                 band = QRectF(card.left() + m, cy, inner, title_h)
@@ -305,21 +315,40 @@ class FuelCalcWidget(QWidget):
         p.drawText(QRectF(x, bar.bottom() + 1, w, h * 0.4), _VC_RIGHT, cap_txt)
 
     # -- the avg/max/min burn grid ------------------------------------------
+    def _stats_row_metrics(self, h: float) -> tuple[float, float]:
+        """Return (head_h, row_h) for a stats block of height ``h``."""
+        cfg = _cfg()
+        n = len(_STAT_ROWS)
+        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
+        if fixed_rh > 0:
+            return float(round(fixed_rh * 1.1)), fixed_rh
+        max_rh_frac = float(cfg.get("max_row_height_frac", 0) or 0)
+        if max_rh_frac > 0:
+            capped = self.height() * max_rh_frac
+            natural_head = capped * 1.1
+            natural = natural_head + n * capped
+            # When the frac cap binds inside a tall slot, use natural sizing so
+            # shrink-wrapping matches what we paint.
+            if natural <= h + 1e-6:
+                return natural_head, capped
+        head_h = h * 0.22
+        row_h = resolve_row_height(
+            body_h=max(1.0, h - head_h), row_count=n,
+            panel_h=self.height(), cfg=cfg)
+        return head_h, row_h
+
+    def _stats_content_height(self, allocated_h: float) -> float:
+        """Tight height for the stats grid (no empty space under the rows)."""
+        head_h, row_h = self._stats_row_metrics(allocated_h)
+        return head_h + len(_STAT_ROWS) * row_h
+
     def _draw_stats(self, p, d, x, y, w, h) -> None:
         rows = d.get("rows") or {}
         headers = _stat_headers()
         label_w = w * 0.13
         col_w = (w - label_w) / len(_STAT_COLS)
         cfg = _cfg()
-        fixed_rh = float(cfg.get("row_height_px", 0) or 0)
-        if fixed_rh > 0:
-            row_h = fixed_rh
-            head_h = round(fixed_rh * 1.1)
-        else:
-            head_h = h * 0.22
-            row_h = resolve_row_height(
-                body_h=h - head_h, row_count=len(_STAT_ROWS),
-                panel_h=self.height(), cfg=cfg)
+        head_h, row_h = self._stats_row_metrics(h)
         data_bold = data_font_bold(_SECTION)
 
         band = QRectF(x, y, w, head_h)

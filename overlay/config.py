@@ -171,8 +171,7 @@ _WIDGET_CHROME_COLORS: dict = {
 
 DEFAULTS: dict = {
     "font_family": "Segoe UI",
-    # Monospace family for gap / lap-time columns (empty = SF Mono on macOS,
-    # Consolas elsewhere).
+    # Monospace override for gap / lap-time columns (empty = same as font_family).
     "tabular_font_family": "",
     # Global multiplier applied to every text size in every widget. Raise it to
     # make all text bigger, lower it to make everything smaller. Each widget also

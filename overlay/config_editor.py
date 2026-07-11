@@ -96,7 +96,7 @@ ENUMS = {
 # but the underlying stored value is unchanged).
 OPTION_LABELS = {
     "none": "None",
-    "": "Default (Consolas / SF Mono)",
+    "": "Same as Font",
     # dash metrics
     "speed": "Speed", "speed_kph": "Speed (km/h)", "speed_mph": "Speed (mph)",
     "rpm": "RPM", "gear": "Gear", "position": "Position", "car_number": "Car number",
@@ -2951,8 +2951,10 @@ class ConfigEditor(QWidget):
         # Capture pending edits to the preset we're leaving, then switch.
         self._save_timer.stop()
         config.apply_edits(self._edit_ctx, self.working, notify=False)
+        self._begin_profile_switch_loading(f"Loading profile\u2026 {new}")
         config.set_active_preset(new)
         self._after_preset_change(f"Switched to \u201c{new}\u201d")
+        self._end_standalone_profile_switch_loading()
 
     def _ask_name(self, title: str, label: str, default: str = "") -> str | None:
         name, ok = QInputDialog.getText(self, title, label, text=default)
@@ -2967,13 +2969,25 @@ class ConfigEditor(QWidget):
             return None
         return name
 
+    def _begin_profile_switch_loading(self, message: str) -> None:
+        if self._overlay is not None:
+            self._overlay._show_profile_loading(message)
+        else:
+            self._show_standalone_profile_loading(message)
+
+    def _end_standalone_profile_switch_loading(self) -> None:
+        if self._overlay is None:
+            self._hide_standalone_profile_loading()
+
     def _new_preset(self) -> None:
         name = self._ask_name("New preset", "Preset name:")
         if not name:
             return
         config.apply_edits(self._edit_ctx, self.working, notify=False)
+        self._begin_profile_switch_loading(f"Loading profile\u2026 {name}")
         config.create_preset(name, activate=True)
         self._after_preset_change(f"Created \u201c{name}\u201d")
+        self._end_standalone_profile_switch_loading()
 
     def _dup_preset(self) -> None:
         src = config.active_preset()
@@ -2983,8 +2997,10 @@ class ConfigEditor(QWidget):
             return
         config.apply_edits(self._edit_ctx, self.working, notify=False)
         config.save_profiles()
+        self._begin_profile_switch_loading(f"Loading profile\u2026 {name}")
         config.duplicate_preset(src, name)
         self._after_preset_change(f"Duplicated to \u201c{name}\u201d")
+        self._end_standalone_profile_switch_loading()
 
     def _export_preset(self) -> None:
         import json
@@ -3058,12 +3074,17 @@ class ConfigEditor(QWidget):
             overwrite = True
         try:
             config.apply_edits(self._edit_ctx, self.working, notify=False)
+            self._begin_profile_switch_loading(f"Loading profile\u2026 {name}")
             dest = config.import_preset(
                 payload, name=name, overwrite=overwrite, activate=True)
         except ValueError as exc:
+            self._end_standalone_profile_switch_loading()
+            if self._overlay is not None:
+                self._overlay._hide_profile_loading()
             QMessageBox.warning(self, "Import preset", str(exc))
             return
         self._after_preset_change(f"Imported \u201c{dest}\u201d")
+        self._end_standalone_profile_switch_loading()
 
     def _rename_preset(self) -> None:
         old = config.active_preset()
@@ -3606,6 +3627,8 @@ class ConfigEditor(QWidget):
         config.apply_edits(self._edit_ctx, self.working, notify=False)
         if self.autosave_sw.isChecked():
             config.save_profiles()
+        label = config.CONTEXT_LABELS.get(new, new)
+        self._begin_profile_switch_loading(f"Loading profile\u2026 {label}")
         self._edit_ctx = new
         self.working = config.editor_full(new)
         # Pin the live overlay to the profile being edited so changes preview.
@@ -3615,6 +3638,27 @@ class ConfigEditor(QWidget):
         self._filter(self.search.text())
         self._update_ctx_hint()
         self._flash(f"Editing {self._ctx_name()} profile")
+        self._end_standalone_profile_switch_loading()
+
+    def _show_standalone_profile_loading(self, message: str) -> None:
+        dlg = QProgressDialog(message, None, 0, 0, self)
+        dlg.setWindowTitle("Switching profile")
+        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        dlg.setCancelButton(None)
+        dlg.setMinimumDuration(0)
+        dlg.setAutoClose(False)
+        dlg.setAutoReset(False)
+        dlg.setValue(0)
+        self._standalone_profile_loading = dlg
+        dlg.show()
+        QApplication.processEvents()
+
+    def _hide_standalone_profile_loading(self) -> None:
+        dlg = getattr(self, "_standalone_profile_loading", None)
+        self._standalone_profile_loading = None
+        if dlg is not None:
+            dlg.close()
+            dlg.deleteLater()
 
     # --- value changes ------------------------------------------------------
 

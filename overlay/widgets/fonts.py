@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 from PyQt6.QtGui import QFont
 
 from .. import config
@@ -20,7 +18,8 @@ def _tabular_family() -> str:
     fam = config.CFG.get("tabular_font_family", "") or ""
     if fam:
         return fam
-    return "SF Mono" if sys.platform == "darwin" else "Consolas"
+    # Empty Tabular inherits the global Font so one setting drives all text.
+    return str(config.CFG.get("font_family", "Segoe UI") or "Segoe UI")
 
 
 def tfont(size: float, bold: bool = True, *, widget_scale: bool = True) -> QFont:

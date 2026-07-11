@@ -114,9 +114,10 @@ HELP_OVERRIDES: dict[str, str] = {
     "row_dividers": "Draws thin horizontal lines between rows.",
     "data_font_bold": "Uses bold weight for numeric cells (position, gap, lap times).",
     "alt_row_shading": "Alternates a subtle background tint on even rows.",
-    "font_family": "Primary UI font for labels and text across all widgets.",
-    "tabular_font_family": "Monospace font for gap and lap-time columns. "
-    "Empty uses SF Mono on macOS or Consolas elsewhere.",
+    "font_family": "Primary UI font for labels, names, headers, and (unless "
+    "Tabular font is set) numeric values across all widgets.",
+    "tabular_font_family": "Optional monospace override for gap / lap-time / "
+    "numeric columns. Empty uses the same family as Font.",
     "text_scale_global": "Global multiplier for every widget's text size. "
     "Raise to enlarge all overlay text; lower to shrink it.",
     "units": "Metric (km/h, °C, L) or imperial (mph, °F, gal) for speed, "
@@ -508,6 +509,10 @@ COLOR_HELP: dict[str, str] = {
     "badge_speaking_bg": "Background when a driver is speaking on team radio.",
     "badge_speaking_border": "Border on the speaking/voice-activity badge.",
     "badge_speaking_text": "Text on the speaking/voice-activity badge.",
+    "pro_name": "Accent color for professional-driver names in Relative and Standings.",
+    "pro_badge": "Star/badge color marking professional drivers in Relative and Standings.",
+    "pylon_bg": "Background behind leaderboard-strip pylon markers.",
+    "car_number": "Car-number text color on the leaderboard strip or radio tower.",
     "bar_bg": "Background track behind tire wear bars.",
     "bar_track": "Background track behind input value bars.",
     "box_border": "Border around fuel summary boxes (time/laps until empty).",

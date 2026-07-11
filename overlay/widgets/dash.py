@@ -633,7 +633,7 @@ class DashWidget(QWidget):
         # --- bottom container contents (primary | stats) -----------------
         if c.get("primary_left", "lap_count") not in (None, "none") \
                 or c.get("primary_right", "speed") not in (None, "none"):
-            # Center primary metrics in the left strip (even margins vs the ring).
+            # Right-align the primary pair into the ring gap (even spacing).
             primary_left = bot_rect.left() + bpad
             self._draw_primary(
                 p, QRectF(primary_left, bot_rect.top() + bpad,
@@ -855,7 +855,7 @@ class DashWidget(QWidget):
         p.setPen(self._col("value"))
         p.drawText(QRectF(x, rect.top(), vw + 6, h), _VC_LEFT, val)
 
-    # -- primary (lower-left): equal-size readouts, centered in the strip --
+    # -- primary (lower-left): equal-size readouts, right-aligned to the ring --
     def _draw_primary(self, p, rect, c, d, fit_width=None):
         h = rect.height()
         left_key = c.get("primary_left", "lap_count")
@@ -917,8 +917,11 @@ class DashWidget(QWidget):
         s = fit / need if need > fit and need > 0 else 1.0
         z = sizes(s)
         total_w = measure(s)
-        # Center the group in the section (also centers a single active metric).
-        x = rect.left() + max(0.0, (rect.width() - total_w) / 2)
+        # Pair hugs the ring; a single active metric stays centered in the strip.
+        if show_l and show_r:
+            x = rect.right() - total_w
+        else:
+            x = rect.left() + max(0.0, (rect.width() - total_w) / 2)
 
         def draw(font, text, color):
             nonlocal x

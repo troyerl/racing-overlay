@@ -517,10 +517,10 @@ class BaseTable(QWidget):
             if is_pro:
                 glyph = icons.glyph("pro_driver")
                 if glyph:
-                    ic_px = h * 0.55
+                    ic_px = h * 0.32
                     ic_f = icons.icon_font(ic_px)
                     gw = QFontMetricsF(ic_f).horizontalAdvance(glyph)
-                    gap = max(2.0, h * 0.12)
+                    gap = max(2.0, h * 0.08)
                     p.setFont(ic_f)
                     p.setPen(col("pro_badge"))
                     p.drawText(QRectF(nx, y, gw + 2, h),

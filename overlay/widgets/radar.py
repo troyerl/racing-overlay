@@ -20,11 +20,12 @@ All colors, sizes, easing and toggles come from config.CFG["radar"].
 from __future__ import annotations
 
 from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QLinearGradient, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QLinearGradient, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from .. import config
 from .chrome import draw_card, ease
+from .fonts import tfont
 
 
 def _rcfg() -> dict:
@@ -167,8 +168,7 @@ class RadarWidget(QWidget):
         if rc.get("show_clear_timer") and clear_secs is not None and clear_secs >= 0:
             txt = f"Clear {clear_secs:.0f}s"
             csz = max(6, round(7 * config.text_scale_for("radar")))
-            p.setFont(QFont(config.CFG.get("font_family", "Arial"), csz,
-                            QFont.Weight.Bold))
+            p.setFont(tfont(csz, bold=True, widget_scale=False))
             fm = p.fontMetrics()
             tw = fm.horizontalAdvance(txt) + 8
             th = fm.height() + 4
@@ -224,8 +224,7 @@ class RadarWidget(QWidget):
         p.drawPixmap(int(round(left)), int(round(yc - marker_h / 2.0)), pm)
         if label:
             lsz = max(6, round(min(w, h) * 0.38))
-            p.setFont(QFont(config.CFG.get("font_family", "Arial"), lsz,
-                            QFont.Weight.Bold))
+            p.setFont(tfont(lsz, bold=True, widget_scale=False))
             p.setPen(QColor(255, 255, 255))
             p.drawText(QRectF(left, yc - marker_h / 2.0, w, marker_h),
                        Qt.AlignmentFlag.AlignCenter, label)

@@ -20,7 +20,7 @@ import math
 import os
 
 from PyQt6.QtCore import QPointF, QRectF, Qt, QElapsedTimer, QTimer
-from PyQt6.QtGui import (QColor, QFont, QFontMetricsF, QMouseEvent, QPainter,
+from PyQt6.QtGui import (QColor, QFontMetricsF, QMouseEvent, QPainter,
                          QPainterPath, QPen, QPixmap, QWheelEvent)
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
@@ -2232,8 +2232,7 @@ class TrackMapWidget(QWidget):
         mc = _mcfg()
         asph = mc.get("asphalt_width", 12)
         sz = max(5, round(7 * config.text_scale_for("map")))
-        fam = config.CFG.get("font_family", "Arial")
-        p.setFont(QFont(fam, sz, QFont.Weight.Bold))
+        p.setFont(tfont(sz, bold=True, widget_scale=False))
         fm = p.fontMetrics()
         label_off = asph * 0.5 + sz + 6.0
         sf_frac = self._sf_loop_frac()
@@ -2292,8 +2291,7 @@ class TrackMapWidget(QWidget):
                 p.drawText(icon_rect, Qt.AlignmentFlag.AlignCenter,
                            icons.glyph(glyph))
             if label:
-                p.setFont(QFont(config.CFG.get("font_family", "Arial"),
-                                max(7, sz - 2), QFont.Weight.Bold))
+                p.setFont(tfont(max(7, sz - 2), bold=True, widget_scale=False))
                 fm = p.fontMetrics()
                 pw = fm.horizontalAdvance(label) + 8
                 ph = fm.height() + 4
@@ -2352,7 +2350,7 @@ class TrackMapWidget(QWidget):
     def _draw_scan_overlays(self, p: QPainter, rect: QRectF) -> None:
         """Scan badge (top, e.g. 'LAP 2/3') and a transient hint banner (bottom)."""
         if self._scan_text:
-            p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+            p.setFont(tfont(9, bold=True, widget_scale=False))
             fm = p.fontMetrics()
             bw = fm.horizontalAdvance(self._scan_text) + 14.0
             bh = fm.height() + 4.0
@@ -2363,7 +2361,7 @@ class TrackMapWidget(QWidget):
             p.setPen(_mcol_def("corner_text", "#d6dce2"))
             p.drawText(br, Qt.AlignmentFlag.AlignCenter, self._scan_text)
         if self._hint_text:
-            p.setFont(QFont("Arial", 9, QFont.Weight.Bold))
+            p.setFont(tfont(9, bold=True, widget_scale=False))
             fm = p.fontMetrics()
             bw = fm.horizontalAdvance(self._hint_text) + 18.0
             bh = fm.height() + 5.0
@@ -2767,9 +2765,8 @@ class TrackMapWidget(QWidget):
             return
         text = f"PIT {round(config.conv_speed(limit))} {config.speed_unit()}"
 
-        fam = config.CFG.get("font_family", "Arial")
         sz = max(5, round(6 * config.text_scale_for("map")))
-        p.setFont(QFont(fam, sz, QFont.Weight.Bold))
+        p.setFont(tfont(sz, bold=True, widget_scale=False))
         fm = p.fontMetrics()
         w = fm.horizontalAdvance(text) + 10
         h = fm.height() + 3
@@ -2830,9 +2827,8 @@ class TrackMapWidget(QWidget):
         p.setPen(QPen(QColor(255, 255, 255, 40), 1))
         p.drawEllipse(center, r, r)
 
-        fam = config.CFG.get("font_family", "Arial")
         nsz = max(5, round(6 * config.text_scale_for("map")))
-        p.setFont(QFont(fam, nsz, QFont.Weight.Bold))
+        p.setFont(tfont(nsz, bold=True, widget_scale=False))
         p.setPen(QColor(170, 178, 188))
         p.drawText(QRectF(cx - r, cy - r - nsz - 1, 2 * r, nsz + 2),
                    Qt.AlignmentFlag.AlignCenter, "N")
@@ -2860,7 +2856,7 @@ class TrackMapWidget(QWidget):
         spd = round(config.conv_speed(self.wind_speed_ms))
         text = f"{spd} {config.speed_unit()}"
         ssz = max(5, round(6 * config.text_scale_for("map")))
-        p.setFont(QFont(fam, ssz, QFont.Weight.Bold))
+        p.setFont(tfont(ssz, bold=True, widget_scale=False))
         fm = p.fontMetrics()
         tw = fm.horizontalAdvance(text) + 6
         th = fm.height() + 2
@@ -2879,7 +2875,7 @@ class TrackMapWidget(QWidget):
                 lines.append(f"Rain {self.rain_intensity:.0f}%")
             if lines:
                 ssz2 = max(5, round(6 * config.text_scale_for("map")))
-                p.setFont(QFont(fam, ssz2, QFont.Weight.Bold))
+                p.setFont(tfont(ssz2, bold=True, widget_scale=False))
                 fm2 = p.fontMetrics()
                 tw2 = max(fm2.horizontalAdvance(s) for s in lines) + 6
                 th2 = fm2.height() * len(lines) + 4
@@ -2968,8 +2964,7 @@ class TrackMapWidget(QWidget):
         }.get(kind, "")
         if glyph:
             sz = max(5, round(br * 1.1))
-            p.setFont(QFont(config.CFG.get("font_family", "Arial"), sz,
-                            QFont.Weight.Bold))
+            p.setFont(tfont(sz, bold=True, widget_scale=False))
             p.setPen(QColor(255, 255, 255) if kind != "furled" else QColor(20, 20, 20))
             p.drawText(QRectF(bx - br, by - br, 2 * br, 2 * br),
                        Qt.AlignmentFlag.AlignCenter, glyph)
@@ -3390,9 +3385,8 @@ class TrackMapWidget(QWidget):
         if not corners:
             self._corner_hit = []
             return
-        fam = config.CFG.get("font_family", "Arial")
         sz = max(5, round(8 * config.text_scale_for("map")))
-        p.setFont(QFont(fam, sz, QFont.Weight.Bold))
+        p.setFont(tfont(sz, bold=True, widget_scale=False))
         fm = p.fontMetrics()
         cc = tx(self._centroid)
         asph = _mcfg().get("asphalt_width", 12)

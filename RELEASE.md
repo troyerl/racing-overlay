@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.66.0 - 2026-07-11
+
+- **Profile switch loading.** Preset / race–garage context switches show a modal
+  “Loading profile…” dialog until layout + deferred repaint finish (overlay and
+  standalone Settings).
+- **Global Font drives numbers.** Empty Tabular font now inherits Font (no
+  longer SF Mono / Consolas); map (and related) labels use the same font
+  helpers. Settings label: “Same as Font”.
+- **Dash primary hugs the ring.** When both left and right primary metrics are
+  set, the pair right-aligns into the ring gap; a single active slot stays
+  centered.
+- **Fuel calc layout.** Stats grid shrink-wraps so the PIT strip sits just under
+  the table instead of under empty weighted space.
+- **Smaller pro-driver star.** Relative / Standings badge is ~0.32 row height
+  with a tighter gap.
+
 ## 1.65.0 - 2026-07-11
 
 - **Map pit without a lane.** If pit display is off or there is no saved pit
