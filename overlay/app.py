@@ -680,12 +680,40 @@ class AdvancedSimHUD:
 
     def _on_context_change(self, _ctx) -> None:
         """Swap panels to the race or garage layout for the active preset."""
-        # Don't persist clamps here — that would bake race fallbacks into
-        # layout_garage just because a widget needed an on-screen nudge.
-        self._apply_layout(persist_clamps=False)
-        self._refresh_visible_widgets()
-        self._apply_visibility()
-        self.map_widget._invalidate_static_cache()
+        label = config.CONTEXT_LABELS.get(
+            config.effective_context(), config.effective_context())
+        try:
+            if self._profile_loading_depth <= 0:
+                self._show_profile_loading(f"Loading profile\u2026 {label}")
+            # Don't persist clamps here — that would bake race fallbacks into
+            # layout_garage just because a widget needed an on-screen nudge.
+            self._apply_layout(persist_clamps=False)
+            QApplication.processEvents()
+            self._refresh_visible_widgets()
+            QApplication.processEvents()
+            self._apply_visibility()
+            QApplication.processEvents()
+            self.map_widget._invalidate_static_cache()
+        finally:
+            self._finish_profile_loading()
+
+    def _update_context(self) -> None:
+        """Pick the 'garage' or 'race' profile from telemetry (iRacing's
+        IsInGarage). Switching only happens on a change, which recomputes the
+        live config and re-applies widget visibility."""
+        try:
+            in_garage = bool(self.ir["IsInGarage"])
+        except Exception:
+            in_garage = False
+        ctx = "garage" if in_garage else "race"
+        if ctx != config.active_context():
+            config.set_context(ctx)
+        # Settings pins a preview context for editing; that must not block
+        # telemetry-driven garage/race switching on the live overlay.
+        pin = config.preview_context()
+        if pin is not None and pin != ctx:
+            config.set_preview_context(None)
+        self._maybe_auto_switch_preset()
 
     def current_car(self) -> tuple[str, str]:
         """The player's current (car_path, display_name), or ("", "") if unknown.
@@ -2133,8 +2161,12 @@ class AdvancedSimHUD:
         # Use the cached est-lap-time (refreshed with drivers) instead of
         # re-parsing the DriverInfo session YAML every single tick.
         lap_est = float(self._car_info.get("est_lap", 0.0) or 0.0)
-        if lap_est <= 0:
+        if lap_est <= 0 and est_time:
             lap_est = max((t for t in est_time if t and t > 0), default=0.0)
+        # Cold mid-race connect can briefly lack DriverCarEstLapTime / EstTime;
+        # keep relative wrap math alive so the table still paints.
+        if lap_est <= 0:
+            lap_est = 90.0
         return lap_est
 
     def _update_radar(self, player, lap_pct, surface, car_left_right,
@@ -2940,8 +2972,10 @@ class AdvancedSimHUD:
                          positions, car_lap, lap_est, sess_time,
                          radio_speaker=None, car_f2=None, on_pit=None,
                          car_flags=None) -> None:
-        if player is None or not est_time or not surface or lap_est <= 0:
+        if player is None or not est_time or not surface:
             return
+        if lap_est <= 0:
+            lap_est = self._lap_est(est_time)
 
         rcfg = config.CFG["relative"]
         cols = self._visible_cols("relative")
@@ -3444,8 +3478,11 @@ class AdvancedSimHUD:
             if not live[player] or int(live[player]) <= 0:
                 return True
         valid_live = sum(
-            1 for p in (live or []) if isinstance(p, int) and int(p) > 0
+            1 for p in (live or []) if isinstance(p, (int, float)) and int(p) > 0
         )
+        # Cold mid-race connect: live positions often all zeros until SDK catches up.
+        if valid_live == 0:
+            return True
         grid_count = sum(1 for p in grid if p > 0)
         if grid_count >= 2 and valid_live < max(2, grid_count // 2):
             return True
@@ -4103,6 +4140,9 @@ class AdvancedSimHUD:
                     positions=None, car_lap=None,
                     radio_speaker=None,
                     on_pit_arr=None, car_flags=None) -> None:
+        # Load the track outline even when car telemetry isn't ready yet (common
+        # on mid-race app restart); car dots still need player/lap%/surface.
+        self._ensure_track(player, lap_pct)
         if player is None or not lap_pct or not surface:
             return
 
@@ -4110,7 +4150,6 @@ class AdvancedSimHUD:
         # Resolve the player's model-space position once (GPS or dead reckoning)
         # so the learner and the pit capture share a single, consistent frame.
         self._update_player_pos(lap_pct[player])
-        self._ensure_track(player, lap_pct)
         # In demo mode the pit lane is synthesized once (see _load_demo_track);
         # skip live learning so it isn't overwritten by the demo's fake pit dips.
         if mcfg.get("show_pit", True) and not self.demo:
@@ -4599,19 +4638,6 @@ class AdvancedSimHUD:
             return "Session complete"
 
         return None
-
-    def _update_context(self) -> None:
-        """Pick the 'garage' or 'race' profile from telemetry (iRacing's
-        IsInGarage). Switching only happens on a change, which recomputes the
-        live config and re-applies widget visibility."""
-        try:
-            in_garage = bool(self.ir["IsInGarage"])
-        except Exception:
-            in_garage = False
-        ctx = "garage" if in_garage else "race"
-        if ctx != config.active_context():
-            config.set_context(ctx)
-        self._maybe_auto_switch_preset()
 
     def _maybe_auto_switch_preset(self) -> None:
         """Switch presets to match the session: league, then car, then default.

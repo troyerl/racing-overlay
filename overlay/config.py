@@ -1568,6 +1568,11 @@ def active_context() -> str:
     return ACTIVE_CONTEXT
 
 
+def preview_context() -> str | None:
+    """Editor preview pin, or None when live CFG follows telemetry."""
+    return _preview_context
+
+
 def effective_context() -> str:
     """The context actually driving the live config (preview pin wins)."""
     return _ctx()

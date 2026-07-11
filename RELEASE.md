@@ -5,6 +5,16 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.67.1 - 2026-07-11
+
+- **Fix: mid-race restart.** Opening the app during a session loads the map
+  without waiting on car telemetry, Relative keeps painting with a lap-time
+  fallback, and Standings uses grid positions when live ranks are still zeros.
+- **Garage / race context follows the sim.** Settings preview pin no longer
+  blocks IsInGarage auto-switching the live overlay profile.
+- **Profile switch spinner.** Race ↔ garage context changes show the same
+  loading spinner as preset switches.
+
 ## 1.67.0 - 2026-07-11
 
 - **Race split slot.** Relative / Standings header and footer can show
