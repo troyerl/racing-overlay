@@ -191,6 +191,9 @@ DEFAULTS: dict = {
     # login. The OS toggle is applied via overlay.autostart; this flag is the
     # remembered preference (synced from the shortcut on the Settings App page).
     "start_at_login": False,
+    # Personal league/driver groups: name + icon + color + members (name/aliases).
+    # Shown as a badge next to matching drivers in Relative / Standings.
+    "driver_groups": [],
     "relative": {
         **copy.deepcopy(_TABLE_STYLE),
         # Show or hide this whole widget (its window + all of its per-tick work).
@@ -1036,6 +1039,8 @@ DEFAULTS: dict = {
             "badge_speaking_bg": "#22c55e",
             "badge_speaking_text": "#ffffff",
             "badge_speaking_border": "#ffffffcc",
+            "pro_name": "#f5c542",
+            "pro_badge": "#f5c542",
         },
     },
     "ers_hybrid": {

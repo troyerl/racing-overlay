@@ -49,6 +49,7 @@ SLOT_ITEMS: dict[str, tuple[str, str]] = {
     "weather":        ("WX",   "weather"),
     "track_wetness":  ("WET",  "track_wetness"),
     "session_type":   ("",     "session_type"),
+    "race_split":     ("",     "race_split"),
 }
 
 
@@ -502,6 +503,9 @@ class BaseTable(QWidget):
             nx, nw = slots["name"]
             name_bold = tc.get("name_font_bold", True)
             is_pro = bool(row.get("is_pro"))
+            group_icon = str(row.get("group_icon") or "")
+            group_color = str(row.get("group_color") or "")
+            show_group = (not is_pro) and bool(group_icon) and icons.has(group_icon)
             if row.get("speaking"):
                 p.setPen(col("badge_speaking_bg"))
             elif self._row_dimmed(row):
@@ -535,6 +539,27 @@ class BaseTable(QWidget):
                         p.setPen(col("muted"))
                     else:
                         p.setPen(col("pro_name"))
+            elif show_group:
+                glyph = icons.glyph(group_icon)
+                if glyph:
+                    ic_px = h * 0.32
+                    ic_f = icons.icon_font(ic_px)
+                    gw = QFontMetricsF(ic_f).horizontalAdvance(glyph)
+                    gap = max(2.0, h * 0.08)
+                    p.setFont(ic_f)
+                    p.setPen(config.qcolor(group_color or "#5bb8ff"))
+                    p.drawText(QRectF(nx, y, gw + 2, h),
+                               Qt.AlignmentFlag.AlignVCenter
+                               | Qt.AlignmentFlag.AlignLeft, glyph)
+                    text_x = nx + gw + gap
+                    text_w = max(10.0, nw - (gw + gap))
+                    p.setFont(tfont(fs, bold=name_bold))
+                    if row.get("speaking"):
+                        p.setPen(col("badge_speaking_bg"))
+                    elif self._row_dimmed(row):
+                        p.setPen(col("muted"))
+                    else:
+                        p.setPen(col("text"))
             elided = QFontMetricsF(p.font()).elidedText(
                 name, Qt.TextElideMode.ElideRight, text_w)
             p.drawText(QRectF(text_x, y, text_w, h),

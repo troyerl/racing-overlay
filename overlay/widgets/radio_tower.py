@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from PyQt6.QtCore import QRectF, Qt
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtGui import QColor, QFontMetricsF, QPainter
 from PyQt6.QtWidgets import QSizePolicy, QWidget
 
 from .. import config
+from . import icons
 from .chrome import col, draw_card, draw_section_header, panel_pad, resolve_row_height
 from .fonts import data_font_bold, tfont
 
@@ -17,6 +18,9 @@ _PREVIEW_ROW = {
     "name": "Preview Driver",
     "active": True,
     "is_player": False,
+    "is_pro": False,
+    "group_icon": "league",
+    "group_color": "#5bb8ff",
 }
 
 
@@ -58,6 +62,20 @@ def _draw_speaking_accent(p: QPainter, rect: QRectF) -> None:
     wash.setAlpha(38)
     p.setBrush(wash)
     p.drawRect(rect)
+
+
+def _badge_glyph(row: dict) -> tuple[str, QColor] | tuple[None, None]:
+    """Pro star wins; else group icon. Returns (glyph, pen_color) or (None, None)."""
+    if bool(row.get("is_pro")):
+        g = icons.glyph("pro_driver")
+        if g:
+            return g, col("pro_badge", _SECTION, "#f5c542")
+    group_icon = str(row.get("group_icon") or "")
+    if group_icon and icons.has(group_icon):
+        g = icons.glyph(group_icon)
+        if g:
+            return g, config.qcolor(str(row.get("group_color") or "#5bb8ff"))
+    return None, None
 
 
 class RadioTowerWidget(QWidget):
@@ -136,8 +154,26 @@ class RadioTowerWidget(QWidget):
         text_x = x0 + text_inset
         text_w = max(0.0, content_w - text_inset)
 
-        p.setFont(tfont(text_size, bold=data_font_bold(_SECTION)))
-        p.setPen(col("text", _SECTION, "#d8d8d8"))
+        glyph, badge_color = _badge_glyph(row)
+        if glyph and badge_color is not None:
+            ic_px = (row_h - 2) * 0.32
+            ic_f = icons.icon_font(ic_px)
+            gw = QFontMetricsF(ic_f).horizontalAdvance(glyph)
+            gap = max(2.0, (row_h - 2) * 0.08)
+            p.setFont(ic_f)
+            p.setPen(badge_color)
+            p.drawText(QRectF(text_x, row_top, gw + 2, row_h - 2),
+                       Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                       glyph)
+            text_x = text_x + gw + gap
+            text_w = max(0.0, text_w - (gw + gap))
+
+        is_pro = bool(row.get("is_pro"))
+        p.setFont(tfont(text_size, bold=data_font_bold(_SECTION) or is_pro))
+        if is_pro and not row.get("active"):
+            p.setPen(col("pro_name", _SECTION, "#f5c542"))
+        else:
+            p.setPen(col("text", _SECTION, "#d8d8d8"))
         text_rect = QRectF(text_x, row_top, text_w, row_h - 2)
         p.drawText(text_rect,
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft

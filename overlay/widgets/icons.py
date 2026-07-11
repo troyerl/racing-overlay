@@ -63,7 +63,15 @@ _CODEPOINTS: dict[str, int] = {
     "race_time": 0xF017,      # clock
     "session_best": 0xF091,   # trophy
     "my_session_best": 0xF2F2,  # stopwatch
+    "race_split": 0xF0CB,     # list-ol
     "track_name": 0xF018,     # road
+    # driver-group picker (Relative / Standings name badge)
+    "league": 0xF0C0,         # users
+    "flag": 0xF024,           # flag
+    "trophy": 0xF091,         # trophy
+    "shield": 0xF3ED,         # shield-halved
+    "crown": 0xF521,          # crown
+    "bolt": 0xF0E7,           # bolt
     "local_time": 0xF017,     # clock
     "sim_time": 0xF185,       # sun
     "cpu": 0xF2DB,            # microchip

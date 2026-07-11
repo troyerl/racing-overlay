@@ -5,6 +5,19 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.67.0 - 2026-07-11
+
+- **Race split slot.** Relative / Standings header and footer can show
+  registration split (`Split N`) when resolvable from WeekendInfo or optional
+  iRacing results credentials; demo shows Split 2.
+- **Dropdown ordering.** None / empty options sort to the top of settings
+  combos; the Default preset stays first in the preset picker.
+- **Driver groups.** App settings: create personal groups (league mates),
+  pick icon + color, add members/aliases. Matching drivers get that badge in
+  Relative and Standings (pro star still wins).
+- **Radio tower badges.** Speakers show the same pro / group icons; the tower
+  also appears when you transmit even without a race position.
+
 ## 1.66.3 - 2026-07-11
 
 - **Save pit.** Track Scan gains Save pit — updates pit geometry locally and to

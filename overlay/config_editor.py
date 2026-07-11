@@ -62,6 +62,7 @@ from PyQt6.QtWidgets import (
 
 from . import config, constants, paths, track_store, version
 from . import demo_data
+from . import driver_groups as dgroups
 from . import setting_help
 from .busy_dialog import BusySpinnerDialog
 
@@ -120,6 +121,7 @@ OPTION_LABELS = {
     "sim_time": "Sim time of day", "cpu": "CPU usage %", "mem": "Memory usage %",
     "gpu": "GPU usage %",
     "order_pill": "Order", "title": "Title", "count": "Count",
+    "race_split": "Race split",
     # pit_mode
     "laps_since": "Laps since pit", "time_since": "Time since pit",
     "at_lap": "Lap pitted on", "at_time": "Race time pitted",
@@ -356,7 +358,7 @@ _SLOT_COMMON = [
     "track_temp", "air_temp", "best_lap", "my_session_best", "session_best",
     "local_time", "sim_time", "cpu", "mem", "gpu",
     "laps_remain", "incident_limit", "fast_repairs",
-    "weather", "track_wetness", "session_type",
+    "weather", "track_wetness", "session_type", "race_split",
 ]
 _SLOT_STANDINGS = _SLOT_COMMON + ["order_pill", "title", "count"]
 SECTION_ITEMS = {
@@ -1391,7 +1393,13 @@ def _option_label(value) -> str:
 
 
 def _sort_combo_options(options: list, label_fn=_option_label) -> list:
-    return sorted(options, key=lambda v: label_fn(v).casefold())
+    """Sort A–Z by label, but pin None / empty / \"none\" at the top."""
+    def _key(v):
+        if v is None or v == "" or v == "none":
+            return (0, label_fn(v).casefold())
+        return (1, label_fn(v).casefold())
+
+    return sorted(options, key=_key)
 
 
 def _is_color(path: list, value) -> bool:
@@ -2247,6 +2255,7 @@ class ConfigEditor(QWidget):
             v.addWidget(self._about_card())
             v.addWidget(self._launch_card())
             v.addWidget(self._auto_switch_card())
+            v.addWidget(self._driver_groups_card())
             if track_store.can_write():
                 v.addWidget(self._demo_track_admin_card())
                 v.addWidget(self._pro_drivers_admin_card())
@@ -2257,7 +2266,7 @@ class ConfigEditor(QWidget):
             v.addWidget(self._preset_leagues_card())
             v.addWidget(self._preset_cars_card())
             scalars = {k: val for k, val in config.DEFAULTS.items()
-                       if not isinstance(val, dict)}
+                       if not isinstance(val, dict) and k != "driver_groups"}
             self._populate(v, scalars, [], color, [])
             v.addStretch(1)
             return page
@@ -2928,7 +2937,14 @@ class ConfigEditor(QWidget):
     def _refresh_preset_combo(self) -> None:
         self.preset_combo.blockSignals(True)
         self.preset_combo.clear()
-        for name in sorted(config.presets(), key=str.casefold):
+        names = list(config.presets())
+        ordered: list[str] = []
+        if config.DEFAULT_PRESET in names:
+            ordered.append(config.DEFAULT_PRESET)
+        ordered.extend(
+            sorted((n for n in names if n != config.DEFAULT_PRESET),
+                   key=str.casefold))
+        for name in ordered:
             self.preset_combo.addItem(name, name)
         i = self.preset_combo.findData(config.active_preset())
         self.preset_combo.setCurrentIndex(max(0, i))
@@ -3173,6 +3189,272 @@ class ConfigEditor(QWidget):
     def _set_auto_switch(self, setter, on: bool) -> None:
         setter(bool(on))
         self._flash("Auto-switch updated")
+
+    def _driver_groups_card(self) -> QFrame:
+        """Personal league/driver groups with icon badges in tables."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Driver groups")
+        t.setObjectName("enableTitle")
+        hint = QLabel(
+            "Group drivers (for example league mates), pick an icon and color, "
+            "and they get that badge next to their name in Relative and "
+            "Standings. Pro drivers still show the gold star instead.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+
+        lists = QHBoxLayout()
+        lists.setSpacing(10)
+        left = QVBoxLayout()
+        left.setSpacing(4)
+        left.addWidget(QLabel("Groups"))
+        self._dg_group_list = QListWidget()
+        self._dg_group_list.setMinimumHeight(110)
+        self._dg_group_list.currentRowChanged.connect(self._on_dg_group_selected)
+        left.addWidget(self._dg_group_list)
+        lists.addLayout(left, 1)
+        right = QVBoxLayout()
+        right.setSpacing(4)
+        right.addWidget(QLabel("Members"))
+        self._dg_member_list = QListWidget()
+        self._dg_member_list.setMinimumHeight(110)
+        self._dg_member_list.currentRowChanged.connect(self._on_dg_member_selected)
+        right.addWidget(self._dg_member_list)
+        lists.addLayout(right, 1)
+        v.addLayout(lists)
+
+        gform = QVBoxLayout()
+        gform.setSpacing(6)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Group name"))
+        self._dg_group_name = QLineEdit()
+        self._dg_group_name.setPlaceholderText("My League")
+        name_row.addWidget(self._dg_group_name, 1)
+        gform.addLayout(name_row)
+        icon_row = QHBoxLayout()
+        icon_row.addWidget(QLabel("Icon"))
+        self._dg_icon = Combo()
+        for key in dgroups.DRIVER_GROUP_ICONS:
+            self._dg_icon.addItem(
+                dgroups.DRIVER_GROUP_ICON_LABELS.get(key, key), key)
+        icon_row.addWidget(self._dg_icon, 1)
+        icon_row.addWidget(QLabel("Color"))
+        self._dg_color_btn = ColorButton(
+            "#5bb8ff", lambda _c: None)
+        icon_row.addWidget(self._dg_color_btn)
+        gform.addLayout(icon_row)
+        v.addLayout(gform)
+
+        gbtns = QHBoxLayout()
+        gbtns.setSpacing(8)
+        g_add = QPushButton("Add / Update group")
+        g_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        g_add.clicked.connect(self._dg_group_add_update)
+        g_rem = QPushButton("Remove group")
+        g_rem.setObjectName("danger")
+        g_rem.setCursor(Qt.CursorShape.PointingHandCursor)
+        g_rem.clicked.connect(self._dg_group_remove)
+        gbtns.addWidget(g_add)
+        gbtns.addWidget(g_rem)
+        gbtns.addStretch(1)
+        v.addLayout(gbtns)
+
+        mform = QVBoxLayout()
+        mform.setSpacing(6)
+        mname = QHBoxLayout()
+        mname.addWidget(QLabel("Member"))
+        self._dg_member_name = QLineEdit()
+        self._dg_member_name.setPlaceholderText("iRacing UserName")
+        mname.addWidget(self._dg_member_name, 1)
+        mform.addLayout(mname)
+        malias = QHBoxLayout()
+        malias.addWidget(QLabel("Aliases"))
+        self._dg_member_alias = QLineEdit()
+        self._dg_member_alias.setPlaceholderText("Comma-separated alternate names")
+        malias.addWidget(self._dg_member_alias, 1)
+        mform.addLayout(malias)
+        v.addLayout(mform)
+
+        mbtns = QHBoxLayout()
+        mbtns.setSpacing(8)
+        m_add = QPushButton("Add / Update member")
+        m_add.setCursor(Qt.CursorShape.PointingHandCursor)
+        m_add.clicked.connect(self._dg_member_add_update)
+        m_rem = QPushButton("Remove member")
+        m_rem.setObjectName("danger")
+        m_rem.setCursor(Qt.CursorShape.PointingHandCursor)
+        m_rem.clicked.connect(self._dg_member_remove)
+        mbtns.addWidget(m_add)
+        mbtns.addWidget(m_rem)
+        mbtns.addStretch(1)
+        v.addLayout(mbtns)
+
+        self._dg_status = QLabel("")
+        self._dg_status.setObjectName("enableHint")
+        self._dg_status.setWordWrap(True)
+        v.addWidget(self._dg_status)
+
+        self._dg_groups_local: list[dict] = []
+        self._dg_selected_group = -1
+        self._load_driver_groups_into_ui(
+            self.working.get("driver_groups")
+            if isinstance(self.working, dict) else None)
+        return card
+
+    def _dg_group_list_label(self, entry: dict) -> str:
+        n = len(entry.get("members") or [])
+        return f"{entry.get('name', '?')}  ({n})"
+
+    def _dg_member_list_label(self, entry: dict) -> str:
+        aliases = entry.get("aliases") or []
+        if aliases:
+            return f"{entry['name']}  ({', '.join(aliases)})"
+        return entry.get("name", "")
+
+    def _load_driver_groups_into_ui(self, raw=None) -> None:
+        groups = dgroups.normalize_driver_groups(raw)
+        self._dg_groups_local = groups
+        prev = self._dg_selected_group
+        self._dg_group_list.blockSignals(True)
+        self._dg_group_list.clear()
+        for entry in groups:
+            self._dg_group_list.addItem(self._dg_group_list_label(entry))
+        self._dg_group_list.blockSignals(False)
+        if groups:
+            row = prev if 0 <= prev < len(groups) else 0
+            self._dg_group_list.setCurrentRow(row)
+            self._on_dg_group_selected(row)
+        else:
+            self._dg_selected_group = -1
+            self._dg_member_list.clear()
+            self._dg_group_name.clear()
+            self._dg_member_name.clear()
+            self._dg_member_alias.clear()
+        self._dg_status.setText(
+            f"{len(groups)} group{'s' if len(groups) != 1 else ''}")
+
+    def _on_dg_group_selected(self, row: int) -> None:
+        self._dg_selected_group = row
+        if row < 0 or row >= len(self._dg_groups_local):
+            self._dg_member_list.clear()
+            return
+        g = self._dg_groups_local[row]
+        self._dg_group_name.setText(g.get("name", ""))
+        idx = self._dg_icon.findData(g.get("icon") or "league")
+        self._dg_icon.setCurrentIndex(max(0, idx))
+        self._dg_color_btn.set_value(g.get("color") or "#5bb8ff")
+        self._dg_member_list.blockSignals(True)
+        self._dg_member_list.clear()
+        for m in g.get("members") or []:
+            self._dg_member_list.addItem(self._dg_member_list_label(m))
+        self._dg_member_list.blockSignals(False)
+        self._dg_member_name.clear()
+        self._dg_member_alias.clear()
+
+    def _on_dg_member_selected(self, row: int) -> None:
+        gi = self._dg_selected_group
+        if gi < 0 or gi >= len(self._dg_groups_local):
+            return
+        members = self._dg_groups_local[gi].get("members") or []
+        if row < 0 or row >= len(members):
+            return
+        m = members[row]
+        self._dg_member_name.setText(m.get("name", ""))
+        self._dg_member_alias.setText(", ".join(m.get("aliases") or []))
+
+    def _dg_current_color(self) -> str:
+        return getattr(self._dg_color_btn, "_value", "#5bb8ff") or "#5bb8ff"
+
+    def _dg_group_add_update(self) -> None:
+        name = self._dg_group_name.text().strip()
+        if not name:
+            self._dg_status.setText("Enter a group name.")
+            return
+        icon = self._dg_icon.currentData() or "league"
+        color = self._dg_current_color()
+        entry = {"name": name, "icon": icon, "color": color, "members": []}
+        replaced = False
+        for i, cur in enumerate(self._dg_groups_local):
+            if cur.get("name", "").casefold() == name.casefold():
+                entry["members"] = list(cur.get("members") or [])
+                self._dg_groups_local[i] = entry
+                self._dg_selected_group = i
+                replaced = True
+                break
+        if not replaced:
+            self._dg_groups_local.append(entry)
+            self._dg_selected_group = len(self._dg_groups_local) - 1
+        self._dg_groups_local = dgroups.normalize_driver_groups(
+            self._dg_groups_local)
+        self._persist_driver_groups()
+        self._load_driver_groups_into_ui(self._dg_groups_local)
+
+    def _dg_group_remove(self) -> None:
+        row = self._dg_group_list.currentRow()
+        if row < 0 or row >= len(self._dg_groups_local):
+            return
+        del self._dg_groups_local[row]
+        self._dg_selected_group = min(row, len(self._dg_groups_local) - 1)
+        self._persist_driver_groups()
+        self._load_driver_groups_into_ui(self._dg_groups_local)
+
+    def _dg_member_add_update(self) -> None:
+        gi = self._dg_selected_group
+        if gi < 0 or gi >= len(self._dg_groups_local):
+            self._dg_status.setText("Select or create a group first.")
+            return
+        name = self._dg_member_name.text().strip()
+        if not name:
+            self._dg_status.setText("Enter a member name.")
+            return
+        aliases = [a.strip() for a in self._dg_member_alias.text().split(",")
+                   if a.strip()]
+        entry = {"name": name, "aliases": aliases}
+        members = list(self._dg_groups_local[gi].get("members") or [])
+        replaced = False
+        for i, cur in enumerate(members):
+            if cur.get("name", "").casefold() == name.casefold():
+                members[i] = entry
+                replaced = True
+                break
+        if not replaced:
+            members.append(entry)
+        self._dg_groups_local[gi]["members"] = members
+        self._dg_groups_local = dgroups.normalize_driver_groups(
+            self._dg_groups_local)
+        self._persist_driver_groups()
+        self._load_driver_groups_into_ui(self._dg_groups_local)
+
+    def _dg_member_remove(self) -> None:
+        gi = self._dg_selected_group
+        if gi < 0 or gi >= len(self._dg_groups_local):
+            return
+        row = self._dg_member_list.currentRow()
+        members = list(self._dg_groups_local[gi].get("members") or [])
+        if row < 0 or row >= len(members):
+            return
+        del members[row]
+        self._dg_groups_local[gi]["members"] = members
+        self._persist_driver_groups()
+        self._load_driver_groups_into_ui(self._dg_groups_local)
+
+    def _persist_driver_groups(self) -> None:
+        groups = dgroups.normalize_driver_groups(self._dg_groups_local)
+        self._dg_groups_local = groups
+        if isinstance(self.working, dict):
+            self.working["driver_groups"] = copy.deepcopy(groups)
+        if self.live_sw.isChecked():
+            config.apply_edits(self._edit_ctx, self.working)
+        if self.autosave_sw.isChecked():
+            self._flash("Driver groups updated \u2014 saving\u2026")
+            self._save_timer.start(400)
+        else:
+            self._flash("Driver groups updated \u2014 unsaved")
 
     def _demo_track_admin_card(self) -> QFrame:
         """Author-only: set the shared demo track for all users."""

@@ -452,7 +452,7 @@ class FakeIRSDK:
             return self._frame["best_lap_times"]
 
         if key == "RadioTransmitCarIdx":
-            # Cycle through a few cars so the speaking badge is visible in demo.
+            # Cycle cars (including the player) so self-talk + speaking badge show.
             return int((time.time() - self._start) // 3.0) % self.num_cars
 
         if key == "Lap":

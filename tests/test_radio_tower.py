@@ -43,6 +43,12 @@ def test_row_text_position_only():
                      show_car_number=False) == "5"
 
 
+def test_row_text_empty_position_still_shows_name():
+    row = {"position": "", "name": "Me", "car_number": "48"}
+    assert _row_text(row, show_position=True, show_name=True,
+                     show_car_number=True) == "Me #48"
+
+
 def test_radio_tower_paint_active_row(qapp):
     w = RadioTowerWidget()
     w.resize(220, 56)
@@ -53,6 +59,42 @@ def test_radio_tower_paint_active_row(qapp):
             "name": "Driver",
             "active": True,
             "is_player": True,
+        }],
+    })
+    w.paintEvent(QPaintEvent(QRect(0, 0, 220, 56)))
+
+
+def test_radio_tower_paint_pro_badge(qapp):
+    w = RadioTowerWidget()
+    w.resize(220, 56)
+    w.set_data({
+        "rows": [{
+            "position": 1,
+            "car_number": "33",
+            "name": "Pro Driver",
+            "active": True,
+            "is_player": False,
+            "is_pro": True,
+            "group_icon": "league",
+            "group_color": "#5bb8ff",
+        }],
+    })
+    w.paintEvent(QPaintEvent(QRect(0, 0, 220, 56)))
+
+
+def test_radio_tower_paint_group_badge(qapp):
+    w = RadioTowerWidget()
+    w.resize(220, 56)
+    w.set_data({
+        "rows": [{
+            "position": "",
+            "car_number": "11",
+            "name": "League Mate",
+            "active": True,
+            "is_player": True,
+            "is_pro": False,
+            "group_icon": "flag",
+            "group_color": "#46df7a",
         }],
     })
     w.paintEvent(QPaintEvent(QRect(0, 0, 220, 56)))

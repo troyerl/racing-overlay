@@ -26,6 +26,7 @@ import logging
 import math
 import os
 import sys
+import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ from . import track_store
 from . import traffic as tr
 from . import telemetry as tele
 from . import version
+from . import driver_groups as dgroups
 from .busy_dialog import BusySpinnerDialog
 from .map_markers import (
     fresh_hold_states, resolve_traffic_markers, select_marker_candidates,
@@ -123,6 +125,36 @@ def _coerce_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _weekend_split_field(wk: dict) -> int | None:
+    """Pull an undocumented numeric split field from WeekendInfo if present."""
+    if not isinstance(wk, dict):
+        return None
+    candidates = (
+        "RaceSplit", "SplitNum", "SplitNumber", "SessionSplit",
+        "SessionSplitNum", "EventSplit",
+    )
+    for key in candidates:
+        if key in wk:
+            n = _coerce_int(wk.get(key))
+            if n is not None and n > 0:
+                return n
+    for key, val in wk.items():
+        if "split" not in str(key).casefold():
+            continue
+        n = _coerce_int(val)
+        if n is not None and n > 0:
+            return n
+    opts = wk.get("WeekendOptions")
+    if isinstance(opts, dict):
+        for key, val in opts.items():
+            if "split" not in str(key).casefold():
+                continue
+            n = _coerce_int(val)
+            if n is not None and n > 0:
+                return n
+    return None
 
 
 class AdvancedSimHUD:
@@ -286,6 +318,11 @@ class AdvancedSimHUD:
         # Throttled WeekendInfo cache for header/footer slots.
         self._weekend_cache: dict = {}
         self._weekend_counter = 0
+        # Registration split (throttled; optional iRacing results API).
+        self._race_split_cache: int | None = None
+        self._race_split_subsession: int | None = None
+        self._race_split_fetch_at: float = 0.0
+        self._race_split_fetching = False
         # Dead-reckoning state, used to learn the map from speed + heading when
         # the sim doesn't expose GPS (Lat/Lon). Re-zeroed each lap.
         self._dr_x = 0.0
@@ -310,6 +347,8 @@ class AdvancedSimHUD:
         self._shared_demo_track_id: str | None = None
         self._session_demo_track_id: str | None = None
         self._pro_drivers: list[dict] = []
+        self._driver_groups: list[dict] = []
+        self._reload_driver_groups()
         self._apply_app_settings_cache()
         # MongoDB is the source of truth: on launch, refresh the local cache so
         # any maps the author changed are pulled in (runs off the GUI thread).
@@ -557,6 +596,7 @@ class AdvancedSimHUD:
                 win.hide()
 
     def _on_config_change(self, cfg) -> None:
+        self._reload_driver_groups(cfg)
         self._refresh_visible_widgets()
         self._apply_visibility()
         self._repaint_config_sections(cfg)
@@ -1798,7 +1838,7 @@ class AdvancedSimHUD:
         on_pit_arr = (self.ir["CarIdxOnPitRoad"] if need_on_pit else None)
         car_flags = (self.ir["CarIdxSessionFlags"] if need_car_flags else None)
         self._need_weekend_info = (
-            config.slot_in_use("weather", "incident_limit")
+            config.slot_in_use("weather", "incident_limit", "race_split")
             or config.slot_in_use("track_wetness")
             or (en["map"] and mcfg.get("show_expanded_weather"))
             or (en["dash"] and config.dash_uses_any("incidents_limit"))
@@ -2325,12 +2365,15 @@ class AdvancedSimHUD:
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
         is_qual = self._is_qualifying_session()
         user_name = d.get("UserName", f"Car {idx}")
+        g_icon, g_color = self._group_badge_fields(user_name)
         row = {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
             "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
             "name": user_name if cols.get("name") else "",
             "is_pro": self._is_pro_driver_name(user_name),
+            "group_icon": g_icon,
+            "group_color": g_color,
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
@@ -2861,12 +2904,15 @@ class AdvancedSimHUD:
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
         is_qual = self._is_qualifying_session()
         user_name = d.get("UserName", f"Car {idx}")
+        g_icon, g_color = self._group_badge_fields(user_name)
         row = {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
             "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
             "name": user_name if cols.get("name") else "",
             "is_pro": self._is_pro_driver_name(user_name),
+            "group_icon": g_icon,
+            "group_color": g_color,
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
@@ -3098,9 +3144,68 @@ class AdvancedSimHUD:
             if "practice" in st or st == "open":
                 return "Practice"
             return st.replace("_", " ").title()
+        if key == "race_split":
+            n = self._race_split_number()
+            return f"Split {n}" if n else "\u2014"
         if key == "count":
             return count
         return None
+
+    def _race_split_number(self) -> int | None:
+        """1-based registration split, or None when unknown."""
+        if self.demo or self._demo_active:
+            return 2
+        if not config.slot_in_use("race_split"):
+            return None
+        wk = self._weekend_info()
+        raw = wk.get("RaceSplit")
+        if raw is not None:
+            try:
+                n = int(raw)
+                if n > 0:
+                    return n
+            except (TypeError, ValueError):
+                pass
+        try:
+            sid = int(wk.get("SubSessionID") or 0)
+        except (TypeError, ValueError):
+            sid = 0
+        if sid <= 0:
+            return self._race_split_cache
+        if (self._race_split_subsession == sid
+                and self._race_split_cache is not None):
+            return self._race_split_cache
+        now = time.monotonic()
+        if (self._race_split_subsession == sid
+                and now - self._race_split_fetch_at < 120.0):
+            return self._race_split_cache
+        if self._race_split_fetching:
+            return self._race_split_cache
+        self._race_split_subsession = sid
+        self._race_split_fetch_at = now
+        self._race_split_fetching = True
+
+        def _worker(sub_id: int) -> None:
+            n = None
+            try:
+                from . import iracing_results
+                n = iracing_results.split_number_for_subsession(sub_id)
+            except Exception:  # noqa: BLE001
+                n = None
+            self._on_race_split_fetched(sub_id, n)
+
+        threading.Thread(target=_worker, args=(sid,), daemon=True).start()
+        return self._race_split_cache
+
+    def _on_race_split_fetched(self, subsession_id: int, n) -> None:
+        self._race_split_fetching = False
+        if self._race_split_subsession != subsession_id:
+            return
+        try:
+            if n is not None and int(n) > 0:
+                self._race_split_cache = int(n)
+        except (TypeError, ValueError):
+            pass
 
     def _weekend_info(self) -> dict:
         """Throttled WeekendInfo + WeekendOptions for header/footer slots."""
@@ -3119,6 +3224,12 @@ class AdvancedSimHUD:
                     out["IncidentLimit"] = opts.get("IncidentLimit")
                 out["Skies"] = wk.get("Skies")
                 out["RelativeHumidity"] = wk.get("RelativeHumidity")
+                for key in ("SubSessionID", "SessionID", "Official"):
+                    if key in wk:
+                        out[key] = wk[key]
+                split = _weekend_split_field(wk)
+                if split is not None:
+                    out["RaceSplit"] = split
         except (TypeError, ValueError, KeyError):
             pass
         self._weekend_cache = out
@@ -3455,6 +3566,18 @@ class AdvancedSimHUD:
 
     def _is_pro_driver_name(self, user_name: str | None) -> bool:
         return track_store.is_pro_driver(user_name, self._pro_drivers)
+
+    def _reload_driver_groups(self, cfg=None) -> None:
+        src = cfg if isinstance(cfg, dict) else config.CFG
+        self._driver_groups = dgroups.normalize_driver_groups(
+            (src or {}).get("driver_groups"))
+
+    def _group_badge_fields(self, user_name: str | None) -> tuple[str, str]:
+        """Return ``(group_icon, group_color)`` for a driver name."""
+        g = dgroups.driver_group_for_name(user_name, self._driver_groups)
+        if not g:
+            return "", ""
+        return str(g.get("icon") or ""), str(g.get("color") or "")
 
     def _sync_demo_pit_from_meta(self, meta: dict | None) -> None:
         """Align demo pit-car simulation with loaded track pit lap-% extents."""
@@ -5515,19 +5638,26 @@ class AdvancedSimHUD:
                             radio_speaker) -> None:
         edit = self.edit_mode_enabled()
         rows = []
-        if (radio_speaker is not None and positions
-                and radio_speaker < len(positions)
+        if (radio_speaker is not None
                 and radio_speaker not in self._pace_idxs):
-            pos = positions[radio_speaker]
-            if pos and pos > 0:
-                d = self._driver_for_row(radio_speaker, player, drivers)
-                rows.append({
-                    "position": pos,
-                    "car_number": d.get("CarNumber", ""),
-                    "name": d.get("UserName", ""),
-                    "active": True,
-                    "is_player": radio_speaker == player,
-                })
+            pos = ""
+            if positions and 0 <= radio_speaker < len(positions):
+                raw = positions[radio_speaker]
+                if raw and raw > 0:
+                    pos = raw
+            d = self._driver_for_row(radio_speaker, player, drivers or {})
+            user_name = d.get("UserName", "")
+            g_icon, g_color = self._group_badge_fields(user_name)
+            rows.append({
+                "position": pos,
+                "car_number": d.get("CarNumber", ""),
+                "name": user_name,
+                "active": True,
+                "is_player": radio_speaker == player,
+                "is_pro": self._is_pro_driver_name(user_name),
+                "group_icon": g_icon,
+                "group_color": g_color,
+            })
         payload = {"rows": rows, "edit": edit}
         if payload == getattr(self.radio_tower_widget, "data", None):
             return
