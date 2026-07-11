@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.66.2 - 2026-07-11
+
+- **Dash primary columns.** Left/right primary metrics sit in two equal columns,
+  each left-aligned (replaces the packed right-aligned pair).
+- **Shift blink timeout.** Flashing stops after 3 seconds at redline
+  (`shift_blink_max_sec`); resumes after RPM drops and climbs again.
+- **Fuel calc PIT strip.** Strip keeps its original weighted height; unused
+  stats space is no longer poured into the timeline bars.
+- **Flag title / subtext spacing.** Slightly more vertical gap between the flag
+  label and context line on the dash flag bar.
+
 ## 1.66.1 - 2026-07-11
 
 - **Fix: preset loading modal.** Loading UI is preset-only (not race/garage),

@@ -442,6 +442,9 @@ DEFAULTS: dict = {
         # flash. Raise it toward 1.0 if the blink feels too early, lower it for
         # an earlier warning. Used in preference to iRacing's shift-light RPMs.
         "shift_blink_pct": 0.99,
+        # After this many seconds of continuous blink-eligible RPM, stop
+        # flashing until RPM drops below the threshold (then blink again).
+        "shift_blink_max_sec": 3.0,
         "ring_segments": 16,
         # Which driver inputs the center medallion shows. These apply to BOTH
         # center modes: in "ring" each selected input is a concentric arc

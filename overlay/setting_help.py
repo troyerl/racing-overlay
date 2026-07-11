@@ -267,6 +267,8 @@ HELP_OVERRIDES: dict[str, str] = {
     "dash.shift_blink": "When on, the whole shift bar flashes at redline to signal shift now.",
     "dash.shift_blink_hz": "Flash rate (Hz) when the shift bar blinks at redline.",
     "dash.shift_blink_pct": "RPM fraction of redline where blinking starts (0.99 = very late).",
+    "dash.shift_blink_max_sec": "Stop flashing after this many seconds at redline; "
+    "resumes the next time RPM drops below the threshold and climbs back.",
     "dash.ring_segments": "Number of segments in the throttle/brake input ring.",
     "dash.show_throttle": "When on, shows throttle in the center medallion (ring arc or pedal bar).",
     "dash.show_brake": "When on, shows brake in the center medallion.",

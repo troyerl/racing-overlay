@@ -404,6 +404,8 @@ class DashWidget(QWidget):
         self.data: dict = {}
         self._shift = 0.0
         self._shift_blink = False  # dark half of the shift-light blink
+        self._shift_blink_since_ms: int | None = None
+        self._shift_blink_suppressed = False
         self._ped = {"t": 0.0, "b": 0.0, "c": 0.0}  # eased throttle/brake/clutch
         self._clock = QElapsedTimer()
         self._clock.start()
@@ -535,13 +537,28 @@ class DashWidget(QWidget):
 
         # Shift-light blink: at the shift RPM, flash the whole bar to say "shift
         # now" (but never in top gear, where there's nothing to shift up to).
+        # After shift_blink_max_sec of continuous eligibility, stop flashing until
+        # RPM drops below the threshold (then blink again on the next climb).
         # Forces continuous repaints while it's flashing.
         self._shift_blink = False
         if c.get("show_shift_bar", True) and self._should_blink(d, c):
-            hz = float(c.get("shift_blink_hz", 7.0) or 7.0)
-            if (self._clock.elapsed() * hz / 1000.0) % 1.0 >= 0.5:
-                self._shift_blink = True
-            self._animating = True
+            now_ms = self._clock.elapsed()
+            if self._shift_blink_since_ms is None:
+                self._shift_blink_since_ms = now_ms
+                self._shift_blink_suppressed = False
+            max_sec = float(c.get("shift_blink_max_sec", 3.0) or 3.0)
+            if (not self._shift_blink_suppressed
+                    and max_sec > 0
+                    and (now_ms - self._shift_blink_since_ms) / 1000.0 >= max_sec):
+                self._shift_blink_suppressed = True
+            if not self._shift_blink_suppressed:
+                hz = float(c.get("shift_blink_hz", 7.0) or 7.0)
+                if (now_ms * hz / 1000.0) % 1.0 >= 0.5:
+                    self._shift_blink = True
+                self._animating = True
+        else:
+            self._shift_blink_since_ms = None
+            self._shift_blink_suppressed = False
 
         # --- container geometry ------------------------------------------
         m = h * 0.045
@@ -633,7 +650,7 @@ class DashWidget(QWidget):
         # --- bottom container contents (primary | stats) -----------------
         if c.get("primary_left", "lap_count") not in (None, "none") \
                 or c.get("primary_right", "speed") not in (None, "none"):
-            # Right-align the primary pair into the ring gap (even spacing).
+            # Two equal columns in the left strip; each metric left-aligned.
             primary_left = bot_rect.left() + bpad
             self._draw_primary(
                 p, QRectF(primary_left, bot_rect.top() + bpad,
@@ -755,8 +772,8 @@ class DashWidget(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(bg)
             p.drawRoundedRect(gap, gap.height() * 0.5, gap.height() * 0.5)
-            title_y = rect.center().y() - rect.height() * 0.20
-            sub_y = rect.center().y() + rect.height() * 0.22
+            title_y = rect.center().y() - rect.height() * 0.26
+            sub_y = rect.center().y() + rect.height() * 0.28
             self._text_centered(p, QPointF(cx, title_y), title_font, label, fg)
             sub_fg = QColor(fg)
             sub_fg.setAlpha(min(255, int(fg.alpha() * 0.88)))
@@ -855,7 +872,7 @@ class DashWidget(QWidget):
         p.setPen(self._col("value"))
         p.drawText(QRectF(x, rect.top(), vw + 6, h), _VC_LEFT, val)
 
-    # -- primary (lower-left): equal-size readouts, right-aligned to the ring --
+    # -- primary (lower-left): two equal columns when both set; else centered --
     def _draw_primary(self, p, rect, c, d, fit_width=None):
         h = rect.height()
         left_key = c.get("primary_left", "lap_count")
@@ -865,7 +882,58 @@ class DashWidget(QWidget):
         if not show_l and not show_r:
             return
 
-        # left = icon + value (label only if no icon); right same.
+        def sizes(s):
+            val = h * 0.58 * s
+            return {
+                "flag": h * 0.32 * s, "lbl": h * 0.28 * s, "val": val,
+                "gauge": h * 0.30 * s,
+                "g_icon": h * 0.12 * s, "g_lbl": h * 0.10 * s,
+                "g_spd": h * 0.12 * s,
+            }
+
+        def metric_width(key, glyph, lbl, val, z, icon_key="flag", gap_key="g_icon"):
+            tot = 0.0
+            if glyph:
+                tot += (QFontMetricsF(icons.icon_font(z[icon_key]))
+                        .horizontalAdvance(glyph) + z[gap_key])
+            if lbl:
+                tot += (QFontMetricsF(self._lbl_font(z["lbl"]))
+                        .horizontalAdvance(lbl) + z["g_lbl"])
+            if key == "irating":
+                tot += self._irating_pair_width(d, z["val"], h)
+            else:
+                tot += QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(val)
+            return tot
+
+        def draw_metric(col: QRectF, key, glyph, lbl, val, *,
+                        icon_key="flag", gap_key="g_icon"):
+            fit = col.width()
+            need = metric_width(key, glyph, lbl, val, sizes(1.0),
+                                icon_key=icon_key, gap_key=gap_key)
+            s = fit / need if need > fit and need > 0 else 1.0
+            z = sizes(s)
+            x = col.left()
+
+            def draw(font, text, color):
+                nonlocal x
+                p.setFont(font)
+                p.setPen(color)
+                wte = QFontMetricsF(font).horizontalAdvance(text)
+                p.drawText(QRectF(x, col.top(), wte + 6, h), _VC_LEFT, text)
+                return wte
+
+            if glyph:
+                x += draw(icons.icon_font(z[icon_key]), glyph,
+                          self._col("label")) + z[gap_key]
+            if lbl:
+                x += draw(self._lbl_font(z["lbl"]), lbl, self._col("label")) + z["g_lbl"]
+            if key == "irating":
+                pair_w = self._irating_pair_width(d, z["val"], h)
+                self._draw_irating_pair(
+                    p, QRectF(x, col.top(), pair_w, h), d, z["val"])
+            else:
+                draw(self._val_font(z["val"]), val, self._col("value"))
+
         l_lbl = _display_label(left_key) if show_l else ""
         l_val = _m_str(left_key, d) if show_l and left_key != "irating" else ""
         l_glyph = icons.glyph(left_key) if show_l else ""
@@ -873,91 +941,33 @@ class DashWidget(QWidget):
         r_val = _m_str(right_key, d) if show_r and right_key != "irating" else ""
         r_glyph = icons.glyph(right_key) if show_r else ""
 
-        def sizes(s):
-            # Same value size on both sides so left is not smaller / right-biased.
-            val = h * 0.58 * s
-            return {
-                "flag": h * 0.32 * s, "lbl": h * 0.28 * s, "val": val,
-                "gauge": h * 0.30 * s,
-                "g_icon": h * 0.12 * s, "g_lbl": h * 0.10 * s,
-                "g_grp": h * 0.34 * s, "g_spd": h * 0.12 * s,
-            }
+        if show_l and show_r:
+            # Two evenly spaced columns; each metric left-aligned in its column.
+            col_w = rect.width() * 0.5
+            draw_metric(QRectF(rect.left(), rect.top(), col_w, h),
+                        left_key, l_glyph, l_lbl, l_val)
+            draw_metric(QRectF(rect.left() + col_w, rect.top(), col_w, h),
+                        right_key, r_glyph, r_lbl, r_val,
+                        icon_key="gauge", gap_key="g_spd")
+            return
 
-        def measure(s):
-            z = sizes(s)
-            tot = 0.0
-            if show_l:
-                if l_glyph:
-                    tot += (QFontMetricsF(icons.icon_font(z["flag"]))
-                            .horizontalAdvance(l_glyph) + z["g_icon"])
-                if l_lbl:
-                    tot += (QFontMetricsF(self._lbl_font(z["lbl"]))
-                            .horizontalAdvance(l_lbl) + z["g_lbl"])
-                tot += QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(l_val)
-                if left_key == "irating":
-                    tot = tot - QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(l_val)
-                    tot += self._irating_pair_width(d, z["val"], h)
-                if show_r:
-                    tot += z["g_grp"]
-            if show_r:
-                if r_glyph:
-                    tot += (QFontMetricsF(icons.icon_font(z["gauge"]))
-                            .horizontalAdvance(r_glyph) + z["g_spd"])
-                if r_lbl:
-                    tot += (z["g_lbl"] + QFontMetricsF(self._lbl_font(z["lbl"]))
-                            .horizontalAdvance(r_lbl))
-                tot += QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(r_val)
-                if right_key == "irating":
-                    tot = tot - QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(r_val)
-                    tot += self._irating_pair_width(d, z["val"], h)
-            return tot
-
+        # Single active metric: center the group in the strip.
+        key = left_key if show_l else right_key
+        glyph = l_glyph if show_l else r_glyph
+        lbl = l_lbl if show_l else r_lbl
+        val = l_val if show_l else r_val
+        icon_key = "flag" if show_l else "gauge"
+        gap_key = "g_icon" if show_l else "g_spd"
         fit = rect.width() if fit_width is None else fit_width
-        need = measure(1.0)
+        need = metric_width(key, glyph, lbl, val, sizes(1.0),
+                            icon_key=icon_key, gap_key=gap_key)
         s = fit / need if need > fit and need > 0 else 1.0
         z = sizes(s)
-        total_w = measure(s)
-        # Pair hugs the ring; a single active metric stays centered in the strip.
-        if show_l and show_r:
-            x = rect.right() - total_w
-        else:
-            x = rect.left() + max(0.0, (rect.width() - total_w) / 2)
-
-        def draw(font, text, color):
-            nonlocal x
-            p.setFont(font)
-            p.setPen(color)
-            wte = QFontMetricsF(font).horizontalAdvance(text)
-            p.drawText(QRectF(x, rect.top(), wte + 6, h), _VC_LEFT, text)
-            return wte
-
-        if show_l:
-            if l_glyph:
-                x += draw(icons.icon_font(z["flag"]), l_glyph,
-                          self._col("label")) + z["g_icon"]
-            if l_lbl:
-                x += draw(self._lbl_font(z["lbl"]), l_lbl, self._col("label")) + z["g_lbl"]
-            if left_key == "irating":
-                pair_w = self._irating_pair_width(d, z["val"], h)
-                self._draw_irating_pair(
-                    p, QRectF(x, rect.top(), pair_w, h), d, z["val"])
-                x += pair_w
-            else:
-                x += draw(self._val_font(z["val"]), l_val, self._col("value"))
-            if show_r:
-                x += z["g_grp"]
-        if show_r:
-            if r_glyph:
-                x += draw(icons.icon_font(z["gauge"]), r_glyph,
-                          self._col("label")) + z["g_spd"]
-            if r_lbl:
-                x += draw(self._lbl_font(z["lbl"]), r_lbl, self._col("label")) + z["g_lbl"]
-            if right_key == "irating":
-                pair_w = self._irating_pair_width(d, z["val"], h)
-                self._draw_irating_pair(
-                    p, QRectF(x, rect.top(), pair_w, h), d, z["val"])
-            else:
-                x += draw(self._val_font(z["val"]), r_val, self._col("value"))
+        total_w = metric_width(key, glyph, lbl, val, z,
+                               icon_key=icon_key, gap_key=gap_key)
+        x0 = rect.left() + max(0.0, (rect.width() - total_w) / 2)
+        draw_metric(QRectF(x0, rect.top(), max(total_w, fit), h),
+                    key, glyph, lbl, val, icon_key=icon_key, gap_key=gap_key)
 
     # -- stats (two configurable stacked cells) ----------------------------
     def _draw_stats(self, p, rect, c, d):

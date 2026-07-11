@@ -591,6 +591,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Shift bar", [
             "show_shift_bar", "shift_blink", "shift_blink_hz", "shift_blink_pct",
+            "shift_blink_max_sec",
         ]),
         ("Center medallion", [
             "center_mode", "show_ring", "show_throttle", "show_brake",

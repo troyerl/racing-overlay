@@ -158,15 +158,13 @@ class FuelCalcWidget(QWidget):
         sumw = sum(wt for _k, wt in blocks)
         avail = (content_bottom - content_top) - gap * (len(blocks) - 1)
         # Provisional weighted heights, then shrink-wrap the stats grid so the
-        # PIT strip sits just under the table instead of under empty stats space.
+        # PIT strip sits just under the table. Freed space stays unused below
+        # the stack (do not grow the strip — keep its weighted height).
         heights = {key: avail * wt / sumw for key, wt in blocks}
         if "stats" in heights:
             needed = self._stats_content_height(heights["stats"])
             if needed < heights["stats"]:
-                freed = heights["stats"] - needed
                 heights["stats"] = needed
-                if "strip" in heights:
-                    heights["strip"] += freed
         cy = content_top
         for key, _wt in blocks:
             bh = heights[key]
