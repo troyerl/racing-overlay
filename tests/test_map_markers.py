@@ -35,6 +35,7 @@ def test_wrap_lap_delta():
 
 
 def test_select_marker_candidates_ahead_behind_leader():
+    # Race positions: player P2 → ahead = P1, behind = P3 (not lap-distance).
     lap_pct = [0.5, 0.55, 0.48, 0.2]
     surface = [oc.TRK_ON_TRACK] * 4
     positions = [2, 1, 4, 3]
@@ -43,7 +44,7 @@ def test_select_marker_candidates_ahead_behind_leader():
         pace_idxs=set(), on_pit_arr=[False] * 4,
     )
     assert out["ahead"] == 1
-    assert out["behind"] == 2
+    assert out["behind"] == 3
     assert out["leader"] == 1
 
 
@@ -57,6 +58,21 @@ def test_select_marker_candidates_excludes_pace():
     )
     assert out["ahead"] is None
     assert out["leader"] is None
+
+
+def test_select_marker_candidates_hides_invalid_neighbor_no_fallthrough():
+    # Player P2; P3 is in pits — behind marker must stay empty (no P4).
+    lap_pct = [0.5, 0.55, 0.48, 0.2]
+    surface = [oc.TRK_ON_TRACK, oc.TRK_ON_TRACK,
+               oc.TRK_ON_TRACK, oc.TRK_ON_TRACK]
+    positions = [2, 1, 4, 3]
+    on_pit = [False, False, False, True]
+    out = select_marker_candidates(
+        0, lap_pct, surface, positions,
+        pace_idxs=set(), on_pit_arr=on_pit,
+    )
+    assert out["ahead"] == 1
+    assert out["behind"] is None
 
 
 def test_marker_hold_requires_three_seconds():

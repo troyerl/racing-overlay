@@ -5,6 +5,26 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.65.0 - 2026-07-11
+
+- **Map pit without a lane.** If pit display is off or there is no saved pit
+  polyline, the map no longer draws a fake pit-span lane. Cars on pit road stay
+  on the racing line, offset inward and greyed.
+- **Ahead / behind by race position.** Map traffic markers target the cars one
+  place ahead and behind in the standings (not nearest by lap %). If that car is
+  in the pits or off-track, the marker is hidden — no fallthrough.
+- **Dash primary layout.** Left/right primary metrics use the same value size
+  and are centered in the strip; a single active slot (or single stat) is
+  centered in its section.
+- **Export / import presets.** Settings preset bar can export and import a
+  shared `.ggprofile.json` so layouts can be passed between installs.
+- **Professional drivers (authors).** With Mongo write access, App settings can
+  manage a shared pro-driver list (name + aliases). Matching drivers show a star
+  badge and accented name in Relative and Standings.
+- **Fix: wrong name through qual into the race.** DriverInfo cache now clears on
+  session change; player name prefers `DriverCarIdx` / `DriverUserID` so a stale
+  CarIdx map cannot label you as someone else until lap 1.
+
 ## 1.64.0 - 2026-07-10
 
 - **Dash delta reference (independent).** Dash settings gain a Reference lap

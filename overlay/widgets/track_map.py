@@ -1995,34 +1995,39 @@ class TrackMapWidget(QWidget):
 
         frac = self._loop_frac_for_pct(pct)
         track_pos = _point_on_loop_at_frac(self.path, frac)
-        weight = self._pit_blend_weight(
-            pct,
-            on_route=on_route,
-            on_pit=on_pit,
-            in_entry=in_entry,
-            in_exit=in_exit,
-            pit_lane=pit_lane,
-        )
+        use_pit = self._usable_pit_path(pit_lane)
+        weight = 0.0
         route_pos = None
-        if schematic and weight > 0:
-            route_pos = self._pos_for_schematic_route(
-                idx, pct, True, on_pit, raw=True, pit_lane=pit_lane)
-        elif on_route and weight > 0:
-            if is_player and self.player_xy is not None:
-                route_pos = self.player_xy
-            else:
-                _in, pit_path, _out, _ip, _op, _span, _sp = (
-                    self._pit_lane_saved_geom(pit_lane))
-                if pit_path and len(pit_path) >= 2:
-                    t = self._route_t_for_pct(pct, pit_lane)
-                    if t is not None:
-                        route_pos = self._pos_on_route(t, pit_lane)
+        if use_pit:
+            weight = self._pit_blend_weight(
+                pct,
+                on_route=on_route,
+                on_pit=on_pit,
+                in_entry=in_entry,
+                in_exit=in_exit,
+                pit_lane=pit_lane,
+            )
+            if schematic and weight > 0:
+                route_pos = self._pos_for_schematic_route(
+                    idx, pct, True, on_pit, raw=True, pit_lane=pit_lane)
+            elif on_route and weight > 0:
+                if is_player and self.player_xy is not None:
+                    route_pos = self.player_xy
+                else:
+                    _in, pit_path, _out, _ip, _op, _span, _sp = (
+                        self._pit_lane_saved_geom(pit_lane))
+                    if pit_path and len(pit_path) >= 2:
+                        t = self._route_t_for_pct(pct, pit_lane)
+                        if t is not None:
+                            route_pos = self._pos_on_route(t, pit_lane)
         if route_pos is not None and weight > 0:
             model = (route_pos if weight >= 1.0
                      else self._blend_xy(track_pos, route_pos, weight))
         else:
             model = track_pos
         c = tx(model)
+        # No usable pit path (or pit display off): keep pit cars offset + greyed
+        # on the racing line rather than inventing a lane.
         if on_pit and weight < 0.5:
             dx, dy = c.x() - cc.x(), c.y() - cc.y()
             ln = math.hypot(dx, dy) or 1.0
@@ -2034,12 +2039,14 @@ class TrackMapWidget(QWidget):
         on_route = car[5] if len(car) > 5 else False
         on_pit = car[6] if len(car) > 6 else False
         in_entry = car[10] if len(car) >= 11 else False
-        if (is_player and on_route and self.player_xy is not None
+        pit_lane = car[12] if len(car) >= 13 else 1
+        use_pit = self._usable_pit_path(pit_lane)
+        if (is_player and on_route and use_pit and self.player_xy is not None
                 and not schematic):
             return ("player_xy", on_route, on_pit)
-        if schematic and in_entry:
+        if schematic and in_entry and use_pit:
             return ("pct", on_route, on_pit)
-        if on_route:
+        if on_route and use_pit:
             return ("route", on_route, on_pit)
         return ("pct", on_route, on_pit)
 
@@ -2383,9 +2390,7 @@ class TrackMapWidget(QWidget):
         p.drawPath(qpath)
         p.setPen(QPen(_mcol_def("outline", "#8b93a1"), mc.get("outline_width", 6)))
         p.drawPath(qpath)
-        if mc.get("show_pit", True) and (self.pit_path or self.pit_in
-                                         or self.pit_out
-                                         or self.pit_span is not None):
+        if mc.get("show_pit", True) and self._has_drawable_pit_geom():
             self._draw_pit(p, tx)
         if self.pit_edit_mode:
             self._draw_pit_edit(p, tx)
@@ -2598,30 +2603,41 @@ class TrackMapWidget(QWidget):
         else:
             self._sf_hit = None
 
+    def _has_drawable_pit_geom(self) -> bool:
+        """True when a real pit polyline or entry/exit blend exists (not span-only)."""
+        for seg in (self.pit_path, self.pit_path_2,
+                    self.pit_in, self.pit_out,
+                    self.pit_in_2, self.pit_out_2):
+            if seg and len(seg) >= 2:
+                return True
+        return False
+
+    def _usable_pit_path(self, pit_lane: int = 1) -> bool:
+        """True when pit-lane display is on and this lane has a saved polyline."""
+        if not _mcfg().get("show_pit", True):
+            return False
+        _in, pit_path, _out, _ip, _op, _span, _sp = (
+            self._pit_lane_saved_geom(pit_lane))
+        return bool(pit_path and len(pit_path) >= 2)
+
     def _draw_pit(self, p: QPainter, tx) -> None:
-        # Prefer the real recorded pit-lane geometry; fall back to the inward
-        # offset approximation of pit_span when no geometry is available.
+        # Only draw real recorded pit-lane geometry — never invent a lane from
+        # pit_span alone (cars without a path stay offset on the racing line).
         hide_saved = self.pit_edit_mode
         entry1, road1, merge1 = self._pit_edit_bufs(1)
         entry2, road2, merge2 = self._pit_edit_bufs(2)
         show_lane1 = not (hide_saved and (road1 or merge1 or entry1))
         show_lane2 = not (hide_saved and (road2 or merge2 or entry2))
-        drew_geom = False
         if show_lane1 and self.pit_path and len(self.pit_path) >= 2:
             self._draw_saved_pit_lane(
                 p, tx, hide_saved, entry1, road1, merge1,
                 self.pit_path, self.pit_in, self.pit_out)
-            drew_geom = True
         if show_lane2 and self.pit_path_2 and len(self.pit_path_2) >= 2:
             self._draw_saved_pit_lane(
                 p, tx, hide_saved, entry2, road2, merge2,
                 self.pit_path_2, self.pit_in_2, self.pit_out_2,
                 road_color="#55d4aa", entry_color="#c8f0a0",
                 merge_color="#5ad0ff")
-            drew_geom = True
-        if drew_geom or self.pit_span is None:
-            return
-        self._draw_pit_span_fallback(p, tx)
 
     def _draw_saved_pit_lane(
         self, p, tx, hide_saved, edit_entry, edit_road, edit_merge,

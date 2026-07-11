@@ -158,11 +158,17 @@ class AdvancedSimHUD:
         self._driver_cache: dict[int, dict] = {}
         # CarIdx values of pace/safety cars, so they're never shown as competitors.
         self._pace_idxs: set[int] = set()
+        # Local driver identity from DriverInfo YAML (not live PlayerCarIdx).
+        self._driver_car_idx: int | None = None
+        self._driver_user_id: int | None = None
+        # Bypass the driver-cache throttle once (session change / identity mismatch).
+        self._force_driver_refresh = False
         # Map ahead/behind/leader icon hold state (debounce side-by-side flicker).
         self._marker_hold = fresh_hold_states()
         # Engine/shift-light params from the session YAML (cached with drivers).
         self._car_info: dict = {}
         self._driver_refresh_counter = 0
+        self._session_num: int | None = None
         # Per-car pit history: idx -> {"on": bool, "lap": int, "time": float}.
         # We track this ourselves because iRacing exposes no per-car "last pit".
         self._pit: dict[int, dict] = {}
@@ -299,6 +305,7 @@ class AdvancedSimHUD:
         self._demo_track_pending_id: str | None = None
         self._shared_demo_track_id: str | None = None
         self._session_demo_track_id: str | None = None
+        self._pro_drivers: list[dict] = []
         self._apply_app_settings_cache()
         # MongoDB is the source of truth: on launch, refresh the local cache so
         # any maps the author changed are pulled in (runs off the GUI thread).
@@ -1416,12 +1423,33 @@ class AdvancedSimHUD:
 
     # --- Telemetry helpers --------------------------------------------------
 
-    def _drivers(self) -> dict[int, dict]:
+    def _invalidate_driver_cache(self) -> None:
+        """Drop the DriverInfo map so the next tick rebuilds from YAML."""
+        self._driver_cache = {}
+        self._driver_refresh_counter = 0
+        self._pace_idxs = set()
+        self._driver_car_idx = None
+        self._driver_user_id = None
+        self._force_driver_refresh = True
+
+    def _int_or_none(self, value) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _drivers(self, player=None) -> dict[int, dict]:
         """CarIdx -> driver dict, cached and refreshed about twice a second."""
         self._driver_refresh_counter += 1
-        if self._driver_cache and self._driver_refresh_counter < 30:
+        force = self._force_driver_refresh
+        if (self._driver_cache and not force
+                and self._driver_refresh_counter < 30
+                and not self._driver_identity_mismatch(player)):
             return self._driver_cache
         self._driver_refresh_counter = 0
+        self._force_driver_refresh = False
 
         info = self.ir["DriverInfo"] if self.ir else None
         if not info:
@@ -1431,7 +1459,7 @@ class AdvancedSimHUD:
         cache: dict[int, dict] = {}
         pace: set[int] = set()
         for d in info.get("Drivers", []):
-            idx = d.get("CarIdx")
+            idx = self._int_or_none(d.get("CarIdx"))
             if idx is None:
                 continue
             if d.get("CarIsPaceCar"):
@@ -1440,6 +1468,8 @@ class AdvancedSimHUD:
             cache[idx] = d
         self._driver_cache = cache
         self._pace_idxs = pace
+        self._driver_car_idx = self._int_or_none(info.get("DriverCarIdx"))
+        self._driver_user_id = self._int_or_none(info.get("DriverUserID"))
         self._car_info = {
             "redline": info.get("DriverCarRedLine"),
             "sl_first": info.get("DriverCarSLFirstRPM"),
@@ -1464,6 +1494,62 @@ class AdvancedSimHUD:
             else:
                 self._track_name = name
         return self._driver_cache
+
+    def _driver_identity_mismatch(self, player) -> bool:
+        """True when the cached PlayerCarIdx slot is not the local DriverInfo driver.
+
+        Index-only PlayerCarIdx vs DriverCarIdx differences are handled by
+        ``_player_driver`` without a full refresh; we only force a rebuild when
+        the cached *identity* at the live slot disagrees with DriverUserID /
+        DriverCarIdx's UserName.
+        """
+        if not self._driver_cache:
+            return False
+        p = self._int_or_none(player)
+        if p is None:
+            return False
+        slot = self._driver_cache.get(p)
+        if slot is None:
+            return False
+        yaml_uid = self._driver_user_id
+        if yaml_uid is not None:
+            slot_uid = self._int_or_none(slot.get("UserID"))
+            if slot_uid is not None and slot_uid != yaml_uid:
+                return True
+        yaml_idx = self._driver_car_idx
+        if yaml_idx is not None and yaml_idx in self._driver_cache:
+            yaml_drv = self._driver_cache[yaml_idx]
+            su = self._int_or_none(slot.get("UserID"))
+            yu = self._int_or_none(yaml_drv.get("UserID"))
+            if su is not None and yu is not None and su != yu:
+                return True
+            sn = slot.get("UserName")
+            yn = yaml_drv.get("UserName")
+            if sn and yn and sn != yn:
+                return True
+        return False
+
+    def _player_driver(self, player, drivers: dict | None = None) -> dict:
+        """Local driver dict, preferring DriverCarIdx / DriverUserID over PlayerCarIdx."""
+        drivers = self._driver_cache if drivers is None else drivers
+        if not drivers:
+            return {}
+        if self._driver_car_idx is not None and self._driver_car_idx in drivers:
+            return drivers[self._driver_car_idx]
+        if self._driver_user_id is not None:
+            for d in drivers.values():
+                if self._int_or_none(d.get("UserID")) == self._driver_user_id:
+                    return d
+        p = self._int_or_none(player)
+        if p is not None:
+            return drivers.get(p) or {}
+        return {}
+
+    def _driver_for_row(self, idx, player, drivers: dict) -> dict:
+        """Driver dict for a table row; reconcile identity on the player row."""
+        if player is not None and idx == player:
+            return self._player_driver(player, drivers) or drivers.get(idx, {})
+        return drivers.get(idx, {})
 
     # --- Per-tick update ----------------------------------------------------
 
@@ -1515,7 +1601,7 @@ class AdvancedSimHUD:
         if not any(en.values()):
             return
 
-        player = self.ir["PlayerCarIdx"]
+        player = self._int_or_none(self.ir["PlayerCarIdx"])
         need_order = (en["standings"] or en["relative"] or en["dash"]
                       or en["leaderboard_strip"] or en["radio_tower"])
         need_drivers = (en["standings"] or en["relative"] or en["map"] or en["dash"]
@@ -1586,7 +1672,13 @@ class AdvancedSimHUD:
             sess_uid = int(self.ir["SessionUniqueID"])
         except (TypeError, ValueError, KeyError):
             sess_uid = None
+        try:
+            sess_num = int(self.ir["SessionNum"])
+        except (TypeError, ValueError, KeyError):
+            sess_num = None
+        session_changed = False
         if sess_uid != self._closing_session_uid:
+            session_changed = True
             self._closing_state = {}
             self._radar_closing_state = {}
             self._radar_clear_since = None
@@ -1601,8 +1693,19 @@ class AdvancedSimHUD:
             self._clear_weather_hist()
             self._ll_laps_version += 1
             self._caution_tracker = pstrat.CautionTracker()
+        if sess_num != self._session_num:
+            session_changed = True
+            self._session_num = sess_num
+        if session_changed:
+            # DriverInfo CarIdx↔name map is session-scoped; drop it so a stale
+            # qual map cannot label the player as someone else into the race.
+            self._invalidate_driver_cache()
+            self._session_info_counter = 0
+            self._practice_cache = None
+            self._qualifying_cache = None
+            self._session_type_cache = ""
         # _drivers() also refreshes the dash's engine/shift-light params.
-        drivers = self._drivers() if need_drivers else {}
+        drivers = self._drivers(player) if need_drivers else {}
         lap_est = self._lap_est(est_time) if est_time is not None else 0.0
 
         # Track pit stops only if a *shown* table shows the pit column.
@@ -2062,7 +2165,7 @@ class AdvancedSimHUD:
                              pit_mode, radio_speaker=None, est_time=None,
                              on_pit=None, car_flags=None) -> dict:
         # Only compute fields whose column is actually shown.
-        d = drivers.get(idx, {})
+        d = self._driver_for_row(idx, player, drivers)
         cls = sr = ""
         if cols.get("license"):
             cls, sr = self._parse_license(d.get("LicString"))
@@ -2085,11 +2188,13 @@ class AdvancedSimHUD:
         is_player = idx == player
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
         is_qual = self._is_qualifying_session()
+        user_name = d.get("UserName", f"Car {idx}")
         row = {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
             "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
-            "name": d.get("UserName", f"Car {idx}") if cols.get("name") else "",
+            "name": user_name if cols.get("name") else "",
+            "is_pro": self._is_pro_driver_name(user_name),
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
@@ -2607,7 +2712,7 @@ class AdvancedSimHUD:
                             radio_speaker=None, est_time=None, car_f2=None,
                             on_pit=None, car_flags=None, lap_est=0.0) -> dict:
         # Only compute fields whose column is actually shown.
-        d = drivers.get(idx, {})
+        d = self._driver_for_row(idx, player, drivers)
         cls = sr = ""
         if cols.get("license"):
             cls, sr = self._parse_license(d.get("LicString"))
@@ -2619,11 +2724,13 @@ class AdvancedSimHUD:
         # it (-> blue). Distance-based so same-lap cars near you aren't tinted.
         lapping, lap_ahead = self._lap_tint(idx, player, car_lap, is_player)
         is_qual = self._is_qualifying_session()
+        user_name = d.get("UserName", f"Car {idx}")
         row = {
             "key": idx,
             "position": (positions[idx] if positions else "") if cols.get("position") else "",
             "car_number": str(d.get("CarNumber", "")) if cols.get("car_number") else "",
-            "name": d.get("UserName", f"Car {idx}") if cols.get("name") else "",
+            "name": user_name if cols.get("name") else "",
+            "is_pro": self._is_pro_driver_name(user_name),
             "class_color": self._class_color(d, idx) if cols.get("stripe") else "#888888",
             "sr": sr,
             "lic_class": cls,
@@ -3144,9 +3251,8 @@ class AdvancedSimHUD:
             total = sum(1 for x in cp if x and x > 0)
         return f"{cp[player]}/{total}" if total else str(cp[player])
 
-    @staticmethod
-    def _player_class(drivers, player):
-        d = drivers.get(player) if drivers and player is not None else None
+    def _player_class(self, drivers, player):
+        d = self._player_driver(player, drivers) if drivers else {}
         return d.get("CarClassID") if d else None
 
     def _sys_stats(self) -> tuple[str, str, str, float | None, float | None, float | None]:
@@ -3182,24 +3288,37 @@ class AdvancedSimHUD:
 
     def _apply_app_settings_cache(self) -> None:
         cached = track_store.load_app_settings_cache(self.tracks_dir)
-        if cached and cached.get("demo_track_id") is not None:
+        if not cached:
+            return
+        if cached.get("demo_track_id") is not None:
             self._shared_demo_track_id = str(cached["demo_track_id"])
+        if "pro_drivers" in cached:
+            self._pro_drivers = track_store.normalize_pro_drivers(
+                cached.get("pro_drivers"))
 
     def _fetch_shared_app_settings(self) -> None:
         if track_store.read_available():
             self._track_sync.fetch_app_settings_async()
 
     def _on_app_settings_fetched(self, settings) -> None:
-        if not settings or settings.get("demo_track_id") is None:
+        if not settings:
             return
-        track_store.write_app_settings_cache(self.tracks_dir, settings)
-        new_id = str(settings["demo_track_id"])
-        old_id = self._shared_demo_track_id
-        self._shared_demo_track_id = new_id
-        if self.demo and old_id != new_id and self._session_demo_track_id is None:
-            self._load_demo_track()
+        track_store.merge_app_settings_cache(self.tracks_dir, settings)
+        if settings.get("demo_track_id") is not None:
+            new_id = str(settings["demo_track_id"])
+            old_id = self._shared_demo_track_id
+            self._shared_demo_track_id = new_id
+            if self.demo and old_id != new_id and self._session_demo_track_id is None:
+                self._load_demo_track()
+        if "pro_drivers" in settings:
+            self._pro_drivers = track_store.normalize_pro_drivers(
+                settings.get("pro_drivers"))
         if self._settings_window is not None:
             self._settings_window.refresh_demo_track_admin(settings)
+            self._settings_window.refresh_pro_drivers_admin(settings)
+
+    def _is_pro_driver_name(self, user_name: str | None) -> bool:
+        return track_store.is_pro_driver(user_name, self._pro_drivers)
 
     def _sync_demo_pit_from_meta(self, meta: dict | None) -> None:
         """Align demo pit-car simulation with loaded track pit lap-% extents."""
@@ -4345,7 +4464,7 @@ class AdvancedSimHUD:
                 player, positions, None, 0.0, self._driver_cache)
         irating = irating_delta = None
         car_number = ""
-        drv = self._driver_cache.get(player) if player is not None else None
+        drv = self._player_driver(player) if player is not None else None
         if drv:
             if self._dash_uses_irating() or self._dash_needs_irating_projection():
                 ir = drv.get("IRating")
@@ -5264,7 +5383,7 @@ class AdvancedSimHUD:
                 and radio_speaker not in self._pace_idxs):
             pos = positions[radio_speaker]
             if pos and pos > 0:
-                d = drivers.get(radio_speaker, {})
+                d = self._driver_for_row(radio_speaker, player, drivers)
                 rows.append({
                     "position": pos,
                     "car_number": d.get("CarNumber", ""),
@@ -5302,7 +5421,7 @@ class AdvancedSimHUD:
             ranked = ranked[:cap]
         rows = []
         for idx in ranked:
-            d = drivers.get(idx, {})
+            d = self._driver_for_row(idx, player, drivers)
             pos = positions[idx]
             gap = tr.fmt_leader_gap(
                 car_f2[idx] if car_f2 and idx < len(car_f2) else None,

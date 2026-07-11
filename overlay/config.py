@@ -134,6 +134,8 @@ _TABLE_STYLE: dict = {
         "badge_speaking_border": "#ffffffcc",
         "badge_empty_border": "#ffffff28",
         "badge_empty_fill": "#00000078",
+        "pro_name": "#f5c542",
+        "pro_badge": "#f5c542",
         "flag_black": "#1a1a1acc",
         "flag_black_text": "#ffffff",
         "flag_meatball": "#ff9416cc",
@@ -1754,6 +1756,110 @@ def create_preset(name: str, copy_from: str | None = None,
 
 def duplicate_preset(src: str, name: str) -> bool:
     return create_preset(name, copy_from=src)
+
+
+_PRESET_EXPORT_KIND = "gridglance.preset"
+_PRESET_EXPORT_VERSION = 1
+
+
+def export_preset(name: str | None = None) -> dict | None:
+    """Serialize one preset for sharing. Returns None if the name is unknown."""
+    _sync_active()
+    name = name or ACTIVE_PRESET
+    if name not in _PRESETS:
+        return None
+    p = _PRESETS[name]
+    cfg = diff_from_defaults(p["base"])
+    garage_sparse = diff_from_defaults(_deep_merge(p["base"], p["garage"]),
+                                       p["base"])
+    if garage_sparse:
+        cfg[GARAGE_KEY] = garage_sparse
+    entry: dict = {"config": cfg}
+    if p.get("layout"):
+        entry["layout"] = p["layout"]
+    if p.get("layout_garage"):
+        entry["layout_garage"] = p["layout_garage"]
+    if p.get("cars"):
+        entry["cars"] = list(p["cars"])
+    if p.get("leagues"):
+        entry["leagues"] = list(p["leagues"])
+    # Never export default=True — importing must not steal the user's default.
+    return {
+        "kind": _PRESET_EXPORT_KIND,
+        "version": _PRESET_EXPORT_VERSION,
+        "name": name,
+        "preset": entry,
+    }
+
+
+def import_preset(payload: dict, name: str | None = None,
+                  *, overwrite: bool = False, activate: bool = True) -> str:
+    """Import a shared preset payload. Returns the preset name used.
+
+    Raises ValueError on malformed payload or name collision when overwrite
+    is False.
+    """
+    global BASE, GARAGE
+    if not isinstance(payload, dict):
+        raise ValueError("Preset file must be a JSON object")
+    kind = payload.get("kind")
+    if kind not in (None, _PRESET_EXPORT_KIND):
+        raise ValueError(f"Unrecognized preset file kind: {kind!r}")
+    entry = payload.get("preset")
+    if entry is None and isinstance(payload.get("config"), dict):
+        # Allow a bare preset entry (schema-2 style) without the wrapper.
+        entry = {k: payload[k] for k in (
+            "config", "layout", "layout_garage", "cars", "leagues")
+            if k in payload}
+    if not isinstance(entry, dict) or not isinstance(entry.get("config"), dict):
+        # Also accept a full overlay_config with a single named preset.
+        presets = payload.get("presets")
+        if isinstance(presets, dict) and len(presets) == 1:
+            only_name, only_entry = next(iter(presets.items()))
+            if name is None:
+                name = str(only_name)
+            entry = only_entry if isinstance(only_entry, dict) else None
+        elif isinstance(presets, dict) and payload.get("name") in presets:
+            entry = presets[payload["name"]]
+    if not isinstance(entry, dict):
+        raise ValueError("Preset file is missing a preset payload")
+    if not isinstance(entry.get("config"), dict):
+        # Treat whole entry as config if it looks like a settings tree.
+        if any(k in entry for k in ("dash", "map", "relative", "standings")):
+            entry = {"config": entry}
+        else:
+            raise ValueError("Preset file is missing a config section")
+
+    dest = (name or payload.get("name") or "Imported").strip()
+    if not dest:
+        dest = "Imported"
+    if dest in _PRESETS and not overwrite:
+        raise ValueError(f"A preset named “{dest}” already exists")
+
+    live = _deserialize_preset(entry)
+    live["default"] = False
+    if dest in _PRESETS and overwrite:
+        live["default"] = bool(_PRESETS[dest].get("default"))
+        _PRESETS[dest] = live
+        if dest == ACTIVE_PRESET:
+            BASE = live["base"]
+            GARAGE = live["garage"]
+            _compute_cfg()
+            save_profiles()
+            _notify()
+            _notify_preset()
+        elif activate:
+            set_active_preset(dest)
+        else:
+            save_profiles()
+        return dest
+
+    _PRESETS[dest] = live
+    if activate:
+        set_active_preset(dest)
+    else:
+        save_profiles()
+    return dest
 
 
 def rename_preset(old: str, new: str) -> bool:

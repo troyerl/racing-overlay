@@ -497,6 +497,8 @@ def fetch_app_settings() -> dict | None:
         if not doc:
             return None
         out = {k: v for k, v in doc.items() if k != "_id"}
+        if "pro_drivers" in out:
+            out["pro_drivers"] = normalize_pro_drivers(out.get("pro_drivers"))
         return out
     except Exception as exc:
         log.warning("app settings fetch failed: %s: %s", type(exc).__name__, exc)
@@ -525,12 +527,82 @@ def save_app_settings(settings: dict) -> bool:
         name = settings.get("demo_track_name")
         if name:
             payload["demo_track_name"] = str(name)
+        if "pro_drivers" in settings:
+            payload["pro_drivers"] = normalize_pro_drivers(
+                settings.get("pro_drivers"))
         col.update_one({"_id": _SETTINGS_DOC_ID}, {"$set": payload}, upsert=True)
         log.info("saved app settings to %s.%s", _DB_NAME, _SETTINGS_COLLECTION)
         return True
     except Exception as exc:
         log.warning("app settings save failed: %s: %s", type(exc).__name__, exc)
         return False
+
+
+def normalize_pro_drivers(raw) -> list[dict]:
+    """Coerce pro-driver entries to ``{name, aliases}`` dicts."""
+    out: list[dict] = []
+    if not isinstance(raw, list):
+        return out
+    for item in raw:
+        if isinstance(item, str):
+            name = item.strip()
+            if name:
+                out.append({"name": name, "aliases": []})
+            continue
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        aliases_raw = item.get("aliases") or []
+        if isinstance(aliases_raw, str):
+            aliases_raw = [a.strip() for a in aliases_raw.split(",")]
+        aliases: list[str] = []
+        seen = {name.casefold()}
+        for a in aliases_raw:
+            s = str(a or "").strip()
+            if not s:
+                continue
+            key = s.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            aliases.append(s)
+        out.append({"name": name, "aliases": aliases})
+    return out
+
+
+def is_pro_driver(user_name: str | None, pro_drivers) -> bool:
+    """True when ``user_name`` matches a pro driver name or alias (casefold)."""
+    if not user_name or not pro_drivers:
+        return False
+    needle = str(user_name).strip().casefold()
+    if not needle:
+        return False
+    for entry in normalize_pro_drivers(pro_drivers):
+        if entry["name"].casefold() == needle:
+            return True
+        for alias in entry.get("aliases") or []:
+            if str(alias).casefold() == needle:
+                return True
+    return False
+
+
+def merge_app_settings_cache(tracks_dir: str, patch: dict) -> dict:
+    """Merge ``patch`` into the local app-settings cache and write it back."""
+    cur = load_app_settings_cache(tracks_dir) or {}
+    if not isinstance(cur, dict):
+        cur = {}
+    merged = dict(cur)
+    for k, v in (patch or {}).items():
+        if k == "_id":
+            continue
+        if k == "pro_drivers":
+            merged[k] = normalize_pro_drivers(v)
+        else:
+            merged[k] = v
+    write_app_settings_cache(tracks_dir, merged)
+    return merged
 
 
 def app_settings_cache_path(tracks_dir: str) -> str:

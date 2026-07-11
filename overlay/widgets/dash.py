@@ -633,8 +633,7 @@ class DashWidget(QWidget):
         # --- bottom container contents (primary | stats) -----------------
         if c.get("primary_left", "lap_count") not in (None, "none") \
                 or c.get("primary_right", "speed") not in (None, "none"):
-            # Right-align into the cleared gapL strip, but fit fonts against
-            # base_gapL so iRating spacing does not shrink left text.
+            # Center primary metrics in the left strip (even margins vs the ring).
             primary_left = bot_rect.left() + bpad
             self._draw_primary(
                 p, QRectF(primary_left, bot_rect.top() + bpad,
@@ -856,13 +855,15 @@ class DashWidget(QWidget):
         p.setPen(self._col("value"))
         p.drawText(QRectF(x, rect.top(), vw + 6, h), _VC_LEFT, val)
 
-    # -- primary (lower-left): a small readout + a big readout, right-aligned --
+    # -- primary (lower-left): equal-size readouts, centered in the strip --
     def _draw_primary(self, p, rect, c, d, fit_width=None):
         h = rect.height()
         left_key = c.get("primary_left", "lap_count")
         right_key = c.get("primary_right", "speed")
         show_l = left_key not in (None, "none")
         show_r = right_key not in (None, "none")
+        if not show_l and not show_r:
+            return
 
         # left = icon + value (label only if no icon); right same.
         l_lbl = _display_label(left_key) if show_l else ""
@@ -873,9 +874,11 @@ class DashWidget(QWidget):
         r_glyph = icons.glyph(right_key) if show_r else ""
 
         def sizes(s):
+            # Same value size on both sides so left is not smaller / right-biased.
+            val = h * 0.58 * s
             return {
-                "flag": h * 0.32 * s, "lbl": h * 0.28 * s, "lapv": h * 0.38 * s,
-                "spd": h * 0.66 * s, "gauge": h * 0.30 * s,
+                "flag": h * 0.32 * s, "lbl": h * 0.28 * s, "val": val,
+                "gauge": h * 0.30 * s,
                 "g_icon": h * 0.12 * s, "g_lbl": h * 0.10 * s,
                 "g_grp": h * 0.34 * s, "g_spd": h * 0.12 * s,
             }
@@ -890,10 +893,10 @@ class DashWidget(QWidget):
                 if l_lbl:
                     tot += (QFontMetricsF(self._lbl_font(z["lbl"]))
                             .horizontalAdvance(l_lbl) + z["g_lbl"])
-                tot += QFontMetricsF(self._val_font(z["lapv"])).horizontalAdvance(l_val)
+                tot += QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(l_val)
                 if left_key == "irating":
-                    tot = tot - QFontMetricsF(self._val_font(z["lapv"])).horizontalAdvance(l_val)
-                    tot += self._irating_pair_width(d, z["lapv"], h)
+                    tot = tot - QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(l_val)
+                    tot += self._irating_pair_width(d, z["val"], h)
                 if show_r:
                     tot += z["g_grp"]
             if show_r:
@@ -903,10 +906,10 @@ class DashWidget(QWidget):
                 if r_lbl:
                     tot += (z["g_lbl"] + QFontMetricsF(self._lbl_font(z["lbl"]))
                             .horizontalAdvance(r_lbl))
-                tot += QFontMetricsF(self._val_font(z["spd"])).horizontalAdvance(r_val)
+                tot += QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(r_val)
                 if right_key == "irating":
-                    tot = tot - QFontMetricsF(self._val_font(z["spd"])).horizontalAdvance(r_val)
-                    tot += self._irating_pair_width(d, z["spd"], h)
+                    tot = tot - QFontMetricsF(self._val_font(z["val"])).horizontalAdvance(r_val)
+                    tot += self._irating_pair_width(d, z["val"], h)
             return tot
 
         fit = rect.width() if fit_width is None else fit_width
@@ -914,7 +917,8 @@ class DashWidget(QWidget):
         s = fit / need if need > fit and need > 0 else 1.0
         z = sizes(s)
         total_w = measure(s)
-        x = rect.right() - total_w
+        # Center the group in the section (also centers a single active metric).
+        x = rect.left() + max(0.0, (rect.width() - total_w) / 2)
 
         def draw(font, text, color):
             nonlocal x
@@ -931,12 +935,12 @@ class DashWidget(QWidget):
             if l_lbl:
                 x += draw(self._lbl_font(z["lbl"]), l_lbl, self._col("label")) + z["g_lbl"]
             if left_key == "irating":
-                pair_w = self._irating_pair_width(d, z["lapv"], h)
+                pair_w = self._irating_pair_width(d, z["val"], h)
                 self._draw_irating_pair(
-                    p, QRectF(x, rect.top(), pair_w, h), d, z["lapv"])
+                    p, QRectF(x, rect.top(), pair_w, h), d, z["val"])
                 x += pair_w
             else:
-                x += draw(self._val_font(z["lapv"]), l_val, self._col("value"))
+                x += draw(self._val_font(z["val"]), l_val, self._col("value"))
             if show_r:
                 x += z["g_grp"]
         if show_r:
@@ -946,11 +950,11 @@ class DashWidget(QWidget):
             if r_lbl:
                 x += draw(self._lbl_font(z["lbl"]), r_lbl, self._col("label")) + z["g_lbl"]
             if right_key == "irating":
-                pair_w = self._irating_pair_width(d, z["spd"], h)
+                pair_w = self._irating_pair_width(d, z["val"], h)
                 self._draw_irating_pair(
-                    p, QRectF(x, rect.top(), pair_w, h), d, z["spd"])
+                    p, QRectF(x, rect.top(), pair_w, h), d, z["val"])
             else:
-                x += draw(self._val_font(z["spd"]), r_val, self._col("value"))
+                x += draw(self._val_font(z["val"]), r_val, self._col("value"))
 
     # -- stats (two configurable stacked cells) ----------------------------
     def _draw_stats(self, p, rect, c, d):
@@ -961,9 +965,10 @@ class DashWidget(QWidget):
         gap = rect.width() * 0.06
         cw = (rect.width() - gap * (len(cells) - 1)) / len(cells)
         x = rect.left()
+        center = len(cells) == 1
         for key, lines in cells:
             self._draw_stat_cell(p, QRectF(x, rect.top(), cw, rect.height()),
-                                 key, lines, d)
+                                 key, lines, d, center=center)
             x += cw + gap
 
     def _delta_color(self, delta: int | float) -> QColor:
@@ -1112,7 +1117,7 @@ class DashWidget(QWidget):
             d_w = QFontMetricsF(val_f).horizontalAdvance(dtxt)
             p.drawText(QRectF(dx, cell.top(), d_w, cell.height()), _VC_LEFT, dtxt)
 
-    def _draw_stat_cell(self, p, rect, key, lines, d: dict):
+    def _draw_stat_cell(self, p, rect, key, lines, d: dict, *, center: bool = False):
         h = rect.height()
         glyph = "" if key == "irating" else icons.glyph(key)
         ic_px, lbl_px, val_px = h * 0.40, h * 0.20, h * 0.24
@@ -1133,8 +1138,11 @@ class DashWidget(QWidget):
             s = rect.width() / need
             ic_px, lbl_px, val_px = ic_px * s, lbl_px * s, val_px * s
             icon_gap, lbl_gap = icon_gap * s, lbl_gap * s
+            need = rect.width()
 
         x = rect.left()
+        if center and need < rect.width():
+            x = rect.left() + (rect.width() - need) / 2
         if glyph:
             p.setFont(icons.icon_font(ic_px))
             p.setPen(self._col("label"))

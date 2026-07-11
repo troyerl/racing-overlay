@@ -501,17 +501,43 @@ class BaseTable(QWidget):
         if "name" in slots:
             nx, nw = slots["name"]
             name_bold = tc.get("name_font_bold", True)
+            is_pro = bool(row.get("is_pro"))
             if row.get("speaking"):
                 p.setPen(col("badge_speaking_bg"))
             elif self._row_dimmed(row):
                 p.setPen(col("muted"))
+            elif is_pro:
+                p.setPen(col("pro_name"))
             else:
                 p.setPen(col("text"))
-            p.setFont(tfont(fs, bold=name_bold))
+            p.setFont(tfont(fs, bold=name_bold or is_pro))
             name = str(row.get("name", ""))
+            text_x = nx
+            text_w = max(10.0, nw)
+            if is_pro:
+                glyph = icons.glyph("pro_driver")
+                if glyph:
+                    ic_px = h * 0.55
+                    ic_f = icons.icon_font(ic_px)
+                    gw = QFontMetricsF(ic_f).horizontalAdvance(glyph)
+                    gap = max(2.0, h * 0.12)
+                    p.setFont(ic_f)
+                    p.setPen(col("pro_badge"))
+                    p.drawText(QRectF(nx, y, gw + 2, h),
+                               Qt.AlignmentFlag.AlignVCenter
+                               | Qt.AlignmentFlag.AlignLeft, glyph)
+                    text_x = nx + gw + gap
+                    text_w = max(10.0, nw - (gw + gap))
+                    p.setFont(tfont(fs, bold=True))
+                    if row.get("speaking"):
+                        p.setPen(col("badge_speaking_bg"))
+                    elif self._row_dimmed(row):
+                        p.setPen(col("muted"))
+                    else:
+                        p.setPen(col("pro_name"))
             elided = QFontMetricsF(p.font()).elidedText(
-                name, Qt.TextElideMode.ElideRight, max(10.0, nw))
-            p.drawText(QRectF(nx, y, max(10.0, nw), h),
+                name, Qt.TextElideMode.ElideRight, text_w)
+            p.drawText(QRectF(text_x, y, text_w, h),
                        Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                        elided)
         if "license" in slots:

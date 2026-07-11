@@ -54,6 +54,7 @@ _CODEPOINTS: dict[str, int] = {
     "air_temp": 0xF72E,       # wind
     # decorative
     "sparkle": 0xF005,        # star
+    "pro_driver": 0xF005,     # star
     # table header / footer items
     "sof": 0xF0C0,            # users
     "class_sof": 0xF0C0,      # users

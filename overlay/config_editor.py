@@ -40,6 +40,7 @@ from PyQt6.QtWidgets import (
     QColorDialog,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QInputDialog,
@@ -1588,6 +1589,7 @@ class OrderEditor(QWidget):
 class ConfigEditor(QWidget):
     _demo_track_missing = pyqtSignal(int)
     _demo_track_saved = pyqtSignal(bool, int, str)
+    _pro_drivers_saved = pyqtSignal(bool, object)
 
     def __init__(self, parent=None, overlay=None):
         super().__init__(parent)
@@ -1595,6 +1597,7 @@ class ConfigEditor(QWidget):
             lambda tid: self._flash(
                 f"Track {tid} not found in the cloud library"))
         self._demo_track_saved.connect(self._on_demo_track_save_local)
+        self._pro_drivers_saved.connect(self._on_pro_drivers_saved)
         # Optional overlay controller (the running HUD) so the settings window
         # can start/stop the widgets. None when launched standalone.
         self._overlay = overlay
@@ -2243,6 +2246,7 @@ class ConfigEditor(QWidget):
             v.addWidget(self._auto_switch_card())
             if track_store.can_write():
                 v.addWidget(self._demo_track_admin_card())
+                v.addWidget(self._pro_drivers_admin_card())
             v.addStretch(1)
             return page
 
@@ -2897,6 +2901,8 @@ class ConfigEditor(QWidget):
         for text, slot, obj in (
             ("New", self._new_preset, ""),
             ("Duplicate", self._dup_preset, ""),
+            ("Export", self._export_preset, ""),
+            ("Import", self._import_preset, ""),
             ("Rename", self._rename_preset, ""),
             ("Delete", self._delete_preset, "danger"),
         ):
@@ -2979,6 +2985,85 @@ class ConfigEditor(QWidget):
         config.save_profiles()
         config.duplicate_preset(src, name)
         self._after_preset_change(f"Duplicated to \u201c{name}\u201d")
+
+    def _export_preset(self) -> None:
+        import json
+
+        config.apply_edits(self._edit_ctx, self.working, notify=False)
+        config.save_profiles()
+        name = config.active_preset()
+        payload = config.export_preset(name)
+        if not payload:
+            QMessageBox.warning(self, "Export preset",
+                                "Could not export the active preset.")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export preset", f"{name}.ggprofile.json",
+            "GridGlance preset (*.ggprofile.json *.json);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh, indent=2)
+                fh.write("\n")
+        except OSError as exc:
+            QMessageBox.warning(self, "Export preset",
+                                f"Could not write file:\n{exc}")
+            return
+        self._flash(f"Exported \u201c{name}\u201d")
+
+    def _import_preset(self) -> None:
+        import json
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import preset", "",
+            "GridGlance preset (*.ggprofile.json *.json);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Import preset",
+                                f"Could not read preset file:\n{exc}")
+            return
+        suggested = ""
+        if isinstance(payload, dict):
+            suggested = str(payload.get("name") or "").strip()
+        name, ok = QInputDialog.getText(
+            self, "Import preset", "Preset name:",
+            text=suggested or "Imported")
+        if not ok:
+            return
+        name = name.strip()
+        if not name:
+            QMessageBox.warning(self, "Import preset",
+                                "Preset name cannot be empty.")
+            return
+        overwrite = False
+        if name in config.presets():
+            box = QMessageBox(self)
+            box.setWindowTitle("Import preset")
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setText(
+                f"A preset named \u201c{name}\u201d already exists.")
+            box.setInformativeText(
+                "Overwrite it, or cancel and choose a different name?")
+            overwrite_btn = box.addButton(
+                "Overwrite", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is not overwrite_btn:
+                return
+            overwrite = True
+        try:
+            config.apply_edits(self._edit_ctx, self.working, notify=False)
+            dest = config.import_preset(
+                payload, name=name, overwrite=overwrite, activate=True)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Import preset", str(exc))
+            return
+        self._after_preset_change(f"Imported \u201c{dest}\u201d")
 
     def _rename_preset(self) -> None:
         old = config.active_preset()
@@ -3134,6 +3219,8 @@ class ConfigEditor(QWidget):
 
     def _on_demo_track_settings_fetched(self, settings) -> None:
         self._update_demo_track_status(settings)
+        if settings is not None:
+            self._load_pro_drivers_into_ui(settings)
 
     def _on_demo_track_settings_saved(self, ok: bool) -> None:
         if ok:
@@ -3171,14 +3258,182 @@ class ConfigEditor(QWidget):
             "updated_at": "",
         }
         if self._overlay is not None:
-            track_store.write_app_settings_cache(
+            merged = track_store.merge_app_settings_cache(
                 self._overlay.tracks_dir, settings)
             self._overlay._shared_demo_track_id = str(tid)
             if self._overlay.demo:
                 self._overlay._load_demo_track()
             self._overlay._track_sync.fetch_app_settings_async()
+            settings = merged
         self._update_demo_track_status(settings)
         self._on_demo_track_settings_saved(True)
+
+    def _pro_drivers_admin_card(self) -> QFrame:
+        """Author-only: manage shared professional driver names + aliases."""
+        card = QFrame()
+        card.setObjectName("enableCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(15, 11, 15, 12)
+        v.setSpacing(8)
+        t = QLabel("Professional drivers")
+        t.setObjectName("enableTitle")
+        hint = QLabel("Drivers listed here (and any aliases) get a star badge "
+                      "and accented name in Relative and Standings for everyone.")
+        hint.setObjectName("enableHint")
+        hint.setWordWrap(True)
+        v.addWidget(t)
+        v.addWidget(hint)
+
+        self._pro_list = QListWidget()
+        self._pro_list.setMinimumHeight(120)
+        self._pro_list.currentRowChanged.connect(self._on_pro_driver_selected)
+        v.addWidget(self._pro_list)
+
+        form = QVBoxLayout()
+        form.setSpacing(6)
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name"))
+        self._pro_name_edit = QLineEdit()
+        self._pro_name_edit.setPlaceholderText("Display / iRacing UserName")
+        name_row.addWidget(self._pro_name_edit, 1)
+        form.addLayout(name_row)
+        alias_row = QHBoxLayout()
+        alias_row.addWidget(QLabel("Aliases"))
+        self._pro_alias_edit = QLineEdit()
+        self._pro_alias_edit.setPlaceholderText("Comma-separated alternate names")
+        alias_row.addWidget(self._pro_alias_edit, 1)
+        form.addLayout(alias_row)
+        v.addLayout(form)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        add_btn = QPushButton("Add / Update")
+        add_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        add_btn.clicked.connect(self._pro_driver_add_update)
+        rem_btn = QPushButton("Remove")
+        rem_btn.setObjectName("danger")
+        rem_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        rem_btn.clicked.connect(self._pro_driver_remove)
+        btns.addWidget(add_btn)
+        btns.addWidget(rem_btn)
+        btns.addStretch(1)
+        v.addLayout(btns)
+
+        self._pro_status = QLabel("Loading shared list\u2026")
+        self._pro_status.setObjectName("enableHint")
+        self._pro_status.setWordWrap(True)
+        v.addWidget(self._pro_status)
+
+        save_btn = QPushButton("Save to cloud")
+        save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_btn.clicked.connect(self._save_pro_drivers_admin)
+        v.addWidget(save_btn)
+
+        self._pro_drivers_local: list[dict] = []
+        if self._overlay is not None:
+            # Reuse the same fetch path as demo track; refresh when settings arrive.
+            cached = track_store.load_app_settings_cache(self._overlay.tracks_dir)
+            self._load_pro_drivers_into_ui(cached)
+        else:
+            cached = track_store.load_app_settings_cache(paths.tracks_dir())
+            self._load_pro_drivers_into_ui(cached)
+        return card
+
+    def refresh_pro_drivers_admin(self, settings=None) -> None:
+        self._load_pro_drivers_into_ui(settings)
+
+    def _pro_driver_list_label(self, entry: dict) -> str:
+        name = entry.get("name") or ""
+        aliases = entry.get("aliases") or []
+        if aliases:
+            return f"{name}  ({', '.join(aliases)})"
+        return name
+
+    def _load_pro_drivers_into_ui(self, settings) -> None:
+        if not hasattr(self, "_pro_list"):
+            return
+        drivers = track_store.normalize_pro_drivers(
+            (settings or {}).get("pro_drivers") if settings else None)
+        self._pro_drivers_local = drivers
+        self._pro_list.blockSignals(True)
+        self._pro_list.clear()
+        for entry in drivers:
+            self._pro_list.addItem(self._pro_driver_list_label(entry))
+        self._pro_list.blockSignals(False)
+        if hasattr(self, "_pro_status"):
+            n = len(drivers)
+            self._pro_status.setText(
+                f"{n} professional driver{'s' if n != 1 else ''} loaded"
+                if n else "No professional drivers yet.")
+
+    def _on_pro_driver_selected(self, row: int) -> None:
+        if row < 0 or row >= len(self._pro_drivers_local):
+            return
+        entry = self._pro_drivers_local[row]
+        self._pro_name_edit.setText(entry.get("name") or "")
+        self._pro_alias_edit.setText(", ".join(entry.get("aliases") or []))
+
+    def _pro_driver_add_update(self) -> None:
+        name = self._pro_name_edit.text().strip()
+        if not name:
+            QMessageBox.warning(self, "Professional drivers",
+                                "Name cannot be empty.")
+            return
+        aliases = [a.strip() for a in self._pro_alias_edit.text().split(",")
+                   if a.strip()]
+        entry = {"name": name, "aliases": aliases}
+        # Update existing by casefold name, else append.
+        key = name.casefold()
+        replaced = False
+        for i, cur in enumerate(self._pro_drivers_local):
+            if (cur.get("name") or "").casefold() == key:
+                self._pro_drivers_local[i] = entry
+                replaced = True
+                break
+        if not replaced:
+            self._pro_drivers_local.append(entry)
+        self._pro_drivers_local = track_store.normalize_pro_drivers(
+            self._pro_drivers_local)
+        self._load_pro_drivers_into_ui({"pro_drivers": self._pro_drivers_local})
+        self._flash("Driver list updated (not saved yet)")
+
+    def _pro_driver_remove(self) -> None:
+        row = self._pro_list.currentRow()
+        if row < 0 or row >= len(self._pro_drivers_local):
+            return
+        del self._pro_drivers_local[row]
+        self._pro_name_edit.clear()
+        self._pro_alias_edit.clear()
+        self._load_pro_drivers_into_ui({"pro_drivers": self._pro_drivers_local})
+        self._flash("Driver removed (not saved yet)")
+
+    def _save_pro_drivers_admin(self) -> None:
+        drivers = track_store.normalize_pro_drivers(self._pro_drivers_local)
+        self._flash("Saving professional drivers\u2026")
+        threading.Thread(target=self._save_pro_drivers_worker,
+                         args=(drivers,), daemon=True).start()
+
+    def _save_pro_drivers_worker(self, drivers: list) -> None:
+        ok = track_store.save_app_settings({"pro_drivers": drivers})
+        # Bounce back to UI thread via demo-track saved path pattern.
+        self._pro_drivers_saved.emit(ok, drivers)
+
+    def _on_pro_drivers_saved(self, ok: bool, drivers: list) -> None:
+        if not ok:
+            self._flash("Professional drivers save failed")
+            return
+        patch = {"pro_drivers": drivers}
+        if self._overlay is not None:
+            merged = track_store.merge_app_settings_cache(
+                self._overlay.tracks_dir, patch)
+            self._overlay._pro_drivers = track_store.normalize_pro_drivers(
+                drivers)
+            self._overlay._track_sync.fetch_app_settings_async()
+            self._load_pro_drivers_into_ui(merged)
+        else:
+            track_store.merge_app_settings_cache(paths.tracks_dir(), patch)
+            self._load_pro_drivers_into_ui(patch)
+        self._flash("Professional drivers saved")
 
     def _preset_cars_card(self) -> QFrame:
         """Card on the General page to bind cars that auto-load this preset."""
