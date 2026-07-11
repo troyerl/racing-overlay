@@ -46,6 +46,7 @@ from . import track_store
 from . import traffic as tr
 from . import telemetry as tele
 from . import version
+from .busy_dialog import BusySpinnerDialog
 from .map_markers import (
     fresh_hold_states, resolve_traffic_markers, select_marker_candidates,
     wrap_lap_delta,
@@ -143,8 +144,8 @@ class AdvancedSimHUD:
         self._map_authoring_depth = 0
         self._map_click_through_saved: bool | None = None
         self._profile_loading_depth = 0
-        self._profile_loading_dialog: QProgressDialog | None = None
-        self._profile_loading_finish_pending = False
+        self._profile_loading_dialog: BusySpinnerDialog | None = None
+        self._profile_loading_shown_at = 0.0
 
         # Repaint + re-apply widget visibility when the config changes (editor UI).
         config.on_change(self._on_config_change)
@@ -576,11 +577,11 @@ class AdvancedSimHUD:
         if persist_clamps and layout_changed:
             config.save_active_layout(self._layout_state)
 
-    def _show_profile_loading(self, message: str = "Loading profile\u2026") -> None:
-        """Show a blocking busy dialog while a preset/profile switch applies."""
+    def _show_profile_loading(self, message: str = "Loading preset\u2026") -> None:
+        """Show a blocking busy spinner while a preset switch applies."""
         self._profile_loading_depth += 1
         if self._profile_loading_dialog is not None:
-            self._profile_loading_dialog.setLabelText(message)
+            self._profile_loading_dialog.set_message(message)
             return
         parent = self._settings_window
         if parent is None or not parent.isVisible():
@@ -589,63 +590,62 @@ class AdvancedSimHUD:
                 if win.isVisible():
                     parent = win
                     break
-        dlg = QProgressDialog(message, None, 0, 0, parent)
-        dlg.setWindowTitle("Switching profile")
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
-        dlg.setCancelButton(None)
-        dlg.setMinimumDuration(0)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setValue(0)
+        dlg = BusySpinnerDialog(message, parent)
         self._profile_loading_dialog = dlg
+        self._profile_loading_shown_at = time.monotonic()
         dlg.show()
+        dlg.raise_()
         QApplication.processEvents()
 
     def _hide_profile_loading(self) -> None:
         self._profile_loading_depth = 0
         dlg = self._profile_loading_dialog
         self._profile_loading_dialog = None
-        self._profile_loading_finish_pending = False
+        self._profile_loading_shown_at = 0.0
         if dlg is not None:
+            dlg.stop()
             dlg.close()
             dlg.deleteLater()
 
     def _finish_profile_loading(self) -> None:
-        """Deferred full repaint, then dismiss the profile-switch busy dialog."""
+        """Repaint, keep the spinner visible briefly so it can animate, then dismiss."""
+        if self._profile_loading_dialog is None and self._profile_loading_depth <= 0:
+            return
         self._repaint_all()
         QApplication.processEvents()
+        # Minimum show so the spinner ticks after the switch starts (bar used to freeze).
+        shown_at = self._profile_loading_shown_at
+        if shown_at > 0:
+            deadline = shown_at + 0.25
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.016)
         self._hide_profile_loading()
-
-    def _schedule_profile_loading_finish(self) -> None:
-        if self._profile_loading_finish_pending:
-            return
-        self._profile_loading_finish_pending = True
-        QTimer.singleShot(0, self._finish_profile_loading)
 
     def _on_preset_change(self, _name) -> None:
         """Reapply the newly active preset's saved window layout to every panel."""
-        if self._profile_loading_depth <= 0:
-            label = f"Loading profile\u2026 {config.active_preset()}"
-            self._show_profile_loading(label)
-        self._apply_layout()
-        self._refresh_visible_widgets()
-        self._apply_visibility()
-        self.map_widget._invalidate_static_cache()
-        self._schedule_profile_loading_finish()
+        try:
+            if self._profile_loading_depth <= 0:
+                label = f"Loading preset\u2026 {config.active_preset()}"
+                self._show_profile_loading(label)
+            self._apply_layout()
+            QApplication.processEvents()
+            self._refresh_visible_widgets()
+            QApplication.processEvents()
+            self._apply_visibility()
+            QApplication.processEvents()
+            self.map_widget._invalidate_static_cache()
+        finally:
+            self._finish_profile_loading()
 
     def _on_context_change(self, _ctx) -> None:
         """Swap panels to the race or garage layout for the active preset."""
         # Don't persist clamps here — that would bake race fallbacks into
         # layout_garage just because a widget needed an on-screen nudge.
-        if self._profile_loading_depth <= 0:
-            label = config.CONTEXT_LABELS.get(
-                config.active_context(), "profile")
-            self._show_profile_loading(f"Loading profile\u2026 {label}")
         self._apply_layout(persist_clamps=False)
         self._refresh_visible_widgets()
         self._apply_visibility()
         self.map_widget._invalidate_static_cache()
-        self._schedule_profile_loading_finish()
 
     def current_car(self) -> tuple[str, str]:
         """The player's current (car_path, display_name), or ("", "") if unknown.
@@ -4407,8 +4407,6 @@ class AdvancedSimHUD:
             in_garage = False
         ctx = "garage" if in_garage else "race"
         if ctx != config.active_context():
-            label = config.CONTEXT_LABELS.get(ctx, ctx)
-            self._show_profile_loading(f"Loading profile\u2026 {label}")
             config.set_context(ctx)
         self._maybe_auto_switch_preset()
 
@@ -4437,7 +4435,7 @@ class AdvancedSimHUD:
         self._last_league_id = league_id
         target = config.preset_for_session(league_id, car)
         if target and target != config.active_preset():
-            self._show_profile_loading(f"Loading profile\u2026 {target}")
+            self._show_profile_loading(f"Loading preset\u2026 {target}")
             config.set_active_preset(target)
 
     def _session_flag(self):

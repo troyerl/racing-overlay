@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.66.1 - 2026-07-11
+
+- **Fix: preset loading modal.** Loading UI is preset-only (not race/garage),
+  dismisses after the switch, and no longer sticks on launch with Settings open.
+- **Animated preset spinner.** Replaces the frozen indeterminate progress bar
+  with a timer-driven spinner that keeps moving while the preset applies.
+
 ## 1.66.0 - 2026-07-11
 
 - **Profile switch loading.** Preset / race–garage context switches show a modal

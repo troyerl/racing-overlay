@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import sys
 import threading
+import time
 
 from PyQt6.QtCore import (
     Qt,
@@ -62,6 +63,7 @@ from PyQt6.QtWidgets import (
 from . import config, constants, paths, track_store, version
 from . import demo_data
 from . import setting_help
+from .busy_dialog import BusySpinnerDialog
 
 COLOR_PARENTS = {"colors", "license_colors"}
 
@@ -2951,7 +2953,7 @@ class ConfigEditor(QWidget):
         # Capture pending edits to the preset we're leaving, then switch.
         self._save_timer.stop()
         config.apply_edits(self._edit_ctx, self.working, notify=False)
-        self._begin_profile_switch_loading(f"Loading profile\u2026 {new}")
+        self._begin_profile_switch_loading(f"Loading preset\u2026 {new}")
         config.set_active_preset(new)
         self._after_preset_change(f"Switched to \u201c{new}\u201d")
         self._end_standalone_profile_switch_loading()
@@ -2976,7 +2978,9 @@ class ConfigEditor(QWidget):
             self._show_standalone_profile_loading(message)
 
     def _end_standalone_profile_switch_loading(self) -> None:
-        if self._overlay is None:
+        if self._overlay is not None:
+            self._overlay._finish_profile_loading()
+        else:
             self._hide_standalone_profile_loading()
 
     def _new_preset(self) -> None:
@@ -2984,7 +2988,7 @@ class ConfigEditor(QWidget):
         if not name:
             return
         config.apply_edits(self._edit_ctx, self.working, notify=False)
-        self._begin_profile_switch_loading(f"Loading profile\u2026 {name}")
+        self._begin_profile_switch_loading(f"Loading preset\u2026 {name}")
         config.create_preset(name, activate=True)
         self._after_preset_change(f"Created \u201c{name}\u201d")
         self._end_standalone_profile_switch_loading()
@@ -2997,7 +3001,7 @@ class ConfigEditor(QWidget):
             return
         config.apply_edits(self._edit_ctx, self.working, notify=False)
         config.save_profiles()
-        self._begin_profile_switch_loading(f"Loading profile\u2026 {name}")
+        self._begin_profile_switch_loading(f"Loading preset\u2026 {name}")
         config.duplicate_preset(src, name)
         self._after_preset_change(f"Duplicated to \u201c{name}\u201d")
         self._end_standalone_profile_switch_loading()
@@ -3074,13 +3078,11 @@ class ConfigEditor(QWidget):
             overwrite = True
         try:
             config.apply_edits(self._edit_ctx, self.working, notify=False)
-            self._begin_profile_switch_loading(f"Loading profile\u2026 {name}")
+            self._begin_profile_switch_loading(f"Loading preset\u2026 {name}")
             dest = config.import_preset(
                 payload, name=name, overwrite=overwrite, activate=True)
         except ValueError as exc:
             self._end_standalone_profile_switch_loading()
-            if self._overlay is not None:
-                self._overlay._hide_profile_loading()
             QMessageBox.warning(self, "Import preset", str(exc))
             return
         self._after_preset_change(f"Imported \u201c{dest}\u201d")
@@ -3627,8 +3629,6 @@ class ConfigEditor(QWidget):
         config.apply_edits(self._edit_ctx, self.working, notify=False)
         if self.autosave_sw.isChecked():
             config.save_profiles()
-        label = config.CONTEXT_LABELS.get(new, new)
-        self._begin_profile_switch_loading(f"Loading profile\u2026 {label}")
         self._edit_ctx = new
         self.working = config.editor_full(new)
         # Pin the live overlay to the profile being edited so changes preview.
@@ -3638,27 +3638,30 @@ class ConfigEditor(QWidget):
         self._filter(self.search.text())
         self._update_ctx_hint()
         self._flash(f"Editing {self._ctx_name()} profile")
-        self._end_standalone_profile_switch_loading()
 
     def _show_standalone_profile_loading(self, message: str) -> None:
-        dlg = QProgressDialog(message, None, 0, 0, self)
-        dlg.setWindowTitle("Switching profile")
-        dlg.setWindowModality(Qt.WindowModality.ApplicationModal)
-        dlg.setCancelButton(None)
-        dlg.setMinimumDuration(0)
-        dlg.setAutoClose(False)
-        dlg.setAutoReset(False)
-        dlg.setValue(0)
+        dlg = BusySpinnerDialog(message, self)
         self._standalone_profile_loading = dlg
+        self._standalone_profile_loading_shown_at = time.monotonic()
         dlg.show()
+        dlg.raise_()
         QApplication.processEvents()
 
     def _hide_standalone_profile_loading(self) -> None:
         dlg = getattr(self, "_standalone_profile_loading", None)
         self._standalone_profile_loading = None
-        if dlg is not None:
-            dlg.close()
-            dlg.deleteLater()
+        shown_at = getattr(self, "_standalone_profile_loading_shown_at", 0.0)
+        self._standalone_profile_loading_shown_at = 0.0
+        if dlg is None:
+            return
+        if shown_at > 0:
+            deadline = shown_at + 0.25
+            while time.monotonic() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.016)
+        dlg.stop()
+        dlg.close()
+        dlg.deleteLater()
 
     # --- value changes ------------------------------------------------------
 
