@@ -45,6 +45,18 @@ def _author_hud(tmp_path, **kwargs) -> AdvancedSimHUD:
     hud._pit_speed_ms = 0.0
     hud._pit_lane_speed_pct = 1.0
     hud._pit_lane_speed_pct_2 = 1.0
+    hud._pit_span = None
+    hud._pit_path = None
+    hud._pit_in = None
+    hud._pit_out = None
+    hud._pit_in_pct = None
+    hud._pit_out_pct = None
+    hud._pit_span_2 = None
+    hud._pit_path_2 = None
+    hud._pit_in_2 = None
+    hud._pit_out_2 = None
+    hud._pit_in_pct_2 = None
+    hud._pit_out_pct_2 = None
     hud.tracks_dir = str(tmp_path)
     hud.demo = kwargs.get("demo", False)
     hud._session_demo_track_id = None
@@ -115,6 +127,33 @@ def test_save_manual_track_v2_blocked_when_track_in_cloud(tmp_path, monkeypatch)
     assert not (tmp_path / "451.json").is_file()
     hud._track_sync.upload_local_async.assert_not_called()
     hud.map_widget.flash_hint.assert_called_once()
+
+
+def test_save_pit_v2_when_track_in_cloud(tmp_path, monkeypatch):
+    """Save pit updates geometry even when the TrackID is already published."""
+    hud = _author_hud(tmp_path)
+    hud.map_widget = _FakeMapWithPit()
+    hud._apply_pit_meta = MagicMock()
+    hud._preview_uploaded_track_in_demo = MagicMock()
+    monkeypatch.setattr(track_store, "can_write", lambda: True)
+    monkeypatch.setattr(track_store, "cloud_track_exists", lambda _tid: True)
+    ok, msg = hud.save_pit_v2()
+    assert ok is True
+    assert "Saved pit" in msg
+    assert "Uploaded to cloud" in msg
+    doc = json.loads((tmp_path / "451.json").read_text())
+    assert "pit_path" in doc
+    assert doc.get("pit_source") == "manual"
+    hud._track_sync.upload_local_async.assert_called_once_with(str(tmp_path), 451)
+    # Unlike Save track, cloud existence must not block.
+    assert "already in the shared library" not in msg
+
+
+def test_save_pit_v2_requires_pit(tmp_path):
+    hud = _author_hud(tmp_path)
+    ok, msg = hud.save_pit_v2()
+    assert ok is False
+    assert "pit road" in msg
 
 
 def test_save_manual_track_v2_saves_when_not_in_cloud(tmp_path, monkeypatch):

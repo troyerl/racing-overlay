@@ -1358,6 +1358,86 @@ class AdvancedSimHUD:
             msg += " Demo map updated for this session."
         return True, msg
 
+    def save_pit_v2(self) -> tuple[bool, str]:
+        """Patch pit geometry into the local track file and upload (even if already in cloud).
+
+        Unlike Save track, this does not rewrite the racing line and is not blocked
+        when the TrackID already exists in the shared library.
+        """
+        tid = self._authoring_track_id()
+        if tid is None:
+            return False, ("No TrackID — join a session on track, or import "
+                           "members HTML with id=\"track-map-123\".")
+        if not self.map_widget.path or len(self.map_widget.path) < 3:
+            return False, "No track loop loaded."
+        entry, road, merge = self.map_widget.pit_edit_snapshot(lane=1)
+        if len(road) < 2:
+            return False, "Need at least 2 pit road points."
+        if len(merge) < 2:
+            return False, "Need at least 2 merge points."
+
+        canonical = self._canonical_track_id(tid)
+        if not self._ensure_local_track_file():
+            return False, "Could not create local track file."
+
+        loop = [(p[0], p[1]) for p in self.map_widget.path]
+        lane1 = self._build_manual_pit_lane_fields(loop, entry, road, merge)
+        if not lane1:
+            return False, "Could not build pit geometry."
+
+        _PIT2_KEYS = (
+            "pit_path_2", "pit_in_2", "pit_out_2", "pit_span_2",
+            "pit_in_pct_2", "pit_out_pct_2", "pit_lane_speed_pct_2",
+        )
+        meta: dict = dict(lane1)
+        meta["pit_source"] = "manual"
+        if self._pit_speed_ms > 0:
+            meta["pit_speed"] = round(self._pit_speed_ms, 3)
+        if self._pit_lane_speed_pct != 1.0:
+            meta["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
+        if "pit_in" not in meta:
+            meta["pit_in"] = None
+
+        entry2, road2, merge2 = self.map_widget.pit_edit_snapshot(lane=2)
+        lane2 = self._build_manual_pit_lane_fields(loop, entry2, road2, merge2)
+        if lane2:
+            meta.update(self._suffix_pit_lane_keys(lane2, "_2"))
+            if self._pit_lane_speed_pct_2 != 1.0:
+                meta["pit_lane_speed_pct_2"] = round(
+                    self._pit_lane_speed_pct_2, 4)
+            if "pit_in_2" not in meta:
+                meta["pit_in_2"] = None
+        else:
+            for key in _PIT2_KEYS:
+                meta[key] = None
+
+        try:
+            ok = track_map.update_track_meta(
+                self.tracks_dir, canonical, **meta)
+        except Exception as exc:
+            return False, f"Could not save pit: {exc}"
+        if not ok:
+            return False, "Could not update local track file."
+
+        self._apply_pit_meta({k: v for k, v in meta.items() if v is not None})
+        if track_store.can_write():
+            self._track_sync.upload_local_async(self.tracks_dir, canonical)
+        self._preview_uploaded_track_in_demo(tid)
+
+        pit_path = lane1.get("pit_path") or []
+        pit_out = lane1.get("pit_out") or []
+        pit_in = lane1.get("pit_in") or []
+        entry_note = f"entry {len(pit_in)}" if pit_in else "no entry"
+        msg = (f"Saved pit — {entry_note}, road {len(pit_path)}, "
+               f"merge {len(pit_out)} pts")
+        if lane2:
+            msg += f"; lane 2 road {len(lane2.get('pit_path') or [])} pts"
+        if track_store.can_write():
+            msg += " Uploaded to cloud."
+        if self.demo:
+            msg += " Demo map updated for this session."
+        return True, msg
+
     def pit_edit_state(self) -> dict:
         """Snapshot for Track Scan v2 import panel."""
         entry, road, merge = self.map_widget.pit_edit_snapshot(lane=1)

@@ -5,6 +5,16 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.66.3 - 2026-07-11
+
+- **Save pit.** Track Scan gains Save pit — updates pit geometry locally and to
+  the cloud even when the TrackID is already in the shared library (Save track
+  remains first-publish only).
+- **Entry links to pit road.** Drawing a new entry onto an existing pit road
+  auto-joins at the pit-road start.
+- **Dash primary right-align.** Equal columns kept; icon+value packs are
+  right-aligned within each column.
+
 ## 1.66.2 - 2026-07-11
 
 - **Dash primary columns.** Left/right primary metrics sit in two equal columns,

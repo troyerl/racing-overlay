@@ -3131,6 +3131,32 @@ class TrackMapWidget(QWidget):
             (pos.y() - self._layout_oy) / s,
         )
 
+    def _append_pit_edit_at(self, x: float, y: float) -> None:
+        """Add a pit-edit click in the active phase (entry / road / merge)."""
+        lane = self.pit_edit_lane
+        entry, road, merge = self._pit_edit_bufs(lane)
+        if self.pit_edit_phase == "entry":
+            if road and entry and self._pit_has_entry_joint(lane):
+                # Insert before the joint so entry end stays on road start.
+                entry.insert(len(entry) - 1, (x, y))
+            elif road and not entry:
+                entry.append((x, y))
+                entry.append(road[0])
+            else:
+                entry.append((x, y))
+                if road:
+                    entry.append(road[0])
+        elif self.pit_edit_phase == "road":
+            if not road and entry:
+                road.append(entry[-1])
+            road.append((x, y))
+            if merge:
+                self._sync_pit_joint(lane)
+        else:
+            if not merge and road:
+                merge.append(road[-1])
+            merge.append((x, y))
+
     def _screen_to_model(self, pos: QPointF) -> tuple[float, float]:
         """Map widget pixel coords to normalized track model space."""
         mx, my = self._screen_to_layout(pos)
@@ -3228,20 +3254,7 @@ class TrackMapWidget(QWidget):
                 event.accept()
                 return
             x, y = self._screen_to_model(event.position())
-            lane = self.pit_edit_lane
-            entry, road, merge = self._pit_edit_bufs(lane)
-            if self.pit_edit_phase == "entry":
-                entry.append((x, y))
-            elif self.pit_edit_phase == "road":
-                if not road and entry:
-                    road.append(entry[-1])
-                road.append((x, y))
-                if merge:
-                    self._sync_pit_joint(lane)
-            else:
-                if not merge and road:
-                    merge.append(road[-1])
-                merge.append((x, y))
+            self._append_pit_edit_at(x, y)
             self.update()
             event.accept()
             return

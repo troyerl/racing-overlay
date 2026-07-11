@@ -906,13 +906,16 @@ class DashWidget(QWidget):
             return tot
 
         def draw_metric(col: QRectF, key, glyph, lbl, val, *,
-                        icon_key="flag", gap_key="g_icon"):
+                        icon_key="flag", gap_key="g_icon",
+                        align_right: bool = False):
             fit = col.width()
             need = metric_width(key, glyph, lbl, val, sizes(1.0),
                                 icon_key=icon_key, gap_key=gap_key)
             s = fit / need if need > fit and need > 0 else 1.0
             z = sizes(s)
-            x = col.left()
+            total_w = metric_width(key, glyph, lbl, val, z,
+                                   icon_key=icon_key, gap_key=gap_key)
+            x = (col.right() - total_w) if align_right else col.left()
 
             def draw(font, text, color):
                 nonlocal x
@@ -942,13 +945,13 @@ class DashWidget(QWidget):
         r_glyph = icons.glyph(right_key) if show_r else ""
 
         if show_l and show_r:
-            # Two evenly spaced columns; each metric left-aligned in its column.
+            # Two evenly spaced columns; each metric right-aligned in its column.
             col_w = rect.width() * 0.5
             draw_metric(QRectF(rect.left(), rect.top(), col_w, h),
-                        left_key, l_glyph, l_lbl, l_val)
+                        left_key, l_glyph, l_lbl, l_val, align_right=True)
             draw_metric(QRectF(rect.left() + col_w, rect.top(), col_w, h),
                         right_key, r_glyph, r_lbl, r_val,
-                        icon_key="gauge", gap_key="g_spd")
+                        icon_key="gauge", gap_key="g_spd", align_right=True)
             return
 
         # Single active metric: center the group in the strip.

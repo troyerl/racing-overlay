@@ -66,8 +66,11 @@ class TrackImportV2Panel(QFrame):
             "from the dropdown or clear all pit to start over. Entry end and "
             "pit road start stay linked (like pit road end and merge start). "
             "Corner labels are edited in Track metadata below. "
-            "Save loop uploads geometry without pit; Save track requires pit "
-            "road + merge on lane 1. In demo mode the map previews your upload "
+            "Save loop uploads geometry without pit; Save pit updates pit lane "
+            "on an existing local/cloud track (entry auto-links to pit-road "
+            "start); Save track requires pit road + merge on lane 1 and is for "
+            "first publish only (blocked if the TrackID is already in the "
+            "shared library). In demo mode the map previews your upload "
             "for this session only.")
         hint.setObjectName("enableHint")
         hint.setWordWrap(True)
@@ -141,6 +144,9 @@ class TrackImportV2Panel(QFrame):
         save_loop = QPushButton("Save loop")
         save_loop.setCursor(Qt.CursorShape.PointingHandCursor)
         save_loop.clicked.connect(self._save_loop)
+        save_pit = QPushButton("Save pit")
+        save_pit.setCursor(Qt.CursorShape.PointingHandCursor)
+        save_pit.clicked.connect(self._save_pit)
         save = QPushButton("Save track")
         save.setCursor(Qt.CursorShape.PointingHandCursor)
         save.clicked.connect(self._save_track)
@@ -151,6 +157,7 @@ class TrackImportV2Panel(QFrame):
         btn_row.addWidget(clear_all)
         btn_row.addStretch(1)
         btn_row.addWidget(save_loop)
+        btn_row.addWidget(save_pit)
         btn_row.addWidget(save)
         v.addLayout(btn_row)
 
@@ -440,6 +447,31 @@ class TrackImportV2Panel(QFrame):
         def _run() -> None:
             try:
                 ok, msg = self._overlay.save_loop_v2()
+            except Exception as exc:
+                ok, msg = False, str(exc)
+            self._status.setText(msg)
+            self.notified.emit(msg if msg else ("Save failed" if not ok else ""))
+            if ok:
+                self.saved.emit(msg)
+            self.refresh()
+
+        QTimer.singleShot(0, _run)
+
+    def _save_pit(self) -> None:
+        if self._overlay is None:
+            self._report("Start the overlay first.")
+            return
+        if not hasattr(self._overlay, "save_pit_v2"):
+            return
+        state = (self._overlay.pit_edit_state()
+                 if hasattr(self._overlay, "pit_edit_state") else {})
+        if not state.get("has_loop"):
+            self._report("No track loaded — join a session or import HTML first.")
+            return
+
+        def _run() -> None:
+            try:
+                ok, msg = self._overlay.save_pit_v2()
             except Exception as exc:
                 ok, msg = False, str(exc)
             self._status.setText(msg)
