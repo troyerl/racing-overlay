@@ -181,6 +181,59 @@ impl OverlayConfig {
             .to_string()
     }
 
+    /// Nested string under `section[group][key]` (e.g. `header.left`).
+    pub fn nested_str(&self, section: &str, group: &str, key: &str, default: &str) -> String {
+        self.section(section)
+            .get(group)
+            .and_then(|g| g.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or(default)
+            .to_string()
+    }
+
+    /// Whether `column_order` includes `col`.
+    pub fn has_column(&self, section: &str, col: &str) -> bool {
+        self.section(section)
+            .get("column_order")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().any(|x| x.as_str() == Some(col)))
+            .unwrap_or(false)
+    }
+
+    /// Dash slot keys that may hold `"irating"`.
+    pub fn dash_uses_irating(&self) -> bool {
+        const SLOTS: &[&str] = &[
+            "top_left",
+            "top_right",
+            "primary_left",
+            "primary_right",
+            "stat_left",
+            "stat_right",
+            "strip_left",
+            "strip_center",
+            "strip_right",
+        ];
+        SLOTS
+            .iter()
+            .any(|k| self.str_key("dash", k, "") == "irating")
+    }
+
+    pub fn conv_temp(&self, celsius: f32) -> f32 {
+        if self.imperial_units() {
+            celsius * 9.0 / 5.0 + 32.0
+        } else {
+            celsius
+        }
+    }
+
+    pub fn temp_unit(&self) -> &'static str {
+        if self.imperial_units() {
+            "°F"
+        } else {
+            "°C"
+        }
+    }
+
     pub fn global_str(&self, key: &str, default: &str) -> String {
         self.cfg
             .get(key)
@@ -458,6 +511,9 @@ fn default_cfg() -> Value {
             section.insert("center_on_player".into(), Value::Bool(true));
             section.insert("show_footer".into(), Value::Bool(true));
             section.insert("row_ease_tau".into(), json!(0.16));
+            section.insert("fade_ease_tau".into(), json!(0.12));
+            section.insert("header_font_scale".into(), json!(1.0));
+            section.insert("footer_font_scale".into(), json!(1.0));
             section.insert("alt_row_shading".into(), Value::Bool(true));
             section.insert("row_dividers".into(), Value::Bool(true));
             section.insert("name_font_bold".into(), Value::Bool(true));
@@ -467,10 +523,28 @@ fn default_cfg() -> Value {
                 json!(["badge", "position", "name", "license", "irating", "gap"]),
             );
             section.insert("columns".into(), json!({ "stripe": true }));
+            if *key == "relative" {
+                section.insert(
+                    "header".into(),
+                    json!({"left": "sof", "center": "none", "right": "position"}),
+                );
+                section.insert(
+                    "footer".into(),
+                    json!({"left": "race_time", "center": "lap", "right": "incidents"}),
+                );
+            }
             if *key == "standings" {
                 section.insert("rows".into(), json!(10));
                 section.insert("pin_podium".into(), Value::Bool(false));
                 section.insert("title".into(), Value::String("Standings".into()));
+                section.insert(
+                    "header".into(),
+                    json!({"left": "order_pill", "center": "title", "right": "count"}),
+                );
+                section.insert(
+                    "footer".into(),
+                    json!({"left": "track_temp", "center": "session_time", "right": "air_temp"}),
+                );
             }
         }
         if *key == "radar" {

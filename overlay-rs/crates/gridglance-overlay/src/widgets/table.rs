@@ -7,11 +7,20 @@ use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 use std::collections::HashMap;
 
 const ROW_SNAP_SLOTS: f32 = 1.25;
+const DENSE_ROW_COUNT: usize = 20;
+const DENSE_ROW_SNAP_SLOTS: f32 = 1.0;
+const DENSE_ROW_EASE_TAU: f32 = 0.12;
+
+#[derive(Clone, Default)]
+struct RowAnimState {
+    idx: f32,
+    opacity: f32,
+}
 
 #[derive(Clone, Default)]
 struct TableAnim {
-    /// key -> visual slot index
-    slots: HashMap<String, f32>,
+    /// key -> visual slot + fade
+    slots: HashMap<String, RowAnimState>,
     last_ms: f64,
 }
 
@@ -31,9 +40,11 @@ pub fn paint_table(
     let scale = cfg.text_scale(section);
     let font_scale = cfg.f64_key(section, "font_scale", 0.40) as f32;
     let gap_font_scale = cfg.f64_key(section, "gap_font_scale", 1.12) as f32;
-    let header_h = (rh * 0.72 * scale).max(18.0);
+    let hscale = cfg.f64_key(section, "header_font_scale", 1.0) as f32;
+    let fscale = cfg.f64_key(section, "footer_font_scale", 1.0) as f32;
+    let header_h = (rh * 0.72 * scale * hscale.max(0.3)).max(18.0);
     let footer_h = if show_footer {
-        (rh * 0.68 * scale).max(16.0)
+        (rh * 0.68 * scale * fscale.max(0.3)).max(16.0)
     } else {
         0.0
     };
@@ -64,9 +75,9 @@ pub fn paint_table(
     };
 
     // Row motion
-    let dt = {
+    let id = egui::Id::new(("table_anim", section));
+    let animating = {
         let now = ui.input(|i| i.time);
-        let id = egui::Id::new(("table_anim", section));
         let mut anim = ui.ctx().data_mut(|d| d.get_temp::<TableAnim>(id).unwrap_or_default());
         let dt = if anim.last_ms > 0.0 {
             ((now - anim.last_ms) as f32).clamp(0.0, 0.1)
@@ -75,33 +86,49 @@ pub fn paint_table(
         };
         anim.last_ms = now;
 
-        let tau = cfg.f64_key(section, "row_ease_tau", 0.16) as f32;
-        let dense = rows.len() >= 20;
-        let snap = if dense { 0.5 } else { ROW_SNAP_SLOTS };
-        let ease_tau = if dense { 0.08 } else { tau };
+        let mut tau = cfg.f64_key(section, "row_ease_tau", 0.16) as f32;
+        let fade_tau = cfg.f64_key(section, "fade_ease_tau", 0.12) as f32;
+        let dense = rows.len() >= DENSE_ROW_COUNT;
+        let snap = if dense {
+            DENSE_ROW_SNAP_SLOTS
+        } else {
+            ROW_SNAP_SLOTS
+        };
+        if dense {
+            tau = tau.min(DENSE_ROW_EASE_TAU);
+        }
 
         let active: std::collections::HashSet<String> =
             rows.iter().filter(|r| !r.empty).map(|r| r.key.clone()).collect();
         anim.slots.retain(|k, _| active.contains(k));
 
+        let mut still = false;
         for (i, row) in rows.iter().enumerate() {
             if row.empty {
                 continue;
             }
             let target = i as f32;
-            let cur = anim.slots.entry(row.key.clone()).or_insert(target);
-            if (*cur - target).abs() > snap {
-                *cur = target;
+            let st = anim.slots.entry(row.key.clone()).or_insert(RowAnimState {
+                idx: target,
+                opacity: 0.0,
+            });
+            if (st.idx - target).abs() > snap {
+                st.idx = target;
             } else {
-                *cur = ease(*cur, target, dt, ease_tau);
+                st.idx = ease(st.idx, target, dt, tau);
+            }
+            st.opacity = ease(st.opacity, 1.0, dt, fade_tau);
+            if (st.idx - target).abs() > 0.02 || (st.opacity - 1.0).abs() > 0.01 {
+                still = true;
             }
         }
         ui.ctx().data_mut(|d| d.insert_temp(id, anim));
-        dt
+        still
     };
-    let _ = dt;
+    if animating {
+        ui.ctx().request_repaint();
+    }
 
-    let id = egui::Id::new(("table_anim", section));
     let anim = ui
         .ctx()
         .data(|d| d.get_temp::<TableAnim>(id))
@@ -115,20 +142,48 @@ pub fn paint_table(
     let fs = (rh * font_scale * scale).clamp(9.0, 22.0);
 
     let body_top = y;
-    for (i, row) in rows.iter().enumerate() {
-        let slot_y = if row.empty {
-            i as f32
+    let mut draw_order: Vec<usize> = (0..rows.len()).collect();
+    draw_order.sort_by(|&a, &b| {
+        let ia = if rows[a].empty {
+            a as f32
         } else {
-            anim.slots.get(&row.key).copied().unwrap_or(i as f32)
+            anim.slots
+                .get(&rows[a].key)
+                .map(|s| s.idx)
+                .unwrap_or(a as f32)
         };
+        let ib = if rows[b].empty {
+            b as f32
+        } else {
+            anim.slots
+                .get(&rows[b].key)
+                .map(|s| s.idx)
+                .unwrap_or(b as f32)
+        };
+        ia.partial_cmp(&ib).unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    for &i in &draw_order {
+        let row = &rows[i];
+        if row.empty {
+            continue;
+        }
+        let st = anim.slots.get(&row.key);
+        let slot_y = st.map(|s| s.idx).unwrap_or(i as f32);
+        let opacity = st.map(|s| s.opacity).unwrap_or(1.0);
         let ry = body_top + slot_y * rh;
         if ry + rh > body_bottom {
             continue;
         }
-        if row.empty {
-            continue;
-        }
         let row_rect = Rect::from_min_size(Pos2::new(left, ry), Vec2::new(inner_w, rh));
+        if opacity < 0.99 {
+            // Soft fade-in: tint with alpha via layer (simple multiply on text later).
+            ui.painter().rect_filled(
+                row_rect,
+                0.0,
+                Color32::from_black_alpha(((1.0 - opacity) * 40.0) as u8),
+            );
+        }
         paint_row_chrome(ui, cfg, section, row, row_rect, i, alt);
         paint_row_cols(
             ui,

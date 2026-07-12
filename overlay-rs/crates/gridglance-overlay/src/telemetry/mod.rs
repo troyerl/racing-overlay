@@ -22,6 +22,8 @@ pub struct CarRow {
     pub best_lap: String,
     pub irating: i32,
     pub irating_delta: Option<i32>,
+    /// CarClassID from DriverInfo (0 when unknown).
+    pub class_id: i32,
     pub license: String,
     pub class_color: String,
     pub on_pit: bool,
@@ -45,6 +47,8 @@ pub struct CarRow {
 pub struct TelemetryFrame {
     pub connected: bool,
     pub session_time: f64,
+    /// iRacing SessionState (4=racing, 5=checkered).
+    pub session_state: i32,
     pub flag: Option<String>,
     pub flag_context: Option<String>,
     pub incident_warn: bool,
@@ -182,7 +186,8 @@ pub mod demo {
                     last_lap: "1:28.442".into(),
                     best_lap: "1:27.901".into(),
                     irating: 1800 + i * 50,
-                    irating_delta: if i == player_i { Some(-28) } else { None },
+                    irating_delta: None,
+                    class_id: 0,
                     license: licenses[i as usize % licenses.len()].into(),
                     class_color: "#2f6bd8".into(),
                     on_pit: i == 5,
@@ -244,6 +249,7 @@ pub mod demo {
             TelemetryFrame {
                 connected: true,
                 session_time: t,
+                session_state: 4,
                 flag: Some("white".into()),
                 flag_context: Some("Lap 2 of 50 — finish this lap".into()),
                 incident_warn: false,
@@ -270,7 +276,7 @@ pub mod demo {
                 best_lap_s: Some(87.901),
                 cur_lap_s: Some(42.1),
                 irating: 2500,
-                irating_delta: Some(-28),
+                irating_delta: None,
                 tire_wear_l: 0.90,
                 tire_wear_r: 0.86,
                 track_temp: Some(32.0 + (t * 0.05).sin() as f32),

@@ -1,6 +1,7 @@
 //! iRating projection (parity with Python `overlay.irating_calc`).
 
-#![allow(dead_code)] // used by unit tests; standings will call this next
+use crate::telemetry::CarRow;
+use std::collections::HashMap;
 
 const BR1: f64 = 1600.0 / std::f64::consts::LN_2;
 
@@ -100,6 +101,63 @@ pub fn calculate_deltas(entries: &[(i32, bool)]) -> Vec<i32> {
         .collect()
 }
 
+fn car_rank(c: &CarRow) -> i32 {
+    if c.class_position > 0 {
+        c.class_position
+    } else if c.position > 0 {
+        c.position
+    } else {
+        0
+    }
+}
+
+/// CarIdx → projected iRating change, computed per `class_id` (Python parity).
+pub fn project_deltas_by_class(cars: &[CarRow]) -> HashMap<i32, i32> {
+    let mut by_class: HashMap<i32, Vec<&CarRow>> = HashMap::new();
+    for c in cars {
+        if c.is_pace_car || c.irating <= 0 {
+            continue;
+        }
+        by_class.entry(c.class_id).or_default().push(c);
+    }
+
+    let mut result = HashMap::new();
+    for idxs in by_class.values() {
+        let mut starters: Vec<&CarRow> = Vec::new();
+        let mut non_starters: Vec<&CarRow> = Vec::new();
+        for c in idxs {
+            if car_rank(c) > 0 {
+                starters.push(c);
+            } else {
+                non_starters.push(c);
+            }
+        }
+        starters.sort_by_key(|c| {
+            let r = car_rank(c);
+            if r <= 0 {
+                10_000
+            } else {
+                r
+            }
+        });
+        let mut ordered: Vec<(i32, bool)> = starters.iter().map(|c| (c.irating, true)).collect();
+        ordered.extend(non_starters.iter().map(|c| (c.irating, false)));
+        if ordered.len() < 2 {
+            continue;
+        }
+        let deltas = calculate_deltas(&ordered);
+        let order_idxs: Vec<i32> = starters
+            .iter()
+            .map(|c| c.car_idx)
+            .chain(non_starters.iter().map(|c| c.car_idx))
+            .collect();
+        for (idx, delta) in order_idxs.into_iter().zip(deltas) {
+            result.insert(idx, delta);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +175,32 @@ mod tests {
     fn round_half_away_neg() {
         assert_eq!(round_half_away(-66.5), -67);
         assert_eq!(round_half_away(66.5), 67);
+    }
+
+    #[test]
+    fn project_by_class_assigns_player() {
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                position: 1,
+                class_position: 1,
+                irating: 2000,
+                class_id: 1,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                position: 2,
+                class_position: 2,
+                irating: 1800,
+                class_id: 1,
+                is_player: true,
+                ..Default::default()
+            },
+        ];
+        let d = project_deltas_by_class(&cars);
+        assert!(d.contains_key(&1));
+        assert!(d[&0] > 0);
+        assert!(d[&1] < 0);
     }
 }

@@ -144,13 +144,13 @@ pub fn build_relative(
     cars: &[CarRow],
     cfg: &OverlayConfig,
     lap_est_hint: f32,
-) -> (Vec<TableRow>, TableSlots) {
+) -> Vec<TableRow> {
     let n_ahead = cfg.f64_key("relative", "rows_ahead", 3.0) as usize;
     let n_behind = cfg.f64_key("relative", "rows_behind", 3.0) as usize;
     let center = cfg.bool_key("relative", "center_on_player", true);
 
     let Some(player) = cars.iter().find(|c| c.is_player) else {
-        return (Vec::new(), default_relative_slots(cars));
+        return Vec::new();
     };
     let me = player.est_time;
     let lap_est = if lap_est_hint > 10.0 {
@@ -198,7 +198,7 @@ pub fn build_relative(
         }
     }
 
-    (rows, default_relative_slots(cars))
+    rows
 }
 
 fn relative_include(c: &CarRow, _player: &CarRow) -> bool {
@@ -225,31 +225,8 @@ fn estimate_lap_est(cars: &[CarRow]) -> f32 {
     }
 }
 
-fn default_relative_slots(cars: &[CarRow]) -> TableSlots {
-    let sof = {
-        let irs: Vec<i32> = cars.iter().map(|c| c.irating).filter(|i| *i > 0).collect();
-        if irs.is_empty() {
-            "--".into()
-        } else {
-            let avg = irs.iter().sum::<i32>() / irs.len() as i32;
-            fmt_irating(avg)
-        }
-    };
-    let player = cars.iter().find(|c| c.is_player);
-    TableSlots {
-        header_left: format!("SOF {sof}"),
-        header_center: String::new(),
-        header_right: player
-            .map(|p| format!("P{}", p.position))
-            .unwrap_or_default(),
-        footer_left: String::new(),
-        footer_center: String::new(),
-        footer_right: String::new(),
-    }
-}
-
 /// Standings windowing (Python `standings_row_list`).
-pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> (Vec<TableRow>, TableSlots) {
+pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
     let mut ranked: Vec<&CarRow> = cars
         .iter()
         .filter(|c| !c.is_pace_car && c.position > 0)
@@ -331,18 +308,7 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> (Vec<TableRow>, 
         }
     };
 
-    let shown = out.iter().filter(|r| !r.empty).count();
-    let total = ranked.len();
-    let title = cfg.str_key("standings", "title", "Standings");
-    let slots = TableSlots {
-        header_left: "ORDER".into(),
-        header_center: title,
-        header_right: format!("{shown}/{total}"),
-        footer_left: String::new(),
-        footer_center: String::new(),
-        footer_right: String::new(),
-    };
-    (out, slots)
+    out
 }
 
 fn pick_context_indices(
@@ -434,14 +400,14 @@ fn pick_context_indices(
 
 /// Fill relative_cars / standings_cars and enrich radar from cars + cfg.
 pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
-    let (rel, mut rel_slots) = build_relative(&frame.cars, cfg, frame.lap_est_time);
-    enrich_slots(frame, &mut rel_slots, "relative");
-    let (std, mut std_slots) = build_standings(&frame.cars, cfg);
-    enrich_slots(frame, &mut std_slots, "standings");
+    apply_irating_projection(frame, cfg);
+
+    let rel = build_relative(&frame.cars, cfg, frame.lap_est_time);
+    let std = build_standings(&frame.cars, cfg);
+    frame.relative_slots = build_table_slots(frame, cfg, "relative", &rel);
+    frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
     frame.relative_cars = rel;
-    frame.relative_slots = rel_slots;
     frame.standings_cars = std;
-    frame.standings_slots = std_slots;
 
     // Merge proximity / side-pos from lap % when IRSDK only set L/R bools (or demo).
     let enriched = build_radar(
@@ -493,38 +459,348 @@ pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 }
 
-fn enrich_slots(frame: &TelemetryFrame, slots: &mut TableSlots, section: &str) {
-    // Fill common footer/header strings the painters display as plain text.
-    if slots.footer_left.is_empty() && section == "relative" {
-        let mins = (frame.session_time / 60.0).floor() as i32;
-        let secs = (frame.session_time % 60.0).floor() as i32;
-        slots.footer_left = format!("{mins:02}:{secs:02}");
+fn needs_irating_projection(cfg: &OverlayConfig) -> bool {
+    if cfg.bool_key("dash", "show_irating_projection", false) && cfg.dash_uses_irating() {
+        return true;
     }
-    if slots.footer_center.is_empty() {
-        if frame.laps_total > 0 {
-            slots.footer_center = format!("L{}/{}", frame.lap, frame.laps_total);
-        } else if frame.lap > 0 {
-            slots.footer_center = format!("L{}", frame.lap);
+    for section in ["relative", "standings"] {
+        if cfg.bool_key(section, "show_irating_projection", false) && cfg.has_column(section, "irating")
+        {
+            return true;
         }
     }
-    if slots.footer_right.is_empty() && section == "relative" {
-        slots.footer_right = format!("x{}", frame.incidents);
+    false
+}
+
+fn apply_irating_projection(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
+    // Clear prior deltas unless we recompute.
+    for c in &mut frame.cars {
+        c.irating_delta = None;
     }
-    if slots.footer_left.is_empty() && section == "standings" {
-        if let Some(tt) = frame.track_temp {
-            slots.footer_left = format!("TRK {tt:.0}°");
+    frame.irating_delta = None;
+
+    if !needs_irating_projection(cfg) {
+        return;
+    }
+    // Race / checkered only (SessionState 4, 5); demo uses 4.
+    if frame.session_state != 4 && frame.session_state != 5 {
+        return;
+    }
+
+    let deltas = crate::irating::project_deltas_by_class(&frame.cars);
+    if deltas.is_empty() {
+        return;
+    }
+    for c in &mut frame.cars {
+        if let Some(d) = deltas.get(&c.car_idx) {
+            c.irating_delta = Some(*d);
         }
     }
-    if slots.footer_right.is_empty() && section == "standings" {
-        if let Some(at) = frame.air_temp {
-            slots.footer_right = format!("AIR {at:.0}°");
+    if let Some(p) = frame.cars.iter().find(|c| c.is_player) {
+        frame.irating_delta = p.irating_delta;
+        if frame.irating <= 0 {
+            frame.irating = p.irating;
         }
     }
-    if slots.footer_center.is_empty() && section == "standings" {
-        let mins = (frame.session_time / 60.0).floor() as i32;
-        let secs = (frame.session_time % 60.0).floor() as i32;
-        slots.footer_center = format!("{mins:02}:{secs:02}");
+}
+
+fn slot_defaults(section: &str) -> [(&'static str, &'static str, &'static str); 2] {
+    if section == "standings" {
+        [
+            ("order_pill", "title", "count"),
+            ("track_temp", "session_time", "air_temp"),
+        ]
+    } else {
+        [
+            ("sof", "none", "position"),
+            ("race_time", "lap", "incidents"),
+        ]
     }
+}
+
+/// Build header/footer strings from Settings `header` / `footer` maps.
+pub fn build_table_slots(
+    frame: &TelemetryFrame,
+    cfg: &OverlayConfig,
+    section: &str,
+    rows: &[TableRow],
+) -> TableSlots {
+    let defs = slot_defaults(section);
+    let (hl, hc, hr) = defs[0];
+    let (fl, fc, fr) = defs[1];
+    let fmt = |group: &str, pos: &str, default: &str| -> String {
+        let key = cfg.nested_str(section, group, pos, default);
+        if key == "none" || key.is_empty() {
+            return String::new();
+        }
+        format_slot_display(&key, frame, cfg, section, rows)
+    };
+    TableSlots {
+        header_left: fmt("header", "left", hl),
+        header_center: fmt("header", "center", hc),
+        header_right: fmt("header", "right", hr),
+        footer_left: fmt("footer", "left", fl),
+        footer_center: fmt("footer", "center", fc),
+        footer_right: fmt("footer", "right", fr),
+    }
+}
+
+fn slot_label(key: &str) -> &'static str {
+    match key {
+        "sof" => "SOF",
+        "class_sof" => "CSOF",
+        "position" => "POS",
+        "class_position" => "CPOS",
+        "session_time" => "TIME",
+        "race_time" => "RACE",
+        "lap" => "LAP",
+        "incidents" => "INC",
+        "track_temp" => "TRK",
+        "air_temp" => "AIR",
+        "best_lap" => "BEST",
+        "session_best" | "my_session_best" => "SBEST",
+        "local_time" => "CLK",
+        "sim_time" => "SIM",
+        "cpu" => "CPU",
+        "mem" => "MEM",
+        "gpu" => "GPU",
+        "laps_remain" => "LEFT",
+        "incident_limit" => "INC",
+        "fast_repairs" => "FR",
+        "weather" => "WX",
+        "track_wetness" => "WET",
+        _ => "",
+    }
+}
+
+fn with_label(key: &str, value: &str) -> String {
+    let lead = slot_label(key);
+    if lead.is_empty() {
+        value.to_string()
+    } else {
+        format!("{lead} {value}")
+    }
+}
+
+fn fmt_clock(secs: f64) -> String {
+    if !secs.is_finite() || secs < 0.0 {
+        return "--:--".into();
+    }
+    let secs = secs as i64;
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    }
+}
+
+fn fmt_laptime(secs: f64) -> String {
+    if !secs.is_finite() || secs <= 0.0 {
+        return "—".into();
+    }
+    let m = (secs / 60.0).floor() as i32;
+    let s = secs - (m as f64) * 60.0;
+    format!("{m}:{s:06.3}")
+}
+
+fn format_slot_value(
+    key: &str,
+    frame: &TelemetryFrame,
+    cfg: &OverlayConfig,
+    section: &str,
+    rows: &[TableRow],
+) -> String {
+    let player = frame.cars.iter().find(|c| c.is_player);
+    let total = frame.cars.iter().filter(|c| c.position > 0 && !c.is_pace_car).count();
+    match key {
+        "sof" => {
+            let irs: Vec<i32> = frame
+                .cars
+                .iter()
+                .filter(|c| !c.is_pace_car && c.irating > 0)
+                .map(|c| c.irating)
+                .collect();
+            if irs.is_empty() {
+                "--".into()
+            } else {
+                fmt_irating(irs.iter().sum::<i32>() / irs.len() as i32)
+            }
+        }
+        "class_sof" => {
+            let cid = player.map(|p| p.class_id).unwrap_or(0);
+            let irs: Vec<i32> = frame
+                .cars
+                .iter()
+                .filter(|c| !c.is_pace_car && c.irating > 0 && c.class_id == cid)
+                .map(|c| c.irating)
+                .collect();
+            if irs.is_empty() {
+                "--".into()
+            } else {
+                fmt_irating(irs.iter().sum::<i32>() / irs.len() as i32)
+            }
+        }
+        "position" => {
+            if let Some(p) = player {
+                if p.position > 0 && total > 0 {
+                    format!("{}/{}", p.position, total)
+                } else {
+                    "—".into()
+                }
+            } else {
+                "—".into()
+            }
+        }
+        "class_position" => {
+            if let Some(p) = player {
+                let class_total = frame
+                    .cars
+                    .iter()
+                    .filter(|c| !c.is_pace_car && c.class_id == p.class_id && c.class_position > 0)
+                    .count();
+                if p.class_position > 0 && class_total > 0 {
+                    format!("{}/{}", p.class_position, class_total)
+                } else {
+                    "—".into()
+                }
+            } else {
+                "—".into()
+            }
+        }
+        "session_time" => {
+            if let Some(rem) = frame.session_time_remain {
+                if rem >= 0.0 {
+                    return fmt_clock(rem as f64);
+                }
+            }
+            "—".into()
+        }
+        "race_time" => {
+            let el = if frame.session_time >= 0.0 {
+                Some(frame.session_time)
+            } else {
+                None
+            };
+            match el {
+                Some(el) => fmt_clock(el),
+                None => "—".into(),
+            }
+        }
+        "lap" => {
+            if frame.laps_total > 0 {
+                format!("{}/{}", frame.lap, frame.laps_total)
+            } else if frame.lap > 0 {
+                format!("{}", frame.lap)
+            } else {
+                "—".into()
+            }
+        }
+        "incidents" => format!("{}x", frame.incidents),
+        "track_name" => frame
+            .track_name
+            .clone()
+            .unwrap_or_else(|| "—".into()),
+        "track_temp" => {
+            if let Some(t) = frame.track_temp {
+                format!("{:.0}{}", cfg.conv_temp(t), cfg.temp_unit())
+            } else {
+                "—".into()
+            }
+        }
+        "air_temp" => {
+            if let Some(t) = frame.air_temp {
+                format!("{:.0}{}", cfg.conv_temp(t), cfg.temp_unit())
+            } else {
+                "—".into()
+            }
+        }
+        "best_lap" => frame
+            .best_lap_s
+            .map(fmt_laptime)
+            .unwrap_or_else(|| "—".into()),
+        "my_session_best" => player
+            .map(|p| {
+                if p.best_lap.is_empty() {
+                    "—".into()
+                } else {
+                    p.best_lap.clone()
+                }
+            })
+            .unwrap_or_else(|| "—".into()),
+        "session_best" => {
+            let best = frame
+                .cars
+                .iter()
+                .filter(|c| !c.best_lap.is_empty() && c.best_lap != "—")
+                .map(|c| c.best_lap.as_str())
+                .min();
+            best.unwrap_or("—").to_string()
+        }
+        "local_time" => {
+            use chrono::{Local, Timelike};
+            let now = Local::now();
+            let h24 = now.hour();
+            let h12 = {
+                let h = h24 % 12;
+                if h == 0 {
+                    12
+                } else {
+                    h
+                }
+            };
+            let ampm = if h24 < 12 { "AM" } else { "PM" };
+            format!("{h12}:{:02} {ampm}", now.minute())
+        }
+        "cpu" => frame.cpu.clone().unwrap_or_else(|| "—".into()),
+        "mem" => frame.mem.clone().unwrap_or_else(|| "—".into()),
+        "gpu" => frame.gpu.clone().unwrap_or_else(|| "—".into()),
+        "laps_remain" => frame
+            .session_laps_remain
+            .map(|v| format!("{v:.0}"))
+            .unwrap_or_else(|| "—".into()),
+        "weather" => {
+            let mut parts = Vec::new();
+            if let Some(s) = &frame.skies {
+                parts.push(s.clone());
+            }
+            if let Some(h) = frame.humidity {
+                parts.push(format!("{h:.0}%"));
+            }
+            if parts.is_empty() {
+                "—".into()
+            } else {
+                parts.join(" ")
+            }
+        }
+        "track_wetness" => frame
+            .track_wetness
+            .map(|w| format!("{w:.0}%"))
+            .unwrap_or_else(|| "—".into()),
+        "title" => cfg.str_key(section, "title", "Standings"),
+        "order_pill" => "ORDER".into(),
+        "count" => {
+            let shown = rows.iter().filter(|r| !r.empty).count();
+            format!("{shown}/{total}")
+        }
+        _ => "—".into(),
+    }
+}
+
+fn format_slot_display(
+    key: &str,
+    frame: &TelemetryFrame,
+    cfg: &OverlayConfig,
+    section: &str,
+    rows: &[TableRow],
+) -> String {
+    if key == "title" || key == "order_pill" || key == "count" || key == "track_name" {
+        return format_slot_value(key, frame, cfg, section, rows);
+    }
+    let val = format_slot_value(key, frame, cfg, section, rows);
+    with_label(key, &val)
 }
 
 /// Radar proximity + side fore/aft from CarLeftRight flags + LapDistPct.
@@ -658,7 +934,7 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let (rows, _) = build_relative(&cars, &cfg, 90.0);
+        let rows = build_relative(&cars, &cfg, 90.0);
         let player_i = rows.iter().position(|r| r.is_player).unwrap();
         // With 3 ahead / 3 behind and centering, player is in the middle slot.
         assert_eq!(player_i, 3);
@@ -681,7 +957,7 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let (rows, _) = build_standings(&cars, &cfg);
+        let rows = build_standings(&cars, &cfg);
         assert!(rows.iter().any(|r| r.is_player));
         assert!(!rows.is_empty());
     }

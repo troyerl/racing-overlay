@@ -37,6 +37,7 @@ mod win {
         irating: i32,
         license: String,
         class_color: String,
+        class_id: i32,
         is_pace_car: bool,
     }
 
@@ -135,6 +136,7 @@ mod win {
         let best_lap = read_f32(session, "LapBestLapTime");
         let cur_lap = read_f32(session, "LapCurrentLapTime");
         let session_time = read_f64(session, "SessionTime");
+        let session_state = read_i32(session, "SessionState");
         let lf = read_f32(session, "LFwearM");
         let rf = read_f32(session, "RFwearM");
         let lr = read_f32(session, "LRwearM");
@@ -233,6 +235,7 @@ mod win {
         TelemetryFrame {
             connected: true,
             session_time,
+            session_state,
             flag,
             flag_context: None,
             incident_warn: false,
@@ -494,13 +497,14 @@ mod win {
                 continue;
             }
 
-            let (name, number, ir, lic, class_color, is_pace) = if let Some(d) = di {
+            let (name, number, ir, lic, class_color, class_id, is_pace) = if let Some(d) = di {
                 (
                     d.name.clone(),
                     d.car_number.clone(),
                     d.irating,
                     d.license.clone(),
                     d.class_color.clone(),
+                    d.class_id,
                     d.is_pace_car,
                 )
             } else {
@@ -510,6 +514,7 @@ mod win {
                     0,
                     String::new(),
                     String::new(),
+                    0,
                     false,
                 )
             };
@@ -533,6 +538,7 @@ mod win {
                 best_lap: String::new(),
                 irating: ir,
                 irating_delta: None,
+                class_id,
                 license: lic,
                 class_color,
                 on_pit: pit,
@@ -666,6 +672,8 @@ mod win {
                 d.car_number = unquote(v);
             } else if let Some(v) = kv(t, "IRating") {
                 d.irating = v.parse().unwrap_or(0);
+            } else if let Some(v) = kv(t, "CarClassID") {
+                d.class_id = v.parse().unwrap_or(0);
             } else if let Some(v) = kv(t, "LicString") {
                 d.license = unquote(v);
             } else if let Some(v) = kv(t, "CarClassColor") {
