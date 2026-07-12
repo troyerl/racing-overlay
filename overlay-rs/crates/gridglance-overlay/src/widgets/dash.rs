@@ -1,7 +1,7 @@
 //! Dash — one-to-one port of Python `overlay/widgets/dash.py` paint path.
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, draw_dark_cell, draw_panel_rect, full_rect, label};
+use crate::chrome::{draw_dark_cell, draw_panel_rect, full_rect, label};
 use crate::config::OverlayConfig;
 use crate::icons;
 use crate::telemetry::TelemetryFrame;
@@ -177,9 +177,7 @@ fn icon_paint(ui: &mut Ui, pos: Pos2, size: f32, name: &str, color: Color32) {
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
-    // Outer card is subtle — Python dash draws panel rects inside without a heavy outer shell.
-    // Keep a transparent allocation; panels provide the chrome.
-    let _ = draw_card(ui, ctx.cfg, SECTION, rect);
+    // Python dash has no outer card — only section panel rects (see-through between them).
 
     let cfg = ctx.cfg;
     let f = ctx.frame;

@@ -6,6 +6,7 @@ mod host;
 mod icons;
 mod ipc;
 mod irating;
+mod layered;
 mod paths;
 mod state;
 mod telemetry;
@@ -78,7 +79,7 @@ fn main() -> Result<()> {
             visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
             visuals.faint_bg_color = egui::Color32::TRANSPARENT;
             cc.egui_ctx.set_visuals(visuals);
-            Ok(Box::new(OverlayApp::new(state, demo)))
+            Ok(Box::new(OverlayApp::new(state, demo, cc.gl.clone())))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;

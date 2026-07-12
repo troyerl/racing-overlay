@@ -2454,9 +2454,17 @@ class ConfigEditor(QWidget):
         sf_enabled = False
         state = {}
         if self._overlay is not None and hasattr(self._overlay, "track_authoring_state"):
-            state = self._overlay.track_authoring_state()
+            try:
+                from .ipc_client import OverlayIpcError
+                state = self._overlay.track_authoring_state()
+            except OverlayIpcError:
+                state = {}
             enabled = bool(state.get("has_track"))
             sf_enabled = bool(state.get("can_author_map"))
+        else:
+            state = {}
+            enabled = False
+            sf_enabled = False
         self._pit_speed_spin.blockSignals(True)
         self._pit_lane_speed_spin.blockSignals(True)
         self._num_turns_spin.blockSignals(True)
@@ -2877,12 +2885,17 @@ class ConfigEditor(QWidget):
         config.set_preview_context(self._edit_ctx)
         # Re-sync state in case it changed from the tray while we were hidden.
         if self._overlay is not None:
-            self._refresh_overlay_btn()
-            self._sync_edit_switch()
-            self._refresh_track_authoring()
-            if hasattr(self, "_v2_import_panel"):
-                self._v2_import_panel.set_overlay(self._overlay)
-                self._v2_import_panel.refresh()
+            from .ipc_client import OverlayIpcError
+            try:
+                self._refresh_overlay_btn()
+                self._sync_edit_switch()
+                self._refresh_track_authoring()
+                if hasattr(self, "_v2_import_panel"):
+                    self._v2_import_panel.set_overlay(self._overlay)
+                    self._v2_import_panel.refresh()
+            except OverlayIpcError:
+                # Overlay may still be starting or was stopped — retry on next show.
+                pass
 
     def _flash(self, msg: str) -> None:
         self.status.setText(msg)

@@ -1,11 +1,13 @@
 //! Multi-viewport egui host for overlay panels.
 
 use crate::config::WIDGET_KEYS;
+use crate::layered;
 use crate::state::{PanelLayout, StateHandle};
 use crate::telemetry::{demo::DemoFeed, IrsdkReader};
 use crate::widgets::{self, WidgetCtx};
-use crate::win_click::{self, PanelShape};
+use crate::win_click;
 use eframe::egui::{self, Sense, ViewportBuilder, ViewportId};
+use eframe::glow;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -16,21 +18,20 @@ pub struct OverlayApp {
     irsdk: Option<IrsdkReader>,
     last_tick: Instant,
     open_viewports: HashSet<String>,
-    /// Last applied Win32 shape signature per panel key.
-    applied_shape: HashMap<String, (i32, i32, i32, bool)>,
     last_click_through: HashMap<String, bool>,
+    gl: Option<Arc<glow::Context>>,
 }
 
 impl OverlayApp {
-    pub fn new(state: StateHandle, demo: bool) -> Self {
+    pub fn new(state: StateHandle, demo: bool, gl: Option<Arc<glow::Context>>) -> Self {
         Self {
             state,
             demo: if demo { Some(DemoFeed::new()) } else { None },
             irsdk: if demo { None } else { Some(IrsdkReader::new()) },
             last_tick: Instant::now(),
             open_viewports: HashSet::new(),
-            applied_shape: HashMap::new(),
             last_click_through: HashMap::new(),
+            gl,
         }
     }
 
@@ -47,32 +48,6 @@ impl OverlayApp {
             return;
         };
         self.state.write().frame = Arc::new(frame);
-    }
-
-    fn panel_shape_for(
-        key: &str,
-        lay: &PanelLayout,
-        show_panel: bool,
-        radius_frac: f32,
-        ppp: f32,
-    ) -> (PanelShape, bool, (i32, i32, i32, bool)) {
-        let w = (lay.w as f32 * ppp).round().max(1.0) as i32;
-        let h = (lay.h as f32 * ppp).round().max(1.0) as i32;
-        let no_panel = matches!(key, "radar" | "map") && !show_panel;
-        let radius = ((lay.h as f32 * radius_frac).max(8.0) * ppp).round() as i32;
-        let shape = if no_panel && key == "radar" {
-            PanelShape::Ellipse { w, h }
-        } else if no_panel {
-            PanelShape::RoundRect {
-                w,
-                h,
-                radius: radius.max(12),
-            }
-        } else {
-            PanelShape::RoundRect { w, h, radius }
-        };
-        let sig = (w, h, if no_panel { -1 } else { radius }, no_panel);
-        (shape, no_panel, sig)
     }
 }
 
@@ -98,13 +73,7 @@ impl eframe::App for OverlayApp {
                         .get(*key)
                         .cloned()
                         .unwrap_or(PanelLayout::default());
-                    let show_panel = st.config.bool_key(
-                        key,
-                        "show_panel",
-                        !matches!(*key, "radar" | "map"),
-                    );
-                    let radius_frac = st.config.f64_key(key, "corner_radius_frac", 0.08) as f32;
-                    items.push(((*key).to_string(), lay, show_panel, radius_frac));
+                    items.push(((*key).to_string(), lay));
                 }
             }
             (
@@ -115,7 +84,6 @@ impl eframe::App for OverlayApp {
             )
         };
 
-        // Root stays off-screen / empty.
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
             .show(ctx, |_| {});
@@ -128,22 +96,19 @@ impl eframe::App for OverlayApp {
                     egui::ViewportCommand::Close,
                 );
                 self.open_viewports.remove(&key);
-                self.applied_shape.remove(&key);
                 self.last_click_through.remove(&key);
             }
             return;
         }
 
-        let ppp = ctx.pixels_per_point();
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
+        let gl = self.gl.clone();
 
-        for (key, lay, show_panel, radius_frac) in keys_layout {
+        for (key, lay) in keys_layout {
             still_open.insert(key.clone());
             let vid = ViewportId::from_hash_of(&key);
             let title = win_click::panel_title(&key);
-            let (shape, chroma, sig) =
-                Self::panel_shape_for(&key, &lay, show_panel, radius_frac, ppp);
 
             let builder = ViewportBuilder::default()
                 .with_title(title.clone())
@@ -157,17 +122,10 @@ impl eframe::App for OverlayApp {
 
             let state = self.state.clone();
             let key_clone = key.clone();
-            let clear = if chroma {
-                let (r, g, b) = win_click::CHROMA_RGB;
-                egui::Color32::from_rgb(r, g, b)
-            } else {
-                egui::Color32::TRANSPARENT
-            };
 
             ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
-                // Match clear to chroma or transparent for this panel.
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE.fill(clear))
+                    .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(vp_ctx, |ui| {
                         let (cfg, frame, mut map) = {
                             let st = state.read();
@@ -211,15 +169,12 @@ impl eframe::App for OverlayApp {
                 }
             });
 
-            // Win32 transparency / region (when HWND is available).
-            if self.applied_shape.get(&key) != Some(&sig) {
-                if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
-                    win_click::apply_panel_transparency(hwnd, shape, chroma);
-                    self.applied_shape.insert(key.clone(), sig);
+            // Per-pixel alpha composite (Windows): read GL backbuffer → UpdateLayeredWindow.
+            if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
+                if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
+                    layered::present_gl_framebuffer(gl, hwnd, w, h);
                 }
-            }
-            if self.last_click_through.get(&key) != Some(&passthrough) {
-                if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
+                if self.last_click_through.get(&key) != Some(&passthrough) {
                     win_click::set_click_through(hwnd, passthrough);
                     self.last_click_through.insert(key.clone(), passthrough);
                 }
@@ -239,7 +194,6 @@ impl eframe::App for OverlayApp {
                 egui::ViewportCommand::Close,
             );
             self.open_viewports.remove(&key);
-            self.applied_shape.remove(&key);
             self.last_click_through.remove(&key);
         }
         self.open_viewports = still_open;

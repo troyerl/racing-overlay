@@ -25,9 +25,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
-    "Win32_Graphics_Dwm",
     "Win32_Graphics_Gdi",
-    "Win32_UI_Controls",
     "Win32_UI_WindowsAndMessaging",
 ] }
 iracing-telem = "0.2.1"

@@ -40,7 +40,7 @@ python run.py --rust --start
 
 Python settings + Rust widgets; live IRSDK fills the dash. Widget `show` flags come from your preset (full `CFG` is pushed over IPC on launch).
 
-Each widget is its own always-on-top window (the root stays tiny/hidden so a failed GL alpha path cannot black out the desktop). On Windows, panels use DWM glass + a shaped window region (rounded card / ellipse for no-panel radar) so the sim shows through outside the content; radar/map honor `show_panel` (off by default). Rebuild after pulling:
+Each widget is its own always-on-top window (the root stays tiny/hidden so a failed GL alpha path cannot black out the desktop). On Windows, after each paint the panel framebuffer is read and shown with `UpdateLayeredWindow` (per-pixel alpha) so empty areas and semi-transparent panels match Python. Dash has no outer card (section panels only); radar/map honor `show_panel` (off by default). Rebuild after pulling:
 
 ```bash
 cargo build --release -p gridglance-overlay
