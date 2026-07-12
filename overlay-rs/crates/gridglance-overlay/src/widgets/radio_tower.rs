@@ -25,7 +25,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     // Simple tower glyph
     let cx = rect.center().x;
     let cy = rect.center().y + 8.0;
-    let stroke = egui::Stroke::new(2.0, accent);
+    let stroke = egui::Stroke::new(2.0_f32, accent);
     ui.painter()
         .line_segment([Pos2::new(cx, cy - 40.0), Pos2::new(cx, cy + 20.0)], stroke);
     ui.painter().line_segment(

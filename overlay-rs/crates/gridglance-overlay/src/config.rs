@@ -188,6 +188,21 @@ impl OverlayConfig {
             .unwrap_or(default)
             .to_string()
     }
+
+    pub fn global_str(&self, key: &str, default: &str) -> String {
+        self.cfg
+            .get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or(default)
+            .to_string()
+    }
+
+    pub fn imperial_units(&self) -> bool {
+        matches!(
+            self.global_str("units", "metric").to_ascii_lowercase().as_str(),
+            "imperial" | "us" | "mph"
+        )
+    }
 }
 
 pub fn parse_color(v: Option<&Value>, fallback: &str) -> egui::Color32 {
@@ -303,6 +318,17 @@ fn default_colors() -> Map<String, Value> {
         ("player_row", "#ff941658"),
         ("row_alt", "#ffffff14"),
         ("accent", "#70df7a"),
+        ("shift_green", "#46df7a"),
+        ("shift_yellow", "#ffd23a"),
+        ("shift_red", "#ff5050"),
+        ("shift_idle", "#ffffff18"),
+        ("throttle", "#46df7a"),
+        ("brake", "#ff5050"),
+        ("clutch", "#4a8cff"),
+        ("abs", "#ffd23a"),
+        ("ring_track", "#ffffff18"),
+        ("label", "#8b93a1"),
+        ("value", "#f4f6f8"),
     ];
     let mut colors = Map::new();
     for (k, v) in PAIRS {
@@ -329,19 +355,30 @@ fn default_cfg() -> Value {
         section.insert("show_value".into(), Value::Bool(true));
         section.insert("row_height_px".into(), json!(36));
         section.insert("font_scale".into(), json!(0.40));
-        for flag in [
-            "show_cpu",
-            "show_mem",
-            "show_gpu",
-            "show_fps",
-            "show_network",
-            "show_skies",
-            "show_rain",
-            "show_temps",
-            "show_wind",
-        ] {
-            section.insert(flag.into(), Value::Bool(true));
-        }
+        section.insert("show_wind".into(), Value::Bool(true));
+        // Dash defaults matching Python CFG.
+        section.insert("show_shift_bar".into(), Value::Bool(true));
+        section.insert("show_ring".into(), Value::Bool(true));
+        section.insert("show_position".into(), Value::Bool(true));
+        section.insert("show_flags".into(), Value::Bool(true));
+        section.insert("show_delta_bar".into(), Value::Bool(false));
+        section.insert("show_throttle".into(), Value::Bool(true));
+        section.insert("show_brake".into(), Value::Bool(true));
+        section.insert("show_clutch".into(), Value::Bool(false));
+        section.insert("center_mode".into(), Value::String("ring".into()));
+        section.insert("top_right".into(), Value::String("incidents".into()));
+        section.insert("primary_left".into(), Value::String("lap_count".into()));
+        section.insert("primary_right".into(), Value::String("speed".into()));
+        section.insert("stat_left".into(), Value::String("tires".into()));
+        section.insert("stat_right".into(), Value::String("fuel_stack".into()));
+        section.insert("strip_left".into(), Value::String("air_temp".into()));
+        section.insert("strip_center".into(), Value::String("track_temp".into()));
+        section.insert("strip_right".into(), Value::String("last_lap".into()));
+        section.insert("text_scale".into(), json!(1.0));
+        section.insert("shift_segments".into(), json!(20));
+        section.insert("shift_red_frac".into(), json!(0.16));
+        section.insert("shift_yellow_frac".into(), json!(0.24));
+        section.insert("delta_bar_range".into(), json!(1.0));
         m.insert((*key).into(), Value::Object(section));
     }
     m.insert("start_overlay_on_launch".into(), Value::Bool(false));

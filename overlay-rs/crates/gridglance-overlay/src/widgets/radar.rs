@@ -16,9 +16,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let track = ctx.cfg.color(SECTION, "track", "#ffffff18");
 
     ui.painter()
-        .circle_stroke(Pos2::new(cx, cy), r, Stroke::new(2.0, track));
+        .circle_stroke(Pos2::new(cx, cy), r, Stroke::new(2.0_f32, track));
     ui.painter()
-        .circle_stroke(Pos2::new(cx, cy), r * 0.55, Stroke::new(1.0, track));
+        .circle_stroke(Pos2::new(cx, cy), r * 0.55, Stroke::new(1.0_f32, track));
     // Player
     ui.painter()
         .circle_filled(Pos2::new(cx, cy), 6.0, ctx.cfg.color(SECTION, "text", "#f4f6f8"));

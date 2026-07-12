@@ -77,6 +77,6 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(bar.center().x, bar.top()),
             Pos2::new(bar.center().x, bar.bottom()),
         ],
-        egui::Stroke::new(2.0, ctx.cfg.color(SECTION, "text", "#f4f6f8")),
+        egui::Stroke::new(2.0_f32, ctx.cfg.color(SECTION, "text", "#f4f6f8")),
     );
 }

@@ -5,7 +5,7 @@ use anyhow::Result;
 use gridglance_ipc::{
     methods, ConfigApplyParams, LayoutSetParams, MapAliasIdsParams, MapBoolParams,
     MapLaneSpeedParams, MapNumTurnsParams, MapPitEditParams, MapSpeedParams, OverlayModeParams,
-    PingResult, Request, Response, PROTOCOL_VERSION, DEFAULT_IPC_PORT,
+    PingResult, Request, Response, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -27,10 +27,6 @@ pub fn spawn(state: StateHandle, port: u16) -> Result<()> {
     });
     eprintln!("GridGlance IPC listening on 127.0.0.1:{port}");
     Ok(())
-}
-
-pub fn spawn_default(state: StateHandle) -> Result<()> {
-    spawn(state, DEFAULT_IPC_PORT)
 }
 
 fn handle_client(state: StateHandle, stream: TcpStream) -> Result<()> {

@@ -1,5 +1,7 @@
 //! iRating projection (parity with Python `overlay.irating_calc`).
 
+#![allow(dead_code)] // used by unit tests; standings will call this next
+
 const BR1: f64 = 1600.0 / std::f64::consts::LN_2;
 
 fn chance(a: f64, b: f64) -> f64 {

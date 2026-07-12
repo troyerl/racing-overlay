@@ -69,6 +69,34 @@ pub fn draw_dark_cell(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rec
     );
 }
 
+/// Nested panel (top/bottom containers inside the dash card).
+pub fn draw_panel_rect(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> f32 {
+    let frac = cfg.f64_key(section, "corner_radius_frac", 0.08) as f32;
+    let radius = (rect.width().min(rect.height()) * frac).max(6.0);
+    let top = cfg.color(section, "bg_top", "#1b1f26");
+    let bottom = cfg.color(section, "bg_bottom", "#0f1216");
+    let mid = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
+    let low = Rect::from_min_max(Pos2::new(rect.min.x, rect.center().y), rect.max);
+    ui.painter().rect_filled(mid, CornerRadius::same(radius as u8), top);
+    ui.painter().rect_filled(
+        low,
+        CornerRadius {
+            nw: 0,
+            ne: 0,
+            sw: radius as u8,
+            se: radius as u8,
+        },
+        bottom,
+    );
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(radius as u8),
+        Stroke::new(1.0_f32, cfg.color(section, "border", "#ffffff28")),
+        egui::StrokeKind::Inside,
+    );
+    radius
+}
+
 pub fn label(
     ui: &mut Ui,
     pos: Pos2,

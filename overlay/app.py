@@ -5909,14 +5909,35 @@ def _main_rust() -> int:
         proc.terminate()
         return 1
 
-    remote = RemoteOverlay(client)
+    remote = RemoteOverlay(
+        client,
+        demo=demo,
+        edit_mode=not click_through,
+        running=start_now,
+    )
     if start_now:
         try:
             remote.start_overlay()
         except OverlayIpcError:
             pass
+    if not click_through:
+        try:
+            remote.set_edit_mode(True)
+        except OverlayIpcError:
+            pass
 
     from .config_editor import ConfigEditor
+    from .updater import UpdateChecker
+
+    remote._updater = UpdateChecker()
+    updater_bridge = _LaunchUpdater(app, remote)
+    remote._updater_bridge = updater_bridge
+    remote._updater.found.connect(updater_bridge.on_found)
+    remote._updater.progress.connect(updater_bridge.on_progress)
+    remote._updater.downloaded.connect(updater_bridge.on_downloaded)
+    remote._updater.failed.connect(updater_bridge.on_failed)
+    if config.CFG.get("check_updates_on_launch", True):
+        remote._updater.start()
 
     def _open_settings() -> None:
         existing = getattr(app, "_settings_window", None)
@@ -5926,6 +5947,7 @@ def _main_rust() -> int:
             return
         editor = ConfigEditor(overlay=remote)
         app._settings_window = editor
+        remote._settings_window = editor
 
         def _on_close(*_args) -> None:
             # Settings exits; Rust overlay keeps racing.

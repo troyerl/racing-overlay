@@ -31,14 +31,28 @@ pub struct TelemetryFrame {
     pub delta: Option<f64>,
     pub speed_mps: f32,
     pub rpm: f32,
+    pub redline: f32,
     pub gear: i32,
     pub throttle: f32,
     pub brake: f32,
     pub clutch: f32,
     pub steering: f32,
+    pub abs_active: bool,
     pub fuel_l: f32,
     pub fuel_pct: f32,
     pub laps_fuel: f32,
+    pub position: i32,
+    pub car_number: String,
+    pub lap: i32,
+    pub laps_total: i32,
+    pub incidents: i32,
+    pub last_lap_s: Option<f64>,
+    pub best_lap_s: Option<f64>,
+    pub cur_lap_s: Option<f64>,
+    pub irating: i32,
+    pub irating_delta: Option<i32>,
+    pub tire_wear_l: f32,
+    pub tire_wear_r: f32,
     pub track_temp: Option<f32>,
     pub air_temp: Option<f32>,
     pub skies: Option<String>,
@@ -60,7 +74,6 @@ pub struct TelemetryFrame {
     pub player_lap_dist_pct: f32,
     pub track_id: Option<i32>,
     pub track_name: Option<String>,
-    /// Relative gaps ahead/behind for radar.
     pub radar_left: bool,
     pub radar_right: bool,
     pub sector_times: Vec<Option<f64>>,
@@ -120,6 +133,7 @@ pub mod demo {
                     lap_dist_pct: pct,
                 });
             }
+            let rpm = 6200.0 + (t * 2.0).sin() as f32 * 800.0;
             TelemetryFrame {
                 connected: true,
                 session_time: t,
@@ -133,15 +147,29 @@ pub mod demo {
                 secondary: None,
                 delta: Some(((t * 0.7).sin()) * 0.35),
                 speed_mps: 55.0 + (t.sin() as f32) * 8.0,
-                rpm: 6200.0 + (t * 2.0).sin() as f32 * 400.0,
+                rpm,
+                redline: 8000.0,
                 gear: 4,
                 throttle: (0.5 + 0.5 * (t * 1.3).sin()) as f32,
-                brake: (0.2 + 0.2 * (t * 0.9).cos()).max(0.0) as f32 * 0.3,
+                brake: ((0.2 + 0.2 * (t * 0.9).cos()).max(0.0) as f32) * 0.3,
                 clutch: 0.0,
                 steering: (t * 0.8).sin() as f32 * 0.4,
+                abs_active: false,
                 fuel_l: 42.0 - (t as f32 * 0.02),
                 fuel_pct: 0.55,
                 laps_fuel: 8.4,
+                position: 4,
+                car_number: "13".into(),
+                lap: 12,
+                laps_total: 25,
+                incidents: 2,
+                last_lap_s: Some(88.442),
+                best_lap_s: Some(87.901),
+                cur_lap_s: Some(42.1 + (t % 40.0)),
+                irating: 2150,
+                irating_delta: Some(12),
+                tire_wear_l: 0.82,
+                tire_wear_r: 0.79,
                 track_temp: Some(32.0 + (t * 0.05).sin() as f32),
                 air_temp: Some(24.0),
                 skies: Some("Partly Cloudy".into()),
@@ -186,7 +214,7 @@ pub mod demo {
                 tire_pressures: [27.1, 27.0, 26.9, 27.2],
                 pit_laps_to_go: Some(6),
                 pit_fuel_to_add: Some(18.5),
-                radio_name: if ((t as i32) % 4 == 0) {
+                radio_name: if (t as i32) % 4 == 0 {
                     Some("Driver 3".into())
                 } else {
                     None
@@ -209,6 +237,7 @@ impl IrsdkReader {
     pub fn tick(&mut self) -> TelemetryFrame {
         TelemetryFrame {
             connected: false,
+            redline: 8000.0,
             ..Default::default()
         }
     }

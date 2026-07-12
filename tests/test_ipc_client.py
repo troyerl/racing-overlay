@@ -86,3 +86,25 @@ def test_remote_overlay_map_api():
     remote.set_pit_edit_mode(True, phase="road", lane="primary")
     assert seen["method"] == "map.set_pit_edit"
     assert seen["params"]["enabled"] is True
+
+
+def test_remote_overlay_hud_api():
+    """ConfigEditor requires these methods without hasattr guards."""
+    port = 19893
+    calls: list[str] = []
+
+    def handler(req):
+        calls.append(req["method"])
+        return {"id": req["id"], "ok": True, "result": {"running": True}}
+
+    _serve_once(handler, port)
+    remote = RemoteOverlay(
+        OverlayIpcClient(port=port, timeout=2.0),
+        edit_mode=True,
+        running=False,
+    )
+    assert remote.edit_mode_enabled() is True
+    assert remote.overlay_running() is False
+    assert remote.toggle_overlay() is True
+    assert remote.overlay_running() is True
+    assert "overlay.start" in calls

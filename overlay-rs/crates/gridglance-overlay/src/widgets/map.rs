@@ -1,5 +1,6 @@
 use super::WidgetCtx;
 use crate::chrome::{draw_card, full_rect, label};
+use crate::paths;
 use egui::{Align2, Pos2, Sense, Stroke, Ui};
 
 const SECTION: &str = "map";
@@ -11,6 +12,7 @@ fn track_point(t: f32) -> Pos2 {
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    let _tracks = paths::tracks_dir(); // keep path helper live for upcoming track JSON load
     let rect = full_rect(ui);
     draw_card(ui, ctx.cfg, SECTION, rect);
     let pad = 12.0_f32;
@@ -32,7 +34,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
     for w in points.windows(2) {
         ui.painter()
-            .line_segment([w[0], w[1]], Stroke::new(3.0, track_col.gamma_multiply(0.55)));
+            .line_segment([w[0], w[1]], Stroke::new(3.0_f32, track_col.gamma_multiply(0.55)));
     }
 
     // Cars
@@ -68,7 +70,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 plot.top() + py * plot.height(),
             );
             ui.painter()
-                .line_segment([prev, p], Stroke::new(2.0, pit_col));
+                .line_segment([prev, p], Stroke::new(2.0_f32, pit_col));
         }
     }
 

@@ -175,11 +175,68 @@ class OverlayIpcClient:
 
 
 class RemoteOverlay:
-    """Duck-typed stand-in for ``AdvancedSimHUD`` Track Scan / apply hooks."""
+    """Duck-typed stand-in for ``AdvancedSimHUD`` settings / Track Scan hooks."""
 
-    def __init__(self, client: OverlayIpcClient | None = None):
+    def __init__(
+        self,
+        client: OverlayIpcClient | None = None,
+        *,
+        demo: bool = False,
+        edit_mode: bool = False,
+        running: bool = False,
+    ):
+        from . import paths
+
         self.ipc = client or OverlayIpcClient()
         self.map_widget = _RemoteMap(self.ipc)
+        self.demo = bool(demo)
+        self.tracks_dir = paths.tracks_dir()
+        self._edit_mode = bool(edit_mode)
+        self._running = bool(running)
+        self._pro_drivers: list = []
+        self._shared_demo_track_id: str | None = None
+        self._settings_window = None
+        # Lazy / optional cloud sync — settings pages guard with hasattr.
+        self._track_sync = None
+
+    # --- overlay start / edit (required by ConfigEditor) -----------------
+
+    def edit_mode_enabled(self) -> bool:
+        return bool(self._edit_mode)
+
+    def overlay_running(self) -> bool:
+        return bool(self._running)
+
+    def start_overlay(self) -> None:
+        self.ipc.overlay_start()
+        self._running = True
+
+    def stop_overlay(self) -> None:
+        try:
+            self.ipc.overlay_stop()
+        finally:
+            self._running = False
+
+    def toggle_overlay(self) -> bool:
+        if self._running:
+            self.stop_overlay()
+        else:
+            self.start_overlay()
+        return self._running
+
+    def set_edit_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        self.ipc.set_edit_mode(enabled)
+        self._edit_mode = enabled
+
+    def apply_config(self, cfg: dict) -> None:
+        self.ipc.config_apply(cfg)
+        try:
+            self.ipc.config_reload()
+        except OverlayIpcError:
+            pass
+
+    # --- Track Scan / authoring ------------------------------------------
 
     def set_pit_edit_mode(self, enabled: bool, phase: str = "road",
                           lane: str = "primary") -> None:
@@ -227,22 +284,40 @@ class RemoteOverlay:
         except OverlayIpcError as exc:
             return False, str(exc)
 
-    def start_overlay(self) -> None:
-        self.ipc.overlay_start()
+    def save_manual_track_v2(self) -> tuple[bool, str]:
+        return False, "manual track save not available on Rust overlay yet"
 
-    def stop_overlay(self) -> None:
-        self.ipc.overlay_stop()
+    def load_pit_into_editor(self, force: bool = False) -> bool:
+        return False
 
-    def set_edit_mode(self, enabled: bool) -> None:
-        self.ipc.set_edit_mode(enabled)
+    def clear_pit_edit_phase(self, phase: str, lane: str = "primary") -> None:
+        self.ipc.map_clear_pit()
 
-    def apply_config(self, cfg: dict) -> None:
-        self.ipc.config_apply(cfg)
-        # Also reload from disk so generation stays consistent after Save.
-        try:
-            self.ipc.config_reload()
-        except OverlayIpcError:
-            pass
+    def parse_loop_v2(self, path: str):
+        return False, "loop import not available on Rust overlay yet", None, None
+
+    def apply_loop_v2_import(self, doc, tid, path) -> tuple[bool, str]:
+        return False, "loop import not available on Rust overlay yet"
+
+    def effective_track_id(self):
+        return None
+
+    # --- profile / identity stubs (settings pages) -----------------------
+
+    def current_car(self):
+        return None
+
+    def current_league(self):
+        return None
+
+    def _show_profile_loading(self, message: str = "") -> None:
+        return None
+
+    def _finish_profile_loading(self) -> None:
+        return None
+
+    def _load_demo_track(self) -> None:
+        return None
 
 
 class _RemoteMap:
@@ -253,6 +328,12 @@ class _RemoteMap:
         self._ipc.map_undo_point()
 
     def clear_pit_edit(self) -> None:
+        self._ipc.map_clear_pit()
+
+    def clear_pit(self) -> None:
+        self._ipc.map_clear_pit()
+
+    def clear_pit_edit_phase(self, phase: str, lane: str = "primary") -> None:
         self._ipc.map_clear_pit()
 
     def reset_pit_edit_view(self) -> None:
