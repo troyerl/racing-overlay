@@ -50,18 +50,17 @@ fn main() -> Result<()> {
 
     ipc::spawn(state.clone(), args.ipc_port)?;
 
-    let (vx, vy, vw, vh) = win_click::virtual_desktop_rect();
+    // Tiny hidden root — panels are separate immediate viewports. Never cover
+    // the desktop with a failed-transparent fullscreen surface.
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title(WINDOW_TITLE)
-            .with_position(egui::pos2(vx as f32, vy as f32))
-            .with_inner_size([vw as f32, vh as f32])
+            .with_inner_size([1.0, 1.0])
+            .with_position(egui::pos2(-32000.0, -32000.0))
             .with_decorations(false)
             .with_transparent(true)
-            .with_always_on_top()
             .with_taskbar(false)
-            .with_mouse_passthrough(click_through),
-        // Glow + no MSAA: needed for per-pixel transparency on Windows.
+            .with_visible(false),
         renderer: eframe::Renderer::Glow,
         multisampling: 1,
         ..Default::default()
@@ -73,6 +72,12 @@ fn main() -> Result<()> {
         options,
         Box::new(move |cc| {
             icons::install_fonts(&cc.egui_ctx);
+            let mut visuals = cc.egui_ctx.style().visuals.clone();
+            visuals.panel_fill = egui::Color32::TRANSPARENT;
+            visuals.window_fill = egui::Color32::TRANSPARENT;
+            visuals.extreme_bg_color = egui::Color32::TRANSPARENT;
+            visuals.faint_bg_color = egui::Color32::TRANSPARENT;
+            cc.egui_ctx.set_visuals(visuals);
             Ok(Box::new(OverlayApp::new(state, demo)))
         }),
     )

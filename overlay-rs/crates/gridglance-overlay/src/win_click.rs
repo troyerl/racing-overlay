@@ -1,26 +1,18 @@
-//! Win32 helpers: click-through, virtual desktop bounds, window hit region.
+//! Win32 overlay window helpers: click-through, DWM glass, shaped regions.
 
-/// Virtual-desktop rect in screen pixels: (x, y, width, height).
-pub fn virtual_desktop_rect() -> (i32, i32, i32, i32) {
-    #[cfg(windows)]
-    {
-        use windows::Win32::UI::WindowsAndMessaging::{
-            GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN,
-            SM_YVIRTUALSCREEN,
-        };
-        unsafe {
-            (
-                GetSystemMetrics(SM_XVIRTUALSCREEN),
-                GetSystemMetrics(SM_YVIRTUALSCREEN),
-                GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1),
-                GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1),
-            )
-        }
-    }
-    #[cfg(not(windows))]
-    {
-        (0, 0, 1920, 1080)
-    }
+/// Reserved clear / chroma color for no-panel widgets (RGB 1,0,1).
+pub const CHROMA_RGB: (u8, u8, u8) = (1, 0, 1);
+
+pub fn panel_title(key: &str) -> String {
+    format!("GridGlance — {key}")
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PanelShape {
+    /// Rounded rectangle (card chrome).
+    RoundRect { w: i32, h: i32, radius: i32 },
+    /// Ellipse (radar / floating no-panel content).
+    Ellipse { w: i32, h: i32 },
 }
 
 #[cfg(windows)]
@@ -50,43 +42,54 @@ pub fn find_overlay_hwnd(_title: &str) -> Option<isize> {
     None
 }
 
-/// Restrict the window's hit-test region to `rects` (client-relative, physical px).
-/// Empty `rects` clears the region (whole window is hittable again).
+/// Apply layered style, DWM glass, shaped region, and optional chroma-key.
 #[cfg(windows)]
-pub fn set_hit_region(hwnd: isize, rects: &[(i32, i32, i32, i32)]) {
-    use windows::Win32::Foundation::HWND;
-    use windows::Win32::Graphics::Gdi::{
-        CombineRgn, CreateRectRgn, DeleteObject, SetRectRgn, SetWindowRgn, RGN_OR,
+pub fn apply_panel_transparency(hwnd: isize, shape: PanelShape, chroma_key: bool) {
+    use windows::Win32::Foundation::{COLORREF, HWND};
+    use windows::Win32::Graphics::Dwm::DwmExtendFrameIntoClientArea;
+    use windows::Win32::Graphics::Gdi::{CreateEllipticRgn, CreateRoundRectRgn, SetWindowRgn};
+    use windows::Win32::UI::Controls::MARGINS;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetLayeredWindowAttributes, SetWindowLongW, GWL_EXSTYLE, LWA_COLORKEY,
+        WINDOW_EX_STYLE, WS_EX_LAYERED,
     };
 
     unsafe {
         let hwnd = HWND(hwnd as *mut _);
-        if rects.is_empty() {
-            let _ = SetWindowRgn(hwnd, None, true);
-            return;
+
+        let current = GetWindowLongW(hwnd, GWL_EXSTYLE);
+        let layered = WINDOW_EX_STYLE(current as u32) | WS_EX_LAYERED;
+        let _ = SetWindowLongW(hwnd, GWL_EXSTYLE, layered.0 as i32);
+
+        let margins = MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
+        };
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
+
+        let rgn = match shape {
+            PanelShape::RoundRect { w, h, radius } => {
+                let r = radius.max(1) * 2; // CreateRoundRectRgn wants ellipse width/height of corner
+                CreateRoundRectRgn(0, 0, w.max(1), h.max(1), r, r)
+            }
+            PanelShape::Ellipse { w, h } => CreateEllipticRgn(0, 0, w.max(1), h.max(1)),
+        };
+        if !rgn.is_invalid() {
+            let _ = SetWindowRgn(hwnd, Some(rgn), true);
         }
-        let (x0, y0, w0, h0) = rects[0];
-        let combined = CreateRectRgn(x0, y0, x0 + w0.max(1), y0 + h0.max(1));
-        if combined.is_invalid() {
-            return;
+
+        if chroma_key {
+            let (r, g, b) = CHROMA_RGB;
+            let key = COLORREF(u32::from(r) | (u32::from(g) << 8) | (u32::from(b) << 16));
+            let _ = SetLayeredWindowAttributes(hwnd, key, 0, LWA_COLORKEY);
         }
-        let tmp = CreateRectRgn(0, 0, 1, 1);
-        if tmp.is_invalid() {
-            let _ = DeleteObject(combined.into());
-            return;
-        }
-        for &(x, y, w, h) in &rects[1..] {
-            let _ = SetRectRgn(tmp, x, y, x + w.max(1), y + h.max(1));
-            let _ = CombineRgn(Some(combined), Some(combined), Some(tmp), RGN_OR);
-        }
-        let _ = DeleteObject(tmp.into());
-        // SetWindowRgn takes ownership of `combined`.
-        let _ = SetWindowRgn(hwnd, Some(combined), true);
     }
 }
 
 #[cfg(not(windows))]
-pub fn set_hit_region(_hwnd: isize, _rects: &[(i32, i32, i32, i32)]) {}
+pub fn apply_panel_transparency(_hwnd: isize, _shape: PanelShape, _chroma_key: bool) {}
 
 #[cfg(windows)]
 pub fn set_click_through(hwnd: isize, enabled: bool) {

@@ -1,37 +1,36 @@
-//! Single transparent virtual-desktop host; widgets as positioned Areas.
+//! Multi-viewport egui host for overlay panels.
 
 use crate::config::WIDGET_KEYS;
 use crate::state::{PanelLayout, StateHandle};
 use crate::telemetry::{demo::DemoFeed, IrsdkReader};
 use crate::widgets::{self, WidgetCtx};
-use crate::win_click;
-use eframe::egui::{self, Order, Sense, Vec2};
+use crate::win_click::{self, PanelShape};
+use eframe::egui::{self, Sense, ViewportBuilder, ViewportId};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
-
-const WINDOW_TITLE: &str = "GridGlance Overlay";
 
 pub struct OverlayApp {
     state: StateHandle,
     demo: Option<DemoFeed>,
     irsdk: Option<IrsdkReader>,
     last_tick: Instant,
-    virtual_origin: (f32, f32),
-    last_passthrough: Option<bool>,
-    last_hit_rects: Vec<(i32, i32, i32, i32)>,
+    open_viewports: HashSet<String>,
+    /// Last applied Win32 shape signature per panel key.
+    applied_shape: HashMap<String, (i32, i32, i32, bool)>,
+    last_click_through: HashMap<String, bool>,
 }
 
 impl OverlayApp {
     pub fn new(state: StateHandle, demo: bool) -> Self {
-        let (vx, vy, _, _) = win_click::virtual_desktop_rect();
         Self {
             state,
             demo: if demo { Some(DemoFeed::new()) } else { None },
             irsdk: if demo { None } else { Some(IrsdkReader::new()) },
             last_tick: Instant::now(),
-            virtual_origin: (vx as f32, vy as f32),
-            last_passthrough: None,
-            last_hit_rects: Vec::new(),
+            open_viewports: HashSet::new(),
+            applied_shape: HashMap::new(),
+            last_click_through: HashMap::new(),
         }
     }
 
@@ -49,6 +48,32 @@ impl OverlayApp {
         };
         self.state.write().frame = Arc::new(frame);
     }
+
+    fn panel_shape_for(
+        key: &str,
+        lay: &PanelLayout,
+        show_panel: bool,
+        radius_frac: f32,
+        ppp: f32,
+    ) -> (PanelShape, bool, (i32, i32, i32, bool)) {
+        let w = (lay.w as f32 * ppp).round().max(1.0) as i32;
+        let h = (lay.h as f32 * ppp).round().max(1.0) as i32;
+        let no_panel = matches!(key, "radar" | "map") && !show_panel;
+        let radius = ((lay.h as f32 * radius_frac).max(8.0) * ppp).round() as i32;
+        let shape = if no_panel && key == "radar" {
+            PanelShape::Ellipse { w, h }
+        } else if no_panel {
+            PanelShape::RoundRect {
+                w,
+                h,
+                radius: radius.max(12),
+            }
+        } else {
+            PanelShape::RoundRect { w, h, radius }
+        };
+        let sig = (w, h, if no_panel { -1 } else { radius }, no_panel);
+        (shape, no_panel, sig)
+    }
 }
 
 impl eframe::App for OverlayApp {
@@ -59,8 +84,6 @@ impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_telemetry();
         ctx.request_repaint_after(std::time::Duration::from_millis(16));
-
-        let (vx, vy) = self.virtual_origin;
 
         let (running, edit_mode, click_through, keys_layout) = {
             let st = self.state.read();
@@ -75,7 +98,13 @@ impl eframe::App for OverlayApp {
                         .get(*key)
                         .cloned()
                         .unwrap_or(PanelLayout::default());
-                    items.push(((*key).to_string(), lay));
+                    let show_panel = st.config.bool_key(
+                        key,
+                        "show_panel",
+                        !matches!(*key, "radar" | "map"),
+                    );
+                    let radius_frac = st.config.f64_key(key, "corner_radius_frac", 0.08) as f32;
+                    items.push(((*key).to_string(), lay, show_panel, radius_frac));
                 }
             }
             (
@@ -86,57 +115,60 @@ impl eframe::App for OverlayApp {
             )
         };
 
-        // Locked overlay: mouse passes through the full virtual desktop.
-        // Edit mode: capture only over widget hit-regions (see SetWindowRgn below).
-        let passthrough = running && click_through && !edit_mode;
-        if self.last_passthrough != Some(passthrough) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::MousePassthrough(passthrough));
-            if let Some(hwnd) = win_click::find_overlay_hwnd(WINDOW_TITLE) {
-                win_click::set_click_through(hwnd, passthrough);
-            }
-            self.last_passthrough = Some(passthrough);
-        }
-
-        // Empty transparent root — no chrome when stopped or running.
+        // Root stays off-screen / empty.
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
             .show(ctx, |_| {});
 
         if !running {
-            if !self.last_hit_rects.is_empty() {
-                if let Some(hwnd) = win_click::find_overlay_hwnd(WINDOW_TITLE) {
-                    win_click::set_hit_region(hwnd, &[]);
-                }
-                self.last_hit_rects.clear();
+            let to_close: Vec<_> = self.open_viewports.iter().cloned().collect();
+            for key in to_close {
+                ctx.send_viewport_cmd_to(
+                    ViewportId::from_hash_of(&key),
+                    egui::ViewportCommand::Close,
+                );
+                self.open_viewports.remove(&key);
+                self.applied_shape.remove(&key);
+                self.last_click_through.remove(&key);
             }
             return;
         }
 
         let ppp = ctx.pixels_per_point();
-        let mut hit_rects: Vec<(i32, i32, i32, i32)> = Vec::with_capacity(keys_layout.len());
+        let mut still_open = HashSet::new();
+        let passthrough = click_through && !edit_mode;
 
-        for (key, lay) in &keys_layout {
-            let pos = egui::pos2(lay.x as f32 - vx, lay.y as f32 - vy);
-            let size = Vec2::new(lay.w as f32, lay.h as f32);
-            hit_rects.push((
-                ((lay.x as f32 - vx) * ppp).round() as i32,
-                ((lay.y as f32 - vy) * ppp).round() as i32,
-                (lay.w as f32 * ppp).round() as i32,
-                (lay.h as f32 * ppp).round() as i32,
-            ));
+        for (key, lay, show_panel, radius_frac) in keys_layout {
+            still_open.insert(key.clone());
+            let vid = ViewportId::from_hash_of(&key);
+            let title = win_click::panel_title(&key);
+            let (shape, chroma, sig) =
+                Self::panel_shape_for(&key, &lay, show_panel, radius_frac, ppp);
+
+            let builder = ViewportBuilder::default()
+                .with_title(title.clone())
+                .with_decorations(false)
+                .with_transparent(true)
+                .with_always_on_top()
+                .with_taskbar(false)
+                .with_mouse_passthrough(passthrough)
+                .with_position(egui::pos2(lay.x as f32, lay.y as f32))
+                .with_inner_size([lay.w as f32, lay.h as f32]);
 
             let state = self.state.clone();
             let key_clone = key.clone();
-            egui::Area::new(egui::Id::new(("gg_panel", key.as_str())))
-                .fixed_pos(pos)
-                .order(Order::Foreground)
-                .interactable(edit_mode || key.as_str() == "map")
-                .show(ctx, |ui| {
-                    ui.set_min_size(size);
-                    ui.set_max_size(size);
-                    ui.scope(|ui| {
-                        ui.set_min_size(size);
-                        ui.set_max_size(size);
+            let clear = if chroma {
+                let (r, g, b) = win_click::CHROMA_RGB;
+                egui::Color32::from_rgb(r, g, b)
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+
+            ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
+                // Match clear to chroma or transparent for this panel.
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE.fill(clear))
+                    .show(vp_ctx, |ui| {
                         let (cfg, frame, mut map) = {
                             let st = state.read();
                             (Arc::clone(&st.config), Arc::clone(&st.frame), st.map.clone())
@@ -173,20 +205,43 @@ impl eframe::App for OverlayApp {
                             }
                         }
                     });
-                });
+
+                if vp_ctx.input(|i| i.viewport().close_requested()) {
+                    // Ignore close — overlay panels aren't user-dismissible.
+                }
+            });
+
+            // Win32 transparency / region (when HWND is available).
+            if self.applied_shape.get(&key) != Some(&sig) {
+                if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
+                    win_click::apply_panel_transparency(hwnd, shape, chroma);
+                    self.applied_shape.insert(key.clone(), sig);
+                }
+            }
+            if self.last_click_through.get(&key) != Some(&passthrough) {
+                if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
+                    win_click::set_click_through(hwnd, passthrough);
+                    self.last_click_through.insert(key.clone(), passthrough);
+                }
+            }
+
+            self.open_viewports.insert(key);
         }
 
-        let desired = if edit_mode || !passthrough {
-            hit_rects
-        } else {
-            // Full-window region is fine when everything is mouse-passthrough.
-            Vec::new()
-        };
-        if desired != self.last_hit_rects {
-            if let Some(hwnd) = win_click::find_overlay_hwnd(WINDOW_TITLE) {
-                win_click::set_hit_region(hwnd, &desired);
-            }
-            self.last_hit_rects = desired;
+        let to_close: Vec<_> = self
+            .open_viewports
+            .difference(&still_open)
+            .cloned()
+            .collect();
+        for key in to_close {
+            ctx.send_viewport_cmd_to(
+                ViewportId::from_hash_of(&key),
+                egui::ViewportCommand::Close,
+            );
+            self.open_viewports.remove(&key);
+            self.applied_shape.remove(&key);
+            self.last_click_through.remove(&key);
         }
+        self.open_viewports = still_open;
     }
 }
