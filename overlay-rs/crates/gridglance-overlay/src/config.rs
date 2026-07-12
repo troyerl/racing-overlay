@@ -203,6 +203,17 @@ impl OverlayConfig {
             "imperial" | "us" | "mph"
         )
     }
+
+    /// Global `text_scale` × per-section `text_scale` (Python `text_scale_for`).
+    pub fn text_scale(&self, section: &str) -> f32 {
+        let g = self
+            .cfg
+            .get("text_scale")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(1.0) as f32;
+        let w = self.f64_key(section, "text_scale", 1.0) as f32;
+        (g * w).max(0.1)
+    }
 }
 
 pub fn parse_color(v: Option<&Value>, fallback: &str) -> egui::Color32 {
@@ -321,14 +332,22 @@ fn default_colors() -> Map<String, Value> {
         ("shift_green", "#46df7a"),
         ("shift_yellow", "#ffd23a"),
         ("shift_red", "#ff5050"),
+        ("shift_off", "#333a42"),
         ("shift_idle", "#ffffff18"),
         ("throttle", "#46df7a"),
         ("brake", "#ff5050"),
         ("clutch", "#4a8cff"),
         ("abs", "#ffd23a"),
         ("ring_track", "#ffffff18"),
+        ("pedal_track", "#ffffff18"),
+        ("cell_border", "#ffffff20"),
+        ("orange", "#ff9416"),
+        ("warn", "#e0a93a"),
+        ("gear", "#ffffff"),
         ("label", "#8b93a1"),
         ("value", "#f4f6f8"),
+        ("irating_delta_up", "#46df7a"),
+        ("irating_delta_down", "#ff5050"),
     ];
     let mut colors = Map::new();
     for (k, v) in PAIRS {
@@ -367,21 +386,26 @@ fn default_cfg() -> Value {
         section.insert("show_clutch".into(), Value::Bool(false));
         section.insert("center_mode".into(), Value::String("ring".into()));
         section.insert("top_right".into(), Value::String("incidents".into()));
-        section.insert("primary_left".into(), Value::String("lap_count".into()));
+        section.insert("primary_left".into(), Value::String("laps_left".into()));
         section.insert("primary_right".into(), Value::String("speed".into()));
         section.insert("stat_left".into(), Value::String("tires".into()));
         section.insert("stat_right".into(), Value::String("fuel_stack".into()));
-        section.insert("strip_left".into(), Value::String("air_temp".into()));
-        section.insert("strip_center".into(), Value::String("track_temp".into()));
-        section.insert("strip_right".into(), Value::String("last_lap".into()));
+        section.insert("strip_left".into(), Value::String("car_number".into()));
+        section.insert("strip_center".into(), Value::String("lap_count".into()));
+        section.insert("strip_right".into(), Value::String("irating".into()));
         section.insert("text_scale".into(), json!(1.0));
         section.insert("shift_segments".into(), json!(20));
         section.insert("shift_red_frac".into(), json!(0.16));
         section.insert("shift_yellow_frac".into(), json!(0.24));
+        section.insert("ring_segments".into(), json!(16));
         section.insert("delta_bar_range".into(), json!(1.0));
+        section.insert("show_irating_projection".into(), Value::Bool(true));
+        section.insert("irating_abbreviate".into(), Value::Bool(false));
         m.insert((*key).into(), Value::Object(section));
     }
     m.insert("start_overlay_on_launch".into(), Value::Bool(false));
+    m.insert("units".into(), Value::String("imperial".into()));
+    m.insert("text_scale".into(), json!(1.20));
     Value::Object(m)
 }
 

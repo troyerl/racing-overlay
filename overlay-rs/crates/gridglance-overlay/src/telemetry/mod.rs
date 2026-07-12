@@ -133,43 +133,42 @@ pub mod demo {
                     lap_dist_pct: pct,
                 });
             }
-            let rpm = 6200.0 + (t * 2.0).sin() as f32 * 800.0;
+            // ~70% redline so green/yellow shift ticks are visible; throttle lit.
+            let rpm = 5600.0 + (t * 0.6).sin() as f32 * 400.0;
+            let speed_mps = 147.0 / 2.236_936_3; // ~147 mph
+            let fuel_l = 15.5 / 0.264_172_05; // ~15.5 Gal
             TelemetryFrame {
                 connected: true,
                 session_time: t,
-                flag: if ((t as i32) / 20) % 5 == 0 {
-                    Some("yellow".into())
-                } else {
-                    Some("green".into())
-                },
-                flag_context: None,
+                flag: Some("white".into()),
+                flag_context: Some("Lap 2 of 50 — finish this lap".into()),
                 incident_warn: false,
                 secondary: None,
-                delta: Some(((t * 0.7).sin()) * 0.35),
-                speed_mps: 55.0 + (t.sin() as f32) * 8.0,
+                delta: Some(-0.12),
+                speed_mps,
                 rpm,
                 redline: 8000.0,
-                gear: 4,
-                throttle: (0.5 + 0.5 * (t * 1.3).sin()) as f32,
-                brake: ((0.2 + 0.2 * (t * 0.9).cos()).max(0.0) as f32) * 0.3,
+                gear: 6,
+                throttle: 0.72 + 0.18 * (t * 1.1).sin() as f32,
+                brake: ((t * 0.7).sin() as f32).max(0.0) * 0.15,
                 clutch: 0.0,
-                steering: (t * 0.8).sin() as f32 * 0.4,
+                steering: 0.1,
                 abs_active: false,
-                fuel_l: 42.0 - (t as f32 * 0.02),
+                fuel_l,
                 fuel_pct: 0.55,
-                laps_fuel: 8.4,
-                position: 4,
-                car_number: "13".into(),
-                lap: 12,
-                laps_total: 25,
-                incidents: 2,
+                laps_fuel: 37.5,
+                position: 8,
+                car_number: "48".into(),
+                lap: 2,
+                laps_total: 50,
+                incidents: 11,
                 last_lap_s: Some(88.442),
                 best_lap_s: Some(87.901),
-                cur_lap_s: Some(42.1 + (t % 40.0)),
-                irating: 2150,
-                irating_delta: Some(12),
-                tire_wear_l: 0.82,
-                tire_wear_r: 0.79,
+                cur_lap_s: Some(42.1),
+                irating: 2500,
+                irating_delta: Some(-28),
+                tire_wear_l: 0.90,
+                tire_wear_r: 0.86,
                 track_temp: Some(32.0 + (t * 0.05).sin() as f32),
                 air_temp: Some(24.0),
                 skies: Some("Partly Cloudy".into()),

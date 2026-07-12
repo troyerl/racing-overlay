@@ -3,6 +3,7 @@
 mod chrome;
 mod config;
 mod host;
+mod icons;
 mod ipc;
 mod irating;
 mod paths;
@@ -61,7 +62,10 @@ fn main() -> Result<()> {
     eframe::run_native(
         "GridGlance Overlay",
         options,
-        Box::new(move |_cc| Ok(Box::new(OverlayApp::new(state, demo)))),
+        Box::new(move |cc| {
+            icons::install_fonts(&cc.egui_ctx);
+            Ok(Box::new(OverlayApp::new(state, demo)))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
     Ok(())

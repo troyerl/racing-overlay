@@ -1,12 +1,41 @@
-//! Dash — multi-container racing dashboard (parity with Python `dash.py`).
+//! Dash — one-to-one port of Python `overlay/widgets/dash.py` paint path.
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, draw_panel_rect, full_rect, label};
+use crate::chrome::{draw_card, draw_dark_cell, draw_panel_rect, full_rect, label};
 use crate::config::OverlayConfig;
+use crate::icons;
 use crate::telemetry::TelemetryFrame;
-use egui::{Align2, Color32, Pos2, Rect, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 
 const SECTION: &str = "dash";
+
+fn gear_str(g: i32) -> String {
+    if g < 0 {
+        "R".into()
+    } else if g == 0 {
+        "N".into()
+    } else {
+        g.to_string()
+    }
+}
+
+fn speed_value(cfg: &OverlayConfig, ms: f32) -> String {
+    let v = if cfg.imperial_units() {
+        ms * 2.236_936_3
+    } else {
+        ms * 3.6
+    };
+    format!("{:.0}", v)
+}
+
+fn fuel_amount(cfg: &OverlayConfig, litres: f32) -> String {
+    let (v, unit) = if cfg.imperial_units() {
+        (litres * 0.264_172_05, "Gal")
+    } else {
+        (litres, "L")
+    };
+    format!("{v:.1} {unit}")
+}
 
 fn fmt_lap(secs: Option<f64>) -> String {
     match secs {
@@ -19,118 +48,109 @@ fn fmt_lap(secs: Option<f64>) -> String {
     }
 }
 
-fn fmt_signed_delta(d: Option<f64>) -> String {
-    match d {
-        Some(v) => format!("{v:+.2}"),
-        None => "--.--".into(),
-    }
-}
-
-fn gear_str(g: i32) -> String {
-    if g < 0 {
-        "R".into()
-    } else if g == 0 {
-        "N".into()
-    } else {
-        g.to_string()
-    }
-}
-
-fn metric_value(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> (String, String) {
-    // Returns (label, value) — stacked metrics use "\n" in value for multi-line.
+/// Single-line metric string (Python `_m_str`).
+fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
     match key {
-        "none" | "" => (String::new(), String::new()),
-        "speed" => {
-            let ms = f.speed_mps;
-            let (v, unit) = if cfg.imperial_units() {
-                (ms * 2.2369363, "mph")
+        "speed" => speed_value(cfg, f.speed_mps),
+        "rpm" => format!("{:.0}", f.rpm),
+        "gear" => gear_str(f.gear),
+        "position" => {
+            if f.position > 0 {
+                format!("P{}", f.position)
             } else {
-                (ms * 3.6, "km/h")
-            };
-            (unit.into(), format!("{:.0}", v))
+                "--".into()
+            }
         }
-        "rpm" => ("RPM".into(), format!("{:.0}", f.rpm)),
-        "gear" => ("GEAR".into(), gear_str(f.gear)),
-        "position" => ("POS".into(), format!("P{}", f.position.max(0))),
-        "car_number" => (
-            "CAR".into(),
+        "car_number" => {
             if f.car_number.is_empty() {
                 "--".into()
             } else {
                 f.car_number.clone()
-            },
-        ),
-        "lap_count" => (
-            "LAP".into(),
+            }
+        }
+        "lap_count" => {
             if f.laps_total > 0 {
                 format!("{}/{}", f.lap, f.laps_total)
             } else if f.lap > 0 {
                 format!("{}", f.lap)
             } else {
                 "--".into()
-            },
-        ),
-        "laps_left" => (
-            "LEFT".into(),
+            }
+        }
+        "laps_left" => {
             if f.laps_total > 0 {
                 format!("{}", (f.laps_total - f.lap).max(0))
             } else {
                 "--".into()
-            },
-        ),
-        "lap" => ("LAP".into(), format!("{}", f.lap.max(0))),
-        "fuel" => ("FUEL".into(), format!("{:.1} L", f.fuel_l)),
-        "fuel_laps" => ("LAPS".into(), format!("{:.1}", f.laps_fuel)),
-        "fuel_stack" => (
-            "FUEL".into(),
-            format!("{:.1} L\n{:.1} laps", f.fuel_l, f.laps_fuel),
-        ),
-        "tires" => (
-            "TIRES".into(),
-            format!(
-                "L {:.0}%\nR {:.0}%",
-                f.tire_wear_l * 100.0,
-                f.tire_wear_r * 100.0
-            ),
-        ),
-        "incidents" => ("INC".into(), format!("{}", f.incidents)),
-        "last_lap" => ("LAST".into(), fmt_lap(f.last_lap_s)),
-        "best_lap" => ("BEST".into(), fmt_lap(f.best_lap_s)),
-        "cur_lap" => ("CUR".into(), fmt_lap(f.cur_lap_s)),
-        "delta" => ("Δ".into(), fmt_signed_delta(f.delta)),
-        "irating" => {
-            let base = if cfg.bool_key(SECTION, "irating_abbreviate", true) {
-                format!("{:.1}k", f.irating as f32 / 1000.0)
-            } else {
-                format!("{}", f.irating)
-            };
-            let v = if cfg.bool_key(SECTION, "show_irating_projection", false) {
-                match f.irating_delta {
-                    Some(d) => format!("{base} {d:+}"),
-                    None => base,
-                }
-            } else {
-                base
-            };
-            ("iR".into(), v)
+            }
         }
-        "air_temp" => (
-            "AIR".into(),
-            f.air_temp
-                .map(|t| format!("{t:.0}°"))
-                .unwrap_or_else(|| "--".into()),
-        ),
-        "track_temp" => (
-            "TRK".into(),
-            f.track_temp
-                .map(|t| format!("{t:.0}°"))
-                .unwrap_or_else(|| "--".into()),
-        ),
-        other => (other.to_uppercase(), "--".into()),
+        "lap" => {
+            if f.lap > 0 {
+                format!("{}", f.lap)
+            } else {
+                "--".into()
+            }
+        }
+        "fuel" => fuel_amount(cfg, f.fuel_l),
+        "fuel_laps" => format!("{:.1} Laps", f.laps_fuel),
+        "incidents" => format!("{}x", f.incidents),
+        "last_lap" => fmt_lap(f.last_lap_s),
+        "best_lap" => fmt_lap(f.best_lap_s),
+        "cur_lap" => fmt_lap(f.cur_lap_s),
+        "delta" => f
+            .delta
+            .map(|d| format!("{d:+.2}"))
+            .unwrap_or_else(|| "--".into()),
+        "irating" => {
+            let ir = f.irating;
+            if cfg.bool_key(SECTION, "irating_abbreviate", true) && ir >= 1000 {
+                format!("{:.1}k", ir as f32 / 1000.0)
+            } else {
+                format!("{ir}")
+            }
+        }
+        "air_temp" => f
+            .air_temp
+            .map(|t| {
+                let t = if cfg.imperial_units() {
+                    t * 9.0 / 5.0 + 32.0
+                } else {
+                    t
+                };
+                format!("{t:.0}°")
+            })
+            .unwrap_or_else(|| "--".into()),
+        "track_temp" => f
+            .track_temp
+            .map(|t| {
+                let t = if cfg.imperial_units() {
+                    t * 9.0 / 5.0 + 32.0
+                } else {
+                    t
+                };
+                format!("{t:.0}°")
+            })
+            .unwrap_or_else(|| "--".into()),
+        _ => "--".into(),
     }
 }
 
-fn slot_key(cfg: &OverlayConfig, key: &str, default: &str) -> String {
+/// Stacked rows for stats cells: (sub_label, value).
+fn metric_lines(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> Vec<(String, String)> {
+    match key {
+        "fuel_stack" => vec![
+            ("FUEL".into(), fuel_amount(cfg, f.fuel_l)),
+            (String::new(), format!("{:.1} Laps", f.laps_fuel)),
+        ],
+        "tires" => vec![
+            ("L".into(), format!("{:.0}%", f.tire_wear_l * 100.0)),
+            ("R".into(), format!("{:.0}%", f.tire_wear_r * 100.0)),
+        ],
+        other => vec![(String::new(), metric_str(cfg, f, other))],
+    }
+}
+
+fn slot(cfg: &OverlayConfig, key: &str, default: &str) -> String {
     let s = cfg.str_key(SECTION, key, default);
     if s.is_empty() {
         "none".into()
@@ -139,18 +159,33 @@ fn slot_key(cfg: &OverlayConfig, key: &str, default: &str) -> String {
     }
 }
 
+fn text_w(ui: &Ui, font: &FontId, text: &str) -> f32 {
+    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size().x)
+}
+
+fn icon_paint(ui: &mut Ui, pos: Pos2, size: f32, name: &str, color: Color32) {
+    if let Some(g) = icons::glyph(name) {
+        ui.painter().text(
+            pos,
+            Align2::LEFT_CENTER,
+            g,
+            icons::font_id(size),
+            color,
+        );
+    }
+}
+
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
-    draw_card(ui, ctx.cfg, SECTION, rect);
+    // Outer card is subtle — Python dash draws panel rects inside without a heavy outer shell.
+    // Keep a transparent allocation; panels provide the chrome.
+    let _ = draw_card(ui, ctx.cfg, SECTION, rect);
 
     let cfg = ctx.cfg;
     let f = ctx.frame;
     let w = rect.width();
     let h = rect.height();
-    let text_scale = cfg.f64_key(SECTION, "text_scale", 1.0) as f32;
-    let value_col = cfg.color(SECTION, "value", "#f4f6f8");
-    let label_col = cfg.color(SECTION, "label", "#8b93a1");
-    let muted = cfg.color(SECTION, "muted", "#8b93a1");
+    let text_scale = cfg.text_scale(SECTION);
 
     let m = h * 0.045;
     let gp = h * 0.022;
@@ -158,49 +193,48 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let show_pos = cfg.bool_key(SECTION, "show_position", true);
     let mut panels_top = rect.top() + m;
     let panels_bottom = rect.top() + h * 0.80;
+    let left_left = rect.left() + m;
+    let right_edge = rect.right() - m;
+    let bar_w = right_edge - left_left;
 
-    // Flag bar reserve
     let mut flag_rect: Option<Rect> = None;
     if cfg.bool_key(SECTION, "show_flags", true) {
-        let has_ctx = f.flag.is_some() && f.flag_context.is_some();
+        let has_ctx = f.flag.is_some() && f.flag_context.as_ref().is_some_and(|s| !s.is_empty());
         let flag_bar_h = (if has_ctx { h * 0.165 } else { h * 0.105 }).max(if has_ctx {
             8.0
         } else {
             6.0
         });
         flag_rect = Some(Rect::from_min_size(
-            Pos2::new(rect.left() + m, panels_top),
-            Vec2::new(w - 2.0 * m, flag_bar_h),
+            Pos2::new(left_left, panels_top),
+            Vec2::new(bar_w, flag_bar_h),
         ));
         panels_top += flag_bar_h + h * 0.03;
     }
 
-    // Optional delta bar
     let mut delta_bar: Option<Rect> = None;
     if cfg.bool_key(SECTION, "show_delta_bar", false) {
         let db_h = h * 0.05;
         delta_bar = Some(Rect::from_min_size(
-            Pos2::new(rect.left() + m, panels_top),
-            Vec2::new(w - 2.0 * m, db_h * 0.7),
+            Pos2::new(left_left, panels_top),
+            Vec2::new(bar_w, db_h * 0.7),
         ));
         panels_top += db_h;
     }
 
-    let left_left = rect.left() + m;
-    let right_edge = rect.right() - m;
     let total = panels_bottom - panels_top;
     let top_h = (total - gp) * 0.42;
     let bot_h = (total - gp) * 0.58;
 
     let mut top_right = right_edge;
-    let mut p9_rect = Rect::NOTHING;
+    let mut p9 = Rect::NOTHING;
     if show_pos {
         let p9_w = top_h * 1.30;
-        p9_rect = Rect::from_min_size(
+        p9 = Rect::from_min_size(
             Pos2::new(right_edge - p9_w, panels_top),
             Vec2::new(p9_w, top_h),
         );
-        top_right = p9_rect.left() - hg;
+        top_right = p9.left() - hg;
     }
 
     let top_rect = Rect::from_min_size(
@@ -215,94 +249,72 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     draw_panel_rect(ui, cfg, SECTION, top_rect);
     draw_panel_rect(ui, cfg, SECTION, bot_rect);
     if show_pos {
-        draw_position(ui, cfg, p9_rect, f, text_scale, value_col, label_col);
+        draw_position(ui, cfg, p9, f, text_scale);
     }
 
-    // Center medallion geometry
     let ring_cx = (left_left + right_edge) * 0.5;
     let ring_cy = panels_top + total * 0.5;
     let ring_d = total * 0.80;
     let ring_half = ring_d * 0.5;
     let bpad = bot_rect.height() * 0.14;
     let base_pad = h * 0.035;
-    let base_gap_l = ring_cx - ring_half - base_pad;
-    let gap_l = base_gap_l;
     let gap_r = ring_cx + ring_half + base_pad;
 
-    // Top: shift bar | status
     let ipad = top_rect.height() * 0.22;
     if cfg.bool_key(SECTION, "show_shift_bar", true) {
-        let shift_w =
-            ((ring_cx - ring_half - base_pad) - (top_rect.left() + ipad)).max(40.0);
         draw_shift(
             ui,
             cfg,
-            Rect::from_min_size(
+            Rect::from_min_max(
                 Pos2::new(
                     top_rect.left() + ipad,
                     top_rect.center().y - top_rect.height() * 0.20,
                 ),
-                Vec2::new(shift_w, top_rect.height() * 0.40),
+                Pos2::new(
+                    (ring_cx - ring_half - base_pad).max(top_rect.left() + ipad + 40.0),
+                    top_rect.center().y + top_rect.height() * 0.20,
+                ),
             ),
             f,
         );
     }
 
-    let top_right_key = slot_key(cfg, "top_right", "incidents");
+    let top_right_key = slot(cfg, "top_right", "incidents");
     if top_right_key != "none" {
-        let status_rect = Rect::from_min_max(
+        let status = Rect::from_min_max(
             Pos2::new(gap_r, top_rect.top()),
             Pos2::new(top_rect.right() - ipad, top_rect.bottom()),
         );
-        draw_status(ui, cfg, status_rect, &top_right_key, f, text_scale, value_col, label_col);
+        draw_status(ui, cfg, status, &top_right_key, f, text_scale);
     }
 
-    // Bottom: primary | stats
-    let primary_l = slot_key(cfg, "primary_left", "lap_count");
-    let primary_r = slot_key(cfg, "primary_right", "speed");
+    let primary_l = slot(cfg, "primary_left", "lap_count");
+    let primary_r = slot(cfg, "primary_right", "speed");
     if primary_l != "none" || primary_r != "none" {
-        let primary_rect = Rect::from_min_max(
+        let primary = Rect::from_min_max(
             Pos2::new(bot_rect.left() + bpad, bot_rect.top() + bpad),
-            Pos2::new(gap_l.max(bot_rect.left() + bpad + 10.0), bot_rect.bottom() - bpad),
+            Pos2::new(
+                (ring_cx - ring_half - base_pad).max(bot_rect.left() + bpad + 10.0),
+                bot_rect.bottom() - bpad,
+            ),
         );
-        draw_primary(
-            ui,
-            cfg,
-            primary_rect,
-            &primary_l,
-            &primary_r,
-            f,
-            text_scale,
-            value_col,
-            label_col,
-        );
+        draw_primary(ui, cfg, primary, &primary_l, &primary_r, f, text_scale);
     }
 
-    let stat_l = slot_key(cfg, "stat_left", "tires");
-    let stat_r = slot_key(cfg, "stat_right", "fuel_stack");
+    let stat_l = slot(cfg, "stat_left", "tires");
+    let stat_r = slot(cfg, "stat_right", "fuel_stack");
     if stat_l != "none" || stat_r != "none" {
-        let stats_rect = Rect::from_min_max(
+        let stats = Rect::from_min_max(
             Pos2::new(gap_r, bot_rect.top() + bpad),
             Pos2::new(bot_rect.right() - bpad, bot_rect.bottom() - bpad),
         );
-        draw_stats(
-            ui,
-            cfg,
-            stats_rect,
-            &stat_l,
-            &stat_r,
-            f,
-            text_scale,
-            value_col,
-            label_col,
-        );
+        draw_stats(ui, cfg, stats, &stat_l, &stat_r, f, text_scale);
     }
 
-    // Strip pill
     let strip_keys = [
-        slot_key(cfg, "strip_left", "air_temp"),
-        slot_key(cfg, "strip_center", "track_temp"),
-        slot_key(cfg, "strip_right", "last_lap"),
+        slot(cfg, "strip_left", "air_temp"),
+        slot(cfg, "strip_center", "track_temp"),
+        slot(cfg, "strip_right", "last_lap"),
     ];
     if strip_keys.iter().any(|k| k != "none") {
         let pill_w = (right_edge - left_left) * 0.66;
@@ -314,105 +326,89 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             ),
             Vec2::new(pill_w, pill_h),
         );
-        draw_strip(
-            ui,
-            cfg,
-            pill,
-            &strip_keys,
-            f,
-            text_scale,
-            value_col,
-            label_col,
-            muted,
-        );
+        draw_strip(ui, cfg, pill, &strip_keys, f, text_scale);
     }
 
-    // Center medallion
     if cfg.bool_key(SECTION, "show_ring", true) {
         if cfg.str_key(SECTION, "center_mode", "ring") == "pedals" {
-            draw_pedals(ui, cfg, ring_cx, ring_cy, ring_d, f, value_col);
+            draw_pedals(ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale);
         } else {
-            draw_ring(ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale, value_col);
+            draw_ring(ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale);
         }
     }
 
     if let Some(fr) = flag_rect {
-        draw_flag(ui, cfg, fr, f, ring_cx);
+        draw_flag(ui, cfg, fr, f, ring_cx, text_scale);
     }
     if let Some(db) = delta_bar {
         draw_delta_bar(ui, cfg, db, f);
     }
 }
 
-fn draw_position(
-    ui: &mut Ui,
-    cfg: &OverlayConfig,
-    rect: Rect,
-    f: &TelemetryFrame,
-    text_scale: f32,
-    value: Color32,
-    label_c: Color32,
-) {
-    draw_panel_rect(ui, cfg, SECTION, rect);
-    label(
-        ui,
-        Pos2::new(rect.center().x, rect.top() + rect.height() * 0.22),
-        Align2::CENTER_CENTER,
-        "POS",
-        (rect.height() * 0.16 * text_scale).clamp(9.0, 16.0),
-        label_c,
-        true,
+fn draw_position(ui: &mut Ui, cfg: &OverlayConfig, box_r: Rect, f: &TelemetryFrame, text_scale: f32) {
+    draw_panel_rect(ui, cfg, SECTION, box_r);
+    let orange = cfg.color(SECTION, "orange", "#ff9416");
+    let radius =
+        (box_r.width().min(box_r.height()) * cfg.f64_key(SECTION, "corner_radius_frac", 0.08) as f32)
+            .max(4.0);
+    ui.painter().rect_stroke(
+        box_r,
+        egui::CornerRadius::same(radius as u8),
+        Stroke::new((box_r.height() * 0.022).max(1.6), orange),
+        StrokeKind::Inside,
     );
-    label(
-        ui,
-        rect.center(),
-        Align2::CENTER_CENTER,
-        &format!("{}", f.position.max(0)),
-        (rect.height() * 0.48 * text_scale).clamp(18.0, 48.0),
-        value,
-        true,
-    );
-    if !f.car_number.is_empty() {
-        label(
-            ui,
-            Pos2::new(rect.center().x, rect.bottom() - rect.height() * 0.18),
-            Align2::CENTER_CENTER,
-            &format!("#{}", f.car_number),
-            (rect.height() * 0.14 * text_scale).clamp(9.0, 14.0),
-            label_c,
-            false,
-        );
+    let text = if f.position > 0 {
+        format!("P{}", f.position)
+    } else {
+        "--".into()
+    };
+    let mut fs = box_r.height() * 0.40 * text_scale;
+    let font = FontId::proportional(fs);
+    let tw = text_w(ui, &font, &text);
+    let max_w = box_r.width() * 0.74;
+    if tw > max_w && tw > 0.0 {
+        fs *= max_w / tw;
     }
+    label(ui, box_r.center(), Align2::CENTER_CENTER, &text, fs, orange, true);
 }
 
 fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) {
-    let segs = cfg.f64_key(SECTION, "shift_segments", 20.0).max(4.0) as i32;
-    let red_frac = cfg.f64_key(SECTION, "shift_red_frac", 0.16) as f32;
-    let yel_frac = cfg.f64_key(SECTION, "shift_yellow_frac", 0.24) as f32;
+    let n = cfg.f64_key(SECTION, "shift_segments", 20.0).max(1.0) as i32;
+    let gap = rect.width() / n as f32 * 0.30;
+    let bw = rect.width() / n as f32 - gap;
     let redline = f.redline.max(1.0);
-    let frac = (f.rpm / redline).clamp(0.0, 1.0);
-    let gap = rect.width() * 0.02;
-    let seg_w = ((rect.width() - gap * (segs as f32 - 1.0)) / segs as f32).max(1.0);
-    let lit = (frac * segs as f32).ceil() as i32;
-    for i in 0..segs {
-        let x = rect.left() + i as f32 * (seg_w + gap);
-        let t = (i as f32 + 1.0) / segs as f32;
-        let col = if t > 1.0 - red_frac {
-            cfg.color(SECTION, "shift_red", "#ff5050")
-        } else if t > 1.0 - red_frac - yel_frac {
-            cfg.color(SECTION, "shift_yellow", "#ffd23a")
+    let lit = (f.rpm / redline).clamp(0.0, 1.0) * n as f32;
+    let red_f = cfg.f64_key(SECTION, "shift_red_frac", 0.16).clamp(0.0, 1.0) as f32;
+    let yel_f = cfg
+        .f64_key(SECTION, "shift_yellow_frac", 0.24)
+        .clamp(0.0, (1.0 - red_f as f64).max(0.0)) as f32;
+    let red0 = n as f32 * (1.0 - red_f);
+    let yel0 = n as f32 * (1.0 - red_f - yel_f);
+    let green = cfg.color(SECTION, "shift_green", "#46df7a");
+    let yel = cfg.color(SECTION, "shift_yellow", "#ffd23a");
+    let red = cfg.color(SECTION, "shift_red", "#ff5050");
+    let off = cfg.color(SECTION, "shift_off", "#333a42");
+    let full_h = rect.height();
+    let tick_h = rect.height() * 0.5;
+    for i in 0..n {
+        let x = rect.left() + i as f32 * (bw + gap);
+        let (cc, y, bh) = if (i as f32) < lit {
+            let cc = if (i as f32) >= red0 {
+                red
+            } else if (i as f32) >= yel0 {
+                yel
+            } else {
+                green
+            };
+            (cc, rect.top(), full_h)
         } else {
-            cfg.color(SECTION, "shift_green", "#46df7a")
+            (off, rect.top() + (full_h - tick_h) * 0.5, tick_h)
         };
-        let fill = if i < lit {
-            col
-        } else {
-            cfg.color(SECTION, "shift_idle", "#ffffff18")
-        };
+        let r = (bw * 0.4).min(bh * 0.5);
         ui.painter().rect_filled(
-            Rect::from_min_size(Pos2::new(x, rect.top()), Vec2::new(seg_w, rect.height())),
-            egui::CornerRadius::same(2),
-            fill,
+            Rect::from_min_size(Pos2::new(x, y), Vec2::new(bw.max(1.0), bh)),
+            egui::CornerRadius::same(r as u8),
+            cc,
         );
     }
 }
@@ -424,26 +420,58 @@ fn draw_status(
     key: &str,
     f: &TelemetryFrame,
     text_scale: f32,
-    value: Color32,
-    label_c: Color32,
 ) {
-    let (lab, val) = metric_value(cfg, f, key);
+    if key == "irating" {
+        draw_irating_pair(ui, cfg, rect, f, rect.height() * 0.34 * text_scale);
+        return;
+    }
+    let val = metric_str(cfg, f, key);
+    let h = rect.height();
+    let mut ic_px = h * 0.46 * text_scale;
+    let mut val_px = h * 0.46 * text_scale;
+    let glyph = icons::glyph(key);
+    let ic_font = icons::font_id(ic_px);
+    let val_font = FontId::proportional(val_px);
+    let mut iw = glyph
+        .as_ref()
+        .map(|g| text_w(ui, &ic_font, g))
+        .unwrap_or(0.0);
+    let mut gap = h * 0.14;
+    let mut vw = text_w(ui, &val_font, &val);
+    let mut total = iw + if glyph.is_some() { gap } else { 0.0 } + vw;
+    if total > rect.width() && total > 0.0 {
+        let s = rect.width() / total;
+        ic_px *= s;
+        val_px *= s;
+        gap *= s;
+        let ic_font = icons::font_id(ic_px);
+        let val_font = FontId::proportional(val_px);
+        iw = glyph
+            .as_ref()
+            .map(|g| text_w(ui, &ic_font, g))
+            .unwrap_or(0.0);
+        vw = text_w(ui, &val_font, &val);
+        total = iw + if glyph.is_some() { gap } else { 0.0 } + vw;
+    }
+    let mut x = rect.left() + (rect.width() - total).max(0.0) * 0.5;
+    let ic_col = if key == "incidents" {
+        cfg.color(SECTION, "warn", "#e0a93a")
+    } else {
+        cfg.color(SECTION, "label", "#8b93a1")
+    };
+    if let Some(g) = glyph {
+        icon_paint(ui, Pos2::new(x, rect.center().y), ic_px, key, ic_col);
+        // re-measure for advance
+        x += text_w(ui, &icons::font_id(ic_px), &g) + gap;
+        let _ = g;
+    }
     label(
         ui,
-        Pos2::new(rect.right(), rect.top() + rect.height() * 0.28),
-        Align2::RIGHT_CENTER,
-        &lab,
-        (rect.height() * 0.22 * text_scale).clamp(9.0, 14.0),
-        label_c,
-        true,
-    );
-    label(
-        ui,
-        Pos2::new(rect.right(), rect.top() + rect.height() * 0.62),
-        Align2::RIGHT_CENTER,
-        &val.lines().next().unwrap_or("--").to_string(),
-        (rect.height() * 0.36 * text_scale).clamp(12.0, 28.0),
-        value,
+        Pos2::new(x, rect.center().y),
+        Align2::LEFT_CENTER,
+        &val,
+        val_px,
+        cfg.color(SECTION, "value", "#f4f6f8"),
         true,
     );
 }
@@ -456,49 +484,68 @@ fn draw_primary(
     right_key: &str,
     f: &TelemetryFrame,
     text_scale: f32,
-    value: Color32,
-    label_c: Color32,
 ) {
-    let mid = rect.left() + rect.width() * 0.42;
-    if left_key != "none" {
-        let (lab, val) = metric_value(cfg, f, left_key);
-        label(
-            ui,
-            Pos2::new(rect.left(), rect.top() + rect.height() * 0.22),
-            Align2::LEFT_CENTER,
-            &lab,
-            (rect.height() * 0.18 * text_scale).clamp(9.0, 13.0),
-            label_c,
-            true,
-        );
-        label(
-            ui,
-            Pos2::new(rect.left(), rect.top() + rect.height() * 0.58),
-            Align2::LEFT_CENTER,
-            &val.lines().next().unwrap_or("--").to_string(),
-            (rect.height() * 0.32 * text_scale).clamp(12.0, 24.0),
-            value,
-            true,
-        );
+    let h = rect.height();
+    let show_l = left_key != "none";
+    let show_r = right_key != "none";
+    if !show_l && !show_r {
+        return;
     }
-    if right_key != "none" {
-        let (lab, val) = metric_value(cfg, f, right_key);
-        label(
-            ui,
-            Pos2::new(mid, rect.top() + rect.height() * 0.18),
-            Align2::LEFT_CENTER,
-            &lab,
-            (rect.height() * 0.16 * text_scale).clamp(9.0, 12.0),
-            label_c,
-            true,
+    let cols = if show_l && show_r { 2 } else { 1 };
+    let cell_w = rect.width() / cols as f32;
+    let keys: Vec<&str> = match (show_l, show_r) {
+        (true, true) => vec![left_key, right_key],
+        (true, false) => vec![left_key],
+        (false, true) => vec![right_key],
+        _ => return,
+    };
+    for (i, key) in keys.into_iter().enumerate() {
+        let cell = Rect::from_min_size(
+            Pos2::new(rect.left() + i as f32 * cell_w, rect.top()),
+            Vec2::new(cell_w, h),
         );
+        let val = metric_str(cfg, f, key);
+        let mut ic_px = h * 0.30 * text_scale;
+        let mut val_px = h * 0.58 * text_scale;
+        let mut gap = h * 0.10;
+        let g = icons::glyph(key);
+        let mut iw = g
+            .as_ref()
+            .map(|gg| text_w(ui, &icons::font_id(ic_px), gg))
+            .unwrap_or(0.0);
+        let mut vw = text_w(ui, &FontId::proportional(val_px), &val);
+        let mut total = iw + if g.is_some() { gap } else { 0.0 } + vw;
+        if total > cell.width() && total > 0.0 {
+            let s = cell.width() / total;
+            ic_px *= s;
+            val_px *= s;
+            gap *= s;
+            iw = g
+                .as_ref()
+                .map(|gg| text_w(ui, &icons::font_id(ic_px), gg))
+                .unwrap_or(0.0);
+            vw = text_w(ui, &FontId::proportional(val_px), &val);
+            total = iw + if g.is_some() { gap } else { 0.0 } + vw;
+        }
+        let mut x = cell.left();
+        let _ = total;
+        if g.is_some() {
+            icon_paint(
+                ui,
+                Pos2::new(x, cell.center().y),
+                ic_px,
+                key,
+                cfg.color(SECTION, "label", "#8b93a1"),
+            );
+            x += iw + gap;
+        }
         label(
             ui,
-            Pos2::new(mid, rect.top() + rect.height() * 0.58),
+            Pos2::new(x, cell.center().y),
             Align2::LEFT_CENTER,
-            &val.lines().next().unwrap_or("--").to_string(),
-            (rect.height() * 0.48 * text_scale).clamp(18.0, 42.0),
-            value,
+            &val,
+            val_px,
+            cfg.color(SECTION, "value", "#f4f6f8"),
             true,
         );
     }
@@ -512,8 +559,6 @@ fn draw_stats(
     right_key: &str,
     f: &TelemetryFrame,
     text_scale: f32,
-    value: Color32,
-    label_c: Color32,
 ) {
     let half = rect.width() * 0.5;
     for (i, key) in [left_key, right_key].into_iter().enumerate() {
@@ -524,78 +569,253 @@ fn draw_stats(
             Pos2::new(rect.left() + i as f32 * half, rect.top()),
             Vec2::new(half - 4.0, rect.height()),
         );
-        let (lab, val) = metric_value(cfg, f, key);
-        label(
-            ui,
-            Pos2::new(cell.left() + 4.0, cell.top() + cell.height() * 0.18),
-            Align2::LEFT_CENTER,
-            &lab,
-            (cell.height() * 0.16 * text_scale).clamp(9.0, 12.0),
-            label_c,
-            true,
-        );
-        let lines: Vec<&str> = val.lines().collect();
-        for (li, line) in lines.iter().enumerate() {
+        if key == "irating" {
+            draw_irating_pair(ui, cfg, cell, f, cell.height() * 0.24 * text_scale);
+            continue;
+        }
+        let lines = metric_lines(cfg, f, key);
+        let h = cell.height();
+        let mut ic_px = h * 0.40 * text_scale;
+        let mut lbl_px = h * 0.20 * text_scale;
+        let mut val_px = h * 0.24 * text_scale;
+        let mut icon_gap = h * 0.12;
+        let mut lbl_gap = h * 0.08;
+        let g = icons::glyph(key);
+        let iw = g
+            .as_ref()
+            .map(|gg| text_w(ui, &icons::font_id(ic_px), gg) + icon_gap)
+            .unwrap_or(0.0);
+        let mut widest = 0.0_f32;
+        for (lbl, val) in &lines {
+            let lw = if lbl.is_empty() {
+                0.0
+            } else {
+                text_w(ui, &FontId::proportional(lbl_px), lbl) + lbl_gap
+            };
+            widest = widest.max(lw + text_w(ui, &FontId::proportional(val_px), val));
+        }
+        let mut need = iw + widest + h * 0.08;
+        if need > cell.width() && need > 0.0 {
+            let s = cell.width() / need;
+            ic_px *= s;
+            lbl_px *= s;
+            val_px *= s;
+            icon_gap *= s;
+            lbl_gap *= s;
+            need = cell.width();
+        }
+        let mut x = cell.left();
+        if let Some(ref gg) = g {
+            icon_paint(
+                ui,
+                Pos2::new(x, cell.center().y),
+                ic_px,
+                key,
+                cfg.color(SECTION, "label", "#8b93a1"),
+            );
+            x += text_w(ui, &icons::font_id(ic_px), gg) + icon_gap;
+        }
+        let n = lines.len().max(1) as f32;
+        for (li, (sub, val)) in lines.iter().enumerate() {
+            let y = cell.top() + cell.height() * ((li as f32 + 0.5) / n);
+            if li > 0 {
+                let y0 = cell.top() + cell.height() * (li as f32 / n);
+                ui.painter().line_segment(
+                    [Pos2::new(x, y0), Pos2::new(cell.right() - 4.0, y0)],
+                    Stroke::new(1.0_f32, cfg.color(SECTION, "cell_border", "#ffffff20")),
+                );
+            }
+            let mut tx = x;
+            if !sub.is_empty() {
+                label(
+                    ui,
+                    Pos2::new(tx, y),
+                    Align2::LEFT_CENTER,
+                    sub,
+                    lbl_px,
+                    cfg.color(SECTION, "label", "#8b93a1"),
+                    false,
+                );
+                tx += text_w(ui, &FontId::proportional(lbl_px), sub) + lbl_gap;
+            }
             label(
                 ui,
-                Pos2::new(
-                    cell.left() + 4.0,
-                    cell.top() + cell.height() * (0.42 + li as f32 * 0.28),
-                ),
+                Pos2::new(tx, y),
                 Align2::LEFT_CENTER,
-                line,
-                (cell.height() * 0.22 * text_scale).clamp(11.0, 18.0),
-                value,
+                val,
+                val_px,
+                cfg.color(SECTION, "value", "#f4f6f8"),
                 true,
             );
         }
+        let _ = need;
     }
 }
 
 fn draw_strip(
     ui: &mut Ui,
     cfg: &OverlayConfig,
-    rect: Rect,
+    pill: Rect,
     keys: &[String; 3],
     f: &TelemetryFrame,
     text_scale: f32,
-    value: Color32,
-    label_c: Color32,
-    muted: Color32,
 ) {
-    draw_panel_rect(ui, cfg, SECTION, rect);
-    let n = keys.iter().filter(|k| *k != "none").count().max(1) as f32;
-    let cell_w = rect.width() / n;
-    let mut i = 0usize;
-    for key in keys {
-        if key == "none" {
+    let sh = pill.height();
+    draw_dark_cell(ui, cfg, SECTION, pill, sh * 0.5);
+    let items: Vec<&str> = keys
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|k| *k != "none")
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    let pad = sh * 0.55;
+    let cx0 = pill.left() + pad;
+    let content_w = pill.width() - 2.0 * pad;
+    let cell = content_w / items.len() as f32;
+    let gap = sh * 0.18;
+    for (i, key) in items.into_iter().enumerate() {
+        if key == "irating" {
+            let val_px = sh * 0.34 * text_scale;
+            let pair_w = irating_pair_width(ui, cfg, f, val_px, sh);
+            let tx = cx0 + i as f32 * cell + (cell - pair_w) * 0.5;
+            draw_irating_pair(
+                ui,
+                cfg,
+                Rect::from_min_size(Pos2::new(tx, pill.top()), Vec2::new(pair_w, sh)),
+                f,
+                val_px,
+            );
             continue;
         }
-        let cell = Rect::from_min_size(
-            Pos2::new(rect.left() + i as f32 * cell_w, rect.top()),
-            Vec2::new(cell_w, rect.height()),
-        );
-        let (lab, val) = metric_value(cfg, f, key);
+        let val = metric_str(cfg, f, key);
+        let g = icons::glyph(key);
+        let ic_px = sh * 0.42 * text_scale;
+        let val_px = sh * 0.40 * text_scale;
+        let iw = g
+            .as_ref()
+            .map(|gg| text_w(ui, &icons::font_id(ic_px), gg))
+            .unwrap_or(0.0);
+        let vw = text_w(ui, &FontId::proportional(val_px), &val);
+        let total = iw + if g.is_some() { gap } else { 0.0 } + vw;
+        let mut tx = cx0 + i as f32 * cell + (cell - total) * 0.5;
+        if g.is_some() {
+            icon_paint(
+                ui,
+                Pos2::new(tx, pill.center().y),
+                ic_px,
+                key,
+                cfg.color(SECTION, "label", "#8b93a1"),
+            );
+            tx += iw + gap;
+        }
         label(
             ui,
-            Pos2::new(cell.center().x, cell.top() + cell.height() * 0.28),
-            Align2::CENTER_CENTER,
-            &lab,
-            (cell.height() * 0.22 * text_scale).clamp(9.0, 12.0),
-            label_c,
+            Pos2::new(tx, pill.center().y),
+            Align2::LEFT_CENTER,
+            &val,
+            val_px,
+            cfg.color(SECTION, "value", "#f4f6f8"),
             true,
         );
-        label(
-            ui,
-            Pos2::new(cell.center().x, cell.top() + cell.height() * 0.62),
-            Align2::CENTER_CENTER,
-            &val.lines().next().unwrap_or("--").to_string(),
-            (cell.height() * 0.32 * text_scale).clamp(11.0, 18.0),
-            if val == "--" { muted } else { value },
-            true,
-        );
-        i += 1;
     }
+}
+
+fn irating_pair_width(
+    ui: &Ui,
+    cfg: &OverlayConfig,
+    f: &TelemetryFrame,
+    val_px: f32,
+    sh: f32,
+) -> f32 {
+    let base = metric_str(cfg, f, "irating");
+    let mut w = text_w(ui, &FontId::proportional(val_px), &base);
+    w += text_w(ui, &icons::font_id(sh * 0.42), &icons::glyph("irating").unwrap_or_default())
+        + sh * 0.18;
+    if cfg.bool_key(SECTION, "show_irating_projection", false) {
+        if let Some(d) = f.irating_delta {
+            if d != 0 {
+                w += text_w(
+                    ui,
+                    &FontId::proportional(val_px * 0.75),
+                    &format!("{}", d.abs()),
+                ) + val_px * 0.7;
+            }
+        }
+    }
+    w
+}
+
+fn draw_irating_pair(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    rect: Rect,
+    f: &TelemetryFrame,
+    val_px: f32,
+) {
+    let sh = rect.height();
+    let ic_px = sh * 0.42;
+    let mut x = rect.left();
+    if icons::glyph("irating").is_some() {
+        icon_paint(
+            ui,
+            Pos2::new(x, rect.center().y),
+            ic_px,
+            "irating",
+            cfg.color(SECTION, "label", "#8b93a1"),
+        );
+        x += text_w(ui, &icons::font_id(ic_px), &icons::glyph("irating").unwrap()) + sh * 0.18;
+    }
+    let base = metric_str(cfg, f, "irating");
+    label(
+        ui,
+        Pos2::new(x, rect.center().y),
+        Align2::LEFT_CENTER,
+        &base,
+        val_px,
+        cfg.color(SECTION, "value", "#f4f6f8"),
+        true,
+    );
+    x += text_w(ui, &FontId::proportional(val_px), &base) + val_px * 0.15;
+    if cfg.bool_key(SECTION, "show_irating_projection", false) {
+        if let Some(d) = f.irating_delta {
+            if d != 0 {
+                let up = d > 0;
+                let col = if up {
+                    cfg.color(SECTION, "irating_delta_up", "#46df7a")
+                } else {
+                    cfg.color(SECTION, "irating_delta_down", "#ff5050")
+                };
+                let gname = if up { "irating_up" } else { "irating_down" };
+                icon_paint(ui, Pos2::new(x, rect.center().y), val_px * 0.55, gname, col);
+                x += val_px * 0.55;
+                label(
+                    ui,
+                    Pos2::new(x, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    &format!("{}", d.abs()),
+                    val_px * 0.75,
+                    col,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+fn selected_inputs(cfg: &OverlayConfig, f: &TelemetryFrame) -> Vec<(f32, &'static str, bool)> {
+    let mut out = Vec::new();
+    if cfg.bool_key(SECTION, "show_throttle", true) {
+        out.push((f.throttle, "throttle", false));
+    }
+    if cfg.bool_key(SECTION, "show_brake", true) {
+        out.push((f.brake, "brake", f.abs_active));
+    }
+    if cfg.bool_key(SECTION, "show_clutch", false) {
+        out.push((f.clutch, "clutch", false));
+    }
+    out
 }
 
 fn draw_ring(
@@ -603,52 +823,55 @@ fn draw_ring(
     cfg: &OverlayConfig,
     cx: f32,
     cy: f32,
-    d: f32,
+    ring_d: f32,
     f: &TelemetryFrame,
     text_scale: f32,
-    value: Color32,
 ) {
-    let r = d * 0.5;
-    let track = cfg.color(SECTION, "ring_track", "#ffffff18");
-    ui.painter()
-        .circle_stroke(Pos2::new(cx, cy), r * 0.92, Stroke::new(6.0_f32, track));
+    let mr = ring_d * 0.5 + ring_d * 0.06;
+    let mut border = cfg.color(SECTION, "cell_border", "#ffffff20");
+    border = Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), 150);
+    ui.painter().circle_filled(
+        Pos2::new(cx, cy),
+        mr,
+        cfg.color(SECTION, "bg_bottom", "#0f1216"),
+    );
+    ui.painter().circle_stroke(
+        Pos2::new(cx, cy),
+        mr,
+        Stroke::new((ring_d * 0.022).max(1.5), border),
+    );
 
-    let inputs = [
-        (
-            cfg.bool_key(SECTION, "show_throttle", true),
-            f.throttle,
-            cfg.color(SECTION, "throttle", "#46df7a"),
-            0.92,
-        ),
-        (
-            cfg.bool_key(SECTION, "show_brake", true),
-            f.brake,
-            cfg.color(SECTION, "brake", "#ff5050"),
-            0.78,
-        ),
-        (
-            cfg.bool_key(SECTION, "show_clutch", false),
-            f.clutch,
-            cfg.color(SECTION, "clutch", "#4a8cff"),
-            0.64,
-        ),
-    ];
-    for (show, frac, col, scale) in inputs {
-        if !show || frac <= 0.01 {
-            continue;
-        }
-        // Approximate arc with chord segments
-        let rr = r * scale;
-        let start = -std::f32::consts::FRAC_PI_2;
-        let end = start + std::f32::consts::TAU * frac.clamp(0.0, 1.0);
-        let steps = 24;
-        let mut prev = Pos2::new(cx + rr * start.cos(), cy + rr * start.sin());
-        for s in 1..=steps {
-            let a = start + (end - start) * (s as f32 / steps as f32);
-            let p = Pos2::new(cx + rr * a.cos(), cy + rr * a.sin());
-            ui.painter()
-                .line_segment([prev, p], Stroke::new(5.0_f32, col));
-            prev = p;
+    let inputs = selected_inputs(cfg, f);
+    let n = inputs.len();
+    let gear_px = if n == 0 {
+        ring_d * 0.50
+    } else if n == 1 {
+        ring_d * 0.50
+    } else if n == 2 {
+        ring_d * 0.40
+    } else {
+        ring_d * 0.32
+    } * text_scale;
+
+    if n > 0 {
+        let pen_w = ring_d
+            * (if n == 1 {
+                0.11
+            } else if n == 2 {
+                0.075
+            } else {
+                0.055
+            });
+        let gap = pen_w * 0.55;
+        let r_out = ring_d * 0.5 - pen_w * 0.5 - ring_d * 0.015;
+        for (i, (val, colkey, abs_on)) in inputs.iter().enumerate() {
+            let r = r_out - i as f32 * (pen_w + gap);
+            let on = if *abs_on {
+                cfg.color(SECTION, "abs", "#ffd23a")
+            } else {
+                cfg.color(SECTION, colkey, "#46df7a")
+            };
+            draw_ring_arc(ui, cfg, cx, cy, r, pen_w, *val, on);
         }
     }
 
@@ -657,10 +880,67 @@ fn draw_ring(
         Pos2::new(cx, cy),
         Align2::CENTER_CENTER,
         &gear_str(f.gear),
-        (d * 0.28 * text_scale).clamp(18.0, 48.0),
-        value,
+        gear_px,
+        cfg.color(SECTION, "gear", "#ffffff"),
         true,
     );
+}
+
+fn draw_ring_arc(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    cx: f32,
+    cy: f32,
+    r: f32,
+    pen_w: f32,
+    mut frac: f32,
+    on_color: Color32,
+) {
+    let n = cfg.f64_key(SECTION, "ring_segments", 16.0).max(1.0) as i32;
+    let seg = std::f32::consts::TAU / n as f32;
+    let span = seg * 0.72;
+    frac = frac.clamp(0.0, 1.0);
+    if frac < 0.02 {
+        frac = 0.0;
+    }
+    let lit = frac * n as f32;
+    let off = cfg.color(SECTION, "ring_track", "#ffffff18");
+    let glow = Color32::from_rgba_unmultiplied(on_color.r(), on_color.g(), on_color.b(), 75);
+
+    // Glow pass then solid pass (Python draws arcs from 90° CCW).
+    for pass in 0..2 {
+        for i in 0..n {
+            let on = (i as f32) < lit;
+            if pass == 0 && !on {
+                continue;
+            }
+            let col = if pass == 0 {
+                glow
+            } else if on {
+                on_color
+            } else {
+                off
+            };
+            let width = if pass == 0 { pen_w * 2.0 } else { pen_w };
+            // Python: ang = 90 + (i+0.5)*seg_deg, sweep -span
+            let mid = std::f32::consts::FRAC_PI_2 + (i as f32 + 0.5) * seg;
+            let a0 = mid + span * 0.5;
+            let a1 = mid - span * 0.5;
+            let steps = 8;
+            let mut prev = Pos2::new(cx + r * a0.cos(), cy - r * a0.sin());
+            // egui y grows down; Python Qt y grows down too, but cos/sin with Qt arcs differ.
+            // Match visual: start at top, go counter-clockwise → use screen angles.
+            for s in 1..=steps {
+                let t = s as f32 / steps as f32;
+                let a = a0 + (a1 - a0) * t;
+                // Convert math angle (0=east, CCW) with y-down: y = cy - r*sin
+                let p = Pos2::new(cx + r * a.cos(), cy - r * a.sin());
+                ui.painter()
+                    .line_segment([prev, p], Stroke::new(width, col));
+                prev = p;
+            }
+        }
+    }
 }
 
 fn draw_pedals(
@@ -668,55 +948,95 @@ fn draw_pedals(
     cfg: &OverlayConfig,
     cx: f32,
     cy: f32,
-    d: f32,
+    ring_d: f32,
     f: &TelemetryFrame,
-    _value: Color32,
+    text_scale: f32,
 ) {
-    let bars: Vec<(bool, f32, Color32)> = vec![
-        (
-            cfg.bool_key(SECTION, "show_throttle", true),
-            f.throttle,
-            cfg.color(SECTION, "throttle", "#46df7a"),
-        ),
-        (
-            cfg.bool_key(SECTION, "show_brake", true),
-            f.brake,
-            if f.abs_active {
+    let mr = ring_d * 0.5 + ring_d * 0.06;
+    let mut border = cfg.color(SECTION, "cell_border", "#ffffff20");
+    border = Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), 150);
+    ui.painter().circle_filled(
+        Pos2::new(cx, cy),
+        mr,
+        cfg.color(SECTION, "bg_bottom", "#0f1216"),
+    );
+    ui.painter().circle_stroke(
+        Pos2::new(cx, cy),
+        mr,
+        Stroke::new((ring_d * 0.022).max(1.5), border),
+    );
+
+    let bars = selected_inputs(cfg, f);
+    if bars.is_empty() {
+        label(
+            ui,
+            Pos2::new(cx, cy),
+            Align2::CENTER_CENTER,
+            &gear_str(f.gear),
+            ring_d * 0.50 * text_scale,
+            cfg.color(SECTION, "gear", "#ffffff"),
+            true,
+        );
+        return;
+    }
+
+    label(
+        ui,
+        Pos2::new(cx, cy - ring_d * 0.28),
+        Align2::CENTER_CENTER,
+        &gear_str(f.gear),
+        ring_d * 0.26 * text_scale,
+        cfg.color(SECTION, "gear", "#ffffff"),
+        true,
+    );
+
+    let n = bars.len();
+    let area_w = ring_d
+        * (if n == 1 {
+            0.26
+        } else if n == 2 {
+            0.46
+        } else {
+            0.60
+        });
+    let area_h = ring_d * 0.44;
+    let top = cy - ring_d * 0.14;
+    let bottom = top + area_h;
+    let bar_w = area_w / (n as f32 + (n as f32 - 1.0) * 0.6);
+    let gap = bar_w * 0.6;
+    let x0 = cx - area_w * 0.5;
+    let rad = bar_w * 0.30;
+    for (i, (val, ckey, abs_on)) in bars.iter().enumerate() {
+        let x = x0 + i as f32 * (bar_w + gap);
+        ui.painter().rect_filled(
+            Rect::from_min_size(Pos2::new(x, top), Vec2::new(bar_w, area_h)),
+            egui::CornerRadius::same(rad as u8),
+            cfg.color(SECTION, "pedal_track", "#ffffff18"),
+        );
+        let fh = area_h * val.clamp(0.0, 1.0);
+        if fh > 0.5 {
+            let col = if *abs_on {
                 cfg.color(SECTION, "abs", "#ffd23a")
             } else {
-                cfg.color(SECTION, "brake", "#ff5050")
-            },
-        ),
-        (
-            cfg.bool_key(SECTION, "show_clutch", false),
-            f.clutch,
-            cfg.color(SECTION, "clutch", "#4a8cff"),
-        ),
-    ];
-    let active: Vec<_> = bars.into_iter().filter(|(s, ..)| *s).collect();
-    let n = active.len().max(1) as f32;
-    let total_w = d * 0.55;
-    let bar_w = total_w / (n * 1.4);
-    let gap = bar_w * 0.4;
-    let start_x = cx - (n * bar_w + (n - 1.0) * gap) * 0.5;
-    let bar_h = d * 0.7;
-    let top = cy - bar_h * 0.5;
-    let track = cfg.color(SECTION, "ring_track", "#ffffff18");
-    for (i, (_, frac, col)) in active.iter().enumerate() {
-        let x = start_x + i as f32 * (bar_w + gap);
-        let track_r = Rect::from_min_size(Pos2::new(x, top), Vec2::new(bar_w, bar_h));
-        ui.painter()
-            .rect_filled(track_r, egui::CornerRadius::same(4), track);
-        let fh = bar_h * frac.clamp(0.0, 1.0);
-        ui.painter().rect_filled(
-            Rect::from_min_size(Pos2::new(x, top + bar_h - fh), Vec2::new(bar_w, fh)),
-            egui::CornerRadius::same(4),
-            *col,
-        );
+                cfg.color(SECTION, ckey, "#46df7a")
+            };
+            ui.painter().rect_filled(
+                Rect::from_min_size(Pos2::new(x, bottom - fh), Vec2::new(bar_w, fh)),
+                egui::CornerRadius::same(rad as u8),
+                col,
+            );
+        }
     }
 }
 
-fn draw_flag(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame, center_x: f32) {
+fn draw_flag(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    rect: Rect,
+    f: &TelemetryFrame,
+    center_x: f32,
+    text_scale: f32,
+) {
     let Some(flag) = f.flag.as_deref() else {
         return;
     };
@@ -729,48 +1049,146 @@ fn draw_flag(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame, c
         "blue" => ("LET BY", "flag_blue", "flag_blue_text"),
         "checkered" => ("FINISH", "flag_checker_bg", "flag_checker_text"),
         "meatball" => ("MEATBALL", "flag_meatball", "flag_meatball_text"),
-        other => (other, "flag_yellow", "flag_yellow_text"),
+        "furled" => ("WARNING", "flag_furled", "flag_furled_text"),
+        "dq" => ("DISQUALIFIED", "flag_dq", "flag_dq_text"),
+        "debris" => ("DEBRIS", "flag_debris", "flag_debris_text"),
+        "crossed" => ("HALFWAY", "flag_crossed", "flag_crossed_text"),
+        _ => return,
     };
-    let bg = cfg.color(SECTION, bgk, "#ffd23a");
+    let bg = cfg.color(SECTION, bgk, "#ebeef0");
     let fg = cfg.color(SECTION, fgk, "#141414");
+    let r = rect.height() * 0.5;
     ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(4), bg);
-    label(
-        ui,
-        Pos2::new(center_x, rect.center().y),
-        Align2::CENTER_CENTER,
-        title,
-        (rect.height() * 0.55).clamp(9.0, 16.0),
-        fg,
-        true,
+        .rect_filled(rect, egui::CornerRadius::same(r as u8), bg);
+    ui.painter().rect_stroke(
+        rect,
+        egui::CornerRadius::same(r as u8),
+        Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 45)),
+        StrokeKind::Inside,
     );
-    if let Some(ctx_line) = f.flag_context.as_deref() {
+
+    // Diagonal hatch (or checker for finish), clipped to the bar.
+    {
+        let painter = ui.painter().with_clip_rect(rect);
+        let hatch = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 70);
+        if flag == "checkered" {
+            let sq = rect.height() * 0.5;
+            let mut row = 0;
+            let mut y = rect.top();
+            while y < rect.bottom() - 0.5 {
+                let mut col = row % 2;
+                let mut x = rect.left();
+                while x < rect.right() - 0.5 {
+                    if col % 2 == 0 {
+                        painter.rect_filled(
+                            Rect::from_min_size(
+                                Pos2::new(x, y),
+                                Vec2::new(sq.min(rect.right() - x), sq.min(rect.bottom() - y)),
+                            ),
+                            egui::CornerRadius::ZERO,
+                            Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 90),
+                        );
+                    }
+                    x += sq;
+                    col += 1;
+                }
+                y += sq;
+                row += 1;
+            }
+        } else {
+            let step = rect.height() * 0.6;
+            let pen = Stroke::new((rect.height() * 0.16).max(2.0), hatch);
+            let mut x = rect.left() - rect.height();
+            while x < rect.right() + rect.height() {
+                painter.line_segment(
+                    [
+                        Pos2::new(x, rect.bottom()),
+                        Pos2::new(x + rect.height(), rect.top()),
+                    ],
+                    pen,
+                );
+                x += step;
+            }
+        }
+    }
+
+    let context = f.flag_context.as_deref().unwrap_or("").trim();
+    if !context.is_empty() {
+        let title_px = rect.height() * 0.36 * text_scale;
+        let sub_px = rect.height() * 0.24 * text_scale;
+        let tw = text_w(ui, &FontId::proportional(title_px), title)
+            .max(text_w(ui, &FontId::proportional(sub_px), context));
+        let pad = rect.height() * 0.55;
+        let gap = Rect::from_center_size(
+            Pos2::new(center_x, rect.center().y),
+            Vec2::new(tw + pad * 2.0, rect.height()),
+        );
+        ui.painter()
+            .rect_filled(gap, egui::CornerRadius::same((gap.height() * 0.5) as u8), bg);
         label(
             ui,
-            Pos2::new(rect.right() - 8.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            ctx_line,
-            (rect.height() * 0.4).clamp(8.0, 12.0),
+            Pos2::new(center_x, rect.center().y - rect.height() * 0.26),
+            Align2::CENTER_CENTER,
+            title,
+            title_px,
             fg,
+            true,
+        );
+        let sub_fg = Color32::from_rgba_unmultiplied(
+            fg.r(),
+            fg.g(),
+            fg.b(),
+            ((fg.a() as f32) * 0.88) as u8,
+        );
+        label(
+            ui,
+            Pos2::new(center_x, rect.center().y + rect.height() * 0.28),
+            Align2::CENTER_CENTER,
+            context,
+            sub_px,
+            sub_fg,
             false,
+        );
+    } else {
+        let title_px = rect.height() * 0.52 * text_scale;
+        let tw = text_w(ui, &FontId::proportional(title_px), title);
+        let pad = rect.height() * 0.6;
+        let gap = Rect::from_center_size(
+            Pos2::new(center_x, rect.center().y),
+            Vec2::new(tw + pad * 2.0, rect.height()),
+        );
+        ui.painter()
+            .rect_filled(gap, egui::CornerRadius::same((gap.height() * 0.5) as u8), bg);
+        label(
+            ui,
+            rect.center(),
+            Align2::CENTER_CENTER,
+            title,
+            title_px,
+            fg,
+            true,
         );
     }
 }
 
 fn draw_delta_bar(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) {
-    let track = cfg.color(SECTION, "track", "#ffffff18");
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(3), track);
+    let r = rect.height() * 0.5;
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(r as u8),
+        cfg.color(SECTION, "track", "#ffffff18"),
+    );
     let rng = cfg.f64_key(SECTION, "delta_bar_range", 1.0).max(0.001) as f32;
     let delta = f.delta.unwrap_or(0.0) as f32;
     let t = (delta / rng).clamp(-1.0, 1.0);
     let cx = rect.center().x;
     if t.abs() > 0.001 {
         let fill_w = rect.width() * 0.5 * t.abs();
+        // Python: faster (neg) fills to the right of center; slower to the left
         let fill = if t < 0.0 {
-            Rect::from_min_max(Pos2::new(cx - fill_w, rect.top()), Pos2::new(cx, rect.bottom()))
-        } else {
             Rect::from_min_max(Pos2::new(cx, rect.top()), Pos2::new(cx + fill_w, rect.bottom()))
+        } else {
+            Rect::from_min_max(Pos2::new(cx - fill_w, rect.top()), Pos2::new(cx, rect.bottom()))
         };
         let col = if t < 0.0 {
             cfg.color(SECTION, "faster", "#46df7a")
@@ -778,6 +1196,13 @@ fn draw_delta_bar(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFra
             cfg.color(SECTION, "slower", "#ff5050")
         };
         ui.painter()
-            .rect_filled(fill, egui::CornerRadius::same(3), col);
+            .rect_filled(fill, egui::CornerRadius::same(r as u8), col);
     }
+    ui.painter().line_segment(
+        [
+            Pos2::new(cx, rect.top() + 1.0),
+            Pos2::new(cx, rect.bottom() - 1.0),
+        ],
+        Stroke::new(1.0_f32, cfg.color(SECTION, "border", "#ffffff28")),
+    );
 }
