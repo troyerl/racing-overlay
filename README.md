@@ -1,15 +1,16 @@
 # GridGlance
 
-A native (non-browser) multi-widget iRacing HUD built with PyQt6 (Dash/RPM,
-Relative, Standings, Radar, 2D Track Map, Laptime Log and Fuel Calculator). It
-draws frameless, always-on-top, click-through panels and polls iRacing's
-shared-memory telemetry via `pyirsdk`.
+A native (non-browser) multi-widget iRacing HUD. **Race widgets** are painted by
+a Rust/egui overlay (`overlay-rs/`); **settings and Track Scan** stay in Python
+(PyQt6). The two processes share `overlay_config.json` and talk over local
+JSON-RPC. A legacy all-Python PyQt overlay remains available via `--python`.
 
 ## Requirements
 
 - **Windows** (iRacing telemetry shared memory is Windows-only)
 - Python 3.10+
-- iRacing running (the overlay shows `iRacing Disconnected` otherwise)
+- Rust toolchain (to build the overlay binary; CI builds it into the installer)
+- iRacing running (the overlay shows disconnected otherwise)
 
 ## Setup
 
@@ -17,28 +18,40 @@ shared-memory telemetry via `pyirsdk`.
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+cd overlay-rs
+cargo build --release
+cd ..
 ```
 
 ## Project layout
 
 ```
-run.py                 # entry point for the multi-widget HUD
-overlay/               # the application package
-  app.py               # HUD controller + telemetry loop (the old sim_hud.py)
-  config.py            # config schema, defaults, JSON load/merge, unit helpers
-  config_editor.py     # the visual settings editor
-  panel.py             # frameless, movable, click-through panel window
-  common.py            # iRacing SDK guard + Windows click-through helpers
-  layout_store.py      # save/restore per-panel geometry
-  demo_data.py         # FakeIRSDK telemetry simulator (--demo)
-  svgpath.py           # minimal SVG <path> flattener
-  widgets/             # custom-painted widgets
-    dash.py  radar.py  relative.py  standings.py
-    table.py  track_map.py  laptime_log.py  fuel_calc.py  icons.py
-tools/                 # standalone helper scripts (not imported by the app)
-  fetch_tracks.py  svg_to_track.py
+run.py                 # entry point (picks Rust overlay when binary is present)
+overlay/               # Python package: settings, IPC client, legacy PyQt HUD
+  app.py               # launcher + legacy HUD / rust hybrid entry
+  ipc_client.py        # JSON-RPC client for the Rust overlay
+  rust_launcher.py     # find/spawn gridglance-overlay
+  config_editor.py     # visual settings editor (stays Python)
+  widgets/             # legacy PyQt widgets (+ Track Scan panel)
+overlay-rs/            # Rust workspace
+  crates/gridglance-overlay   # egui widgets + IPC server
+  crates/gridglance-ipc       # shared RPC method names
+tools/                 # standalone helper scripts
 assets/fonts/          # bundled Font Awesome TTF
 tracks/                # track shape files keyed by iRacing TrackID
+```
+
+## Run
+
+```powershell
+# Default: Rust widgets + Python settings (if binary built)
+python run.py --demo
+
+# Legacy PyQt overlay
+python run.py --python --demo
+
+# Settings only, attached to a running Rust overlay
+python -m overlay.config_editor --rust-overlay
 ```
 
 ## Install as a desktop app (no terminal)

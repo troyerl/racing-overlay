@@ -13,6 +13,24 @@ def test_calculate_deltas_irating_rs_reference():
     assert deltas[4] == -7
 
 
+def test_round_half_away():
+    assert ic._round_half_away(66.5) == 67
+    assert ic._round_half_away(-66.5) == -67
+    assert ic._round_half_away(-66.4) == -66
+    assert ic._round_half_away(66.4) == 66
+
+
+def test_delta_rounds_new_rating_not_raw_change():
+    """irating-rs: delta = round(start + change) - start (not round(change))."""
+    # Banker's round on the raw change disagrees with the new-rating rule.
+    change = -67.5
+    assert int(round(change)) == -68
+    assert ic._delta_from_change(2000, change) == -67
+    change_pos = 66.5
+    assert int(round(change_pos)) == 66
+    assert ic._delta_from_change(2000, change_pos) == 67
+
+
 def test_dns_count_affects_p7_low_irating():
     """More registered DNS shifts a below-SoF P7 from negative toward positive."""
     base = [1314] * 6 + [1184] + [1314] * 3

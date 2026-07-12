@@ -18,6 +18,7 @@ Notes
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -56,6 +57,41 @@ def make_icon() -> str | None:
     img.save(ICO, sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)])
     print(f"Wrote {ICO}")
     return ICO
+
+
+def build_rust_overlay() -> str | None:
+    """Build ``gridglance-overlay`` and return the binary path, or None."""
+    cargo = shutil.which("cargo")
+    rs = os.path.join(ROOT, "overlay-rs")
+    if cargo is None or not os.path.isdir(rs):
+        print("Skipping Rust overlay build (cargo / overlay-rs not found).")
+        return None
+    env = os.environ.copy()
+    env["CARGO_TARGET_DIR"] = os.path.join(rs, "target")
+    print("Building Rust overlay (release)…")
+    subprocess.check_call(
+        [cargo, "build", "--release", "-p", "gridglance-overlay"],
+        cwd=rs,
+        env=env,
+    )
+    name = "gridglance-overlay.exe" if os.name == "nt" else "gridglance-overlay"
+    path = os.path.join(rs, "target", "release", name)
+    if not os.path.isfile(path):
+        print(f"Rust build finished but binary missing: {path}")
+        return None
+    return path
+
+
+def copy_rust_overlay(exe: str, rust_bin: str | None) -> None:
+    if not rust_bin:
+        return
+    dest_dir = os.path.dirname(exe)
+    dest = os.path.join(
+        dest_dir,
+        "gridglance-overlay.exe" if os.name == "nt" else "gridglance-overlay",
+    )
+    shutil.copy2(rust_bin, dest)
+    print(f"Bundled Rust overlay: {dest}")
 
 
 def build(icon: str | None) -> str:
@@ -118,7 +154,9 @@ def make_desktop_shortcut(exe: str) -> None:
 
 def main() -> int:
     icon = make_icon()
+    rust_bin = build_rust_overlay()
     exe = build(icon)
+    copy_rust_overlay(exe, rust_bin)
     # CI passes --no-shortcut (it packages an installer instead).
     if "--no-shortcut" not in sys.argv:
         make_desktop_shortcut(exe)

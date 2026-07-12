@@ -3485,7 +3485,7 @@ class ConfigEditor(QWidget):
         if isinstance(self.working, dict):
             self.working["driver_groups"] = copy.deepcopy(groups)
         if self.live_sw.isChecked():
-            config.apply_edits(self._edit_ctx, self.working)
+            self._sync_overlay_live()
         if self.autosave_sw.isChecked():
             self._flash("Driver groups updated \u2014 saving\u2026")
             self._save_timer.start(400)
@@ -4006,13 +4006,23 @@ class ConfigEditor(QWidget):
 
     # --- value changes ------------------------------------------------------
 
+    def _sync_overlay_live(self, *, notify: bool = True) -> None:
+        """Push working edits into CFG and, if the overlay is remote (Rust), IPC."""
+        config.apply_edits(self._edit_ctx, self.working, notify=notify)
+        remote = getattr(self._overlay, "apply_config", None)
+        if callable(remote):
+            try:
+                remote(config.CFG)
+            except Exception:  # noqa: BLE001 — settings must stay usable if overlay is down
+                pass
+
     def _set(self, path: list, value) -> None:
         _set_at(self.working, path, value)
         # Toggling a controller (e.g. map.show_pit) reveals/hides dependent rows.
         if ".".join(str(p) for p in path) in _DEP_CONTROLLERS:
             self._filter(self.search.text())
         if self.live_sw.isChecked():
-            config.apply_edits(self._edit_ctx, self.working)
+            self._sync_overlay_live()
         if self.autosave_sw.isChecked():
             self._flash("Modified \u2014 saving\u2026")
             self._save_timer.start(400)
@@ -4020,19 +4030,18 @@ class ConfigEditor(QWidget):
             self._flash("Modified \u2014 unsaved")
 
     def _autosave(self) -> None:
-        config.apply_edits(self._edit_ctx, self.working,
-                           notify=self.live_sw.isChecked())
+        self._sync_overlay_live(notify=self.live_sw.isChecked())
         config.save_profiles()
         self._flash("Saved to overlay_config.json")
 
     def _apply(self) -> None:
-        config.apply_edits(self._edit_ctx, self.working)
+        self._sync_overlay_live()
         config.set_preview_context(self._edit_ctx)
         self._flash(f"Applied to {self._ctx_name()} profile")
 
     def _save(self) -> None:
         self._save_timer.stop()
-        config.apply_edits(self._edit_ctx, self.working)
+        self._sync_overlay_live()
         config.save_profiles()
         self._flash("Saved to overlay_config.json")
 
@@ -4056,7 +4065,7 @@ class ConfigEditor(QWidget):
         """Restore a single widget's settings to their built-in defaults."""
         self.working[key] = copy.deepcopy(config.DEFAULTS[key])
         if self.live_sw.isChecked():
-            config.apply_edits(self._edit_ctx, self.working)
+            self._sync_overlay_live()
         if self.autosave_sw.isChecked():
             self._save_timer.start(400)
             self._flash(f"Reset {title} \u2014 saving\u2026")
@@ -4095,8 +4104,21 @@ class ConfigEditor(QWidget):
 
 
 def main() -> int:
+    """Standalone settings. Pass ``--rust-overlay`` to attach to a running Rust overlay."""
     app = QApplication(sys.argv)
-    editor = ConfigEditor()
+    overlay = None
+    if "--rust-overlay" in sys.argv:
+        from .ipc_client import OverlayIpcClient, OverlayIpcError, RemoteOverlay
+        client = OverlayIpcClient()
+        try:
+            client.ping()
+        except OverlayIpcError as exc:
+            print(f"Rust overlay not reachable: {exc}", file=sys.stderr)
+            print("Start it with: cargo run -p gridglance-overlay -- --demo",
+                  file=sys.stderr)
+            return 1
+        overlay = RemoteOverlay(client)
+    editor = ConfigEditor(overlay=overlay)
     editor.show()
     return app.exec()
 

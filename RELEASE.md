@@ -5,6 +5,22 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.68.0 - 2026-07-12
+
+- **Rust overlay (hybrid).** Race widgets run in a Rust/egui process
+  (`overlay-rs`); settings and Track Scan stay in Python and talk over local
+  JSON-RPC (port 19847). When `gridglance-overlay` is built, it is the default
+  backend; use `--python` for the legacy PyQt overlay.
+- **IPC live apply.** Settings Apply Live / Save push CFG to the Rust host;
+  Track Scan authoring commands (`map.set_pit_edit`, etc.) go over the same
+  channel via `RemoteOverlay`.
+
+## 1.67.6 - 2026-07-11
+
+- **Fix: iRating projection rounding.** Projected change uses round(start +
+  change) − start (half away from zero), matching the community calculator so
+  values are less often off by one vs the official result.
+
 ## 1.67.5 - 2026-07-11
 
 - **Fix: pit-lane map dots.** Cars on pit road move along the full pit polyline

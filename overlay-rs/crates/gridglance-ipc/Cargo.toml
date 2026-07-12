@@ -1,0 +1,10 @@
+[package]
+name = "gridglance-ipc"
+version.workspace = true
+edition.workspace = true
+description = "JSON-RPC message types for GridGlance overlay ↔ settings IPC"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

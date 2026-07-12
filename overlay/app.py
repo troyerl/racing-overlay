@@ -5813,12 +5813,182 @@ class AdvancedSimHUD:
         self.ers_hybrid_widget.set_data(snap)
 
 
+def _resolve_backend() -> str:
+    """Pick overlay backend: rust (default when binary present) or python."""
+    if "--python" in sys.argv:
+        return "python"
+    if "--rust" in sys.argv:
+        return "rust"
+    if "--backend" in sys.argv:
+        i = sys.argv.index("--backend")
+        if i + 1 < len(sys.argv):
+            return sys.argv[i + 1].strip().lower()
+    env = os.environ.get("GRIDGLANCE_BACKEND", "").strip().lower()
+    if env in ("python", "rust"):
+        return env
+    from .rust_launcher import find_overlay_binary
+    if find_overlay_binary() is not None:
+        return "rust"
+    return "python"
+
+
+def _main_rust() -> int:
+    """Launch Rust overlay process + Python settings (exits with settings)."""
+    import signal
+    import time
+    import traceback
+
+    from .ipc_client import OverlayIpcClient, OverlayIpcError, RemoteOverlay
+    from .rust_launcher import start_rust_overlay
+
+    click_through = "--no-clickthrough" not in sys.argv
+    demo = "--demo" in sys.argv
+    start_now = (
+        "--start" in sys.argv
+        or demo
+        or bool(config.CFG.get("start_overlay_on_launch", False))
+    )
+    open_settings = "--no-settings" not in sys.argv
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "GridGlance.App")
+        except Exception:  # noqa: BLE001
+            pass
+
+    app = QApplication(sys.argv)
+    app.setApplicationName("GridGlance")
+    app.setDesktopFileName("GridGlance")
+    icon_path = paths.app_icon()
+    if icon_path:
+        from PyQt6.QtGui import QIcon
+        app.setWindowIcon(QIcon(icon_path))
+
+    from . import single_instance
+    instance = single_instance.acquire(app)
+    if instance is None:
+        return 0
+
+    def _excepthook(exc_type, exc, tb) -> None:
+        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        sys.__excepthook__(exc_type, exc, tb)
+
+    sys.excepthook = _excepthook
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+
+    try:
+        proc = start_rust_overlay(
+            demo=demo,
+            click_through=click_through,
+            stopped=not start_now,
+        )
+    except FileNotFoundError as exc:
+        QMessageBox.critical(None, "GridGlance", str(exc))
+        return 1
+
+    client = OverlayIpcClient()
+    deadline = time.monotonic() + 8.0
+    while time.monotonic() < deadline:
+        try:
+            client.ping()
+            break
+        except OverlayIpcError:
+            if proc.poll() is not None:
+                QMessageBox.critical(
+                    None, "GridGlance",
+                    "Rust overlay exited before IPC became ready.")
+                return 1
+            time.sleep(0.1)
+            QApplication.processEvents()
+    else:
+        QMessageBox.critical(
+            None, "GridGlance",
+            "Timed out waiting for Rust overlay IPC on 127.0.0.1:19847.")
+        proc.terminate()
+        return 1
+
+    remote = RemoteOverlay(client)
+    if start_now:
+        try:
+            remote.start_overlay()
+        except OverlayIpcError:
+            pass
+
+    from .config_editor import ConfigEditor
+
+    def _open_settings() -> None:
+        existing = getattr(app, "_settings_window", None)
+        if existing is not None and existing.isVisible():
+            existing.raise_()
+            existing.activateWindow()
+            return
+        editor = ConfigEditor(overlay=remote)
+        app._settings_window = editor
+
+        def _on_close(*_args) -> None:
+            # Settings exits; Rust overlay keeps racing.
+            pass
+
+        editor.destroyed.connect(_on_close)
+        editor.show()
+
+    def _shutdown_overlay() -> None:
+        try:
+            remote.stop_overlay()
+        except OverlayIpcError:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except Exception:  # noqa: BLE001
+                proc.kill()
+
+    def _quit_all() -> None:
+        _shutdown_overlay()
+        app.quit()
+
+    instance.set_activate_callback(_open_settings)
+
+    # Keep the Python process alive after settings closes so the tray can
+    # reopen settings / quit. The Rust overlay is the long-lived paint process.
+    tray = None
+    if icon_path:
+        from PyQt6.QtGui import QAction, QIcon
+        from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
+        tray = QSystemTrayIcon(QIcon(icon_path), app)
+        menu = QMenu()
+        act_settings = QAction("Settings", menu)
+        act_settings.triggered.connect(_open_settings)
+        act_quit = QAction("Quit", menu)
+        act_quit.triggered.connect(_quit_all)
+        menu.addAction(act_settings)
+        menu.addAction(act_quit)
+        tray.setContextMenu(menu)
+        tray.setToolTip("GridGlance")
+        tray.show()
+
+    app.setQuitOnLastWindowClosed(tray is None)
+    if open_settings or not start_now:
+        _open_settings()
+
+    code = app.exec()
+    _shutdown_overlay()
+    return code
+
+
 def main() -> int:
     if "--dump-config" in sys.argv:
         path = config.write_template()
         print(f"Wrote default config template to {path}")
         print("Edit it to customize every color, font, size, count and toggle.")
         return 0
+
+    backend = _resolve_backend()
+    if backend == "rust":
+        return _main_rust()
 
     click_through = "--no-clickthrough" not in sys.argv
     demo = "--demo" in sys.argv

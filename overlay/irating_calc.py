@@ -20,6 +20,18 @@ def _chance(a: float, b: float) -> float:
     return (1.0 - ea) * eb / ((1.0 - eb) * ea + (1.0 - ea) * eb)
 
 
+def _round_half_away(x: float) -> int:
+    """Round half away from zero (Excel ROUND / Rust f32::round)."""
+    if x >= 0.0:
+        return int(math.floor(x + 0.5))
+    return int(math.ceil(x - 0.5))
+
+
+def _delta_from_change(start_ir: int, change: float) -> int:
+    """Integer delta matching irating-rs: round(start + change) - start."""
+    return _round_half_away(float(start_ir) + change) - int(start_ir)
+
+
 def calculate_deltas(entries: list[tuple[int, bool]]) -> list[int]:
     """Return rounded iRating deltas for finish-ordered (start_ir, started) pairs."""
     n = len(entries)
@@ -70,11 +82,11 @@ def calculate_deltas(entries: list[tuple[int, bool]]) -> list[int]:
                 -sum_starters / num_non * exp / (sum_exp_non / num_non))
 
     out: list[int] = []
-    for cs, cn in zip(changes_starters, changes_non):
+    for (ir, _), cs, cn in zip(entries, changes_starters, changes_non):
         if cs is not None:
-            out.append(int(round(cs)))
+            out.append(_delta_from_change(ir, cs))
         elif cn is not None:
-            out.append(int(round(cn)))
+            out.append(_delta_from_change(ir, cn))
         else:
             out.append(0)
     return out

@@ -34,3 +34,8 @@ stderr.txt
 # Fetched track library (keep only the bundled demo track)
 /tracks/*
 !/tracks/_demo.json
+
+# Local Rust toolchain (workspace-installed)
+.cargo/
+.rustup/
+overlay-rs/target/

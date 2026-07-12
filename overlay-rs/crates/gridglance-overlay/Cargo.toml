@@ -1,0 +1,32 @@
+[package]
+name = "gridglance-overlay"
+version.workspace = true
+edition.workspace = true
+description = "GridGlance race overlay (egui) — widgets in Rust, settings stay in Python"
+
+[[bin]]
+name = "gridglance-overlay"
+path = "src/main.rs"
+
+[dependencies]
+gridglance-ipc = { path = "../gridglance-ipc" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+eframe = { version = "0.31", default-features = true, features = ["default_fonts"] }
+egui = "0.31"
+egui_extras = { version = "0.31", features = ["svg"] }
+parking_lot = "0.12"
+directories = "6"
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[dev-dependencies]
+approx = "0.5"
