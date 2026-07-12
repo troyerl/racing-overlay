@@ -333,21 +333,21 @@ mod win {
 
     unsafe fn float_arr(session: &Session, name: &str) -> Option<Vec<f32>> {
         match session.find_var(name).map(|v| session.var_value(&v)) {
-            Some(Value::Floats(a)) => Some(a),
+            Some(Value::Floats(a)) => Some(a.to_vec()),
             _ => None,
         }
     }
 
     unsafe fn int_arr(session: &Session, name: &str) -> Option<Vec<i32>> {
         match session.find_var(name).map(|v| session.var_value(&v)) {
-            Some(Value::Ints(a)) => Some(a),
+            Some(Value::Ints(a)) => Some(a.to_vec()),
             _ => None,
         }
     }
 
     unsafe fn bool_arr(session: &Session, name: &str) -> Option<Vec<bool>> {
         match session.find_var(name).map(|v| session.var_value(&v)) {
-            Some(Value::Bools(a)) => Some(a),
+            Some(Value::Bools(a)) => Some(a.to_vec()),
             _ => None,
         }
     }
