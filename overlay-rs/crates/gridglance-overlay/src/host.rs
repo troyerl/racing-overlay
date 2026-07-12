@@ -6,10 +6,10 @@ use crate::state::{PanelLayout, StateHandle};
 use crate::telemetry::{demo::DemoFeed, finalize_frame, IrsdkReader};
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
-use eframe::egui::{self, Sense, ViewportBuilder, ViewportId};
+use eframe::egui::{self, Sense, ViewportBuilder, ViewportCommand, ViewportId};
 use eframe::glow;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 pub struct OverlayApp {
@@ -19,6 +19,8 @@ pub struct OverlayApp {
     last_tick: Instant,
     open_viewports: HashSet<String>,
     last_click_through: HashMap<String, bool>,
+    /// Widget key currently being OS-dragged in edit mode.
+    dragging: Arc<Mutex<Option<String>>>,
     gl: Option<Arc<glow::Context>>,
 }
 
@@ -31,6 +33,7 @@ impl OverlayApp {
             last_tick: Instant::now(),
             open_viewports: HashSet::new(),
             last_click_through: HashMap::new(),
+            dragging: Arc::new(Mutex::new(None)),
             gl,
         }
     }
@@ -95,35 +98,46 @@ impl eframe::App for OverlayApp {
             for key in to_close {
                 ctx.send_viewport_cmd_to(
                     ViewportId::from_hash_of(&key),
-                    egui::ViewportCommand::Close,
+                    ViewportCommand::Close,
                 );
                 self.open_viewports.remove(&key);
                 self.last_click_through.remove(&key);
             }
+            *self.dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return;
         }
 
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
         let gl = self.gl.clone();
+        let dragging_key = self
+            .dragging
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
 
         for (key, lay) in keys_layout {
             still_open.insert(key.clone());
             let vid = ViewportId::from_hash_of(&key);
             let title = win_click::panel_title(&key);
+            let is_dragging = dragging_key.as_deref() == Some(key.as_str());
 
-            let builder = ViewportBuilder::default()
+            let mut builder = ViewportBuilder::default()
                 .with_title(title.clone())
                 .with_decorations(false)
                 .with_transparent(true)
                 .with_always_on_top()
                 .with_taskbar(false)
                 .with_mouse_passthrough(passthrough)
-                .with_position(egui::pos2(lay.x as f32, lay.y as f32))
                 .with_inner_size([lay.w as f32, lay.h as f32]);
+            // While OS-dragging, do not fight the window with OuterPosition.
+            if !is_dragging {
+                builder = builder.with_position(egui::pos2(lay.x as f32, lay.y as f32));
+            }
 
             let state = self.state.clone();
             let key_clone = key.clone();
+            let dragging = Arc::clone(&self.dragging);
 
             ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
                 egui::CentralPanel::default()
@@ -152,16 +166,23 @@ impl eframe::App for OverlayApp {
                                 ui.id().with("drag"),
                                 Sense::drag(),
                             );
-                            if resp.dragged() {
-                                let delta = resp.drag_delta();
-                                let mut st = state.write();
-                                if let Some(lay) = st.layout.get_mut(&key_clone) {
-                                    lay.x += delta.x as i32;
-                                    lay.y += delta.y as i32;
-                                }
+                            if resp.drag_started() {
+                                vp_ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                                *dragging.lock().unwrap_or_else(|e| e.into_inner()) =
+                                    Some(key_clone.clone());
                             }
                             if resp.drag_stopped() {
-                                state.write().save_layout();
+                                if let Some(outer) = vp_ctx.input(|i| i.viewport().outer_rect) {
+                                    let mut st = state.write();
+                                    if let Some(lay) = st.layout.get_mut(&key_clone) {
+                                        lay.x = outer.min.x.round() as i32;
+                                        lay.y = outer.min.y.round() as i32;
+                                    }
+                                    st.save_layout();
+                                } else {
+                                    state.write().save_layout();
+                                }
+                                *dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             }
                         }
                     });
@@ -193,7 +214,7 @@ impl eframe::App for OverlayApp {
         for key in to_close {
             ctx.send_viewport_cmd_to(
                 ViewportId::from_hash_of(&key),
-                egui::ViewportCommand::Close,
+                ViewportCommand::Close,
             );
             self.open_viewports.remove(&key);
             self.last_click_through.remove(&key);

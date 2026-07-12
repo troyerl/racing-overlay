@@ -111,6 +111,20 @@ pub struct TelemetryFrame {
     pub pit_laps_to_go: Option<i32>,
     pub pit_fuel_to_add: Option<f32>,
     pub radio_name: Option<String>,
+    /// Active radio transmitter row (Python radio_tower `rows[0]`).
+    pub radio: Option<RadioSpeaker>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RadioSpeaker {
+    pub position: i32,
+    pub car_number: String,
+    pub name: String,
+    pub active: bool,
+    pub is_player: bool,
+    pub is_pro: bool,
+    pub group_icon: String,
+    pub group_color: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -202,6 +216,22 @@ pub mod demo {
             let rpm = 5600.0 + (t * 0.6).sin() as f32 * 400.0;
             let speed_mps = 147.0 / 2.236_936_3;
             let fuel_l = 15.5 / 0.264_172_05;
+            let speaking = (t as i32) % 4 == 0;
+            let radio = if speaking {
+                let c = &cars[2];
+                Some(RadioSpeaker {
+                    position: c.position,
+                    car_number: c.car_number.clone(),
+                    name: c.name.clone(),
+                    active: true,
+                    is_player: false,
+                    is_pro: false,
+                    group_icon: "league".into(),
+                    group_color: "#5bb8ff".into(),
+                })
+            } else {
+                None
+            };
             TelemetryFrame {
                 connected: true,
                 session_time: t,
@@ -280,11 +310,8 @@ pub mod demo {
                 tire_pressures: [27.1, 27.0, 26.9, 27.2],
                 pit_laps_to_go: Some(6),
                 pit_fuel_to_add: Some(18.5),
-                radio_name: if (t as i32) % 4 == 0 {
-                    Some("Driver 3".into())
-                } else {
-                    None
-                },
+                radio_name: radio.as_ref().map(|r| r.name.clone()),
+                radio,
                 cars,
                 ..Default::default()
             }

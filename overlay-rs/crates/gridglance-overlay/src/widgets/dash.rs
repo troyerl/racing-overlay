@@ -1,7 +1,7 @@
 //! Dash — one-to-one port of Python `overlay/widgets/dash.py` paint path.
 
 use super::WidgetCtx;
-use crate::chrome::{draw_dark_cell, draw_panel_rect, full_rect, label};
+use crate::chrome::{color_with_alpha, draw_dark_cell, draw_panel_rect, full_rect, label};
 use crate::config::OverlayConfig;
 use crate::icons;
 use crate::telemetry::TelemetryFrame;
@@ -827,7 +827,7 @@ fn draw_ring(
 ) {
     let mr = ring_d * 0.5 + ring_d * 0.06;
     let mut border = cfg.color(SECTION, "cell_border", "#ffffff20");
-    border = Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), 150);
+    border = color_with_alpha(border, 150);
     ui.painter().circle_filled(
         Pos2::new(cx, cy),
         mr,
@@ -903,7 +903,7 @@ fn draw_ring_arc(
     }
     let lit = frac * n as f32;
     let off = cfg.color(SECTION, "ring_track", "#ffffff18");
-    let glow = Color32::from_rgba_unmultiplied(on_color.r(), on_color.g(), on_color.b(), 75);
+    let glow = color_with_alpha(on_color, 75);
 
     // Glow pass then solid pass (Python draws arcs from 90° CCW).
     for pass in 0..2 {
@@ -952,7 +952,7 @@ fn draw_pedals(
 ) {
     let mr = ring_d * 0.5 + ring_d * 0.06;
     let mut border = cfg.color(SECTION, "cell_border", "#ffffff20");
-    border = Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), 150);
+    border = color_with_alpha(border, 150);
     ui.painter().circle_filled(
         Pos2::new(cx, cy),
         mr,
@@ -1068,7 +1068,7 @@ fn draw_flag(
     // Diagonal hatch (or checker for finish), clipped to the bar.
     {
         let painter = ui.painter().with_clip_rect(rect);
-        let hatch = Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 70);
+        let hatch = color_with_alpha(fg, 70);
         if flag == "checkered" {
             let sq = rect.height() * 0.5;
             let mut row = 0;
@@ -1084,7 +1084,7 @@ fn draw_flag(
                                 Vec2::new(sq.min(rect.right() - x), sq.min(rect.bottom() - y)),
                             ),
                             egui::CornerRadius::ZERO,
-                            Color32::from_rgba_unmultiplied(fg.r(), fg.g(), fg.b(), 90),
+                            color_with_alpha(fg, 90),
                         );
                     }
                     x += sq;
@@ -1132,12 +1132,7 @@ fn draw_flag(
             fg,
             true,
         );
-        let sub_fg = Color32::from_rgba_unmultiplied(
-            fg.r(),
-            fg.g(),
-            fg.b(),
-            ((fg.a() as f32) * 0.88) as u8,
-        );
+        let sub_fg = color_with_alpha(fg, ((fg.a() as f32) * 0.88) as u8);
         label(
             ui,
             Pos2::new(center_x, rect.center().y + rect.height() * 0.28),

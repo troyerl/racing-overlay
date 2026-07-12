@@ -50,7 +50,7 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "pit_board" => (40, 980, 320, 140),
         "weather_panel" => (380, 980, 260, 180),
         "leaderboard_strip" => (660, 980, 480, 80),
-        "radio_tower" => (1160, 720, 200, 200),
+        "radio_tower" => (1160, 720, 220, 56),
         "ers_hybrid" => (920, 780, 220, 140),
         "system_panel" => (1160, 940, 220, 180),
         "pit_advisor" => (660, 1080, 320, 160),
@@ -340,6 +340,20 @@ fn default_colors() -> Map<String, Value> {
         ("value", "#f4f6f8"),
         ("irating_delta_up", "#46df7a"),
         ("irating_delta_down", "#ff5050"),
+        ("threat", "#ff505060"),
+        ("lapped", "#4a8cff60"),
+        ("pit_row", "#8b93a118"),
+        ("inactive_row", "#8b93a128"),
+        ("speaking_row", "#22c55e50"),
+        ("footer_bg", "#0f1216"),
+        ("badge_player", "#ff9416"),
+        ("badge_pit_bg", "#ebeef0"),
+        ("badge_pit_text", "#141414"),
+        ("badge_speaking_bg", "#22c55e"),
+        ("badge_speaking_text", "#ffffff"),
+        ("badge_empty_border", "#ffffff28"),
+        ("pro_name", "#f5c542"),
+        ("pro_badge", "#f5c542"),
     ];
     let mut colors = Map::new();
     for (k, v) in PAIRS {
@@ -458,6 +472,15 @@ fn default_cfg() -> Value {
                 colors.insert("red".into(), Value::String("#ff5050".into()));
                 colors.insert("yellow".into(), Value::String("#ffd23a".into()));
             }
+        }
+        if *key == "radio_tower" {
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("RADIO".into()));
+            section.insert("show_position".into(), Value::Bool(true));
+            section.insert("show_car_number".into(), Value::Bool(true));
+            section.insert("show_name".into(), Value::Bool(true));
+            section.insert("highlight_player".into(), Value::Bool(true));
+            section.insert("row_height_px".into(), json!(0));
         }
         m.insert((*key).into(), Value::Object(section));
     }

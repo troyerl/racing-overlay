@@ -1,7 +1,7 @@
 //! Directional proximity radar HUD (Python `radar.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, ease, full_rect, label};
+use crate::chrome::{color_with_alpha, draw_card, ease, full_rect, label};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
 const SECTION: &str = "radar";
@@ -268,7 +268,7 @@ fn side_marker(
                 Pos2::new(x_b, yc + h * 0.5),
             ),
             CornerRadius::ZERO,
-            Color32::from_rgba_unmultiplied(base.r(), base.g(), base.b(), a),
+            color_with_alpha(base, a),
         );
     }
     if !label_txt.is_empty() {

@@ -33,6 +33,10 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("irating", 0xF201),
     ("irating_up", 0xF062),
     ("irating_down", 0xF063),
+    ("pro_driver", 0xF005),
+    ("league", 0xF0C0),
+    ("flag", 0xF024),
+    ("speaking", 0xF028),
 ];
 
 pub fn install_fonts(ctx: &egui::Context) {

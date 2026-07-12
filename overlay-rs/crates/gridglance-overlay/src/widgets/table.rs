@@ -1,6 +1,6 @@
 //! Shared BaseTable-style painter for relative / standings (Python parity).
 
-use crate::chrome::{draw_card, ease, label, panel_pad};
+use crate::chrome::{color_with_alpha, draw_card, draw_row_tint, ease, label, panel_pad};
 use crate::config::{parse_color_str, OverlayConfig};
 use crate::telemetry::{TableRow, TableSlots};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
@@ -210,33 +210,10 @@ fn paint_row_chrome(
     if cfg.bool_key(section, "row_dividers", true) {
         let line = cfg.color(section, "border", "#ffffff28");
         let y = rect.bottom() - 0.5;
+        let a = ((line.a() as f32) * 0.55).max(30.0) as u8;
         ui.painter().line_segment(
             [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(1.0_f32, with_alpha(line, 40)),
-        );
-    }
-}
-
-fn draw_row_tint(ui: &mut Ui, rect: Rect, accent: Color32) {
-    let h = rect.height();
-    let stripe_w = (h * 0.07).max(2.5);
-    let edge = with_alpha(accent, (accent.a() as u16 + 50).min(255) as u8);
-    ui.painter().rect_filled(
-        Rect::from_min_size(
-            Pos2::new(rect.left(), rect.top() + h * 0.12),
-            Vec2::new(stripe_w, h * 0.76),
-        ),
-        CornerRadius::same(2),
-        edge,
-    );
-    // Soft wash (approximate gradient with a few rects).
-    for (frac, scale) in [(0.0, 0.42), (0.25, 0.22), (0.55, 0.08)] {
-        let x0 = rect.left() + rect.width() * frac;
-        let x1 = rect.left() + rect.width() * (frac + 0.28).min(1.0);
-        ui.painter().rect_filled(
-            Rect::from_min_max(Pos2::new(x0, rect.top()), Pos2::new(x1, rect.bottom())),
-            CornerRadius::ZERO,
-            with_alpha(accent, (accent.a() as f32 * scale) as u8),
+            Stroke::new(1.0_f32, color_with_alpha(line, a)),
         );
     }
 }
@@ -655,8 +632,4 @@ fn truncate_sr(sr: &str) -> String {
     } else {
         sr.chars().take(4).collect()
     }
-}
-
-fn with_alpha(c: Color32, a: u8) -> Color32 {
-    Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
 }

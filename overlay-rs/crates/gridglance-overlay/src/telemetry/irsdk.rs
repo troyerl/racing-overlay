@@ -2,7 +2,7 @@
 
 #[cfg(windows)]
 mod win {
-    use crate::telemetry::{CarRow, RadarState, TelemetryFrame};
+    use crate::telemetry::{CarRow, RadarState, RadioSpeaker, TelemetryFrame};
     use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
     use std::collections::HashMap;
 
@@ -168,7 +168,16 @@ mod win {
 
         let abs_active = read_bool(session, "BrakeABSactive");
         let (left, right, left2, right2) = car_left_right(session);
-        let cars = car_rows(session, cache);
+        let radio_idx = {
+            let v = read_i32(session, "RadioTransmitCarIdx");
+            if v >= 0 {
+                Some(v)
+            } else {
+                None
+            }
+        };
+        let cars = car_rows(session, cache, radio_idx);
+        let radio = radio_speaker_from_cars(&cars, radio_idx, cache.player_idx);
         let radar = RadarState {
             left,
             right,
@@ -233,9 +242,33 @@ mod win {
             radar: radar.clone(),
             radar_left: left,
             radar_right: right,
+            radio_name: radio.as_ref().map(|r| r.name.clone()),
+            radio,
             cars,
             ..Default::default()
         }
+    }
+
+    fn radio_speaker_from_cars(
+        cars: &[CarRow],
+        radio_idx: Option<i32>,
+        player_idx: i32,
+    ) -> Option<RadioSpeaker> {
+        let idx = radio_idx?;
+        let c = cars.iter().find(|c| c.car_idx == idx)?;
+        if c.is_pace_car {
+            return None;
+        }
+        Some(RadioSpeaker {
+            position: c.position,
+            car_number: c.car_number.clone(),
+            name: c.name.clone(),
+            active: true,
+            is_player: c.car_idx == player_idx || c.is_player,
+            is_pro: false,
+            group_icon: String::new(),
+            group_color: String::new(),
+        })
     }
 
     fn positive_opt(v: f64) -> Option<f64> {
@@ -352,7 +385,11 @@ mod win {
         }
     }
 
-    unsafe fn car_rows(session: &Session, cache: &SessionCache) -> Vec<CarRow> {
+    unsafe fn car_rows(
+        session: &Session,
+        cache: &SessionCache,
+        radio_idx: Option<i32>,
+    ) -> Vec<CarRow> {
         let Some(pcts) = float_arr(session, "CarIdxLapDistPct") else {
             return Vec::new();
         };
@@ -469,7 +506,7 @@ mod win {
                 in_pit,
                 on_track,
                 is_player: i as i32 == player_idx,
-                is_speaking: false,
+                is_speaking: radio_idx == Some(i as i32),
                 is_pace_car: is_pace,
                 lapping,
                 lap_ahead,

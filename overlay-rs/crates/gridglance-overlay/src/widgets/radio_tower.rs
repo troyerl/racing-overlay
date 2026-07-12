@@ -1,59 +1,193 @@
+//! Radio tower — current team-radio speaker (Python parity).
+
 use super::WidgetCtx;
-use crate::chrome::{draw_card, full_rect, label, panel_pad};
-use egui::{Align2, Pos2, Ui};
+use crate::chrome::{
+    color_with_alpha, draw_card, draw_section_header, full_rect, panel_pad,
+};
+use crate::config::parse_color_str;
+use crate::icons;
+use crate::telemetry::RadioSpeaker;
+use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Ui, Vec2};
 
 const SECTION: &str = "radio_tower";
 
+fn preview_row() -> RadioSpeaker {
+    RadioSpeaker {
+        position: 2,
+        car_number: "10".into(),
+        name: "Preview Driver".into(),
+        active: true,
+        is_player: false,
+        is_pro: false,
+        group_icon: "league".into(),
+        group_color: "#5bb8ff".into(),
+    }
+}
+
+fn driver_part(row: &RadioSpeaker, show_name: bool, show_car_number: bool) -> String {
+    let name = row.name.trim();
+    let num = row.car_number.trim();
+    match (show_name && !name.is_empty(), show_car_number && !num.is_empty()) {
+        (true, true) => format!("{name} #{num}"),
+        (true, false) => name.to_string(),
+        (false, true) => {
+            if num.starts_with('#') {
+                num.to_string()
+            } else {
+                format!("#{num}")
+            }
+        }
+        (false, false) => String::new(),
+    }
+}
+
+fn row_text(row: &RadioSpeaker, show_position: bool, show_name: bool, show_num: bool) -> String {
+    let driver = driver_part(row, show_name, show_num);
+    let has_pos = show_position && row.position > 0;
+    if has_pos && !driver.is_empty() {
+        format!("{} - {driver}", row.position)
+    } else if has_pos {
+        row.position.to_string()
+    } else {
+        driver
+    }
+}
+
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    let row = match &ctx.frame.radio {
+        Some(r) => r.clone(),
+        None if ctx.edit_mode => preview_row(),
+        None => return, // silent: paint nothing (transparent)
+    };
+
     let rect = full_rect(ui);
-    draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = panel_pad(rect.height());
-    let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
-    let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
-    let accent = ctx.cfg.color(SECTION, "faster", "#46df7a");
+    let (card, radius) = draw_card(ui, ctx.cfg, SECTION, rect);
+    let pad = panel_pad(card.height());
+    let mut y = card.top() + pad;
 
-    label(
-        ui,
-        Pos2::new(rect.center().x, rect.top() + pad + 12.0),
-        Align2::CENTER_TOP,
-        "RADIO",
-        12.0,
-        muted,
-        true,
-    );
-
-    // Simple tower glyph
-    let cx = rect.center().x;
-    let cy = rect.center().y + 8.0;
-    let stroke = egui::Stroke::new(2.0_f32, accent);
-    ui.painter()
-        .line_segment([Pos2::new(cx, cy - 40.0), Pos2::new(cx, cy + 20.0)], stroke);
-    ui.painter().line_segment(
-        [Pos2::new(cx - 18.0, cy + 20.0), Pos2::new(cx + 18.0, cy + 20.0)],
-        stroke,
-    );
-    ui.painter().circle_stroke(Pos2::new(cx, cy - 40.0), 6.0, stroke);
-    if ctx.frame.radio_name.is_some() {
-        ui.painter()
-            .circle_filled(Pos2::new(cx, cy - 40.0), 4.0, accent);
+    let show_title = ctx.cfg.bool_key(SECTION, "show_title", true);
+    if show_title {
+        let hh = (card.height() * 0.22).max(18.0);
+        let hdr = Rect::from_min_size(
+            Pos2::new(card.left() + pad, y),
+            Vec2::new(card.width() - 2.0 * pad, hh),
+        );
+        let title = ctx.cfg.str_key(SECTION, "title", "RADIO");
+        draw_section_header(ui, ctx.cfg, SECTION, hdr, &title, radius);
+        y += hh + pad * 0.2;
     }
 
-    let name = ctx
-        .frame
-        .radio_name
-        .as_deref()
-        .unwrap_or("Listening…");
-    label(
-        ui,
-        Pos2::new(cx, rect.bottom() - pad - 4.0),
-        Align2::CENTER_BOTTOM,
-        name,
-        14.0,
-        if ctx.frame.radio_name.is_some() {
-            text
-        } else {
-            muted
-        },
-        true,
+    let show_pos = ctx.cfg.bool_key(SECTION, "show_position", true);
+    let show_num = ctx.cfg.bool_key(SECTION, "show_car_number", true);
+    let show_name = ctx.cfg.bool_key(SECTION, "show_name", true);
+    let highlight = ctx.cfg.bool_key(SECTION, "highlight_player", true);
+
+    let body_h = (card.bottom() - pad - y).max(22.0);
+    let fixed_rh = ctx.cfg.f64_key(SECTION, "row_height_px", 0.0) as f32;
+    let row_h = if fixed_rh > 0.0 {
+        fixed_rh
+    } else {
+        body_h.min(card.height() * 0.55)
+    }
+    .max(22.0);
+
+    let content_w = card.width() - 2.0 * pad;
+    let text_size = row_h * 0.46 * ctx.cfg.text_scale(SECTION);
+    let x0 = card.left() + pad;
+    let row_rect = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(content_w, row_h - 2.0));
+
+    if row.active {
+        draw_speaking_accent(ui, ctx, row_rect);
+    } else if row.is_player && highlight {
+        ui.painter().rect_filled(
+            row_rect,
+            CornerRadius::ZERO,
+            ctx.cfg.color(SECTION, "player_row", "#ffffff14"),
+        );
+    }
+
+    let text = row_text(&row, show_pos, show_name, show_num);
+    if text.is_empty() {
+        return;
+    }
+
+    let stripe_w = ((row_h - 2.0) * 0.09).max(3.5);
+    let text_inset = stripe_w + (row_h * 0.12).max(6.0);
+    let mut text_x = x0 + text_inset;
+    let mut text_w = (content_w - text_inset).max(0.0);
+
+    if let Some((glyph, badge_col)) = badge_glyph(ctx, &row) {
+        let ic_px = (row_h - 2.0) * 0.32;
+        let gap = ((row_h - 2.0) * 0.08).max(2.0);
+        let gw = ic_px * 0.85; // approximate advance
+        ui.painter().text(
+            Pos2::new(text_x, row_rect.center().y),
+            Align2::LEFT_CENTER,
+            &glyph,
+            icons::font_id(ic_px),
+            badge_col,
+        );
+        text_x += gw + gap;
+        text_w = (text_w - (gw + gap)).max(0.0);
+    }
+
+    let text_col = if row.is_pro && !row.active {
+        ctx.cfg.color(SECTION, "pro_name", "#f5c542")
+    } else {
+        ctx.cfg.color(SECTION, "text", "#d8d8d8")
+    };
+    // Elide by clipping painter to the text slot.
+    let text_rect = Rect::from_min_size(Pos2::new(text_x, y), Vec2::new(text_w, row_h - 2.0));
+    let painter = ui.painter().with_clip_rect(text_rect);
+    painter.text(
+        Pos2::new(text_x, text_rect.center().y),
+        Align2::LEFT_CENTER,
+        &text,
+        egui::FontId::new(
+            text_size,
+            egui::FontFamily::Proportional,
+        ),
+        text_col,
     );
+}
+
+fn draw_speaking_accent(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
+    let accent = ctx.cfg.color(SECTION, "badge_speaking_bg", "#22c55e");
+    let h = rect.height();
+    let stripe_w = (h * 0.09).max(3.5);
+    ui.painter().rect_filled(
+        Rect::from_min_size(
+            Pos2::new(rect.left(), rect.top() + h * 0.10),
+            Vec2::new(stripe_w, h * 0.80),
+        ),
+        CornerRadius::same(2),
+        accent,
+    );
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::ZERO,
+        color_with_alpha(accent, 38),
+    );
+}
+
+fn badge_glyph(ctx: &WidgetCtx<'_>, row: &RadioSpeaker) -> Option<(String, Color32)> {
+    if row.is_pro {
+        if let Some(g) = icons::glyph("pro_driver") {
+            return Some((
+                g,
+                ctx.cfg.color(SECTION, "pro_badge", "#f5c542"),
+            ));
+        }
+    }
+    if !row.group_icon.is_empty() {
+        if let Some(g) = icons::glyph(&row.group_icon) {
+            let col = if row.group_color.is_empty() {
+                parse_color_str("#5bb8ff")
+            } else {
+                parse_color_str(&row.group_color)
+            };
+            return Some((g, col));
+        }
+    }
+    None
 }
