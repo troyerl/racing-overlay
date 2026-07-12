@@ -267,14 +267,18 @@ fn paint_row_cols(
             "position" => {
                 if stripe && !row.class_color.is_empty() {
                     let sc = parse_color_str(&row.class_color);
-                    ui.painter().rect_filled(
-                        Rect::from_min_size(
-                            Pos2::new(cx, rect.top() + rh * 0.18),
-                            Vec2::new((rh * 0.08).max(2.0), rh * 0.64),
-                        ),
-                        CornerRadius::same(1),
-                        sc,
-                    );
+                    // Skip parse fallback magenta (#ff00ff) from bad class colors.
+                    let is_fallback = sc.r() == 255 && sc.g() == 0 && sc.b() == 255;
+                    if !is_fallback {
+                        ui.painter().rect_filled(
+                            Rect::from_min_size(
+                                Pos2::new(cx, rect.top() + rh * 0.18),
+                                Vec2::new((rh * 0.08).max(2.0), rh * 0.64),
+                            ),
+                            CornerRadius::same(1),
+                            sc,
+                        );
+                    }
                 }
                 label(
                     ui,

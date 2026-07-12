@@ -191,6 +191,35 @@ mod win {
         } else {
             0.0
         };
+        let fuel_max = {
+            let v = read_f32(session, "DriverCarFuelMaxLtr");
+            if v > 1.0 {
+                v
+            } else {
+                0.0
+            }
+        };
+        let session_laps_remain = {
+            let v = read_f32(session, "SessionLapsRemainEx");
+            if v.is_finite() && v >= 0.0 && v < 32000.0 {
+                Some(v)
+            } else {
+                let v2 = read_f32(session, "SessionLapsRemain");
+                if v2.is_finite() && v2 >= 0.0 && v2 < 32000.0 {
+                    Some(v2)
+                } else {
+                    None
+                }
+            }
+        };
+        let session_time_remain = {
+            let v = read_f32(session, "SessionTimeRemain");
+            if v.is_finite() && v >= 0.0 && v < 48.0 * 3600.0 {
+                Some(v)
+            } else {
+                None
+            }
+        };
 
         let laps_total = {
             let t = read_i32(session, "SessionLapsTotal");
@@ -221,6 +250,10 @@ mod win {
             fuel_l,
             fuel_pct,
             laps_fuel,
+            fuel_max_l: fuel_max,
+            fuel_use_per_hour: fuel_use,
+            session_laps_remain,
+            session_time_remain,
             position,
             car_number: cache.car_number.clone(),
             lap,
@@ -636,9 +669,9 @@ mod win {
             } else if let Some(v) = kv(t, "LicString") {
                 d.license = unquote(v);
             } else if let Some(v) = kv(t, "CarClassColor") {
-                // Often an int color; keep as hex if parseable.
+                // iRacing packs RGB in the low 24 bits (sometimes with high bits set).
                 if let Ok(n) = v.parse::<u32>() {
-                    d.class_color = format!("#{n:06x}");
+                    d.class_color = format!("#{:06x}", n & 0x00FF_FFFF);
                 } else {
                     d.class_color = unquote(v);
                 }

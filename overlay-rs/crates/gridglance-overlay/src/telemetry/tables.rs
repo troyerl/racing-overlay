@@ -476,6 +476,21 @@ pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     }
     frame.radar_left = frame.radar.left;
     frame.radar_right = frame.radar.right;
+
+    // Rebuild fuel snapshot from live frame fields + CFG.
+    let inp = crate::telemetry::FuelInputs {
+        level: frame.fuel_l,
+        fuel_pct: frame.fuel_pct,
+        fuel_max: frame.fuel_max_l,
+        lap: frame.lap,
+        last_lap_s: frame.last_lap_s,
+        lap_est: frame.lap_est_time,
+        laps_remain: frame.session_laps_remain,
+        time_remain: frame.session_time_remain,
+        fuel_use_per_hour: frame.fuel_use_per_hour,
+        laps_total: frame.laps_total,
+    };
+    frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 }
 
 fn enrich_slots(frame: &TelemetryFrame, slots: &mut TableSlots, section: &str) {

@@ -40,7 +40,7 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "map" => (920, 280, 360, 360),
         "dash" => (40, 580, 520, 160),
         "laptime_log" => (580, 580, 320, 220),
-        "fuel_calc" => (40, 760, 280, 200),
+        "fuel_calc" => (440, 500, 460, 380),
         "inputs" => (340, 760, 280, 160),
         "delta_bar" => (640, 760, 280, 120),
         "flags" => (940, 660, 220, 100),
@@ -194,6 +194,23 @@ impl OverlayConfig {
             self.global_str("units", "metric").to_ascii_lowercase().as_str(),
             "imperial" | "us" | "mph"
         )
+    }
+
+    /// Litres → display units (L or US gal).
+    pub fn conv_fuel(&self, litres: f32) -> f32 {
+        if self.imperial_units() {
+            litres * 0.264_172_05
+        } else {
+            litres
+        }
+    }
+
+    pub fn fuel_unit(&self) -> &'static str {
+        if self.imperial_units() {
+            "Gal"
+        } else {
+            "L"
+        }
     }
 
     /// Global `text_scale` × per-section `text_scale` (Python `text_scale_for`).
@@ -354,6 +371,18 @@ fn default_colors() -> Map<String, Value> {
         ("badge_empty_border", "#ffffff28"),
         ("pro_name", "#f5c542"),
         ("pro_badge", "#f5c542"),
+        ("strip_none", "#333a42"),
+        ("strip_window", "#46df7a"),
+        ("strip_now", "#ffd23a"),
+        ("pill_open", "#46df7a"),
+        ("pill_closed", "#6e747d"),
+        ("pill_text", "#06210f"),
+        ("add_text", "#f4f6f8"),
+        ("gauge_fill", "#f4f6f8"),
+        ("gauge_bg", "#0b0e12"),
+        ("box_value", "#f4f6f8"),
+        ("box_warn", "#e23b3b"),
+        ("header", "#8b93a1"),
     ];
     let mut colors = Map::new();
     for (k, v) in PAIRS {
@@ -481,6 +510,26 @@ fn default_cfg() -> Value {
             section.insert("show_name".into(), Value::Bool(true));
             section.insert("highlight_player".into(), Value::Bool(true));
             section.insert("row_height_px".into(), json!(0));
+        }
+        if *key == "fuel_calc" {
+            section.insert("title".into(), Value::String("FUEL CALCULATOR".into()));
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("show_pill".into(), Value::Bool(true));
+            section.insert("show_add".into(), Value::Bool(true));
+            section.insert("show_gauge".into(), Value::Bool(true));
+            section.insert("show_stats".into(), Value::Bool(true));
+            section.insert("show_strip".into(), Value::Bool(true));
+            section.insert("show_time".into(), Value::Bool(true));
+            section.insert("show_laps".into(), Value::Bool(true));
+            section.insert("show_live_burn".into(), Value::Bool(false));
+            section.insert("show_tank_pct".into(), Value::Bool(false));
+            section.insert("show_low_fuel_alert".into(), Value::Bool(true));
+            section.insert("history_laps".into(), json!(10));
+            section.insert("low_fuel_laps_threshold".into(), json!(2.0));
+            section.insert("low_fuel_time_threshold".into(), json!(120.0));
+            section.insert("max_row_height_frac".into(), json!(0.14));
+            section.insert("stats_header_font_scale".into(), json!(1.0));
+            section.insert("stats_row_font_scale".into(), json!(1.0));
         }
         m.insert((*key).into(), Value::Object(section));
     }

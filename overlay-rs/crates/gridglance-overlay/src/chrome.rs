@@ -152,23 +152,42 @@ pub fn draw_row_tint(ui: &mut Ui, rect: Rect, accent: Color32) {
         CornerRadius::same(2),
         color_with_alpha(accent, edge_a),
     );
-    // Approximate a horizontal gradient with non-overlapping strips that fade to 0.
-    let stops = [(0.0, 0.42), (0.35, 0.22), (0.72, 0.08), (1.0, 0.0)];
+
+    // True horizontal gradient (Python QLinearGradient stops).
+    let stops = [(0.0_f32, 0.42_f32), (0.35, 0.22), (0.72, 0.08), (1.0, 0.0)];
+    let mut mesh = egui::Mesh::default();
     for w in stops.windows(2) {
         let (f0, s0) = w[0];
         let (f1, s1) = w[1];
-        let scale = (s0 + s1) * 0.5;
-        if scale <= 0.001 {
-            continue;
-        }
         let x0 = rect.left() + rect.width() * f0;
         let x1 = rect.left() + rect.width() * f1;
-        ui.painter().rect_filled(
-            Rect::from_min_max(Pos2::new(x0, rect.top()), Pos2::new(x1, rect.bottom())),
-            CornerRadius::ZERO,
-            color_with_alpha(accent, (accent.a() as f32 * scale) as u8),
-        );
+        let c0 = color_with_alpha(accent, (accent.a() as f32 * s0) as u8);
+        let c1 = color_with_alpha(accent, (accent.a() as f32 * s1) as u8);
+        let i = mesh.vertices.len() as u32;
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(x0, rect.top()),
+            uv: egui::epaint::WHITE_UV,
+            color: c0,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(x1, rect.top()),
+            uv: egui::epaint::WHITE_UV,
+            color: c1,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(x1, rect.bottom()),
+            uv: egui::epaint::WHITE_UV,
+            color: c1,
+        });
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: Pos2::new(x0, rect.bottom()),
+            uv: egui::epaint::WHITE_UV,
+            color: c0,
+        });
+        mesh.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
     }
+    ui.painter().add(egui::Shape::mesh(mesh));
+
     let rim = color_with_alpha(accent, ((accent.a() as f32) * 0.55) as u8);
     let inset = rect.shrink(0.5);
     ui.painter().line_segment(

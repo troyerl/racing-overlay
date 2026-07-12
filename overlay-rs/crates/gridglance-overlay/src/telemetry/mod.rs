@@ -2,9 +2,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod fuel;
 mod irsdk;
 mod tables;
 
+pub use fuel::{build_fuel_snapshot, FuelCalcState, FuelInputs, FuelScenario};
 pub use irsdk::IrsdkReader;
 pub use tables::{finalize_frame, RadarState, TableRow, TableSlots};
 
@@ -113,6 +115,13 @@ pub struct TelemetryFrame {
     pub radio_name: Option<String>,
     /// Active radio transmitter row (Python radio_tower `rows[0]`).
     pub radio: Option<RadioSpeaker>,
+    /// Fuel calculator snapshot (Python fuel_calc `set_data`).
+    pub fuel: FuelCalcState,
+    /// DriverCarFuelMaxLtr when known.
+    pub fuel_max_l: f32,
+    pub fuel_use_per_hour: f32,
+    pub session_laps_remain: Option<f32>,
+    pub session_time_remain: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -313,6 +322,10 @@ pub mod demo {
                 radio_name: radio.as_ref().map(|r| r.name.clone()),
                 radio,
                 cars,
+                fuel_max_l: fuel_l / 0.55,
+                fuel_use_per_hour: 48.0,
+                session_laps_remain: Some(37.5),
+                session_time_remain: Some(3300.0 - t as f32 * 0.5),
                 ..Default::default()
             }
         }
