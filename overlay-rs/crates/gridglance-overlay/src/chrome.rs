@@ -7,6 +7,65 @@ pub fn panel_pad(h: f32) -> f32 {
     (h * 0.06).clamp(6.0, 14.0)
 }
 
+fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    Color32::from_rgba_premultiplied(
+        lerp_u8(a.r(), b.r(), t),
+        lerp_u8(a.g(), b.g(), t),
+        lerp_u8(a.b(), b.b(), t),
+        lerp_u8(a.a(), b.a(), t),
+    )
+}
+
+/// Smooth vertical `top`→`bottom` fill with rounded corners (Python QLinearGradient parity).
+///
+/// Uses many thin rounded bands so there is no hard mid-panel seam (unlike the old
+/// two-rect approximation) while preserving top/bottom corner radii.
+fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
+    const BANDS: usize = 24;
+    let r = radius
+        .min(rect.height() * 0.5)
+        .min(rect.width() * 0.5)
+        .max(0.0);
+    let ru = r.round().clamp(0.0, 255.0) as u8;
+    let h = rect.height().max(1.0);
+
+    for i in 0..BANDS {
+        let t0 = i as f32 / BANDS as f32;
+        let t1 = (i + 1) as f32 / BANDS as f32;
+        let y0 = rect.top() + h * t0;
+        let y1 = rect.top() + h * t1;
+        // Slight overlap avoids hairline gaps between bands.
+        let band = Rect::from_min_max(
+            Pos2::new(rect.left(), y0),
+            Pos2::new(rect.right(), (y1 + 0.5).min(rect.bottom())),
+        );
+        let col = lerp_color(top, bottom, (t0 + t1) * 0.5);
+        let cr = if i == 0 {
+            CornerRadius {
+                nw: ru,
+                ne: ru,
+                sw: 0,
+                se: 0,
+            }
+        } else if i + 1 == BANDS {
+            CornerRadius {
+                nw: 0,
+                ne: 0,
+                sw: ru,
+                se: ru,
+            }
+        } else {
+            CornerRadius::ZERO
+        };
+        ui.painter().rect_filled(band, cr, col);
+    }
+}
+
 pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> (Rect, f32) {
     let h = rect.height();
     let radius = (h * cfg.f64_key(section, "corner_radius_frac", 0.08) as f32).max(8.0);
@@ -14,19 +73,10 @@ pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) ->
     let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
     let border = cfg.color(section, "border", "#ffffff28");
 
-    // Vertical gradient via two rects (simple approximation).
-    let mid = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
-    let low = Rect::from_min_max(Pos2::new(rect.min.x, rect.center().y), rect.max);
-    ui.painter().rect_filled(mid, CornerRadius::same(radius as u8), top);
-    ui.painter().rect_filled(low, CornerRadius {
-        nw: 0,
-        ne: 0,
-        sw: radius as u8,
-        se: radius as u8,
-    }, bottom);
+    fill_vertical_gradient(ui, rect, radius, top, bottom);
     ui.painter().rect_stroke(
         rect,
-        CornerRadius::same(radius as u8),
+        CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8),
         Stroke::new(1.0_f32, border),
         egui::StrokeKind::Inside,
     );
@@ -75,22 +125,10 @@ pub fn draw_panel_rect(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Re
     let radius = (rect.width().min(rect.height()) * frac).max(6.0);
     let top = cfg.color(section, "bg_top", "#1b1f26f2");
     let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
-    let mid = Rect::from_min_max(rect.min, Pos2::new(rect.max.x, rect.center().y));
-    let low = Rect::from_min_max(Pos2::new(rect.min.x, rect.center().y), rect.max);
-    ui.painter().rect_filled(mid, CornerRadius::same(radius as u8), top);
-    ui.painter().rect_filled(
-        low,
-        CornerRadius {
-            nw: 0,
-            ne: 0,
-            sw: radius as u8,
-            se: radius as u8,
-        },
-        bottom,
-    );
+    fill_vertical_gradient(ui, rect, radius, top, bottom);
     ui.painter().rect_stroke(
         rect,
-        CornerRadius::same(radius as u8),
+        CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8),
         Stroke::new(1.0_f32, cfg.color(section, "border", "#ffffff28")),
         egui::StrokeKind::Inside,
     );
