@@ -2,8 +2,9 @@
 
 #[cfg(windows)]
 mod win {
-    use crate::telemetry::{CarRow, TelemetryFrame};
+    use crate::telemetry::{CarRow, RadarState, TelemetryFrame};
     use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
+    use std::collections::HashMap;
 
     // SessionFlags bits (match overlay/app.py)
     const FLAG_CHECKERED: i32 = 0x0000_0001;
@@ -23,6 +24,22 @@ mod win {
     const FLAG_FURLED: i32 = 0x0008_0000;
     const FLAG_REPAIR: i32 = 0x0010_0000;
 
+    // TrackSurface
+    const TRK_ON_TRACK: i32 = 3;
+    const TRK_IN_PIT_STALL: i32 = 1;
+    const TRK_APPROACHING_PITS: i32 = 2;
+
+    #[derive(Clone, Default)]
+    struct DriverInfo {
+        car_idx: i32,
+        name: String,
+        car_number: String,
+        irating: i32,
+        license: String,
+        class_color: String,
+        is_pace_car: bool,
+    }
+
     #[derive(Default)]
     struct SessionCache {
         update: i32,
@@ -33,6 +50,7 @@ mod win {
         track_name: Option<String>,
         redline: f32,
         laps_total: i32,
+        drivers: HashMap<i32, DriverInfo>,
     }
 
     pub struct IrsdkReader {
@@ -124,6 +142,14 @@ mod win {
         let air_temp = read_f32_opt(session, "AirTemp");
         let track_temp = read_f32_opt(session, "TrackTempCrew")
             .or_else(|| read_f32_opt(session, "TrackTemp"));
+        let lap_est = {
+            let v = read_f32(session, "LapEstTime");
+            if v > 10.0 {
+                v
+            } else {
+                90.0
+            }
+        };
 
         let position = player_position(session, cache.player_idx);
         let sf = read_i32(session, "SessionFlags");
@@ -141,9 +167,15 @@ mod win {
         };
 
         let abs_active = read_bool(session, "BrakeABSactive");
-        let (radar_left, radar_right) = car_left_right(session);
-
-        let cars = car_rows(session, cache.player_idx);
+        let (left, right, left2, right2) = car_left_right(session);
+        let cars = car_rows(session, cache);
+        let radar = RadarState {
+            left,
+            right,
+            left2,
+            right2,
+            ..Default::default()
+        };
         let fuel_use = read_f32(session, "FuelUsePerHour");
         let laps_fuel = if fuel_use > 0.05 && last_lap > 10.0 {
             (fuel_l / (fuel_use / 3600.0 * last_lap)).max(0.0)
@@ -195,10 +227,12 @@ mod win {
             track_temp,
             air_temp,
             player_lap_dist_pct: lap_dist,
+            lap_est_time: lap_est,
             track_id: cache.track_id,
             track_name: cache.track_name.clone(),
-            radar_left,
-            radar_right,
+            radar: radar.clone(),
+            radar_left: left,
+            radar_right: right,
             cars,
             ..Default::default()
         }
@@ -258,21 +292,23 @@ mod win {
         None
     }
 
-    unsafe fn car_left_right(session: &Session) -> (bool, bool) {
+    unsafe fn car_left_right(session: &Session) -> (bool, bool, bool, bool) {
         let Some(var) = session.find_var("CarLeftRight") else {
-            return (false, false);
+            return (false, false, false, false);
         };
         match session.value::<flags::CarLeftRight>(&var) {
             Ok(v) => {
                 use flags::CarLeftRight::*;
                 match v {
-                    CarLeft | TwoCarsLeft => (true, false),
-                    CarRight | TwoCarsRight => (false, true),
-                    CarLeftRight => (true, true),
-                    _ => (false, false),
+                    CarLeft => (true, false, false, false),
+                    CarRight => (false, true, false, false),
+                    CarLeftRight => (true, true, false, false),
+                    TwoCarsLeft => (true, false, true, false),
+                    TwoCarsRight => (false, true, false, true),
+                    _ => (false, false, false, false),
                 }
             }
-            Err(_) => (false, false),
+            Err(_) => (false, false, false, false),
         }
     }
 
@@ -295,59 +331,157 @@ mod win {
         0
     }
 
-    unsafe fn car_rows(session: &Session, player_idx: i32) -> Vec<CarRow> {
-        let Some(Value::Floats(pcts)) = session
-            .find_var("CarIdxLapDistPct")
-            .map(|v| session.var_value(&v))
-        else {
+    unsafe fn float_arr(session: &Session, name: &str) -> Option<Vec<f32>> {
+        match session.find_var(name).map(|v| session.var_value(&v)) {
+            Some(Value::Floats(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    unsafe fn int_arr(session: &Session, name: &str) -> Option<Vec<i32>> {
+        match session.find_var(name).map(|v| session.var_value(&v)) {
+            Some(Value::Ints(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    unsafe fn bool_arr(session: &Session, name: &str) -> Option<Vec<bool>> {
+        match session.find_var(name).map(|v| session.var_value(&v)) {
+            Some(Value::Bools(a)) => Some(a),
+            _ => None,
+        }
+    }
+
+    unsafe fn car_rows(session: &Session, cache: &SessionCache) -> Vec<CarRow> {
+        let Some(pcts) = float_arr(session, "CarIdxLapDistPct") else {
             return Vec::new();
         };
-        let on_pit = session
-            .find_var("CarIdxOnPitRoad")
-            .map(|v| session.var_value(&v));
-        let positions = session
-            .find_var("CarIdxPosition")
-            .map(|v| session.var_value(&v));
+        let on_pit = bool_arr(session, "CarIdxOnPitRoad");
+        let positions = int_arr(session, "CarIdxPosition");
+        let class_pos = int_arr(session, "CarIdxClassPosition");
+        let est = float_arr(session, "CarIdxEstTime");
+        let f2 = float_arr(session, "CarIdxF2Time");
+        let laps = int_arr(session, "CarIdxLap");
+        let surface = int_arr(session, "CarIdxTrackSurface");
+        let player_idx = cache.player_idx;
+        let player_lap = laps
+            .as_ref()
+            .and_then(|a| a.get(player_idx as usize).copied())
+            .unwrap_or(0);
 
         let mut out = Vec::new();
         for (i, &pct) in pcts.iter().enumerate() {
-            if !pct.is_finite() || pct < 0.0 {
-                continue;
+            let di = cache.drivers.get(&(i as i32));
+            if di.map(|d| d.is_pace_car).unwrap_or(false) {
+                // Still include pace car marked so builders can skip.
             }
-            // Skip empty slots (often -1 pct or zero with no car)
-            if pct == 0.0 && i as i32 != player_idx {
-                // still include if they have a position
-                let pos = match &positions {
-                    Some(Value::Ints(a)) => a.get(i).copied().unwrap_or(0),
-                    _ => 0,
-                };
-                if pos <= 0 {
+            let pos = positions
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0)
+                .max(0);
+            let cpos = class_pos
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(pos)
+                .max(0);
+            let pit = on_pit
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(false);
+            let surf = surface
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(-1);
+            let on_track = surf == TRK_ON_TRACK;
+            let in_pit = pit
+                || surf == TRK_IN_PIT_STALL
+                || surf == TRK_APPROACHING_PITS;
+            let est_t = est
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0.0);
+            let f2_t = f2
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0.0);
+            let car_lap = laps
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0);
+
+            // Skip empty world slots.
+            let has_driver = di.is_some();
+            if !pct.is_finite() || pct < 0.0 {
+                if !has_driver || pos <= 0 {
                     continue;
                 }
             }
-            let pos = match &positions {
-                Some(Value::Ints(a)) => a.get(i).copied().unwrap_or(0),
-                _ => 0,
+            if pct == 0.0 && i as i32 != player_idx && pos <= 0 && !has_driver {
+                continue;
+            }
+            if !has_driver && pos <= 0 && !on_track && !in_pit && i as i32 != player_idx {
+                continue;
+            }
+
+            let (name, number, ir, lic, class_color, is_pace) = if let Some(d) = di {
+                (
+                    d.name.clone(),
+                    d.car_number.clone(),
+                    d.irating,
+                    d.license.clone(),
+                    d.class_color.clone(),
+                    d.is_pace_car,
+                )
+            } else {
+                (
+                    format!("Car {i}"),
+                    format!("{i}"),
+                    0,
+                    String::new(),
+                    String::new(),
+                    false,
+                )
             };
-            let pit = match &on_pit {
-                Some(Value::Bools(a)) => a.get(i).copied().unwrap_or(false),
-                _ => false,
+
+            let lap_delta = if player_lap > 0 && car_lap > 0 {
+                car_lap - player_lap
+            } else {
+                0
             };
+            let lapping = lap_delta != 0;
+            let lap_ahead = lap_delta > 0;
+
             out.push(CarRow {
                 car_idx: i as i32,
-                position: pos.max(0),
-                class_position: pos.max(0),
-                car_number: format!("{}", i),
-                name: format!("Car {i}"),
+                position: pos,
+                class_position: cpos,
+                car_number: number,
+                name,
                 gap: String::new(),
                 last_lap: String::new(),
                 best_lap: String::new(),
-                irating: 0,
-                license: String::new(),
+                irating: ir,
+                irating_delta: None,
+                license: lic,
+                class_color,
                 on_pit: pit,
+                in_pit,
+                on_track,
                 is_player: i as i32 == player_idx,
                 is_speaking: false,
-                lap_dist_pct: pct.fract().abs(),
+                is_pace_car: is_pace,
+                lapping,
+                lap_ahead,
+                inactive: !on_track && !in_pit && pos > 0,
+                lap_dist_pct: if pct.is_finite() && pct >= 0.0 {
+                    pct.fract().abs()
+                } else {
+                    -1.0
+                },
+                est_time: if est_t.is_finite() { est_t } else { 0.0 },
+                f2_time: if f2_t.is_finite() { f2_t } else { 0.0 },
+                lap: car_lap.max(0),
             });
         }
         out
@@ -383,6 +517,110 @@ mod win {
                 cache.laps_total = v;
             }
         }
+        cache.drivers = parse_drivers(yaml);
+        if let Some(d) = cache.drivers.get(&cache.player_idx) {
+            if !d.car_number.is_empty() {
+                cache.car_number = d.car_number.clone();
+            }
+            if d.irating > 0 {
+                cache.irating = d.irating;
+            }
+        }
+    }
+
+    /// Parse `DriverInfo: Drivers:` list entries from session YAML.
+    fn parse_drivers(yaml: &str) -> HashMap<i32, DriverInfo> {
+        let mut out = HashMap::new();
+        let mut in_drivers = false;
+        let mut cur: Option<DriverInfo> = None;
+
+        let flush = |cur: &mut Option<DriverInfo>, out: &mut HashMap<i32, DriverInfo>| {
+            if let Some(d) = cur.take() {
+                if d.car_idx >= 0 {
+                    out.insert(d.car_idx, d);
+                }
+            }
+        };
+
+        for line in yaml.lines() {
+            let raw = line;
+            let t = raw.trim();
+            if t.starts_with("Drivers:") {
+                in_drivers = true;
+                continue;
+            }
+            if in_drivers {
+                // Leaving Drivers section when a top-level key appears (no indent).
+                if !raw.is_empty()
+                    && !raw.starts_with(' ')
+                    && !raw.starts_with('\t')
+                    && t.contains(':')
+                    && !t.starts_with('-')
+                {
+                    flush(&mut cur, &mut out);
+                    in_drivers = false;
+                    continue;
+                }
+            }
+            if !in_drivers {
+                continue;
+            }
+            if t.starts_with("- CarIdx:") || t.starts_with("-CarIdx:") {
+                flush(&mut cur, &mut out);
+                let mut d = DriverInfo::default();
+                if let Some(rest) = t.split_once(':').map(|(_, r)| r.trim()) {
+                    d.car_idx = rest.parse().unwrap_or(-1);
+                }
+                cur = Some(d);
+                continue;
+            }
+            if t.starts_with("- ") && t.contains("CarIdx:") {
+                flush(&mut cur, &mut out);
+                let mut d = DriverInfo::default();
+                if let Some(rest) = t.split("CarIdx:").nth(1) {
+                    d.car_idx = rest.trim().parse().unwrap_or(-1);
+                }
+                cur = Some(d);
+                continue;
+            }
+            let Some(d) = cur.as_mut() else { continue };
+            if let Some(v) = kv(t, "CarIdx") {
+                d.car_idx = v.parse().unwrap_or(d.car_idx);
+            } else if let Some(v) = kv(t, "UserName") {
+                d.name = unquote(v);
+            } else if let Some(v) = kv(t, "AbbrevName") {
+                if d.name.is_empty() {
+                    d.name = unquote(v);
+                }
+            } else if let Some(v) = kv(t, "CarNumber") {
+                d.car_number = unquote(v);
+            } else if let Some(v) = kv(t, "IRating") {
+                d.irating = v.parse().unwrap_or(0);
+            } else if let Some(v) = kv(t, "LicString") {
+                d.license = unquote(v);
+            } else if let Some(v) = kv(t, "CarClassColor") {
+                // Often an int color; keep as hex if parseable.
+                if let Ok(n) = v.parse::<u32>() {
+                    d.class_color = format!("#{n:06x}");
+                } else {
+                    d.class_color = unquote(v);
+                }
+            } else if let Some(v) = kv(t, "CarIsPaceCar") {
+                d.is_pace_car = v == "1" || v.eq_ignore_ascii_case("true");
+            }
+        }
+        flush(&mut cur, &mut out);
+        out
+    }
+
+    fn kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+        let needle = format!("{key}:");
+        let t = line.trim();
+        t.strip_prefix(&needle).map(|r| r.trim())
+    }
+
+    fn unquote(s: &str) -> String {
+        s.trim().trim_matches('"').to_string()
     }
 
     fn yaml_i32(yaml: &str, key: &str) -> Option<i32> {

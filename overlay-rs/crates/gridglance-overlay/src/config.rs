@@ -408,6 +408,57 @@ fn default_cfg() -> Value {
         section.insert("delta_bar_range".into(), json!(1.0));
         section.insert("show_irating_projection".into(), Value::Bool(true));
         section.insert("irating_abbreviate".into(), Value::Bool(false));
+        // Table / radar defaults (Python parity) so demo works without a full CFG dump.
+        if *key == "relative" || *key == "standings" {
+            section.insert("rows_ahead".into(), json!(if *key == "relative" { 3 } else { 4 }));
+            section.insert("rows_behind".into(), json!(if *key == "relative" { 3 } else { 5 }));
+            section.insert("center_on_player".into(), Value::Bool(true));
+            section.insert("show_footer".into(), Value::Bool(true));
+            section.insert("row_ease_tau".into(), json!(0.16));
+            section.insert("alt_row_shading".into(), Value::Bool(true));
+            section.insert("row_dividers".into(), Value::Bool(true));
+            section.insert("name_font_bold".into(), Value::Bool(true));
+            section.insert("gap_font_scale".into(), json!(1.12));
+            section.insert(
+                "column_order".into(),
+                json!(["badge", "position", "name", "license", "irating", "gap"]),
+            );
+            section.insert("columns".into(), json!({ "stripe": true }));
+            if *key == "standings" {
+                section.insert("rows".into(), json!(10));
+                section.insert("pin_podium".into(), Value::Bool(false));
+                section.insert("title".into(), Value::String("Standings".into()));
+            }
+        }
+        if *key == "radar" {
+            section.insert("show_panel".into(), Value::Bool(false));
+            section.insert("show_front".into(), Value::Bool(true));
+            section.insert("show_rear".into(), Value::Bool(true));
+            section.insert("show_axis".into(), Value::Bool(true));
+            section.insert("show_nose".into(), Value::Bool(true));
+            section.insert("range_pct".into(), json!(0.03));
+            section.insert("alongside_zone_pct".into(), json!(0.004));
+            section.insert("side_span_pct".into(), json!(0.0045));
+            section.insert("ease_side_tau".into(), json!(0.10));
+            section.insert("ease_glow_tau".into(), json!(0.13));
+            section.insert(
+                "sizes".into(),
+                json!({
+                    "car_w": 0.13,
+                    "car_h": 0.20,
+                    "bar_h": 0.78,
+                    "glow_w": 0.17,
+                    "nose_len": 0.16
+                }),
+            );
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("car".into(), Value::String("#f4f6f8".into()));
+                colors.insert("axis".into(), Value::String("#ffffff28".into()));
+                colors.insert("nose".into(), Value::String("#f4f6f8".into()));
+                colors.insert("red".into(), Value::String("#ff5050".into()));
+                colors.insert("yellow".into(), Value::String("#ffd23a".into()));
+            }
+        }
         m.insert((*key).into(), Value::Object(section));
     }
     m.insert("start_overlay_on_launch".into(), Value::Bool(false));

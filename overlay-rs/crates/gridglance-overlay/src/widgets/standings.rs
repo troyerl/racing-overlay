@@ -1,12 +1,13 @@
-use super::WidgetCtx;
 use super::table::paint_table;
+use super::WidgetCtx;
 
 pub fn paint(ui: &mut egui::Ui, ctx: &mut WidgetCtx<'_>) {
     paint_table(
         ui,
         ctx.cfg,
         "standings",
-        &ctx.cfg.str_key("standings", "title", "STANDINGS"),
-        &ctx.frame.cars,
+        &ctx.frame.standings_cars,
+        &ctx.frame.standings_slots,
+        false,
     );
 }

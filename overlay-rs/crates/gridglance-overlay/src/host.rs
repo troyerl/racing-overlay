@@ -3,7 +3,7 @@
 use crate::config::WIDGET_KEYS;
 use crate::layered;
 use crate::state::{PanelLayout, StateHandle};
-use crate::telemetry::{demo::DemoFeed, IrsdkReader};
+use crate::telemetry::{demo::DemoFeed, finalize_frame, IrsdkReader};
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
 use eframe::egui::{self, Sense, ViewportBuilder, ViewportId};
@@ -40,13 +40,15 @@ impl OverlayApp {
             return;
         }
         self.last_tick = Instant::now();
-        let frame = if let Some(demo) = &self.demo {
+        let mut frame = if let Some(demo) = &self.demo {
             demo.tick()
         } else if let Some(ir) = &mut self.irsdk {
             ir.tick()
         } else {
             return;
         };
+        let cfg = Arc::clone(&self.state.read().config);
+        finalize_frame(&mut frame, cfg.as_ref());
         self.state.write().frame = Arc::new(frame);
     }
 }

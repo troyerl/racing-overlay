@@ -3,7 +3,10 @@
 use serde::{Deserialize, Serialize};
 
 mod irsdk;
+mod tables;
+
 pub use irsdk::IrsdkReader;
+pub use tables::{finalize_frame, RadarState, TableRow, TableSlots};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CarRow {
@@ -16,11 +19,24 @@ pub struct CarRow {
     pub last_lap: String,
     pub best_lap: String,
     pub irating: i32,
+    pub irating_delta: Option<i32>,
     pub license: String,
+    pub class_color: String,
     pub on_pit: bool,
+    pub in_pit: bool,
+    pub on_track: bool,
     pub is_player: bool,
     pub is_speaking: bool,
+    pub is_pace_car: bool,
+    pub lapping: bool,
+    pub lap_ahead: bool,
+    pub inactive: bool,
     pub lap_dist_pct: f32,
+    /// CarIdxEstTime (seconds into estimated lap).
+    pub est_time: f32,
+    /// CarIdxF2Time (gap-to-leader style clock).
+    pub f2_time: f32,
+    pub lap: i32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -74,9 +90,18 @@ pub struct TelemetryFrame {
     pub ers_pct: Option<f32>,
     pub ers_mode: Option<String>,
     pub cars: Vec<CarRow>,
+    /// Pre-built relative / standings views (Python `set_data` rows).
+    pub relative_cars: Vec<TableRow>,
+    pub relative_slots: TableSlots,
+    pub standings_cars: Vec<TableRow>,
+    pub standings_slots: TableSlots,
     pub player_lap_dist_pct: f32,
+    /// Estimated lap duration for EstTime wrap (LapEstTime).
+    pub lap_est_time: f32,
     pub track_id: Option<i32>,
     pub track_name: Option<String>,
+    pub radar: RadarState,
+    /// Legacy mirrors of `radar.left` / `radar.right`.
     pub radar_left: bool,
     pub radar_right: bool,
     pub sector_times: Vec<Option<f64>>,
@@ -112,9 +137,14 @@ pub mod demo {
 
         pub fn tick(&self) -> TelemetryFrame {
             let t = self.start.elapsed().as_secs_f64();
+            let lap_est = 90.0_f32;
+            let player_i = 3i32;
             let mut cars = Vec::new();
             for i in 0..12 {
                 let pct = ((t * 0.03 + i as f64 * 0.08) % 1.0) as f32;
+                let est = (pct * lap_est + (t as f32 * 0.15)) % lap_est;
+                let f2 = i as f32 * 0.85;
+                let licenses = ["A 4.12", "B 3.80", "A 2.99", "A 3.50", "C 2.10", "B 4.00"];
                 cars.push(CarRow {
                     car_idx: i,
                     position: i + 1,
@@ -124,22 +154,54 @@ pub mod demo {
                     gap: if i == 0 {
                         "—".into()
                     } else {
-                        format!("+{:.1}", i as f64 * 0.42)
+                        format!("+{:.1}", f2)
                     },
                     last_lap: "1:28.442".into(),
                     best_lap: "1:27.901".into(),
                     irating: 1800 + i * 50,
-                    license: "A".into(),
+                    irating_delta: if i == player_i { Some(-28) } else { None },
+                    license: licenses[i as usize % licenses.len()].into(),
+                    class_color: "#2f6bd8".into(),
                     on_pit: i == 5,
-                    is_player: i == 3,
+                    in_pit: i == 5,
+                    on_track: i != 5,
+                    is_player: i == player_i,
                     is_speaking: i == 2 && ((t as i32) % 4 == 0),
+                    is_pace_car: false,
+                    lapping: i == 8,
+                    lap_ahead: false,
+                    inactive: false,
                     lap_dist_pct: pct,
+                    est_time: est,
+                    f2_time: f2,
+                    lap: 12 + (i % 3),
                 });
             }
-            // ~70% redline so green/yellow shift ticks are visible; throttle lit.
+
+            // Animate a car sliding past on the left, then right.
+            let phase = (t * 0.35) % 6.0;
+            let mut radar = RadarState::default();
+            if phase < 2.0 {
+                radar.left = true;
+                radar.left2 = phase > 1.2;
+                radar.left_pos = ((phase / 2.0) * 2.0 - 1.0) as f32;
+            } else if phase < 4.0 {
+                radar.right = true;
+                radar.right2 = phase > 3.2;
+                radar.right_pos = (1.0 - ((phase - 2.0) / 2.0) * 2.0) as f32;
+            }
+            // Front/rear closeness pulses.
+            let pulse = ((t * 0.8).sin() as f32 * 0.5 + 0.5).clamp(0.0, 1.0);
+            if (t as i32 % 5) < 2 {
+                radar.ahead = Some(pulse * 0.85);
+            }
+            if (t as i32 % 7) < 2 {
+                radar.behind = Some((1.0 - pulse) * 0.7);
+            }
+
             let rpm = 5600.0 + (t * 0.6).sin() as f32 * 400.0;
-            let speed_mps = 147.0 / 2.236_936_3; // ~147 mph
-            let fuel_l = 15.5 / 0.264_172_05; // ~15.5 Gal
+            let speed_mps = 147.0 / 2.236_936_3;
+            let fuel_l = 15.5 / 0.264_172_05;
             TelemetryFrame {
                 connected: true,
                 session_time: t,
@@ -160,7 +222,7 @@ pub mod demo {
                 fuel_l,
                 fuel_pct: 0.55,
                 laps_fuel: 37.5,
-                position: 8,
+                position: 4,
                 car_number: "48".into(),
                 lap: 2,
                 laps_total: 50,
@@ -189,11 +251,13 @@ pub mod demo {
                 chan_latency: Some(28.0),
                 ers_pct: Some(62.0),
                 ers_mode: Some("Balanced".into()),
-                player_lap_dist_pct: cars[3].lap_dist_pct,
+                player_lap_dist_pct: cars[player_i as usize].lap_dist_pct,
+                lap_est_time: lap_est,
                 track_id: Some(1),
                 track_name: Some("Demo Circuit".into()),
-                radar_left: (t as i32 % 7) < 2,
-                radar_right: (t as i32 % 11) < 2,
+                radar: radar.clone(),
+                radar_left: radar.left,
+                radar_right: radar.right,
                 sector_times: vec![Some(28.1), Some(31.4), None],
                 lap_log: vec![
                     LapLogRow {
@@ -222,6 +286,7 @@ pub mod demo {
                     None
                 },
                 cars,
+                ..Default::default()
             }
         }
     }

@@ -114,6 +114,14 @@ pub fn label(
     ui.painter().text(pos, align, text, font, color);
 }
 
+pub fn ease(cur: f32, target: f32, dt: f32, tau: f32) -> f32 {
+    if !tau.is_finite() || tau <= 1e-6 {
+        return target;
+    }
+    let a = (1.0 - (-dt / tau).exp()).clamp(0.0, 1.0);
+    cur + (target - cur) * a
+}
+
 /// Allocate the full available rect and return it (for custom painting).
 pub fn full_rect(ui: &mut Ui) -> Rect {
     let size = ui.available_size();
