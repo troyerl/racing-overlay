@@ -47,6 +47,11 @@ tracks/                # track shape files keyed by iRacing TrackID
 # Default: Rust widgets + Python settings (if binary built)
 python run.py --demo
 
+# Live iRacing (Windows): rebuild Rust overlay, then start without --demo
+#   cargo build --release -p gridglance-overlay
+#   python run.py --rust --start
+# See overlay-rs/README.md for details (IRSDK memmap; preset show flags).
+
 # Legacy PyQt overlay
 python run.py --python --demo
 

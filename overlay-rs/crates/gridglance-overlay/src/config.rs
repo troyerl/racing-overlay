@@ -349,11 +349,26 @@ fn default_colors() -> Map<String, Value> {
 }
 
 /// Minimal defaults so widgets render without a full Python DEFAULTS dump.
+/// `show` flags must match Python `config.DEFAULTS` so sparse preset merges work.
+fn default_show(key: &str) -> bool {
+    !matches!(
+        key,
+        "tire_panel"
+            | "pit_board"
+            | "weather_panel"
+            | "leaderboard_strip"
+            | "radio_tower"
+            | "ers_hybrid"
+            | "system_panel"
+            | "pit_advisor"
+    )
+}
+
 fn default_cfg() -> Value {
     let mut m = Map::new();
     for key in WIDGET_KEYS {
         let mut section = Map::new();
-        section.insert("show".into(), Value::Bool(true));
+        section.insert("show".into(), Value::Bool(default_show(key)));
         section.insert("corner_radius_frac".into(), json!(0.08));
         section.insert("colors".into(), Value::Object(default_colors()));
         section.insert(
@@ -419,5 +434,30 @@ mod tests {
         deep_merge(&mut a, &json!({"flags": {"show": false}}));
         assert_eq!(a["flags"]["show"], false);
         assert_eq!(a["flags"]["colors"]["text"], "#fff");
+    }
+
+    #[test]
+    fn sparse_preset_merge_matches_python_show_semantics() {
+        let mut cfg = default_cfg();
+        // Sparse patch: hide dash (diff from DEFAULTS). weather_panel omitted —
+        // must stay false like Python DEFAULTS, not flip true.
+        deep_merge(
+            &mut cfg,
+            &json!({
+                "dash": { "show": false },
+                "map": { "show": true },
+            }),
+        );
+        let oc = OverlayConfig {
+            cfg,
+            doc: json!({}),
+            generation: 0,
+            active_preset: "Default".into(),
+        };
+        assert!(!oc.widget_shown("dash"));
+        assert!(oc.widget_shown("map"));
+        assert!(!oc.widget_shown("weather_panel"));
+        assert!(!oc.widget_shown("pit_advisor"));
+        assert!(oc.widget_shown("standings")); // Python default true, not patched
     }
 }

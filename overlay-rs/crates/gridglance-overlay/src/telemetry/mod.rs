@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod irsdk;
+pub use irsdk::IrsdkReader;
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CarRow {
     pub car_idx: i32,
@@ -220,24 +223,6 @@ pub mod demo {
                 },
                 cars,
             }
-        }
-    }
-}
-
-/// Placeholder IRSDK reader — returns disconnected until Windows shared-memory
-/// binding is wired. Demo mode uses [`demo::DemoFeed`] instead.
-pub struct IrsdkReader;
-
-impl IrsdkReader {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub fn tick(&mut self) -> TelemetryFrame {
-        TelemetryFrame {
-            connected: false,
-            redline: 8000.0,
-            ..Default::default()
         }
     }
 }

@@ -27,6 +27,7 @@ windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
 ] }
+iracing-telem = "0.2.1"
 
 [dev-dependencies]
 approx = "0.5"

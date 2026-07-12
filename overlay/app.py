@@ -5915,6 +5915,11 @@ def _main_rust() -> int:
         edit_mode=not click_through,
         running=start_now,
     )
+    # Push full live CFG (not sparse disk merge) so show flags match Settings.
+    try:
+        remote.apply_config(config.CFG)
+    except OverlayIpcError:
+        pass
     if start_now:
         try:
             remote.start_overlay()

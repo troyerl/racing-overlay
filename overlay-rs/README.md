@@ -21,6 +21,31 @@ cargo run -p gridglance-overlay -- --demo --no-clickthrough
 
 IPC listens on `127.0.0.1:19847` (newline-delimited JSON-RPC).
 
+## Run with live iRacing (Windows)
+
+1. Build a release binary on Windows:
+
+```bash
+cd overlay-rs
+cargo build --release -p gridglance-overlay
+```
+
+2. Start iRacing (enable memory telemetry: `irsdkEnableMem=1` in `app.ini` if needed).
+
+3. From the repo root, launch the hybrid stack **without** `--demo`:
+
+```bash
+python run.py --rust --start
+```
+
+Python settings + Rust widgets; live IRSDK fills the dash. Widget `show` flags come from your preset (full `CFG` is pushed over IPC on launch).
+
+Demo feed (no sim):
+
+```bash
+python run.py --rust --demo
+```
+
 ## Launch from Python
 
 ```bash
