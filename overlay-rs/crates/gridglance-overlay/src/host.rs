@@ -7,6 +7,7 @@ use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
 use eframe::egui::{self, ViewportBuilder, ViewportId};
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Instant;
 
 pub struct OverlayApp {
@@ -40,7 +41,7 @@ impl OverlayApp {
         } else {
             return;
         };
-        self.state.write().frame = frame;
+        self.state.write().frame = Arc::new(frame);
     }
 }
 
@@ -61,7 +62,7 @@ impl eframe::App for OverlayApp {
                 if !st.running {
                     break;
                 }
-                if !st.config.widget_shown(key) && !st.edit_mode {
+                if !st.config.widget_shown(key) {
                     continue;
                 }
                 let lay = st
@@ -131,16 +132,16 @@ impl eframe::App for OverlayApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(vp_ctx, |ui| {
-                        // Snapshot under read lock — never hold write across paint
-                        // so the IPC thread can service overlay.start / map edits.
+                        // Cheap Arc clones under a brief read lock — never deep-clone
+                        // CFG while holding the lock (keeps IPC responsive).
                         let (cfg, frame, mut map) = {
                             let st = state.read();
-                            (st.config.clone(), st.frame.clone(), st.map.clone())
+                            (Arc::clone(&st.config), Arc::clone(&st.frame), st.map.clone())
                         };
                         {
                             let mut wctx = WidgetCtx {
-                                cfg: &cfg,
-                                frame: &frame,
+                                cfg: cfg.as_ref(),
+                                frame: frame.as_ref(),
                                 edit_mode,
                                 map: &mut map,
                             };

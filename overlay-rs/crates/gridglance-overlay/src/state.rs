@@ -44,8 +44,8 @@ impl Default for PanelLayout {
 }
 
 pub struct SharedState {
-    pub config: OverlayConfig,
-    pub frame: TelemetryFrame,
+    pub config: Arc<OverlayConfig>,
+    pub frame: Arc<TelemetryFrame>,
     pub running: bool,
     pub edit_mode: bool,
     pub click_through: bool,
@@ -115,8 +115,8 @@ impl SharedState {
             }
         }
         Self {
-            config,
-            frame: TelemetryFrame::default(),
+            config: Arc::new(config),
+            frame: Arc::new(TelemetryFrame::default()),
             running: true,
             edit_mode: !click_through,
             click_through,

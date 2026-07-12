@@ -138,14 +138,6 @@ impl OverlayConfig {
         self.generation = self.generation.saturating_add(1);
     }
 
-    pub fn reload(&mut self) -> Result<()> {
-        let next = Self::load()?;
-        let gen = self.generation.saturating_add(1);
-        *self = next;
-        self.generation = gen;
-        Ok(())
-    }
-
     pub fn color(&self, section: &str, key: &str, fallback: &str) -> egui::Color32 {
         let raw = self
             .section(section)

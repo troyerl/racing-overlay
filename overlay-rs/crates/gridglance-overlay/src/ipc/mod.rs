@@ -1,5 +1,6 @@
 //! Local TCP JSON-RPC server for Python settings.
 
+use crate::config::OverlayConfig;
 use crate::state::StateHandle;
 use anyhow::Result;
 use gridglance_ipc::{
@@ -10,7 +11,11 @@ use gridglance_ipc::{
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
+
+const LOCK_WAIT: Duration = Duration::from_millis(100);
 
 pub fn spawn(state: StateHandle, port: u16) -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
@@ -73,29 +78,51 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                 .unwrap_or(Value::Null),
             )
         }
-        methods::CONFIG_RELOAD => match state.write().config.reload() {
-            Ok(()) => Response::ok(id, json!({"generation": state.read().config.generation})),
-            Err(e) => Response::err(id, e.to_string()),
-        },
+        methods::CONFIG_RELOAD => {
+            // Load from disk outside the lock, then swap Arc under a short write.
+            match OverlayConfig::load() {
+                Ok(mut next) => match state.try_write_for(LOCK_WAIT) {
+                    Some(mut st) => {
+                        let gen = st.config.generation.saturating_add(1);
+                        next.generation = gen;
+                        st.config = Arc::new(next);
+                        Response::ok(id, json!({"generation": gen}))
+                    }
+                    None => Response::err(id, "busy"),
+                },
+                Err(e) => Response::err(id, e.to_string()),
+            }
+        }
         methods::CONFIG_APPLY => {
             let params: ConfigApplyParams = serde_json::from_value(req.params).unwrap_or_default();
-            let mut st = state.write();
-            if !params.cfg.is_null() {
-                st.config.apply_cfg_patch(&params.cfg);
+            match state.try_write_for(LOCK_WAIT) {
+                Some(mut st) => {
+                    let cfg = Arc::make_mut(&mut st.config);
+                    if !params.cfg.is_null() {
+                        cfg.apply_cfg_patch(&params.cfg);
+                    }
+                    if let Some(g) = params.generation {
+                        cfg.generation = g;
+                    }
+                    Response::ok(id, json!({"generation": cfg.generation}))
+                }
+                None => Response::err(id, "busy"),
             }
-            if let Some(g) = params.generation {
-                st.config.generation = g;
+        }
+        methods::OVERLAY_START => match state.try_write_for(LOCK_WAIT) {
+            Some(mut st) => {
+                st.running = true;
+                Response::ok(id, json!({"running": true}))
             }
-            Response::ok(id, json!({"generation": st.config.generation}))
-        }
-        methods::OVERLAY_START => {
-            state.write().running = true;
-            Response::ok(id, json!({"running": true}))
-        }
-        methods::OVERLAY_STOP => {
-            state.write().running = false;
-            Response::ok(id, json!({"running": false}))
-        }
+            None => Response::err(id, "busy"),
+        },
+        methods::OVERLAY_STOP => match state.try_write_for(LOCK_WAIT) {
+            Some(mut st) => {
+                st.running = false;
+                Response::ok(id, json!({"running": false}))
+            }
+            None => Response::err(id, "busy"),
+        },
         methods::OVERLAY_SET_EDIT_MODE => {
             let params: OverlayModeParams =
                 serde_json::from_value(req.params).unwrap_or_default();

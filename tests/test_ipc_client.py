@@ -170,3 +170,19 @@ def test_timeout_closes_and_reconnects():
     result = client.ping()
     assert result["generation"] == 1
     client.close()
+
+
+def test_apply_config_does_not_reload(qapp):
+    """Live apply must not config.reload() (that undoes unsaved show flags)."""
+    port = 19896
+    methods: list[str] = []
+
+    def handler(req):
+        methods.append(req["method"])
+        return {"id": req["id"], "ok": True, "result": {"generation": 1}}
+
+    _serve_once(handler, port)
+    remote = RemoteOverlay(OverlayIpcClient(port=port, timeout=2.0))
+    remote.apply_config({"map": {"show": True}, "dash": {"show": False}})
+    assert methods == ["config.apply"]
+    assert "config.reload" not in methods

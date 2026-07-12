@@ -220,8 +220,23 @@ class RemoteOverlay:
         return bool(self._running)
 
     def start_overlay(self) -> None:
-        self.ipc.overlay_start()
-        self._running = True
+        import time
+
+        last_err: OverlayIpcError | None = None
+        for attempt in range(3):
+            try:
+                # Fresh TCP so a half-open peer cannot eat the request.
+                self.ipc.close()
+                self.ipc.overlay_start()
+                self._running = True
+                return
+            except OverlayIpcError as exc:
+                last_err = exc
+                if attempt < 2:
+                    time.sleep(0.15 * (attempt + 1))
+        self._running = False
+        assert last_err is not None
+        raise last_err
 
     def stop_overlay(self) -> None:
         try:
@@ -242,11 +257,9 @@ class RemoteOverlay:
         self._edit_mode = enabled
 
     def apply_config(self, cfg: dict) -> None:
+        # Apply live CFG only — do not config.reload() afterward (that reloads
+        # from disk and undoes unsaved show flags / live edits).
         self.ipc.config_apply(cfg)
-        try:
-            self.ipc.config_reload()
-        except OverlayIpcError:
-            pass
 
     # --- Track Scan / authoring ------------------------------------------
 
