@@ -3524,16 +3524,23 @@ class ConfigEditor(QWidget):
         save_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         save_btn.clicked.connect(self._save_demo_track_admin)
         v.addWidget(save_btn)
-        if self._overlay is not None:
-            self._overlay._track_sync.app_settingsFetched.connect(
+        sync = self._overlay_track_sync()
+        if sync is not None:
+            sync.app_settingsFetched.connect(
                 self._on_demo_track_settings_fetched)
-            self._overlay._track_sync.app_settingsSaved.connect(
+            sync.app_settingsSaved.connect(
                 self._on_demo_track_settings_saved)
-            self._overlay._track_sync.fetch_app_settings_async()
+            sync.fetch_app_settings_async()
         else:
             cached = track_store.load_app_settings_cache(paths.tracks_dir())
             self._update_demo_track_status(cached)
         return card
+
+    def _overlay_track_sync(self):
+        """TrackSync on the overlay, or None when missing (Rust remote stub)."""
+        if self._overlay is None:
+            return None
+        return getattr(self._overlay, "_track_sync", None)
 
     def refresh_demo_track_admin(self, settings=None) -> None:
         self._update_demo_track_status(settings)
@@ -3567,8 +3574,9 @@ class ConfigEditor(QWidget):
     def _on_demo_track_settings_saved(self, ok: bool) -> None:
         if ok:
             self._flash("Shared demo track saved")
-            if self._overlay is not None:
-                self._overlay._track_sync.fetch_app_settings_async()
+            sync = self._overlay_track_sync()
+            if sync is not None:
+                sync.fetch_app_settings_async()
         else:
             self._flash("Demo track save failed")
 
@@ -3605,7 +3613,9 @@ class ConfigEditor(QWidget):
             self._overlay._shared_demo_track_id = str(tid)
             if self._overlay.demo:
                 self._overlay._load_demo_track()
-            self._overlay._track_sync.fetch_app_settings_async()
+            sync = self._overlay_track_sync()
+            if sync is not None:
+                sync.fetch_app_settings_async()
             settings = merged
         self._update_demo_track_status(settings)
         self._on_demo_track_settings_saved(True)
@@ -3792,7 +3802,9 @@ class ConfigEditor(QWidget):
                 self._overlay.tracks_dir, patch)
             self._overlay._pro_drivers = track_store.normalize_pro_drivers(
                 drivers)
-            self._overlay._track_sync.fetch_app_settings_async()
+            sync = self._overlay_track_sync()
+            if sync is not None:
+                sync.fetch_app_settings_async()
             self._load_pro_drivers_into_ui(merged)
         else:
             track_store.merge_app_settings_cache(paths.tracks_dir(), patch)

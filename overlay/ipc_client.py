@@ -196,8 +196,20 @@ class RemoteOverlay:
         self._pro_drivers: list = []
         self._shared_demo_track_id: str | None = None
         self._settings_window = None
-        # Lazy / optional cloud sync — settings pages guard with hasattr.
-        self._track_sync = None
+        # Same cloud sync object ConfigEditor expects on the Python HUD.
+        from . import track_store
+        self._track_sync = track_store.TrackSync()
+        self._track_sync.app_settingsFetched.connect(self._on_app_settings_fetched)
+
+    def _on_app_settings_fetched(self, settings) -> None:
+        """Mirror shared demo-track / pro-driver cache from cloud settings."""
+        from . import track_store
+        if not settings:
+            return
+        tid = settings.get("demo_track_id")
+        self._shared_demo_track_id = str(tid) if tid is not None else None
+        self._pro_drivers = track_store.normalize_pro_drivers(
+            settings.get("pro_drivers") or [])
 
     # --- overlay start / edit (required by ConfigEditor) -----------------
 

@@ -8,6 +8,7 @@ import threading
 from typing import Callable
 
 import pytest
+from PyQt6.QtWidgets import QApplication
 
 from overlay.ipc_client import (
     DEFAULT_PORT,
@@ -15,6 +16,14 @@ from overlay.ipc_client import (
     OverlayIpcError,
     RemoteOverlay,
 )
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    app = QApplication.instance()
+    if app is None:
+        app = QApplication([])
+    return app
 
 
 def _serve_once(handler: Callable[[dict], dict], port: int) -> threading.Thread:
@@ -72,7 +81,7 @@ def test_error_raises():
     client.close()
 
 
-def test_remote_overlay_map_api():
+def test_remote_overlay_map_api(qapp):
     port = 19892
     seen = {}
 
@@ -88,7 +97,7 @@ def test_remote_overlay_map_api():
     assert seen["params"]["enabled"] is True
 
 
-def test_remote_overlay_hud_api():
+def test_remote_overlay_hud_api(qapp):
     """ConfigEditor requires these methods without hasattr guards."""
     port = 19893
     calls: list[str] = []
@@ -108,3 +117,12 @@ def test_remote_overlay_hud_api():
     assert remote.toggle_overlay() is True
     assert remote.overlay_running() is True
     assert "overlay.start" in calls
+
+
+def test_remote_overlay_track_sync(qapp):
+    """ConfigEditor demo-track admin connects app_settingsFetched on this."""
+    remote = RemoteOverlay(OverlayIpcClient(port=19999, timeout=0.1))
+    sync = remote._track_sync
+    assert sync is not None
+    assert hasattr(sync, "app_settingsFetched")
+    assert callable(sync.fetch_app_settings_async)
