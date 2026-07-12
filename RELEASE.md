@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.67.4 - 2026-07-11
+
+- **Fix: telemetry crash.** `slot_in_use` accepts multiple header/footer keys
+  again, so checking weather / incident limit / race split together no longer
+  TypeErrors every tick.
+
 ## 1.67.3 - 2026-07-11
 
 - **Import drivers from results.** Professional drivers and driver-group members

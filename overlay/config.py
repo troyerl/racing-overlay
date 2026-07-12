@@ -2217,9 +2217,11 @@ def table_slot_items(section: str) -> set:
     return items
 
 
-def slot_in_use(key: str, sections=("relative", "standings")) -> bool:
-    """True if any table currently displays the given header/footer item."""
-    return any(key in table_slot_items(s) for s in sections)
+def slot_in_use(*keys: str, sections=("relative", "standings")) -> bool:
+    """True if any table displays any of the given header/footer items."""
+    if not keys:
+        return False
+    return any(key in table_slot_items(s) for s in sections for key in keys)
 
 
 def units() -> str:
