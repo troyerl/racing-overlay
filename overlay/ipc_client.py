@@ -261,6 +261,20 @@ class RemoteOverlay:
         # from disk and undoes unsaved show flags / live edits).
         self.ipc.config_apply(cfg)
 
+    def apply_active_preset(self) -> None:
+        """Push the active preset's full CFG + window layout to the Rust overlay."""
+        from . import config
+
+        try:
+            self.apply_config(config.CFG)
+            for key, geom in (config.active_layout() or {}).items():
+                if not geom or len(geom) != 4:
+                    continue
+                x, y, w, h = (int(geom[0]), int(geom[1]), int(geom[2]), int(geom[3]))
+                self.ipc.layout_set(key, x, y, w, h)
+        except OverlayIpcError:
+            pass
+
     # --- Track Scan / authoring ------------------------------------------
 
     def set_pit_edit_mode(self, enabled: bool, phase: str = "road",

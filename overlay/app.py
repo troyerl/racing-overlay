@@ -5915,9 +5915,10 @@ def _main_rust() -> int:
         edit_mode=not click_through,
         running=start_now,
     )
+    config.on_preset_change(lambda _name: remote.apply_active_preset())
     # Push full live CFG (not sparse disk merge) so show flags match Settings.
     try:
-        remote.apply_config(config.CFG)
+        remote.apply_active_preset()
     except OverlayIpcError:
         pass
     if start_now:

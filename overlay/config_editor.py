@@ -2967,6 +2967,13 @@ class ConfigEditor(QWidget):
         self._refresh_preset_cars()
         self._refresh_preset_leagues()
         self._update_default_toggle()
+        # Rust overlay: push new show flags + layout (Python OverlayApp does this
+        # via on_preset_change → _apply_visibility / _apply_layout).
+        apply = getattr(self._overlay, "apply_active_preset", None)
+        if callable(apply):
+            apply()
+        elif callable(getattr(self._overlay, "apply_config", None)):
+            self._sync_overlay_live(notify=False)
         self._flash(msg)
 
     def _change_preset(self) -> None:
