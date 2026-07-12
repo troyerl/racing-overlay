@@ -172,13 +172,14 @@ def test_on_pit_stays_on_pit_path_across_sf_gap(qapp):
     w.pit_in_pct = 0.10
     w.pit_out_pct = 0.50
     w.pit_span = (0.15, 0.98)  # S/F hole: 0.98 .. 0.15
+    rlo, rhi = w._pit_lane_mapping_interval()
     for pct in (0.99, 0.001, 0.05):
         assert not w._pct_in_interval(pct, *w.pit_span)
         assert not w._pct_in_interval(pct, w.pit_in_pct, w.pit_span[0])
         routed = w._pos_for_schematic_route(
             0, pct, on_route=True, on_pit_road=True, raw=True)
         assert routed is not None, pct
-        expected = w._pit_path_pos_for_route_pct(pct, w.pit_in_pct, w.pit_out_pct)
+        expected = w._pit_path_pos_for_route_pct(pct, rlo, rhi)
         assert expected is not None
         assert routed == expected
 
@@ -197,15 +198,41 @@ def test_entry_phase_uses_pit_in_segment(qapp):
 
 
 def test_lane_phase_uses_pit_path_segment(qapp):
-    """Mid-lane lap-% maps through pit_path only."""
+    """Mid-lane lap-% maps through pit_path only (lane mapping interval)."""
     w = _make_chicagoland_like_widget()
-    route_lo, route_hi = w.pit_in_pct, w.pit_out_pct
-    span = (route_hi - route_lo) % 1.0
-    pct = (route_lo + span * 0.5) % 1.0
-    raw = w._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
+    lane_lo, lane_hi = w._pit_lane_mapping_interval()
+    span = (lane_hi - lane_lo) % 1.0
+    pct = (lane_lo + span * 0.5) % 1.0
+    assert not w._pct_in_interval(pct, w.pit_in_pct, w.pit_span[0])
+    raw = w._pit_path_pos_for_route_pct(pct, lane_lo, lane_hi)
     routed = w._pos_for_schematic_route(0, pct, on_route=True, on_pit_road=True)
     assert raw is not None and routed is not None
     assert routed == raw
+
+
+def test_on_pit_not_pinned_at_path_end_mid_lane(qapp):
+    """Mid OnPitRoad must not sit at pit_path[-1] (route-interval clamp bug)."""
+    import math
+
+    w = _make_widget()
+    # Wide route window + short pit path previously clamped t→1 early.
+    w.pit_in_pct = 0.02
+    w.pit_out_pct = 0.80
+    w.pit_span = (0.15, 0.70)
+    w.pit_in = [(0.05, 0.48), w.pit_path[0]]
+    lane_lo, lane_hi = w._pit_lane_mapping_interval()
+    span = (lane_hi - lane_lo) % 1.0
+    pct = (lane_lo + span * 0.35) % 1.0
+    assert not w._pct_in_interval(pct, w.pit_in_pct, w.pit_span[0])
+    routed = w._pos_for_schematic_route(
+        0, pct, on_route=True, on_pit_road=True, raw=True)
+    start = w.pit_path[0]
+    end = w.pit_path[-1]
+    assert routed is not None
+    ds = math.hypot(routed[0] - start[0], routed[1] - start[1])
+    de = math.hypot(routed[0] - end[0], routed[1] - end[1])
+    assert de > 0.05
+    assert ds < de
 
 
 def test_entry_feather_starts_on_track(qapp):

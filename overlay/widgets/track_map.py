@@ -1539,7 +1539,7 @@ class TrackMapWidget(QWidget):
         *,
         lane: int = 1,
     ) -> tuple[float, float] | None:
-        """Place on pit_path using route lap-% order (pit_in → pit_out)."""
+        """Place on pit_path for a lap-% interval (even progress along the path)."""
         pit_in, pit_path, pit_out, pit_in_pct, pit_out_pct, pit_span, speed_pct = (
             self._pit_lane_saved_geom(lane))
         if not pit_path or len(pit_path) < 2:
@@ -1548,17 +1548,12 @@ class TrackMapWidget(QWidget):
         if span_pct <= 1e-6:
             return None
         linear = ((pct - lo) % 1.0) / span_pct
-        segments = [pit_path]
-        pit_arc = self._pit_arc_length(segments)
-        loop_arc = self._loop_arc_between(lo, hi)
-        scale = speed_pct
-        if pit_arc > 1e-9 and loop_arc > 1e-9:
-            t = min(1.0, max(0.0, linear * (loop_arc / pit_arc) * scale))
-        else:
-            t = min(1.0, max(0.0, linear * scale))
+        # Map the interval evenly onto pit_path. Do not scale by loop_arc/pit_arc
+        # — that clamps t→1 early on ovals and pins dots at the pit-road end.
+        t = min(1.0, max(0.0, linear * speed_pct))
         if self._pit_path_needs_reverse(lane):
             t = 1.0 - t
-        return self._pos_on_polyline_chain(segments, t)
+        return self._pos_on_polyline_chain([pit_path], t)
 
     def _loop_pct_at(self, pt) -> float | None:
         """Lap fraction of the nearest point on the main loop."""
@@ -1691,7 +1686,9 @@ class TrackMapWidget(QWidget):
 
         # Pit lane: while OnPitRoad (after entry blend), always use pit_path.
         if on_pit_road and pit_path and len(pit_path) >= 2:
-            rlo, rhi = route_lo, route_hi
+            rlo, rhi = self._pit_lane_mapping_interval(pit_lane)
+            if rlo is None or rhi is None:
+                rlo, rhi = route_lo, route_hi
             if rlo is None or rhi is None:
                 rlo = lo if lo is not None else lane_lo
                 rhi = hi if hi is not None else lane_hi

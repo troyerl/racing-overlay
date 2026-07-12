@@ -99,7 +99,8 @@ def _make_chicagoland_wide_span_widget():
     w.pit_in_pct = v1["pit_in_pct"]
     w.pit_out_pct = v1["pit_out_pct"]
     w.pit_span = tuple(v1["pit_span"])
-    w.pit_in = [tuple(p) for p in v1["pit_in"]]
+    pit_in = v1.get("pit_in") or []
+    w.pit_in = [tuple(p) for p in pit_in] if len(pit_in) >= 2 else None
     w.pit_path = [tuple(p) for p in v1["pit_path"]]
     w.pit_out = [tuple(p) for p in v1["pit_out"]]
     return w
@@ -113,8 +114,8 @@ def test_mid_pit_stays_on_path_not_exit_blend(qapp):
     exit_pct = lane_hi
     assert w._pct_in_interval(pct, lane_lo, lane_hi)
     assert w._pct_in_interval(pct, exit_pct, w.pit_out_pct)
-    route_lo, route_hi = w._pit_route_mapping_interval()
-    on_path = w._pit_path_pos_for_route_pct(pct, route_lo, route_hi)
+    map_lo, map_hi = w._pit_lane_mapping_interval()
+    on_path = w._pit_path_pos_for_route_pct(pct, map_lo, map_hi)
     routed = w._pos_for_schematic_route(
         0, pct, on_route=True, on_pit_road=True)
     exit_pos = w._pit_phase_pos(
@@ -132,6 +133,8 @@ def _make_chicagoland_manual_pit_widget():
     w.pit_in_pct = 0.84
     w.pit_out_pct = 0.35
     w.pit_span = (0.86, 0.95)
+    # Entry handoff so reversed pit_path still resolves toward pit entry.
+    w.pit_in = [(0.82, 0.48), w.pit_path[0]]
     return w
 
 

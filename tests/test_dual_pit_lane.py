@@ -75,8 +75,8 @@ def test_schematic_placement_uses_lane2_route(qapp):
         car, MagicMock(), 0.0, True,
     )
     assert pt is not None
-    lane2_mid = w._pit_path_pos_for_route_pct(
-        0.6, hud._pit_in_pct_2, hud._pit_out_pct_2, lane=2)
+    map_lo, map_hi = w._pit_lane_mapping_interval(2)
+    lane2_mid = w._pit_path_pos_for_route_pct(0.6, map_lo, map_hi, lane=2)
     assert lane2_mid is not None
     assert math.hypot(pt.x() - lane2_mid[0], pt.y() - lane2_mid[1]) < 0.05
 

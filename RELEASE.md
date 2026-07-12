@@ -5,6 +5,11 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.67.5 - 2026-07-11
+
+- **Fix: pit-lane map dots.** Cars on pit road move along the full pit polyline
+  instead of sticking at the end (lane mapping + even path progress).
+
 ## 1.67.4 - 2026-07-11
 
 - **Fix: telemetry crash.** `slot_in_use` accepts multiple header/footer keys
