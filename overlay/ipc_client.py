@@ -25,7 +25,7 @@ class OverlayIpcClient:
     """Thread-safe thin client. Reconnects on demand."""
 
     def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
-                 timeout: float = 2.0):
+                 timeout: float = 5.0):
         self.host = host
         self.port = port
         self.timeout = timeout
@@ -80,7 +80,7 @@ class OverlayIpcClient:
                     self._close_unlocked()
                     raise OverlayIpcError("overlay IPC connection closed")
                 resp = json.loads(raw.decode("utf-8"))
-            except (OSError, json.JSONDecodeError) as exc:
+            except (OSError, TimeoutError, json.JSONDecodeError) as exc:
                 self._close_unlocked()
                 raise OverlayIpcError(str(exc)) from exc
 

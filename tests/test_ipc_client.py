@@ -8,7 +8,7 @@ import threading
 from typing import Callable
 
 import pytest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QCoreApplication
 
 from overlay.ipc_client import (
     DEFAULT_PORT,
@@ -20,9 +20,10 @@ from overlay.ipc_client import (
 
 @pytest.fixture(scope="module")
 def qapp():
-    app = QApplication.instance()
+    """QObject/TrackSync needs a Qt app; Core is enough (no GUI)."""
+    app = QCoreApplication.instance()
     if app is None:
-        app = QApplication([])
+        app = QCoreApplication([])
     return app
 
 
@@ -126,3 +127,46 @@ def test_remote_overlay_track_sync(qapp):
     assert sync is not None
     assert hasattr(sync, "app_settingsFetched")
     assert callable(sync.fetch_app_settings_async)
+
+
+def test_timeout_closes_and_reconnects():
+    """A hung peer raises OverlayIpcError; the next call can reconnect."""
+    hang_port = 19894
+    ok_port = 19895
+
+    def hang() -> None:
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", hang_port))
+        srv.listen(1)
+        srv.settimeout(3.0)
+        try:
+            conn, _ = srv.accept()
+            with conn:
+                # Read the request but never reply — client should time out.
+                conn.makefile("rb").readline()
+                threading.Event().wait(2.0)
+        finally:
+            srv.close()
+
+    t = threading.Thread(target=hang, daemon=True)
+    t.start()
+
+    client = OverlayIpcClient(port=hang_port, timeout=0.3)
+    with pytest.raises(OverlayIpcError):
+        client.ping()
+    assert client._sock is None
+
+    def handler(req):
+        return {
+            "id": req["id"],
+            "ok": True,
+            "result": {"version": 1, "backend": "rust", "generation": 1},
+        }
+
+    _serve_once(handler, ok_port)
+    client.port = ok_port
+    client.timeout = 2.0
+    result = client.ping()
+    assert result["generation"] == 1
+    client.close()

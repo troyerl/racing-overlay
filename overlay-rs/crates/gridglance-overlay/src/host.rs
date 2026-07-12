@@ -131,19 +131,23 @@ impl eframe::App for OverlayApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(vp_ctx, |ui| {
-                        let (cfg, frame) = {
+                        // Snapshot under read lock — never hold write across paint
+                        // so the IPC thread can service overlay.start / map edits.
+                        let (cfg, frame, mut map) = {
                             let st = state.read();
-                            (st.config.clone(), st.frame.clone())
+                            (st.config.clone(), st.frame.clone(), st.map.clone())
                         };
                         {
-                            let mut st = state.write();
                             let mut wctx = WidgetCtx {
                                 cfg: &cfg,
                                 frame: &frame,
                                 edit_mode,
-                                map: &mut st.map,
+                                map: &mut map,
                             };
                             widgets::paint(ui, &key_clone, &mut wctx);
+                        }
+                        if key_clone == "map" {
+                            state.write().map = map;
                         }
 
                         // Drag to move in edit mode

@@ -2838,7 +2838,13 @@ class ConfigEditor(QWidget):
     def _toggle_overlay(self) -> None:
         if self._overlay is None:
             return
-        running = self._overlay.toggle_overlay()
+        from .ipc_client import OverlayIpcError
+        try:
+            running = self._overlay.toggle_overlay()
+        except OverlayIpcError as exc:
+            self._refresh_overlay_btn()
+            self._flash(f"Overlay IPC error: {exc}")
+            return
         self._refresh_overlay_btn()
         self._flash("Overlay started" if running else "Overlay stopped")
 
@@ -4100,7 +4106,11 @@ class ConfigEditor(QWidget):
 
     def closeEvent(self, event):  # noqa: N802
         if self._overlay is not None and hasattr(self._overlay, "set_corner_edit_mode"):
-            self._overlay.set_corner_edit_mode(False)
+            from .ipc_client import OverlayIpcError
+            try:
+                self._overlay.set_corner_edit_mode(False)
+            except OverlayIpcError:
+                pass
         # Stop pinning the live overlay to the edited profile; resume the
         # telemetry-driven context.
         config.set_preview_context(None)
@@ -4111,7 +4121,11 @@ class ConfigEditor(QWidget):
         if self.autosave_sw.isChecked():
             self._autosave()
         if self._overlay is not None:
-            self._overlay.stop_overlay()
+            from .ipc_client import OverlayIpcError
+            try:
+                self._overlay.stop_overlay()
+            except OverlayIpcError:
+                pass
         QApplication.instance().quit()
 
 
