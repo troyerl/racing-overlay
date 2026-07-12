@@ -6,7 +6,9 @@ const SECTION: &str = "radar";
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
-    draw_card(ui, ctx.cfg, SECTION, rect);
+    if ctx.cfg.bool_key(SECTION, "show_panel", false) {
+        draw_card(ui, ctx.cfg, SECTION, rect);
+    }
     let cx = rect.center().x;
     let cy = rect.center().y;
     let r = (rect.width().min(rect.height()) * 0.38).min(90.0);

@@ -1,7 +1,5 @@
 //! Live iRacing shared-memory reader (Windows). Non-Windows uses a stub.
 
-use super::TelemetryFrame;
-
 #[cfg(windows)]
 mod win {
     use crate::telemetry::{CarRow, TelemetryFrame};
@@ -488,8 +486,8 @@ impl IrsdkReader {
         Self
     }
 
-    pub fn tick(&mut self) -> TelemetryFrame {
-        TelemetryFrame {
+    pub fn tick(&mut self) -> super::TelemetryFrame {
+        super::TelemetryFrame {
             connected: false,
             redline: 8000.0,
             ..Default::default()

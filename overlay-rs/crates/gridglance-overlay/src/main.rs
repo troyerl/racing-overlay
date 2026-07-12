@@ -17,8 +17,10 @@ use clap::Parser;
 use gridglance_ipc::DEFAULT_IPC_PORT;
 use host::OverlayApp;
 
+const WINDOW_TITLE: &str = "GridGlance Overlay";
+
 #[derive(Parser, Debug)]
-#[command(name = "gridglance-overlay", about = "GridGlance race overlay (Rust)")]
+#[command(name = "gridglance-overlay", about = "GridGlance race overlay (egui)")]
 struct Args {
     /// Drive widgets from a built-in demo feed (no iRacing).
     #[arg(long)]
@@ -48,19 +50,26 @@ fn main() -> Result<()> {
 
     ipc::spawn(state.clone(), args.ipc_port)?;
 
+    let (vx, vy, vw, vh) = win_click::virtual_desktop_rect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("GridGlance Overlay")
-            .with_inner_size([280.0, 48.0])
-            .with_decorations(true)
-            .with_transparent(false)
-            .with_visible(true),
+            .with_title(WINDOW_TITLE)
+            .with_position(egui::pos2(vx as f32, vy as f32))
+            .with_inner_size([vw as f32, vh as f32])
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_always_on_top()
+            .with_taskbar(false)
+            .with_mouse_passthrough(click_through),
+        // Glow + no MSAA: needed for per-pixel transparency on Windows.
+        renderer: eframe::Renderer::Glow,
+        multisampling: 1,
         ..Default::default()
     };
 
     let demo = args.demo;
     eframe::run_native(
-        "GridGlance Overlay",
+        WINDOW_TITLE,
         options,
         Box::new(move |cc| {
             icons::install_fonts(&cc.egui_ctx);

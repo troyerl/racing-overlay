@@ -14,7 +14,9 @@ fn track_point(t: f32) -> Pos2 {
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let _tracks = paths::tracks_dir(); // keep path helper live for upcoming track JSON load
     let rect = full_rect(ui);
-    draw_card(ui, ctx.cfg, SECTION, rect);
+    if ctx.cfg.bool_key(SECTION, "show_panel", false) {
+        draw_card(ui, ctx.cfg, SECTION, rect);
+    }
     let pad = 12.0_f32;
     let plot = rect.shrink(pad);
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");

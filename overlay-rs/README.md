@@ -40,6 +40,12 @@ python run.py --rust --start
 
 Python settings + Rust widgets; live IRSDK fills the dash. Widget `show` flags come from your preset (full `CFG` is pushed over IPC on launch).
 
+The overlay uses one transparent, always-on-top window covering the virtual desktop (Glow renderer). Rounded-card alpha and radar/map with `show_panel` off should see through to the sim. Rebuild after pulling this change:
+
+```bash
+cargo build --release -p gridglance-overlay
+```
+
 Demo feed (no sim):
 
 ```bash
