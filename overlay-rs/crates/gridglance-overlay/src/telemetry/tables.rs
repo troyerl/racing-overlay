@@ -34,13 +34,19 @@ pub struct TableRow {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TableSlotItem {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TableSlots {
-    pub header_left: String,
-    pub header_center: String,
-    pub header_right: String,
-    pub footer_left: String,
-    pub footer_center: String,
-    pub footer_right: String,
+    pub header_left: TableSlotItem,
+    pub header_center: TableSlotItem,
+    pub header_right: TableSlotItem,
+    pub footer_left: TableSlotItem,
+    pub footer_center: TableSlotItem,
+    pub footer_right: TableSlotItem,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -518,7 +524,7 @@ fn slot_defaults(section: &str) -> [(&'static str, &'static str, &'static str); 
     }
 }
 
-/// Build header/footer strings from Settings `header` / `footer` maps.
+/// Build header/footer slot keys + values from Settings maps.
 pub fn build_table_slots(
     frame: &TelemetryFrame,
     cfg: &OverlayConfig,
@@ -528,24 +534,27 @@ pub fn build_table_slots(
     let defs = slot_defaults(section);
     let (hl, hc, hr) = defs[0];
     let (fl, fc, fr) = defs[1];
-    let fmt = |group: &str, pos: &str, default: &str| -> String {
+    let item = |group: &str, pos: &str, default: &str| -> TableSlotItem {
         let key = cfg.nested_str(section, group, pos, default);
         if key == "none" || key.is_empty() {
-            return String::new();
+            return TableSlotItem::default();
         }
-        format_slot_display(&key, frame, cfg, section, rows)
+        TableSlotItem {
+            value: format_slot_value(&key, frame, cfg, section, rows),
+            key,
+        }
     };
     TableSlots {
-        header_left: fmt("header", "left", hl),
-        header_center: fmt("header", "center", hc),
-        header_right: fmt("header", "right", hr),
-        footer_left: fmt("footer", "left", fl),
-        footer_center: fmt("footer", "center", fc),
-        footer_right: fmt("footer", "right", fr),
+        header_left: item("header", "left", hl),
+        header_center: item("header", "center", hc),
+        header_right: item("header", "right", hr),
+        footer_left: item("footer", "left", fl),
+        footer_center: item("footer", "center", fc),
+        footer_right: item("footer", "right", fr),
     }
 }
 
-fn slot_label(key: &str) -> &'static str {
+pub fn slot_label(key: &str) -> &'static str {
     match key {
         "sof" => "SOF",
         "class_sof" => "CSOF",
@@ -570,15 +579,6 @@ fn slot_label(key: &str) -> &'static str {
         "weather" => "WX",
         "track_wetness" => "WET",
         _ => "",
-    }
-}
-
-fn with_label(key: &str, value: &str) -> String {
-    let lead = slot_label(key);
-    if lead.is_empty() {
-        value.to_string()
-    } else {
-        format!("{lead} {value}")
     }
 }
 
@@ -787,20 +787,6 @@ fn format_slot_value(
         }
         _ => "—".into(),
     }
-}
-
-fn format_slot_display(
-    key: &str,
-    frame: &TelemetryFrame,
-    cfg: &OverlayConfig,
-    section: &str,
-    rows: &[TableRow],
-) -> String {
-    if key == "title" || key == "order_pill" || key == "count" || key == "track_name" {
-        return format_slot_value(key, frame, cfg, section, rows);
-    }
-    let val = format_slot_value(key, frame, cfg, section, rows);
-    with_label(key, &val)
 }
 
 /// Radar proximity + side fore/aft from CarLeftRight flags + LapDistPct.

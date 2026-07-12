@@ -8,7 +8,7 @@ mod tables;
 
 pub use fuel::{build_fuel_snapshot, FuelCalcState, FuelInputs, FuelScenario};
 pub use irsdk::IrsdkReader;
-pub use tables::{finalize_frame, RadarState, TableRow, TableSlots};
+pub use tables::{finalize_frame, RadarState, TableRow, TableSlotItem, TableSlots, slot_label};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CarRow {

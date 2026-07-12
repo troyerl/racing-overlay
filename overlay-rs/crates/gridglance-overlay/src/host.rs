@@ -1,16 +1,28 @@
 //! Multi-viewport egui host for overlay panels.
 
 use crate::config::WIDGET_KEYS;
+use crate::chrome::color_with_alpha;
 use crate::layered;
 use crate::state::{PanelLayout, StateHandle};
 use crate::telemetry::{demo::DemoFeed, finalize_frame, IrsdkReader};
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
-use eframe::egui::{self, Sense, ViewportBuilder, ViewportCommand, ViewportId};
+use eframe::egui::{self, CornerRadius, Pos2, Rect, Sense, Stroke, ViewportBuilder, ViewportCommand, ViewportId};
 use eframe::glow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+const MIN_PANEL_W: i32 = 90;
+const MIN_PANEL_H: i32 = 44;
+const RESIZE_GRIP: f32 = 28.0;
+
+struct ResizeDrag {
+    key: String,
+    origin_w: i32,
+    origin_h: i32,
+    start: Pos2,
+}
 
 pub struct OverlayApp {
     state: StateHandle,
@@ -21,6 +33,8 @@ pub struct OverlayApp {
     last_click_through: HashMap<String, bool>,
     /// Widget key currently being OS-dragged in edit mode.
     dragging: Arc<Mutex<Option<String>>>,
+    /// Active SE-corner resize in edit mode.
+    resizing: Arc<Mutex<Option<ResizeDrag>>>,
     gl: Option<Arc<glow::Context>>,
 }
 
@@ -34,6 +48,7 @@ impl OverlayApp {
             open_viewports: HashSet::new(),
             last_click_through: HashMap::new(),
             dragging: Arc::new(Mutex::new(None)),
+            resizing: Arc::new(Mutex::new(None)),
             gl,
         }
     }
@@ -104,6 +119,7 @@ impl eframe::App for OverlayApp {
                 self.last_click_through.remove(&key);
             }
             *self.dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            *self.resizing.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return;
         }
 
@@ -138,6 +154,7 @@ impl eframe::App for OverlayApp {
             let state = self.state.clone();
             let key_clone = key.clone();
             let dragging = Arc::clone(&self.dragging);
+            let resizing = Arc::clone(&self.resizing);
 
             ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
                 egui::CentralPanel::default()
@@ -161,29 +178,134 @@ impl eframe::App for OverlayApp {
                         }
 
                         if edit_mode {
-                            let resp = ui.interact(
-                                ui.max_rect(),
-                                ui.id().with("drag"),
-                                Sense::drag(),
+                            let full = ui.max_rect();
+                            let grip = Rect::from_min_max(
+                                Pos2::new(full.right() - RESIZE_GRIP, full.bottom() - RESIZE_GRIP),
+                                full.max,
                             );
-                            if resp.drag_started() {
-                                vp_ctx.send_viewport_cmd(ViewportCommand::StartDrag);
-                                *dragging.lock().unwrap_or_else(|e| e.into_inner()) =
-                                    Some(key_clone.clone());
+                            let accent = cfg.color(&key_clone, "accent", "#70df7a");
+
+                            // SE resize grip
+                            ui.painter().rect_filled(
+                                grip,
+                                CornerRadius::same(4),
+                                color_with_alpha(accent, 40),
+                            );
+                            // Grip lines
+                            for i in 0..3 {
+                                let t = 0.35 + i as f32 * 0.18;
+                                let a = Pos2::new(
+                                    grip.left() + grip.width() * t,
+                                    grip.bottom() - 4.0,
+                                );
+                                let b = Pos2::new(
+                                    grip.right() - 4.0,
+                                    grip.top() + grip.height() * t,
+                                );
+                                ui.painter().line_segment(
+                                    [a, b],
+                                    Stroke::new(1.5_f32, accent.gamma_multiply(0.85)),
+                                );
                             }
-                            if resp.drag_stopped() {
-                                if let Some(outer) = vp_ctx.input(|i| i.viewport().outer_rect) {
-                                    let mut st = state.write();
-                                    if let Some(lay) = st.layout.get_mut(&key_clone) {
-                                        lay.x = outer.min.x.round() as i32;
-                                        lay.y = outer.min.y.round() as i32;
-                                    }
-                                    st.save_layout();
-                                } else {
-                                    state.write().save_layout();
+
+                            let grip_resp =
+                                ui.interact(grip, ui.id().with("resize"), Sense::drag());
+                            if grip_resp.drag_started() {
+                                if let Some(pos) = grip_resp.interact_pointer_pos() {
+                                    let st = state.read();
+                                    let cur = st
+                                        .layout
+                                        .get(&key_clone)
+                                        .cloned()
+                                        .unwrap_or(PanelLayout::default());
+                                    *resizing.lock().unwrap_or_else(|e| e.into_inner()) =
+                                        Some(ResizeDrag {
+                                            key: key_clone.clone(),
+                                            origin_w: cur.w,
+                                            origin_h: cur.h,
+                                            start: pos,
+                                        });
                                 }
-                                *dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
                             }
+                            if grip_resp.dragged() {
+                                if let Some(pos) = grip_resp.interact_pointer_pos() {
+                                    let guard =
+                                        resizing.lock().unwrap_or_else(|e| e.into_inner());
+                                    if let Some(rd) = guard.as_ref() {
+                                        if rd.key == key_clone {
+                                            let dx = pos.x - rd.start.x;
+                                            let dy = pos.y - rd.start.y;
+                                            let nw = (rd.origin_w as f32 + dx)
+                                                .round()
+                                                .max(MIN_PANEL_W as f32)
+                                                as i32;
+                                            let nh = (rd.origin_h as f32 + dy)
+                                                .round()
+                                                .max(MIN_PANEL_H as f32)
+                                                as i32;
+                                            drop(guard);
+                                            let mut st = state.write();
+                                            let lay = st
+                                                .layout
+                                                .entry(key_clone.clone())
+                                                .or_insert_with(PanelLayout::default);
+                                            lay.w = nw;
+                                            lay.h = nh;
+                                        }
+                                    }
+                                }
+                            }
+                            if grip_resp.drag_stopped() {
+                                *resizing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                                state.write().save_layout();
+                            }
+
+                            // Move: full panel except when interacting with grip
+                            let ptr_in_grip = ui
+                                .input(|i| i.pointer.interact_pos())
+                                .map(|p| grip.contains(p))
+                                .unwrap_or(false);
+                            let resizing_this = resizing
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .as_ref()
+                                .map(|r| r.key == key_clone)
+                                .unwrap_or(false);
+                            if !ptr_in_grip && !resizing_this {
+                                let resp = ui.interact(
+                                    full,
+                                    ui.id().with("drag"),
+                                    Sense::drag(),
+                                );
+                                if resp.drag_started() {
+                                    vp_ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                                    *dragging.lock().unwrap_or_else(|e| e.into_inner()) =
+                                        Some(key_clone.clone());
+                                }
+                                if resp.drag_stopped() {
+                                    if let Some(outer) =
+                                        vp_ctx.input(|i| i.viewport().outer_rect)
+                                    {
+                                        let mut st = state.write();
+                                        if let Some(lay) = st.layout.get_mut(&key_clone) {
+                                            lay.x = outer.min.x.round() as i32;
+                                            lay.y = outer.min.y.round() as i32;
+                                        }
+                                        st.save_layout();
+                                    } else {
+                                        state.write().save_layout();
+                                    }
+                                    *dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                                }
+                            }
+
+                            // Light edit border
+                            ui.painter().rect_stroke(
+                                full.shrink(0.5),
+                                CornerRadius::same(4),
+                                Stroke::new(1.0_f32, accent.gamma_multiply(0.55)),
+                                egui::StrokeKind::Inside,
+                            );
                         }
                     });
 

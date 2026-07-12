@@ -15,10 +15,12 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("rpm", 0xF624),
     ("gear", 0xF013),
     ("position", 0xF292),
+    ("class_position", 0xF292),
     ("car_number", 0xF1B9),
     ("lap", 0xF11E),
     ("lap_count", 0xF11E),
     ("laps_left", 0xF11E),
+    ("laps_remain", 0xF11E),
     ("fuel", 0xF52F),
     ("fuel_laps", 0xF52F),
     ("fuel_stack", 0xF52F),
@@ -28,6 +30,7 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("cur_lap", 0xF2F2),
     ("delta", 0xF252),
     ("incidents", 0xF071),
+    ("incident_limit", 0xF071),
     ("track_temp", 0xF2C9),
     ("air_temp", 0xF72E),
     ("irating", 0xF201),
@@ -37,6 +40,25 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("league", 0xF0C0),
     ("flag", 0xF024),
     ("speaking", 0xF028),
+    // table header / footer
+    ("sof", 0xF0C0),
+    ("class_sof", 0xF0C0),
+    ("session_time", 0xF017),
+    ("race_time", 0xF017),
+    ("session_best", 0xF091),
+    ("my_session_best", 0xF2F2),
+    ("local_time", 0xF017),
+    ("sim_time", 0xF185),
+    ("cpu", 0xF2DB),
+    ("mem", 0xF538),
+    ("gpu", 0xF390),
+    ("weather", 0xF0C2),       // cloud
+    ("track_wetness", 0xF043), // droplet
+    ("fast_repairs", 0xF0AD),  // wrench
+    ("track_name", 0xF018),    // road
+    ("order_pill", 0xF0CB),
+    ("title", 0xF091),
+    ("count", 0xF0C0),
 ];
 
 pub fn install_fonts(ctx: &egui::Context) {
@@ -85,6 +107,26 @@ mod tests {
             "irating",
             "irating_up",
             "irating_down",
+        ] {
+            assert!(glyph(name).is_some(), "missing glyph {name}");
+        }
+    }
+
+    #[test]
+    fn codepoints_cover_table_slots() {
+        for name in [
+            "sof",
+            "class_sof",
+            "session_time",
+            "race_time",
+            "position",
+            "class_position",
+            "track_temp",
+            "air_temp",
+            "local_time",
+            "cpu",
+            "weather",
+            "track_wetness",
         ] {
             assert!(glyph(name).is_some(), "missing glyph {name}");
         }

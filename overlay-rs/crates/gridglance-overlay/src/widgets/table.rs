@@ -2,8 +2,9 @@
 
 use crate::chrome::{color_with_alpha, draw_card, draw_row_tint, ease, label, panel_pad};
 use crate::config::{parse_color_str, OverlayConfig};
-use crate::telemetry::{TableRow, TableSlots};
-use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
+use crate::icons;
+use crate::telemetry::{slot_label, TableRow, TableSlotItem, TableSlots};
+use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, Ui, Vec2};
 use std::collections::HashMap;
 
 const ROW_SNAP_SLOTS: f32 = 1.25;
@@ -542,9 +543,9 @@ fn draw_edge_band(
     rect: Rect,
     radius: f32,
     is_header: bool,
-    left: &str,
-    center: &str,
-    right: &str,
+    left: &TableSlotItem,
+    center: &TableSlotItem,
+    right: &TableSlotItem,
 ) {
     let bg = if is_header {
         cfg.color(section, "header_bg", "#0b0e12bb")
@@ -570,39 +571,160 @@ fn draw_edge_band(
     let muted = cfg.color(section, "muted", "#8b93a1");
     let text = cfg.color(section, "text", "#f4f6f8");
     let fs = (rect.height() * 0.48).clamp(9.0, 16.0) * cfg.text_scale(section);
-    if !left.is_empty() {
-        label(
-            ui,
-            Pos2::new(rect.left() + 8.0, rect.center().y),
+    let icons_group = if is_header {
+        "header_icons"
+    } else {
+        "footer_icons"
+    };
+
+    paint_band_slot(
+        ui,
+        cfg,
+        section,
+        icons_group,
+        "left",
+        left,
+        Pos2::new(rect.left() + 8.0, rect.center().y),
+        Align2::LEFT_CENTER,
+        fs,
+        muted,
+        text,
+    );
+    paint_band_slot(
+        ui,
+        cfg,
+        section,
+        icons_group,
+        "center",
+        center,
+        rect.center(),
+        Align2::CENTER_CENTER,
+        fs,
+        muted,
+        text,
+    );
+    paint_band_slot(
+        ui,
+        cfg,
+        section,
+        icons_group,
+        "right",
+        right,
+        Pos2::new(rect.right() - 8.0, rect.center().y),
+        Align2::RIGHT_CENTER,
+        fs,
+        muted,
+        text,
+    );
+}
+
+fn text_width(ui: &Ui, font: &FontId, s: &str) -> f32 {
+    ui.fonts(|f| f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE).size().x)
+}
+
+fn paint_band_slot(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    section: &str,
+    icons_group: &str,
+    pos: &str,
+    item: &TableSlotItem,
+    anchor: Pos2,
+    align: Align2,
+    fs: f32,
+    muted: Color32,
+    text: Color32,
+) {
+    if item.key.is_empty() {
+        return;
+    }
+    let use_icon = cfg.nested_bool(section, icons_group, pos, false);
+
+    // Special cases: title / order_pill / count are value-only (Python parity).
+    if item.key == "title" {
+        label(ui, anchor, align, &item.value, fs, text, true);
+        return;
+    }
+    if item.key == "order_pill" {
+        let pill_w = fs * 2.8;
+        let pill_h = fs * 1.15;
+        let x0 = if align == Align2::LEFT_CENTER {
+            anchor.x
+        } else if align == Align2::RIGHT_CENTER {
+            anchor.x - pill_w
+        } else {
+            anchor.x - pill_w * 0.5
+        };
+        let pill = Rect::from_min_size(
+            Pos2::new(x0, anchor.y - pill_h * 0.5),
+            Vec2::new(pill_w, pill_h),
+        );
+        ui.painter().rect_stroke(
+            pill,
+            CornerRadius::same(3),
+            Stroke::new(1.0_f32, muted),
+            egui::StrokeKind::Inside,
+        );
+        label(ui, pill.center(), Align2::CENTER_CENTER, "ORDER", fs * 0.72, muted, true);
+        return;
+    }
+    if item.key == "count" || item.key == "track_name" {
+        label(ui, anchor, align, &item.value, fs, muted, true);
+        return;
+    }
+
+    let glyph = if use_icon {
+        icons::glyph(&item.key)
+    } else {
+        None
+    };
+    let lead_is_icon = glyph.is_some();
+    let lead: String = if let Some(g) = glyph {
+        g
+    } else {
+        slot_label(&item.key).to_string()
+    };
+
+    let lead_font = if lead_is_icon {
+        icons::font_id(fs * 0.82)
+    } else {
+        FontId::proportional(fs * 0.62)
+    };
+    let val_font = FontId::proportional(fs * 0.9);
+    let lead_w = if lead.is_empty() {
+        0.0
+    } else {
+        text_width(ui, &lead_font, &lead)
+    };
+    let gap = if lead.is_empty() { 0.0 } else { fs * 0.35 };
+    let val_w = text_width(ui, &val_font, &item.value);
+    let total_w = lead_w + gap + val_w;
+
+    let x0 = if align == Align2::LEFT_CENTER {
+        anchor.x
+    } else if align == Align2::RIGHT_CENTER {
+        anchor.x - total_w
+    } else {
+        anchor.x - total_w * 0.5
+    };
+    let y = anchor.y;
+
+    if !lead.is_empty() {
+        ui.painter().text(
+            Pos2::new(x0, y),
             Align2::LEFT_CENTER,
-            left,
-            fs,
+            &lead,
+            lead_font,
             muted,
-            true,
         );
     }
-    if !center.is_empty() {
-        label(
-            ui,
-            rect.center(),
-            Align2::CENTER_CENTER,
-            center,
-            fs,
-            text,
-            true,
-        );
-    }
-    if !right.is_empty() {
-        label(
-            ui,
-            Pos2::new(rect.right() - 8.0, rect.center().y),
-            Align2::RIGHT_CENTER,
-            right,
-            fs,
-            muted,
-            true,
-        );
-    }
+    ui.painter().text(
+        Pos2::new(x0 + lead_w + gap, y),
+        Align2::LEFT_CENTER,
+        &item.value,
+        val_font,
+        text,
+    );
 }
 
 fn column_order(cfg: &OverlayConfig, section: &str) -> Vec<String> {

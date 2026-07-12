@@ -191,6 +191,15 @@ impl OverlayConfig {
             .to_string()
     }
 
+    /// Nested bool under `section[group][key]` (e.g. `header_icons.left`).
+    pub fn nested_bool(&self, section: &str, group: &str, key: &str, default: bool) -> bool {
+        self.section(section)
+            .get(group)
+            .and_then(|g| g.get(key))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(default)
+    }
+
     /// Whether `column_order` includes `col`.
     pub fn has_column(&self, section: &str, col: &str) -> bool {
         self.section(section)
@@ -532,6 +541,14 @@ fn default_cfg() -> Value {
                     "footer".into(),
                     json!({"left": "race_time", "center": "lap", "right": "incidents"}),
                 );
+                section.insert(
+                    "header_icons".into(),
+                    json!({"left": false, "center": false, "right": false}),
+                );
+                section.insert(
+                    "footer_icons".into(),
+                    json!({"left": false, "center": false, "right": false}),
+                );
             }
             if *key == "standings" {
                 section.insert("rows".into(), json!(10));
@@ -544,6 +561,14 @@ fn default_cfg() -> Value {
                 section.insert(
                     "footer".into(),
                     json!({"left": "track_temp", "center": "session_time", "right": "air_temp"}),
+                );
+                section.insert(
+                    "header_icons".into(),
+                    json!({"left": false, "center": false, "right": false}),
+                );
+                section.insert(
+                    "footer_icons".into(),
+                    json!({"left": false, "center": false, "right": false}),
                 );
             }
         }
