@@ -22,6 +22,10 @@ pub struct MapAuthoring {
     pub pit_lane_speed_pct: f64,
     pub num_turns: i32,
     pub alias_ids: Vec<i32>,
+    /// Cached track polyline for map MVP (`None` = try load / oval fallback).
+    pub cached_track_id: Option<i32>,
+    pub cached_path: Vec<(f32, f32)>,
+    pub cached_track_name: String,
 }
 
 #[derive(Debug, Clone)]

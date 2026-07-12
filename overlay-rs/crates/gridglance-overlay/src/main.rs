@@ -10,6 +10,7 @@ mod layered;
 mod paths;
 mod state;
 mod telemetry;
+mod track_path;
 mod widgets;
 mod win_click;
 
