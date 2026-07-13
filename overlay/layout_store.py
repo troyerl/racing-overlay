@@ -1,4 +1,4 @@
-"""Persist per-panel window geometry to a JSON file next to the scripts."""
+"""Persist per-panel window geometry to a JSON file in the per-user data folder."""
 
 from __future__ import annotations
 

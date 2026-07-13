@@ -1,9 +1,10 @@
 """Filesystem paths that work both in a dev checkout and a frozen Windows exe.
 
 When packaged with PyInstaller, code and bundled assets live in a read-only
-location (``sys._MEIPASS``) while user data (config, saved layout, learned
-tracks) must be written somewhere persistent next to the executable. These
-helpers paper over that difference so the rest of the app can stay oblivious.
+location (``sys._MEIPASS``). User data (config, saved layout, learned tracks)
+always lives in a per-user folder (e.g. ``%LOCALAPPDATA%/GridGlance`` or
+``~/Library/Application Support/GridGlance``) so local runs and builds share
+the same settings.
 """
 
 from __future__ import annotations

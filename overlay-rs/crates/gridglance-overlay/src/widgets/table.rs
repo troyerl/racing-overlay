@@ -251,7 +251,7 @@ fn paint_row_chrome(
             "pit_row" => "#8b93a118",
             "inactive_row" => "#8b93a128",
             "speaking_row" => "#22c55e50",
-            _ => "#ffffff14",
+            _ => "#ffffff08",
         };
         let accent = cfg.color(section, key, fallback);
         draw_row_tint(ui, rect, accent);
@@ -261,6 +261,23 @@ fn paint_row_chrome(
             CornerRadius::ZERO,
             cfg.color(section, "row_alt", "#ffffff08"),
         );
+    }
+
+    // Python `_draw_speaking_accent`: bright stripe + wash on top of any status tint.
+    if row.is_speaking {
+        let accent = cfg.color(section, "badge_speaking_bg", "#22c55e");
+        let h = rect.height();
+        let stripe_w = (h * 0.09).max(3.5);
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                Pos2::new(rect.left(), rect.top() + h * 0.10),
+                Vec2::new(stripe_w, h * 0.80),
+            ),
+            CornerRadius::same(2),
+            color_with_alpha(accent, 255),
+        );
+        ui.painter()
+            .rect_filled(rect, CornerRadius::ZERO, color_with_alpha(accent, 38));
     }
 
     if cfg.bool_key(section, "row_dividers", true) {

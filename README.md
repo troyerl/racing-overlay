@@ -391,8 +391,10 @@ and `PlayerCarMyIncidentCount`.
 
 Every visual and behavioral parameter of every widget — colors, fonts, sizes,
 column visibility, row counts, radar range, animation speeds, toggles — lives in
-config and can be overridden by an **`overlay_config.json`** file next to the
-scripts. Defaults match the built-in look, so nothing changes until you edit it.
+config and can be overridden by an **`overlay_config.json`** file in the per-user
+data folder (`~/Library/Application Support/GridGlance` on macOS,
+`%LOCALAPPDATA%\\GridGlance` on Windows). Defaults match the built-in look, so
+nothing changes until you edit it. Local and packaged runs share this same file.
 
 ### Visual settings editor (recommended)
 

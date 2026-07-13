@@ -35,7 +35,7 @@ pub struct OverlayApp {
     sysstats: SysStats,
     last_tick: Instant,
     open_viewports: HashSet<String>,
-    /// Widget key currently being OS-dragged in edit mode.
+    /// Widget key currently being manually dragged in edit mode.
     dragging: Arc<Mutex<Option<String>>>,
     /// Active SE-corner resize in edit mode.
     resizing: Arc<Mutex<Option<ResizeDrag>>>,
@@ -159,7 +159,7 @@ impl eframe::App for OverlayApp {
                 .with_taskbar(false)
                 .with_mouse_passthrough(passthrough)
                 .with_inner_size([lay.w as f32, lay.h as f32]);
-            // While OS-dragging, do not fight the window with OuterPosition.
+            // While manually dragging, do not fight OuterPosition with builder position.
             if !is_dragging {
                 builder = builder.with_position(egui::pos2(lay.x as f32, lay.y as f32));
             }
@@ -291,9 +291,34 @@ impl eframe::App for OverlayApp {
                                     Sense::drag(),
                                 );
                                 if resp.drag_started() {
-                                    vp_ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                                    // Sync from live window so delta drag starts clean.
+                                    if let Some(outer) =
+                                        vp_ctx.input(|i| i.viewport().outer_rect)
+                                    {
+                                        let mut st = state.write();
+                                        if let Some(lay) = st.layout.get_mut(&key_clone) {
+                                            lay.x = outer.min.x.round() as i32;
+                                            lay.y = outer.min.y.round() as i32;
+                                        }
+                                    }
                                     *dragging.lock().unwrap_or_else(|e| e.into_inner()) =
                                         Some(key_clone.clone());
+                                }
+                                if resp.dragged() {
+                                    let delta = ui.input(|i| i.pointer.delta());
+                                    if delta != egui::Vec2::ZERO {
+                                        let mut st = state.write();
+                                        if let Some(lay) = st.layout.get_mut(&key_clone) {
+                                            lay.x += delta.x.round() as i32;
+                                            lay.y += delta.y.round() as i32;
+                                            let pos =
+                                                egui::pos2(lay.x as f32, lay.y as f32);
+                                            drop(st);
+                                            vp_ctx.send_viewport_cmd(
+                                                ViewportCommand::OuterPosition(pos),
+                                            );
+                                        }
+                                    }
                                 }
                                 if resp.drag_stopped() {
                                     if let Some(outer) =

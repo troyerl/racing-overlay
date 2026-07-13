@@ -17,21 +17,9 @@ pub struct TrackPath {
     pub p2p_zones: Vec<(f32, f32)>,
 }
 
-/// Directories to search for track JSON (user data + common relative paths).
+/// Directories to search for track JSON (user data tracks only).
 pub fn tracks_search_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![crate::paths::tracks_dir()];
-    if let Ok(cwd) = std::env::current_dir() {
-        for rel in ["tracks", "../tracks", "../../tracks"] {
-            let p = cwd.join(rel);
-            if p.is_dir() {
-                dirs.push(p);
-            }
-        }
-    }
-    // Dedup
-    dirs.sort();
-    dirs.dedup();
-    dirs
+    vec![crate::paths::tracks_dir()]
 }
 
 /// Find a track file for a numeric iRacing TrackID (or demo id).

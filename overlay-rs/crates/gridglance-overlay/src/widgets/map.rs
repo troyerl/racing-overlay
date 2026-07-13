@@ -349,6 +349,30 @@ fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
     Pos2::new(pt.x + dx / ln * extra, pt.y + dy / ln * extra)
 }
 
+/// Screen-space inset so outward labels/icons are not clipped (Python `_layout_pad`).
+fn layout_pad(cfg: &OverlayConfig, asphalt_w: f32, text_scale: f32) -> f32 {
+    let pad = 26.0_f32;
+    let mut outward = 0.0_f32;
+    if cfg.bool_key(SECTION, "show_traffic_markers", true) {
+        let sz = (10.0 * text_scale).max(8.0);
+        let icon_off = asphalt_w * 1.2 + sz + 10.0;
+        let side = (sz + 6.0).max(22.0);
+        let pill_h = sz + 14.0;
+        outward = outward.max(icon_off + side * 0.5 + pill_h + 4.0);
+    }
+    if cfg.bool_key(SECTION, "show_corners", true) {
+        let sz = (8.0 * text_scale).max(5.0);
+        let off = asphalt_w * 0.5 + sz + 8.0;
+        outward = outward.max(off + sz + 8.0);
+    }
+    if cfg.bool_key(SECTION, "show_sector_boundaries", true) {
+        let sz = (7.0 * text_scale).max(5.0);
+        let off = asphalt_w * 0.5 + sz + 6.0;
+        outward = outward.max(off + sz + 6.0);
+    }
+    pad + outward
+}
+
 fn marker_color_key(slot: &str) -> (&'static str, &'static str) {
     match slot {
         "leader" => ("marker_leader", "#ffd23a"),
@@ -743,8 +767,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let infield = ctx.cfg.color(SECTION, "infield", "#0f1216c8");
     let accent = ctx.cfg.color(SECTION, "accent", "#70df7a");
 
-    // Pad so thick ribbon + S/F tick aren't clipped (~Python _layout_pad 26).
-    let pad_px = 26.0_f32 + asphalt_w * 0.5;
+    let text_scale = ctx.cfg.text_scale(SECTION);
+    let pad_px = layout_pad(ctx.cfg, asphalt_w, text_scale);
     let plot = rect; // fit uses absolute pad inside
 
     let path = ctx.map.cached_path.clone();
@@ -788,7 +812,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let other_scale = dot_scale(ctx.cfg.f64_key(SECTION, "other_dot_radius_frac", 0.05));
     let pit_opacity = ctx.cfg.f64_key(SECTION, "pit_dot_opacity", 0.45) as f32;
     let car_label_mode = ctx.cfg.str_key(SECTION, "car_label", "number");
-    let map_text_scale = ctx.cfg.text_scale(SECTION);
+    let map_text_scale = text_scale;
     let show_markers = ctx.cfg.bool_key(SECTION, "show_traffic_markers", true);
     let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 3.0);
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
