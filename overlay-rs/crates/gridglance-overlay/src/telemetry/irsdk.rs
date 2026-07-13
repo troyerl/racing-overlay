@@ -517,9 +517,7 @@ mod win {
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(-1);
             let on_track = surf == TRK_ON_TRACK;
-            let in_pit = pit
-                || surf == TRK_IN_PIT_STALL
-                || surf == TRK_APPROACHING_PITS;
+            let in_pit = surf == TRK_IN_PIT_STALL || surf == TRK_APPROACHING_PITS;
             let est_t = est
                 .as_ref()
                 .and_then(|a| a.get(i).copied())

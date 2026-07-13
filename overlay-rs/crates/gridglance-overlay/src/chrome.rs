@@ -196,7 +196,7 @@ pub fn draw_row_tint(ui: &mut Ui, rect: Rect, accent: Color32) {
             Pos2::new(rect.left(), rect.top() + h * 0.12),
             Vec2::new(stripe_w, h * 0.76),
         ),
-        CornerRadius::same(2),
+        CornerRadius::same(2), // ~Python 1.5; egui uses u8 radii
         color_with_alpha(accent, edge_a),
     );
 

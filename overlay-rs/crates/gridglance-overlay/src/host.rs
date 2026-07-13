@@ -25,6 +25,15 @@ struct ResizeDrag {
     start: Pos2,
 }
 
+/// Absolute screen-pointer drag so window moves don't fight pointer.delta().
+#[derive(Clone)]
+struct PanelDrag {
+    key: String,
+    origin_x: f32,
+    origin_y: f32,
+    pointer_origin: Pos2,
+}
+
 pub struct OverlayApp {
     state: StateHandle,
     /// Always available; used for `--demo` and as fallback when iRacing is down.
@@ -35,8 +44,8 @@ pub struct OverlayApp {
     sysstats: SysStats,
     last_tick: Instant,
     open_viewports: HashSet<String>,
-    /// Widget key currently being manually dragged in edit mode.
-    dragging: Arc<Mutex<Option<String>>>,
+    /// Active panel move in edit mode.
+    dragging: Arc<Mutex<Option<PanelDrag>>>,
     /// Active SE-corner resize in edit mode.
     resizing: Arc<Mutex<Option<ResizeDrag>>>,
     last_click_through: HashMap<String, bool>,
@@ -143,7 +152,8 @@ impl eframe::App for OverlayApp {
             .dragging
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .clone();
+            .as_ref()
+            .map(|d| d.key.clone());
 
         for (key, lay) in keys_layout {
             still_open.insert(key.clone());
@@ -291,32 +301,62 @@ impl eframe::App for OverlayApp {
                                     Sense::drag(),
                                 );
                                 if resp.drag_started() {
-                                    // Sync from live window so delta drag starts clean.
-                                    if let Some(outer) =
-                                        vp_ctx.input(|i| i.viewport().outer_rect)
-                                    {
+                                    let outer = vp_ctx.input(|i| i.viewport().outer_rect);
+                                    let local = vp_ctx.input(|i| i.pointer.latest_pos());
+                                    if let (Some(outer), Some(local)) = (outer, local) {
+                                        let screen = Pos2::new(
+                                            outer.min.x + local.x,
+                                            outer.min.y + local.y,
+                                        );
                                         let mut st = state.write();
                                         if let Some(lay) = st.layout.get_mut(&key_clone) {
                                             lay.x = outer.min.x.round() as i32;
                                             lay.y = outer.min.y.round() as i32;
+                                            *dragging.lock().unwrap_or_else(|e| e.into_inner()) =
+                                                Some(PanelDrag {
+                                                    key: key_clone.clone(),
+                                                    origin_x: lay.x as f32,
+                                                    origin_y: lay.y as f32,
+                                                    pointer_origin: screen,
+                                                });
                                         }
                                     }
-                                    *dragging.lock().unwrap_or_else(|e| e.into_inner()) =
-                                        Some(key_clone.clone());
                                 }
                                 if resp.dragged() {
-                                    let delta = ui.input(|i| i.pointer.delta());
-                                    if delta != egui::Vec2::ZERO {
-                                        let mut st = state.write();
-                                        if let Some(lay) = st.layout.get_mut(&key_clone) {
-                                            lay.x += delta.x.round() as i32;
-                                            lay.y += delta.y.round() as i32;
-                                            let pos =
-                                                egui::pos2(lay.x as f32, lay.y as f32);
-                                            drop(st);
-                                            vp_ctx.send_viewport_cmd(
-                                                ViewportCommand::OuterPosition(pos),
-                                            );
+                                    let drag_snap = dragging
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .clone();
+                                    if let Some(pd) = drag_snap {
+                                        if pd.key == key_clone {
+                                            let outer =
+                                                vp_ctx.input(|i| i.viewport().outer_rect);
+                                            let local =
+                                                vp_ctx.input(|i| i.pointer.latest_pos());
+                                            if let (Some(outer), Some(local)) = (outer, local)
+                                            {
+                                                let screen = Pos2::new(
+                                                    outer.min.x + local.x,
+                                                    outer.min.y + local.y,
+                                                );
+                                                let nx = pd.origin_x
+                                                    + (screen.x - pd.pointer_origin.x);
+                                                let ny = pd.origin_y
+                                                    + (screen.y - pd.pointer_origin.y);
+                                                let mut st = state.write();
+                                                if let Some(lay) =
+                                                    st.layout.get_mut(&key_clone)
+                                                {
+                                                    lay.x = nx.round() as i32;
+                                                    lay.y = ny.round() as i32;
+                                                }
+                                                drop(st);
+                                                vp_ctx.send_viewport_cmd(
+                                                    ViewportCommand::OuterPosition(
+                                                        egui::pos2(nx, ny),
+                                                    ),
+                                                );
+                                            }
                                         }
                                     }
                                 }

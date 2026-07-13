@@ -164,6 +164,8 @@ pub fn paint_table(
         ia.partial_cmp(&ib).unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    let dividers = cfg.bool_key(section, "row_dividers", true);
+    let mut prev_draw_y: Option<f32> = None;
     for &i in &draw_order {
         let row = &rows[i];
         if row.empty {
@@ -177,6 +179,23 @@ pub fn paint_table(
             continue;
         }
         let row_rect = Rect::from_min_size(Pos2::new(left, ry), Vec2::new(inner_w, rh));
+        if dividers {
+            if let Some(prev_y) = prev_draw_y {
+                // Python draws the divider at the top of the current row (between rows).
+                if (ry - prev_y).abs() > 0.5 {
+                    let line = cfg.color(section, "border", "#ffffff28");
+                    let a = ((line.a() as f32) * 0.55).max(30.0) as u8;
+                    ui.painter().line_segment(
+                        [
+                            Pos2::new(row_rect.left(), ry),
+                            Pos2::new(row_rect.right(), ry),
+                        ],
+                        Stroke::new(1.0_f32, color_with_alpha(line, a)),
+                    );
+                }
+            }
+            prev_draw_y = Some(ry + rh);
+        }
         if opacity < 0.99 {
             // Soft fade-in: tint with alpha via layer (simple multiply on text later).
             ui.painter().rect_filled(
@@ -233,7 +252,7 @@ fn paint_row_chrome(
         Some("player_row")
     } else if row.lapping {
         Some(if row.lap_ahead { "threat" } else { "lapped" })
-    } else if row.in_pit || row.on_pit {
+    } else if row.in_pit {
         Some("pit_row")
     } else if row.inactive && section == "standings" {
         Some("inactive_row")
@@ -279,16 +298,6 @@ fn paint_row_chrome(
         ui.painter()
             .rect_filled(rect, CornerRadius::ZERO, color_with_alpha(accent, 38));
     }
-
-    if cfg.bool_key(section, "row_dividers", true) {
-        let line = cfg.color(section, "border", "#ffffff28");
-        let y = rect.bottom() - 0.5;
-        let a = ((line.a() as f32) * 0.55).max(30.0) as u8;
-        ui.painter().line_segment(
-            [Pos2::new(rect.left(), y), Pos2::new(rect.right(), y)],
-            Stroke::new(1.0_f32, color_with_alpha(line, a)),
-        );
-    }
 }
 
 fn paint_row_cols(
@@ -306,7 +315,7 @@ fn paint_row_cols(
     text: Color32,
     muted: Color32,
 ) {
-    let dim = row.inactive || (row.empty);
+    let dim = row.in_pit || (row.inactive && section == "standings") || row.empty;
     let name_col = columns.iter().any(|c| c == "name");
     let fixed: f32 = columns
         .iter()
@@ -346,9 +355,9 @@ fn paint_row_cols(
                         ui.painter().rect_filled(
                             Rect::from_min_size(
                                 Pos2::new(cx, rect.top() + rh * 0.18),
-                                Vec2::new((rh * 0.08).max(2.0), rh * 0.64),
+                                Vec2::new(rh * 0.12, rh * 0.64),
                             ),
-                            CornerRadius::same(1),
+                            CornerRadius::same(2),
                             sc,
                         );
                     }
@@ -512,18 +521,28 @@ fn paint_badge(
 ) {
     let cx = x + w * 0.5;
     let cy = y + h * 0.5;
-    let r = (h * 0.28).min(w * 0.35);
+    let size = (w.min(h)) * 0.62;
+    let box_r = Rect::from_center_size(Pos2::new(cx, cy), Vec2::new(size, size));
+
+    if row.is_speaking {
+        paint_speaker_badge(ui, cfg, section, box_r);
+        return;
+    }
     if row.is_player {
         ui.painter().circle_filled(
             Pos2::new(cx, cy),
-            r,
+            size * 0.5,
             cfg.color(section, "badge_player", "#ff9416"),
         );
-    } else if row.in_pit || row.on_pit {
-        let pill = Rect::from_center_size(Pos2::new(cx, cy), Vec2::new(w * 0.85, h * 0.42));
+        return;
+    }
+    if row.in_pit {
+        let pill_w = w.min(size * 1.55);
+        let pill_h = size * 0.92;
+        let pill = Rect::from_center_size(Pos2::new(cx, cy), Vec2::new(pill_w, pill_h));
         ui.painter().rect_filled(
             pill,
-            CornerRadius::same(3),
+            CornerRadius::same(4),
             cfg.color(section, "badge_pit_bg", "#ebeef0"),
         );
         label(
@@ -531,26 +550,76 @@ fn paint_badge(
             pill.center(),
             Align2::CENTER_CENTER,
             "PIT",
-            h * 0.22,
+            pill_h * 0.46,
             cfg.color(section, "badge_pit_text", "#141414"),
             true,
         );
-    } else if row.is_speaking {
-        ui.painter().circle_filled(
-            Pos2::new(cx, cy),
-            r,
-            cfg.color(section, "badge_speaking_bg", "#22c55e"),
-        );
-    } else {
-        ui.painter().circle_stroke(
-            Pos2::new(cx, cy),
-            r,
-            Stroke::new(
-                1.0_f32,
-                cfg.color(section, "badge_empty_border", "#ffffff28"),
-            ),
-        );
+        return;
     }
+    if row.lapping {
+        ui.painter().rect_filled(
+            box_r,
+            CornerRadius::same(3),
+            cfg.color(section, "badge_lap", "#7638c4"),
+        );
+        paint_clock(ui, box_r);
+        return;
+    }
+
+    ui.painter().circle_filled(
+        Pos2::new(cx, cy),
+        size * 0.5,
+        cfg.color(section, "badge_empty_fill", "#00000078"),
+    );
+    ui.painter().circle_stroke(
+        Pos2::new(cx, cy),
+        size * 0.5,
+        Stroke::new(
+            1.0_f32,
+            cfg.color(section, "badge_empty_border", "#ffffff28"),
+        ),
+    );
+}
+
+fn paint_speaker_badge(ui: &mut Ui, cfg: &OverlayConfig, section: &str, box_r: Rect) {
+    let Some(g) = icons::glyph("speaking") else {
+        return;
+    };
+    let pad = box_r.width() * 0.06;
+    let pill = box_r.expand(pad);
+    let border = cfg.color(section, "badge_speaking_border", "#ffffffcc");
+    let bg = cfg.color(section, "badge_speaking_bg", "#22c55e");
+    let fg = cfg.color(section, "badge_speaking_text", "#ffffff");
+    ui.painter().circle_filled(pill.center(), pill.width() * 0.5, bg);
+    ui.painter().circle_stroke(
+        pill.center(),
+        pill.width() * 0.5,
+        Stroke::new((box_r.width() * 0.08).max(1.2), border),
+    );
+    ui.painter().text(
+        pill.center(),
+        Align2::CENTER_CENTER,
+        g,
+        icons::font_id(pill.height() * 0.58),
+        fg,
+    );
+}
+
+fn paint_clock(ui: &mut Ui, box_r: Rect) {
+    let stroke_w = (box_r.width() * 0.08).max(1.0);
+    let white = Color32::from_rgb(255, 255, 255);
+    let inner = box_r.shrink2(Vec2::new(box_r.width() * 0.22, box_r.height() * 0.22));
+    ui.painter()
+        .circle_stroke(inner.center(), inner.width() * 0.5, Stroke::new(stroke_w, white));
+    let c = inner.center();
+    ui.painter().line_segment(
+        [c, Pos2::new(c.x, c.y - inner.height() * 0.32)],
+        Stroke::new(stroke_w, white),
+    );
+    ui.painter().line_segment(
+        [c, Pos2::new(c.x + inner.width() * 0.26, c.y)],
+        Stroke::new(stroke_w, white),
+    );
 }
 
 fn draw_edge_band(
