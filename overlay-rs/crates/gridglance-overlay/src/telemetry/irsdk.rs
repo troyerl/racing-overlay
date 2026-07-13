@@ -196,6 +196,18 @@ mod win {
         let fog = read_f32_opt(session, "FogLevel");
 
         let tire_corners = read_tire_corners(session);
+        let tire_temps = [
+            tire_corners[0].temp.unwrap_or(0.0),
+            tire_corners[1].temp.unwrap_or(0.0),
+            tire_corners[2].temp.unwrap_or(0.0),
+            tire_corners[3].temp.unwrap_or(0.0),
+        ];
+        let tire_pressures = [
+            tire_corners[0].pressure.unwrap_or(0.0),
+            tire_corners[1].pressure.unwrap_or(0.0),
+            tire_corners[2].pressure.unwrap_or(0.0),
+            tire_corners[3].pressure.unwrap_or(0.0),
+        ];
         let pit_flags = read_i32(session, "PitSvFlags");
         let pit_services = decode_pit_flags(pit_flags);
         let pit_active = any_requested(pit_flags) || read_bool(session, "PlayerCarInPitStall");
@@ -351,18 +363,8 @@ mod win {
             radio,
             cars,
             tire_corners,
-            tire_temps: [
-                tire_corners[0].temp.unwrap_or(0.0),
-                tire_corners[1].temp.unwrap_or(0.0),
-                tire_corners[2].temp.unwrap_or(0.0),
-                tire_corners[3].temp.unwrap_or(0.0),
-            ],
-            tire_pressures: [
-                tire_corners[0].pressure.unwrap_or(0.0),
-                tire_corners[1].pressure.unwrap_or(0.0),
-                tire_corners[2].pressure.unwrap_or(0.0),
-                tire_corners[3].pressure.unwrap_or(0.0),
-            ],
+            tire_temps,
+            tire_pressures,
             pit_services,
             pit_active,
             pit_fuel_add_l,
