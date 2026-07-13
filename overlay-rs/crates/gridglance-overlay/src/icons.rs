@@ -40,6 +40,10 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("league", 0xF0C0),
     ("flag", 0xF024),
     ("speaking", 0xF028),
+    // map traffic markers
+    ("leader", 0xF521),      // crown
+    ("car_ahead", 0xF062),   // arrow-up
+    ("car_behind", 0xF063),  // arrow-down
     // table header / footer
     ("sof", 0xF0C0),
     ("class_sof", 0xF0C0),
@@ -107,6 +111,9 @@ mod tests {
             "irating",
             "irating_up",
             "irating_down",
+            "leader",
+            "car_ahead",
+            "car_behind",
         ] {
             assert!(glyph(name).is_some(), "missing glyph {name}");
         }

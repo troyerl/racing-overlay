@@ -7,6 +7,7 @@ mod icons;
 mod ipc;
 mod irating;
 mod layered;
+mod map_markers;
 mod paths;
 mod state;
 mod telemetry;

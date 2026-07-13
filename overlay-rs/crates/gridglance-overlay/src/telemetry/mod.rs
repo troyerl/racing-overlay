@@ -41,6 +41,8 @@ pub struct CarRow {
     /// CarIdxF2Time (gap-to-leader style clock).
     pub f2_time: f32,
     pub lap: i32,
+    /// Map status badge: pit / off / garage / black / meatball / dq / furled.
+    pub status_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -203,6 +205,13 @@ pub mod demo {
                     est_time: est,
                     f2_time: f2,
                     lap: 12 + (i % 3),
+                    status_kind: if i == 5 {
+                        Some("pit".into())
+                    } else if i == 9 {
+                        Some("off".into())
+                    } else {
+                        None
+                    },
                 });
             }
 

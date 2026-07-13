@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct MapAuthoring {
     pub pit_edit: bool,
     pub phase: String,
@@ -26,6 +26,42 @@ pub struct MapAuthoring {
     pub cached_track_id: Option<i32>,
     pub cached_path: Vec<(f32, f32)>,
     pub cached_track_name: String,
+    pub cached_start_finish: f32,
+    pub cached_drs_zones: Vec<(f32, f32)>,
+    pub cached_p2p_zones: Vec<(f32, f32)>,
+    /// Hold-before-switch state for ahead/behind/leader markers.
+    pub marker_hold: crate::map_markers::HoldStates,
+    /// Eased lap_dist_pct per car_idx for smooth map motion.
+    pub car_anim: HashMap<i32, f32>,
+    /// Session time of last map paint (for smoothing dt).
+    pub last_paint_secs: f64,
+}
+
+impl Default for MapAuthoring {
+    fn default() -> Self {
+        Self {
+            pit_edit: false,
+            phase: String::new(),
+            lane: String::new(),
+            corner_edit: false,
+            sf_edit: false,
+            interactive: false,
+            pit_points: Vec::new(),
+            pit_speed_ms: 0.0,
+            pit_lane_speed_pct: 1.0,
+            num_turns: 0,
+            alias_ids: Vec::new(),
+            cached_track_id: None,
+            cached_path: Vec::new(),
+            cached_track_name: String::new(),
+            cached_start_finish: 0.0,
+            cached_drs_zones: Vec::new(),
+            cached_p2p_zones: Vec::new(),
+            marker_hold: crate::map_markers::fresh_hold_states(),
+            car_anim: HashMap::new(),
+            last_paint_secs: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

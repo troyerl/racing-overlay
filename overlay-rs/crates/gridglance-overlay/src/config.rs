@@ -275,6 +275,23 @@ impl OverlayConfig {
         }
     }
 
+    /// m/s → display speed (mph or km/h).
+    pub fn conv_speed(&self, mps: f32) -> f32 {
+        if self.imperial_units() {
+            mps * 2.236_936_3
+        } else {
+            mps * 3.6
+        }
+    }
+
+    pub fn speed_unit(&self) -> &'static str {
+        if self.imperial_units() {
+            "mph"
+        } else {
+            "km/h"
+        }
+    }
+
     /// Global `text_scale` × per-section `text_scale` (Python `text_scale_for`).
     pub fn text_scale(&self, section: &str) -> f32 {
         let g = self
@@ -445,6 +462,9 @@ fn default_colors() -> Map<String, Value> {
         ("box_value", "#f4f6f8"),
         ("box_warn", "#e23b3b"),
         ("header", "#8b93a1"),
+        ("asphalt", "#333a42"),
+        ("outline", "#8b93a1"),
+        ("infield", "#0f1216c8"),
     ];
     let mut colors = Map::new();
     for (k, v) in PAIRS {
@@ -570,6 +590,56 @@ fn default_cfg() -> Value {
                     "footer_icons".into(),
                     json!({"left": false, "center": false, "right": false}),
                 );
+            }
+        }
+        if *key == "map" {
+            section.insert("show_panel".into(), Value::Bool(false));
+            section.insert("show_infield".into(), Value::Bool(true));
+            section.insert("show_start_finish".into(), Value::Bool(true));
+            section.insert("asphalt_width".into(), json!(12));
+            section.insert("outline_width".into(), json!(6));
+            section.insert("rotation".into(), json!(0));
+            section.insert("mirror".into(), Value::Bool(false));
+            section.insert("dot_radius_frac".into(), json!(0.05));
+            section.insert("other_dot_radius_frac".into(), json!(0.05));
+            section.insert("pit_dot_opacity".into(), json!(0.45));
+            section.insert("car_label".into(), Value::String("number".into()));
+            section.insert("show_traffic_markers".into(), Value::Bool(true));
+            section.insert("marker_hold_seconds".into(), json!(3.0));
+            section.insert("show_car_status".into(), Value::Bool(true));
+            section.insert("show_drs_zones".into(), Value::Bool(false));
+            section.insert("show_p2p_zones".into(), Value::Bool(false));
+            section.insert("show_wind".into(), Value::Bool(true));
+            section.insert("show_expanded_weather".into(), Value::Bool(false));
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("player".into(), Value::String("#46df7a".into()));
+                colors.insert("competitor".into(), Value::String("#b06bff".into()));
+                colors.insert("lapped".into(), Value::String("#4a8cff".into()));
+                colors.insert("lapping".into(), Value::String("#ff5050".into()));
+                colors.insert("pit_car".into(), Value::String("#6e747d".into()));
+                colors.insert("pace_car".into(), Value::String("#0b0e12".into()));
+                colors.insert("asphalt".into(), Value::String("#333a42".into()));
+                colors.insert("outline".into(), Value::String("#8b93a1".into()));
+                colors.insert("infield".into(), Value::String("#0f1216c8".into()));
+                colors.insert("marker_leader".into(), Value::String("#ffd23a".into()));
+                colors.insert("marker_ahead".into(), Value::String("#46df7a".into()));
+                colors.insert("marker_behind".into(), Value::String("#ff5050".into()));
+                colors.insert("marker_line".into(), Value::String("#ffffff40".into()));
+                colors.insert("speaking_ring".into(), Value::String("#46df7a".into()));
+                colors.insert("speaking_glow".into(), Value::String("#46df7a55".into()));
+                colors.insert("speaking_badge_bg".into(), Value::String("#22c55e".into()));
+                colors.insert("speaking_badge_text".into(), Value::String("#ffffff".into()));
+                colors.insert("status_pit".into(), Value::String("#ffd23a".into()));
+                colors.insert("status_off".into(), Value::String("#ff5050".into()));
+                colors.insert("status_garage".into(), Value::String("#8b93a1".into()));
+                colors.insert("status_black".into(), Value::String("#1a1a1a".into()));
+                colors.insert("status_meatball".into(), Value::String("#ff9416".into()));
+                colors.insert("status_dq".into(), Value::String("#ff5050".into()));
+                colors.insert("status_furled".into(), Value::String("#ffd23a".into()));
+                colors.insert("drs_zone".into(), Value::String("#46df7a88".into()));
+                colors.insert("p2p_zone".into(), Value::String("#3aa0ff88".into()));
+                colors.insert("wind".into(), Value::String("#9fd0ff".into()));
+                colors.insert("wind_text".into(), Value::String("#eaf3ff".into()));
             }
         }
         if *key == "radar" {

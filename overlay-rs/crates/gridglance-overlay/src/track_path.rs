@@ -9,6 +9,12 @@ use std::path::{Path, PathBuf};
 pub struct TrackPath {
     pub points: Vec<(f32, f32)>,
     pub name: String,
+    /// LapDistPct of start/finish (0..1).
+    pub start_finish: f32,
+    /// DRS activation ranges as (lo, hi) lap fractions.
+    pub drs_zones: Vec<(f32, f32)>,
+    /// Push-to-pass ranges as (lo, hi) lap fractions.
+    pub p2p_zones: Vec<(f32, f32)>,
 }
 
 /// Directories to search for track JSON (user data + common relative paths).
@@ -118,12 +124,42 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         .and_then(|n| n.as_str())
         .unwrap_or("")
         .to_string();
+    let start_finish = v
+        .get("start_finish")
+        .and_then(|x| x.as_f64())
+        .unwrap_or(0.0) as f32;
+    let drs_zones = parse_zone_ranges(v.get("drs_zones"));
+    let p2p_zones = parse_zone_ranges(v.get("p2p_zones"));
     let target = n.clamp(64, 720);
     let resampled = resample_closed(&pts, target);
     Some(TrackPath {
         points: resampled,
         name,
+        start_finish: start_finish.fract().rem_euclid(1.0),
+        drs_zones,
+        p2p_zones,
     })
+}
+
+fn parse_zone_ranges(v: Option<&Value>) -> Vec<(f32, f32)> {
+    let Some(arr) = v.and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for z in arr {
+        let Some(pair) = z.as_array() else {
+            continue;
+        };
+        if pair.len() < 2 {
+            continue;
+        }
+        let lo = pair[0].as_f64().unwrap_or(f64::NAN) as f32;
+        let hi = pair[1].as_f64().unwrap_or(f64::NAN) as f32;
+        if lo.is_finite() && hi.is_finite() {
+            out.push((lo.rem_euclid(1.0), hi.rem_euclid(1.0)));
+        }
+    }
+    out
 }
 
 /// Load track for id, or None if not found / invalid.
@@ -205,6 +241,20 @@ pub fn point_at(pts: &[(f32, f32)], pct: f32) -> (f32, f32) {
         return pts[0];
     }
     sample_at_dist(pts, &cum, p * total, true)
+}
+
+/// Unit tangent along the closed path at `pct` (for S/F tick).
+pub fn tangent_at(pts: &[(f32, f32)], pct: f32) -> (f32, f32) {
+    if pts.len() < 2 {
+        return (1.0, 0.0);
+    }
+    let eps = 1.0 / pts.len().max(8) as f32;
+    let a = point_at(pts, pct - eps);
+    let b = point_at(pts, pct + eps);
+    let dx = b.0 - a.0;
+    let dy = b.1 - a.1;
+    let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+    (dx / len, dy / len)
 }
 
 /// Fallback oval in 0..1 space (same as previous map stub).

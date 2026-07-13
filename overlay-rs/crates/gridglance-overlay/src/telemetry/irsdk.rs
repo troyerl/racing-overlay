@@ -25,9 +25,11 @@ mod win {
     const FLAG_REPAIR: i32 = 0x0010_0000;
 
     // TrackSurface
-    const TRK_ON_TRACK: i32 = 3;
+    const TRK_NOT_IN_WORLD: i32 = -1;
+    const TRK_OFF_TRACK: i32 = 0;
     const TRK_IN_PIT_STALL: i32 = 1;
     const TRK_APPROACHING_PITS: i32 = 2;
+    const TRK_ON_TRACK: i32 = 3;
 
     #[derive(Clone, Default)]
     struct DriverInfo {
@@ -144,6 +146,24 @@ mod win {
         let air_temp = read_f32_opt(session, "AirTemp");
         let track_temp = read_f32_opt(session, "TrackTempCrew")
             .or_else(|| read_f32_opt(session, "TrackTemp"));
+        let wind_dir = read_f32_opt(session, "WindDir");
+        let wind_vel = read_f32_opt(session, "WindVel");
+        let track_wetness = read_f32_opt(session, "TrackWetness").map(|v| {
+            if v <= 1.0 {
+                v * 100.0
+            } else {
+                v
+            }
+        });
+        let rain_intensity = read_f32_opt(session, "Precipitation")
+            .or_else(|| read_f32_opt(session, "RainIntensity"))
+            .map(|v| {
+                if v <= 1.0 {
+                    v * 100.0
+                } else {
+                    v
+                }
+            });
         let lap_est = {
             let v = read_f32(session, "LapEstTime");
             if v > 10.0 {
@@ -271,6 +291,10 @@ mod win {
             tire_wear_r: ((rf + rr) * 0.5).clamp(0.0, 1.0),
             track_temp,
             air_temp,
+            track_wetness,
+            rain_intensity,
+            wind_dir,
+            wind_vel,
             player_lap_dist_pct: lap_dist,
             lap_est_time: lap_est,
             track_id: cache.track_id,
@@ -283,6 +307,31 @@ mod win {
             cars,
             ..Default::default()
         }
+    }
+
+    fn map_car_status_kind(surface: i32, on_pit: bool, car_flags: i32) -> Option<String> {
+        if car_flags & FLAG_REPAIR != 0 {
+            return Some("meatball".into());
+        }
+        if car_flags & FLAG_BLACK != 0 {
+            return Some("black".into());
+        }
+        if car_flags & FLAG_DQ != 0 {
+            return Some("dq".into());
+        }
+        if car_flags & FLAG_FURLED != 0 {
+            return Some("furled".into());
+        }
+        if on_pit || surface == TRK_IN_PIT_STALL || surface == TRK_APPROACHING_PITS {
+            return Some("pit".into());
+        }
+        if surface == TRK_OFF_TRACK {
+            return Some("off".into());
+        }
+        if surface == TRK_NOT_IN_WORLD {
+            return Some("garage".into());
+        }
+        None
     }
 
     fn radio_speaker_from_cars(
@@ -436,6 +485,7 @@ mod win {
         let f2 = float_arr(session, "CarIdxF2Time");
         let laps = int_arr(session, "CarIdxLap");
         let surface = int_arr(session, "CarIdxTrackSurface");
+        let session_flags = int_arr(session, "CarIdxSessionFlags");
         let player_idx = cache.player_idx;
         let player_lap = laps
             .as_ref()
@@ -526,6 +576,11 @@ mod win {
             };
             let lapping = lap_delta != 0;
             let lap_ahead = lap_delta > 0;
+            let flags = session_flags
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0);
+            let status_kind = map_car_status_kind(surf, pit, flags);
 
             out.push(CarRow {
                 car_idx: i as i32,
@@ -558,6 +613,7 @@ mod win {
                 est_time: if est_t.is_finite() { est_t } else { 0.0 },
                 f2_time: if f2_t.is_finite() { f2_t } else { 0.0 },
                 lap: car_lap.max(0),
+                status_kind,
             });
         }
         out
