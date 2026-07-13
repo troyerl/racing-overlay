@@ -384,7 +384,7 @@ fn draw_stats(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f3
             ui.painter().rect_filled(
                 Rect::from_min_size(Pos2::new(x, ry), Vec2::new(w, row_h)),
                 CornerRadius::same(4),
-                ctx.cfg.color(SECTION, "row_alt", "#ffffff14"),
+                ctx.cfg.color(SECTION, "row_alt", "#ffffff08"),
             );
         }
         label(

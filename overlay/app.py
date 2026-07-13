@@ -5834,6 +5834,7 @@ def _resolve_backend() -> str:
 
 def _main_rust() -> int:
     """Launch Rust overlay process + Python settings (exits with settings)."""
+    import atexit
     import signal
     import time
     import traceback
@@ -5871,140 +5872,155 @@ def _main_rust() -> int:
     if instance is None:
         return 0
 
-    def _excepthook(exc_type, exc, tb) -> None:
-        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
-        sys.__excepthook__(exc_type, exc, tb)
-
-    sys.excepthook = _excepthook
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
-
-    try:
-        proc = start_rust_overlay(
-            demo=demo,
-            click_through=click_through,
-            stopped=not start_now,
-        )
-    except FileNotFoundError as exc:
-        QMessageBox.critical(None, "GridGlance", str(exc))
-        return 1
-
-    client = OverlayIpcClient()
-    deadline = time.monotonic() + 8.0
-    while time.monotonic() < deadline:
-        try:
-            client.ping()
-            break
-        except OverlayIpcError:
-            if proc.poll() is not None:
-                QMessageBox.critical(
-                    None, "GridGlance",
-                    "Rust overlay exited before IPC became ready.")
-                return 1
-            time.sleep(0.1)
-            QApplication.processEvents()
-    else:
-        QMessageBox.critical(
-            None, "GridGlance",
-            "Timed out waiting for Rust overlay IPC on 127.0.0.1:19847.")
-        proc.terminate()
-        return 1
-
-    remote = RemoteOverlay(
-        client,
-        demo=demo,
-        edit_mode=not click_through,
-        running=start_now,
-    )
-    config.on_preset_change(lambda _name: remote.apply_active_preset())
-    # Push full live CFG (not sparse disk merge) so show flags match Settings.
-    try:
-        remote.apply_active_preset()
-    except OverlayIpcError:
-        pass
-    if start_now:
-        try:
-            remote.start_overlay()
-        except OverlayIpcError:
-            pass
-    if not click_through:
-        try:
-            remote.set_edit_mode(True)
-        except OverlayIpcError:
-            pass
-
-    from .config_editor import ConfigEditor
-    from .updater import UpdateChecker
-
-    remote._updater = UpdateChecker()
-    updater_bridge = _LaunchUpdater(app, remote)
-    remote._updater_bridge = updater_bridge
-    remote._updater.found.connect(updater_bridge.on_found)
-    remote._updater.progress.connect(updater_bridge.on_progress)
-    remote._updater.downloaded.connect(updater_bridge.on_downloaded)
-    remote._updater.failed.connect(updater_bridge.on_failed)
-    if config.CFG.get("check_updates_on_launch", True):
-        remote._updater.start()
-
-    def _open_settings() -> None:
-        existing = getattr(app, "_settings_window", None)
-        if existing is not None and existing.isVisible():
-            existing.raise_()
-            existing.activateWindow()
-            return
-        editor = ConfigEditor(overlay=remote)
-        app._settings_window = editor
-        remote._settings_window = editor
-
-        def _on_close(*_args) -> None:
-            # Settings exits; Rust overlay keeps racing.
-            pass
-
-        editor.destroyed.connect(_on_close)
-        editor.show()
+    # Mutable holder so cleanup can reach the child even if spawn partially
+    # succeeded or remote/client setup fails mid-way.
+    hold: dict = {"proc": None, "remote": None, "done": False}
 
     def _shutdown_overlay() -> None:
-        try:
-            remote.stop_overlay()
-        except OverlayIpcError:
-            pass
-        if proc.poll() is None:
+        if hold["done"]:
+            return
+        hold["done"] = True
+        remote = hold.get("remote")
+        if remote is not None:
+            try:
+                remote.stop_overlay()
+            except OverlayIpcError:
+                pass
+        proc = hold.get("proc")
+        if proc is not None and proc.poll() is None:
             proc.terminate()
             try:
                 proc.wait(timeout=3)
             except Exception:  # noqa: BLE001
                 proc.kill()
 
-    def _quit_all() -> None:
+    def _excepthook(exc_type, exc, tb) -> None:
         _shutdown_overlay()
-        app.quit()
+        traceback.print_exception(exc_type, exc, tb, file=sys.stderr)
+        sys.__excepthook__(exc_type, exc, tb)
 
-    instance.set_activate_callback(_open_settings)
+    sys.excepthook = _excepthook
+    atexit.register(_shutdown_overlay)
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
 
-    # Keep the Python process alive after settings closes so the tray can
-    # reopen settings / quit. The Rust overlay is the long-lived paint process.
-    tray = None
-    if icon_path:
-        from PyQt6.QtGui import QAction, QIcon
-        from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
-        tray = QSystemTrayIcon(QIcon(icon_path), app)
-        menu = QMenu()
-        act_settings = QAction("Settings", menu)
-        act_settings.triggered.connect(_open_settings)
-        act_quit = QAction("Quit", menu)
-        act_quit.triggered.connect(_quit_all)
-        menu.addAction(act_settings)
-        menu.addAction(act_quit)
-        tray.setContextMenu(menu)
-        tray.setToolTip("GridGlance")
-        tray.show()
+    try:
+        try:
+            proc = start_rust_overlay(
+                demo=demo,
+                click_through=click_through,
+                stopped=not start_now,
+            )
+        except FileNotFoundError as exc:
+            QMessageBox.critical(None, "GridGlance", str(exc))
+            return 1
+        hold["proc"] = proc
 
-    app.setQuitOnLastWindowClosed(tray is None)
-    if open_settings or not start_now:
-        _open_settings()
+        client = OverlayIpcClient()
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline:
+            try:
+                client.ping()
+                break
+            except OverlayIpcError:
+                if proc.poll() is not None:
+                    QMessageBox.critical(
+                        None, "GridGlance",
+                        "Rust overlay exited before IPC became ready.")
+                    return 1
+                time.sleep(0.1)
+                QApplication.processEvents()
+        else:
+            QMessageBox.critical(
+                None, "GridGlance",
+                "Timed out waiting for Rust overlay IPC on 127.0.0.1:19847.")
+            return 1
 
-    code = app.exec()
-    _shutdown_overlay()
-    return code
+        remote = RemoteOverlay(
+            client,
+            demo=demo,
+            edit_mode=not click_through,
+            running=start_now,
+        )
+        hold["remote"] = remote
+        config.on_preset_change(lambda _name: remote.apply_active_preset())
+        # Push full live CFG (not sparse disk merge) so show flags match Settings.
+        try:
+            remote.apply_active_preset()
+        except OverlayIpcError:
+            pass
+        if start_now:
+            try:
+                remote.start_overlay()
+            except OverlayIpcError:
+                pass
+        if not click_through:
+            try:
+                remote.set_edit_mode(True)
+            except OverlayIpcError:
+                pass
+
+        from .config_editor import ConfigEditor
+        from .updater import UpdateChecker
+
+        remote._updater = UpdateChecker()
+        updater_bridge = _LaunchUpdater(app, remote)
+        remote._updater_bridge = updater_bridge
+        remote._updater.found.connect(updater_bridge.on_found)
+        remote._updater.progress.connect(updater_bridge.on_progress)
+        remote._updater.downloaded.connect(updater_bridge.on_downloaded)
+        remote._updater.failed.connect(updater_bridge.on_failed)
+        if config.CFG.get("check_updates_on_launch", True):
+            remote._updater.start()
+
+        def _open_settings() -> None:
+            existing = getattr(app, "_settings_window", None)
+            if existing is not None and existing.isVisible():
+                existing.raise_()
+                existing.activateWindow()
+                return
+            editor = ConfigEditor(overlay=remote)
+            app._settings_window = editor
+            remote._settings_window = editor
+
+            def _on_close(*_args) -> None:
+                # Settings exits; Rust overlay keeps racing.
+                pass
+
+            editor.destroyed.connect(_on_close)
+            editor.show()
+
+        def _quit_all() -> None:
+            _shutdown_overlay()
+            app.quit()
+
+        instance.set_activate_callback(_open_settings)
+
+        # Keep the Python process alive after settings closes so the tray can
+        # reopen settings / quit. The Rust overlay is the long-lived paint process.
+        tray = None
+        if icon_path:
+            from PyQt6.QtGui import QAction, QIcon
+            from PyQt6.QtWidgets import QMenu, QSystemTrayIcon
+            tray = QSystemTrayIcon(QIcon(icon_path), app)
+            menu = QMenu()
+            act_settings = QAction("Settings", menu)
+            act_settings.triggered.connect(_open_settings)
+            act_quit = QAction("Quit", menu)
+            act_quit.triggered.connect(_quit_all)
+            menu.addAction(act_settings)
+            menu.addAction(act_quit)
+            tray.setContextMenu(menu)
+            tray.setToolTip("GridGlance")
+            tray.show()
+
+        app.setQuitOnLastWindowClosed(tray is None)
+        if open_settings or not start_now:
+            _open_settings()
+
+        return app.exec()
+    finally:
+        _shutdown_overlay()
+
 
 
 def main() -> int:

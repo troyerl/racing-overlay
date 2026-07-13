@@ -106,7 +106,7 @@ _TABLE_STYLE: dict = {
         "bg_bottom": "#0f1216f2",
         "border": "#ffffff28",
         "cell_dark": "#0b0e12",
-        "row_alt": "#ffffff14",
+        "row_alt": "#ffffff08",
         "player_row": "#ff941658",
         "header_bg": "#0b0e12bb",
         "footer_bg": "#0f1216",
@@ -166,7 +166,7 @@ _WIDGET_CHROME_COLORS: dict = {
     "footer_bg": "#0f1216",
     "cell_dark": "#0b0e12",
     "cell_border": "#ffffff20",
-    "row_alt": "#ffffff14",
+    "row_alt": "#ffffff08",
 }
 
 DEFAULTS: dict = {
@@ -351,7 +351,7 @@ DEFAULTS: dict = {
             "header": "#8b93a1",
             "text": "#f4f6f8",
             "muted": "#8b93a1",
-            "row_alt": "#ffffff14",
+            "row_alt": "#ffffff08",
             "cell_dark": "#0b0e12",
             # Pit-window status pill + the big "add fuel" box.
             "pill_open": "#46df7a",

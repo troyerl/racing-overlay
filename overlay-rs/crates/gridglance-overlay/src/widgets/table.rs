@@ -259,7 +259,7 @@ fn paint_row_chrome(
         ui.painter().rect_filled(
             rect,
             CornerRadius::ZERO,
-            cfg.color(section, "row_alt", "#ffffff14"),
+            cfg.color(section, "row_alt", "#ffffff08"),
         );
     }
 

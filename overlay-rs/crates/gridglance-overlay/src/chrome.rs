@@ -21,10 +21,28 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
+/// Horizontal inset so a square band stays inside the rounded corner silhouette.
+fn corner_band_inset(r: f32, y: f32, top: f32, bottom: f32) -> f32 {
+    if r <= 0.0 {
+        return 0.0;
+    }
+    let dy = if y < top + r {
+        r - (y - top)
+    } else if y > bottom - r {
+        r - (bottom - y)
+    } else {
+        return 0.0;
+    };
+    if dy <= 0.0 || dy >= r {
+        return 0.0;
+    }
+    r - (r * r - dy * dy).sqrt()
+}
+
 /// Smooth vertical `top`→`bottom` fill with rounded corners (Python QLinearGradient parity).
 ///
-/// Uses many thin rounded bands so there is no hard mid-panel seam (unlike the old
-/// two-rect approximation) while preserving top/bottom corner radii.
+/// Paints a rounded base, then inset square bands so mid-band edges never poke through
+/// the corner fillets when band height is smaller than the radius.
 fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
     const BANDS: usize = 24;
     let r = radius
@@ -34,35 +52,26 @@ fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bo
     let ru = r.round().clamp(0.0, 255.0) as u8;
     let h = rect.height().max(1.0);
 
+    // Opaque rounded silhouette so corners stay clean under the stroke.
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(ru), top);
+
     for i in 0..BANDS {
         let t0 = i as f32 / BANDS as f32;
         let t1 = (i + 1) as f32 / BANDS as f32;
         let y0 = rect.top() + h * t0;
-        let y1 = rect.top() + h * t1;
-        // Slight overlap avoids hairline gaps between bands.
+        let y1 = (rect.top() + h * t1 + 0.5).min(rect.bottom());
+        let mid_y = (y0 + y1) * 0.5;
+        let inset = corner_band_inset(r, mid_y, rect.top(), rect.bottom());
         let band = Rect::from_min_max(
-            Pos2::new(rect.left(), y0),
-            Pos2::new(rect.right(), (y1 + 0.5).min(rect.bottom())),
+            Pos2::new(rect.left() + inset, y0),
+            Pos2::new(rect.right() - inset, y1),
         );
+        if band.width() <= 0.0 || band.height() <= 0.0 {
+            continue;
+        }
         let col = lerp_color(top, bottom, (t0 + t1) * 0.5);
-        let cr = if i == 0 {
-            CornerRadius {
-                nw: ru,
-                ne: ru,
-                sw: 0,
-                se: 0,
-            }
-        } else if i + 1 == BANDS {
-            CornerRadius {
-                nw: 0,
-                ne: 0,
-                sw: ru,
-                se: ru,
-            }
-        } else {
-            CornerRadius::ZERO
-        };
-        ui.painter().rect_filled(band, cr, col);
+        ui.painter().rect_filled(band, CornerRadius::ZERO, col);
     }
 }
 
