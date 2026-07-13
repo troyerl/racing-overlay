@@ -377,7 +377,7 @@ fn draw_stats(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f3
         );
     }
 
-    let labels = ["AVG", "MAX", "MIN"];
+    let labels = ["AVG", "HIGH", "LOW"];
     for (r, rk) in STAT_ROWS.iter().enumerate() {
         let ry = y + head_h + r as f32 * row_h;
         if r % 2 == 1 {

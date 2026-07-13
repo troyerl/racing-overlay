@@ -383,6 +383,7 @@ fn default_colors() -> Map<String, Value> {
         ("border", "#ffffff28"),
         ("text", "#f4f6f8"),
         ("muted", "#8b93a1"),
+        ("row_dim_text", "#5a616c"),
         ("header_bg", "#0b0e12bb"),
         ("cell_dark", "#0b0e12"),
         ("faster", "#46df7a"),

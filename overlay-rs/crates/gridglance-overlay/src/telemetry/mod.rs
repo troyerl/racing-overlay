@@ -298,7 +298,7 @@ pub mod demo {
                 wind_dir: Some(210.0),
                 wind_vel: Some(3.2),
                 cpu: Some("34%".into()),
-                mem: Some("11.2 GB".into()),
+                mem: Some("42%".into()),
                 gpu: Some("41%".into()),
                 fps: Some(144),
                 chan_quality: Some(92.0),

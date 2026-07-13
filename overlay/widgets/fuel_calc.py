@@ -46,7 +46,7 @@ _CENTER = Qt.AlignmentFlag.AlignCenter
 
 _STAT_COLS = ("usage", "laps", "pits", "refuel")
 _STAT_ROWS = ("avg", "max", "min")
-_STAT_ROW_LABELS = {"avg": "AVG", "max": "MAX", "min": "MIN"}
+_STAT_ROW_LABELS = {"avg": "AVG", "max": "HIGH", "min": "LOW"}
 
 
 def _cfg() -> dict:

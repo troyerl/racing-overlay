@@ -313,9 +313,10 @@ fn paint_row_cols(
     gap_font_scale: f32,
     signed_gaps: bool,
     text: Color32,
-    muted: Color32,
+    _muted: Color32,
 ) {
     let dim = row.in_pit || (row.inactive && section == "standings") || row.empty;
+    let dim_text = cfg.color(section, "row_dim_text", "#5a616c");
     let name_col = columns.iter().any(|c| c == "name");
     let fixed: f32 = columns
         .iter()
@@ -368,7 +369,7 @@ fn paint_row_cols(
                     Align2::CENTER_CENTER,
                     &format!("{}", row.position.max(0)),
                     fs,
-                    if dim { muted } else { text },
+                    if dim { dim_text } else { text },
                     true,
                 );
             }
@@ -376,7 +377,7 @@ fn paint_row_cols(
                 let colc = if row.is_speaking {
                     cfg.color(section, "badge_speaking_bg", "#22c55e")
                 } else if dim {
-                    muted
+                    dim_text
                 } else {
                     text
                 };
@@ -424,7 +425,7 @@ fn paint_row_cols(
                     Align2::RIGHT_CENTER,
                     &s,
                     fs * 0.9,
-                    if dim { muted } else { text },
+                    if dim { dim_text } else { text },
                     false,
                 );
             }
@@ -436,7 +437,7 @@ fn paint_row_cols(
                     Align2::RIGHT_CENTER,
                     &gtxt,
                     fs * gap_font_scale,
-                    if dim { muted } else { gcol },
+                    if dim { dim_text } else { gcol },
                     false,
                 );
             }
@@ -447,7 +448,7 @@ fn paint_row_cols(
                     Align2::CENTER_CENTER,
                     &row.car_number,
                     fs,
-                    if dim { muted } else { text },
+                    if dim { dim_text } else { text },
                     true,
                 );
             }
@@ -464,7 +465,7 @@ fn paint_row_cols(
                     Align2::CENTER_CENTER,
                     s,
                     fs * 0.92,
-                    if dim { muted } else { text },
+                    if dim { dim_text } else { text },
                     false,
                 );
             }
