@@ -256,7 +256,7 @@ fn draw_car_number_label(
         Color32::from_rgba_unmultiplied(0, 0, 0, 220)
     };
     let stroke_w = if is_player { 1.2_f32 } else { 1.0 };
-    let pos = Pos2::new(c.x.round(), c.y.round());
+    let pos = c;
     let rich = is_player || is_pace;
     let offsets: &[(f32, f32)] = if rich {
         &[
@@ -741,7 +741,6 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let asphalt = ctx.cfg.color(SECTION, "asphalt", "#333a42");
     let outline = ctx.cfg.color(SECTION, "outline", "#8b93a1");
     let infield = ctx.cfg.color(SECTION, "infield", "#0f1216c8");
-    let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
     let accent = ctx.cfg.color(SECTION, "accent", "#70df7a");
 
     // Pad so thick ribbon + S/F tick aren't clipped (~Python _layout_pad 26).
@@ -974,21 +973,6 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             true,
         );
     }
-
-    let title = if !ctx.map.cached_track_name.is_empty() {
-        ctx.map.cached_track_name.as_str()
-    } else {
-        ctx.frame.track_name.as_deref().unwrap_or("MAP")
-    };
-    label(
-        ui,
-        Pos2::new(rect.center().x, rect.bottom() - 8.0),
-        Align2::CENTER_BOTTOM,
-        title,
-        11.0,
-        muted,
-        true,
-    );
 }
 
 fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {

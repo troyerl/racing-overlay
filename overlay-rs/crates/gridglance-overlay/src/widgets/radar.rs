@@ -208,16 +208,38 @@ fn size_frac(ctx: &WidgetCtx<'_>, key: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
+fn unpremultiply(c: Color32) -> (u8, u8, u8) {
+    let a = c.a();
+    if a == 0 {
+        return (0, 0, 0);
+    }
+    (
+        (c.r() as u16 * 255 / a as u16).min(255) as u8,
+        (c.g() as u16 * 255 / a as u16).min(255) as u8,
+        (c.b() as u16 * 255 / a as u16).min(255) as u8,
+    )
+}
+
 fn prox_color(ctx: &WidgetCtx<'_>, closeness: f32, alpha: u8) -> Color32 {
     let c = closeness.clamp(0.0, 1.0);
-    let y = ctx.cfg.color(SECTION, "yellow", "#ffd23a");
-    let r = ctx.cfg.color(SECTION, "red", "#ff5050");
+    let (yr, yg, yb) = unpremultiply(ctx.cfg.color(SECTION, "yellow", "#ffd23a"));
+    let (rr, rg, rb) = unpremultiply(ctx.cfg.color(SECTION, "red", "#ff5050"));
     Color32::from_rgba_unmultiplied(
-        (y.r() as f32 + (r.r() as f32 - y.r() as f32) * c) as u8,
-        (y.g() as f32 + (r.g() as f32 - y.g() as f32) * c) as u8,
-        (y.b() as f32 + (r.b() as f32 - y.b() as f32) * c) as u8,
+        (yr as f32 + (rr as f32 - yr as f32) * c) as u8,
+        (yg as f32 + (rg as f32 - yg as f32) * c) as u8,
+        (yb as f32 + (rb as f32 - yb as f32) * c) as u8,
         alpha,
     )
+}
+
+/// Tent map 0→1→0 across [0, 1] (Python `_feather_mask` edge dissolve).
+fn tent(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.5 {
+        (t * 2.0).clamp(0.0, 1.0)
+    } else {
+        ((1.0 - t) * 2.0).clamp(0.0, 1.0)
+    }
 }
 
 fn side_marker(
@@ -237,39 +259,39 @@ fn side_marker(
     let right = x0.max(x1);
     let w = (right - left).max(1.0);
     let h = marker_h.max(1.0);
-    let alpha = ((if strong { 235.0 } else { 195.0 }) * opacity.clamp(0.0, 1.0)) as u8;
+    let peak = ((if strong { 235.0 } else { 195.0 }) * opacity.clamp(0.0, 1.0)) as u8;
     let base = if let Some(c) = closeness {
         prox_color(ctx, c, 255)
     } else {
         ctx.cfg.color(SECTION, "red", "#ff5050")
     };
-    // Approximate feathered gradient with strips.
-    let steps = 8;
-    for i in 0..steps {
-        let t0 = i as f32 / steps as f32;
-        let t1 = (i + 1) as f32 / steps as f32;
-        let fade = if to_left {
-            // solid at right (near car), transparent at left
-            1.0 - (t0 + t1) * 0.5
-        } else {
-            (t0 + t1) * 0.5
-        };
-        // Vertical feather
-        let vfade = {
-            let mid = ((t0 + t1) * 0.5 - 0.5).abs() * 2.0;
-            1.0 - mid
-        };
-        let a = (alpha as f32 * fade * vfade.max(0.15)) as u8;
-        let x_a = left + w * t0;
-        let x_b = left + w * t1;
-        ui.painter().rect_filled(
-            Rect::from_min_max(
-                Pos2::new(x_a, yc - h * 0.5),
-                Pos2::new(x_b, yc + h * 0.5),
-            ),
-            CornerRadius::ZERO,
-            color_with_alpha(base, a),
-        );
+    // Horizontal fade toward car + vertical tent feather (Python side pixmap).
+    let nx = 16;
+    let ny = 10;
+    for ix in 0..nx {
+        let tx0 = ix as f32 / nx as f32;
+        let tx1 = (ix + 1) as f32 / nx as f32;
+        let tx = (tx0 + tx1) * 0.5;
+        // Solid near car: right edge when to_left, left edge otherwise.
+        let hfade = if to_left { 1.0 - tx } else { tx };
+        for iy in 0..ny {
+            let ty0 = iy as f32 / ny as f32;
+            let ty1 = (iy + 1) as f32 / ny as f32;
+            let ty = (ty0 + ty1) * 0.5;
+            let vfade = tent(ty);
+            let a = (peak as f32 * hfade * vfade) as u8;
+            if a < 2 {
+                continue;
+            }
+            ui.painter().rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(left + w * tx0, yc - h * 0.5 + h * ty0),
+                    Pos2::new(left + w * tx1, yc - h * 0.5 + h * ty1),
+                ),
+                CornerRadius::ZERO,
+                color_with_alpha(base, a),
+            );
+        }
     }
     if !label_txt.is_empty() {
         label(
@@ -297,32 +319,36 @@ fn v_glow(
     let top = y_inner.min(y_outer);
     let bottom = y_inner.max(y_outer);
     let h = (bottom - top).max(1.0);
+    let w = (half_w * 2.0).max(1.0);
     let peak = (80.0 + 130.0 * closeness.clamp(0.0, 1.0)) as u8;
-    let col = prox_color(ctx, closeness, peak);
-    let steps = 10;
-    for i in 0..steps {
-        let t0 = i as f32 / steps as f32;
-        let t1 = (i + 1) as f32 / steps as f32;
-        // Fade from inner (t toward y_inner) to outer.
-        let along = (t0 + t1) * 0.5;
-        let from_inner = if y_inner < y_outer { along } else { 1.0 - along };
-        let a = (peak as f32 * (1.0 - from_inner)) as u8;
-        // Horizontal feather
-        let hf = 1.0 - ((along - 0.5).abs() * 0.3);
-        let y0 = top + h * t0;
-        let y1 = top + h * t1;
-        ui.painter().rect_filled(
-            Rect::from_min_max(
-                Pos2::new(cx - half_w, y0),
-                Pos2::new(cx + half_w, y1),
-            ),
-            CornerRadius::ZERO,
-            Color32::from_rgba_unmultiplied(
-                col.r(),
-                col.g(),
-                col.b(),
-                (a as f32 * hf) as u8,
-            ),
-        );
+    let base = prox_color(ctx, closeness, 255);
+    // Inner→outer fade × horizontal tent feather (Python _build_glow_pixmap).
+    let ny = 20;
+    let nx = 12;
+    for iy in 0..ny {
+        let ty0 = iy as f32 / ny as f32;
+        let ty1 = (iy + 1) as f32 / ny as f32;
+        let ty = (ty0 + ty1) * 0.5;
+        // t=0 at inner, t=1 at outer
+        let from_inner = if y_inner <= y_outer { ty } else { 1.0 - ty };
+        let a_v = 1.0 - from_inner;
+        for ix in 0..nx {
+            let tx0 = ix as f32 / nx as f32;
+            let tx1 = (ix + 1) as f32 / nx as f32;
+            let tx = (tx0 + tx1) * 0.5;
+            let a_h = tent(tx);
+            let a = (peak as f32 * a_v * a_h) as u8;
+            if a < 2 {
+                continue;
+            }
+            ui.painter().rect_filled(
+                Rect::from_min_max(
+                    Pos2::new(cx - half_w + w * tx0, top + h * ty0),
+                    Pos2::new(cx - half_w + w * tx1, top + h * ty1),
+                ),
+                CornerRadius::ZERO,
+                color_with_alpha(base, a),
+            );
+        }
     }
 }

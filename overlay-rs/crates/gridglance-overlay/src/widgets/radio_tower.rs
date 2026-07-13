@@ -87,7 +87,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let row_h = if fixed_rh > 0.0 {
         fixed_rh
     } else {
-        body_h.min(card.height() * 0.55)
+        body_h
     }
     .max(22.0);
 
