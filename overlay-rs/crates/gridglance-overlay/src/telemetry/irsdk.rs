@@ -2,7 +2,10 @@
 
 #[cfg(windows)]
 mod win {
-    use crate::telemetry::{CarRow, RadarState, RadioSpeaker, TelemetryFrame};
+    use crate::telemetry::{
+        decode_pit_flags, any_requested, CarRow, RadarState, RadioSpeaker, TelemetryFrame,
+        TireCorner,
+    };
     use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
     use std::collections::HashMap;
 
@@ -176,6 +179,45 @@ mod win {
         let position = player_position(session, cache.player_idx);
         let sf = read_i32(session, "SessionFlags");
         let flag = map_flag(sf);
+        let flag_context = flag_context_for(flag.as_deref(), sf);
+        let incident_warn = sf & (FLAG_YELLOW | FLAG_YELLOW_WAVING | FLAG_CAUTION | FLAG_CAUTION_WAVING) != 0
+            && (sf & FLAG_BLUE != 0 || sf & FLAG_BLACK != 0);
+
+        let delta = read_delta(session);
+
+        let skies = weather_skies(session);
+        let humidity = read_f32_opt(session, "RelativeHumidity").map(|h| {
+            if h <= 1.0 {
+                h * 100.0
+            } else {
+                h
+            }
+        });
+        let fog = read_f32_opt(session, "FogLevel");
+
+        let tire_corners = read_tire_corners(session);
+        let pit_flags = read_i32(session, "PitSvFlags");
+        let pit_services = decode_pit_flags(pit_flags);
+        let pit_active = any_requested(pit_flags) || read_bool(session, "PlayerCarInPitStall");
+        let pit_fuel_add_l = {
+            let v = read_f32(session, "PitSvFuel");
+            if v > 0.05 { Some(v) } else { None }
+        };
+        let pit_compound = read_i32_opt(session, "PitSvTireCompound");
+        let pit_repairs = read_i32_opt(session, "FastRepairAvailable");
+
+        let ers_battery_pct = read_f32_opt(session, "EnergyERSBatteryPct").map(|v| {
+            if v <= 1.0 {
+                v * 100.0
+            } else {
+                v
+            }
+        });
+        let have_hybrid =
+            ers_battery_pct.is_some() || read_f32_opt(session, "PowerMGU_K").is_some();
+        let ers_boost_active = read_f32(session, "PowerMGU_K") > 50.0;
+        let ers_p2p_active =
+            read_bool(session, "dcPushToPass") || read_f32(session, "PushToPass") > 0.5;
 
         let redline = {
             let rl = read_f32(session, "DriverCarRedLine");
@@ -257,10 +299,10 @@ mod win {
             session_time,
             session_state,
             flag,
-            flag_context: None,
-            incident_warn: false,
+            flag_context,
+            incident_warn,
             secondary: None,
-            delta: None,
+            delta,
             speed_mps: speed,
             rpm,
             redline,
@@ -291,6 +333,9 @@ mod win {
             tire_wear_r: ((rf + rr) * 0.5).clamp(0.0, 1.0),
             track_temp,
             air_temp,
+            skies,
+            humidity,
+            fog,
             track_wetness,
             rain_intensity,
             wind_dir,
@@ -305,6 +350,30 @@ mod win {
             radio_name: radio.as_ref().map(|r| r.name.clone()),
             radio,
             cars,
+            tire_corners,
+            tire_temps: [
+                tire_corners[0].temp.unwrap_or(0.0),
+                tire_corners[1].temp.unwrap_or(0.0),
+                tire_corners[2].temp.unwrap_or(0.0),
+                tire_corners[3].temp.unwrap_or(0.0),
+            ],
+            tire_pressures: [
+                tire_corners[0].pressure.unwrap_or(0.0),
+                tire_corners[1].pressure.unwrap_or(0.0),
+                tire_corners[2].pressure.unwrap_or(0.0),
+                tire_corners[3].pressure.unwrap_or(0.0),
+            ],
+            pit_services,
+            pit_active,
+            pit_fuel_add_l,
+            pit_fuel_to_add: pit_fuel_add_l,
+            pit_compound,
+            pit_repairs,
+            have_hybrid,
+            ers_battery_pct,
+            ers_pct: ers_battery_pct,
+            ers_boost_active,
+            ers_p2p_active,
             ..Default::default()
         }
     }
@@ -408,6 +477,101 @@ mod win {
             return Some("green".into());
         }
         None
+    }
+
+    fn flag_context_for(flag: Option<&str>, _sf: i32) -> Option<String> {
+        match flag {
+            Some("yellow") | Some("caution") => Some("Caution — pace car out".into()),
+            Some("white") => Some("White flag — final lap".into()),
+            Some("checkered") => Some("Checkered — race complete".into()),
+            Some("blue") => Some("Blue flag — yield to faster traffic".into()),
+            Some("meatball") => Some("Meatball — damage / pit for repairs".into()),
+            Some("black") => Some("Black flag — serve penalty".into()),
+            Some("red") => Some("Red flag — session stopped".into()),
+            _ => None,
+        }
+    }
+
+    unsafe fn read_delta(session: &Session) -> Option<f64> {
+        for (val_name, ok_name) in [
+            ("LapDeltaToSessionBestLap", "LapDeltaToSessionBestLap_OK"),
+            ("LapDeltaToBestLap", "LapDeltaToBestLap_OK"),
+            ("LapDeltaToOptimalLap", "LapDeltaToOptimalLap_OK"),
+        ] {
+            if !read_bool(session, ok_name) {
+                continue;
+            }
+            let v = read_f32(session, val_name) as f64;
+            if v.is_finite() && v.abs() < 600.0 {
+                return Some(v);
+            }
+        }
+        None
+    }
+
+    unsafe fn weather_skies(session: &Session) -> Option<String> {
+        let v = read_i32_opt(session, "Skies")?;
+        Some(
+            match v {
+                0 => "Clear",
+                1 => "Partly Cloudy",
+                2 => "Mostly Cloudy",
+                3 => "Overcast",
+                _ => "Cloudy",
+            }
+            .into(),
+        )
+    }
+
+    unsafe fn read_tire_corners(session: &Session) -> [TireCorner; 4] {
+        let wear = |a: &str, b: &str, c: &str| -> Option<f32> {
+            let vals = [read_f32(session, a), read_f32(session, b), read_f32(session, c)];
+            let good: Vec<f32> = vals.into_iter().filter(|v| *v > 0.0 && *v <= 1.0).collect();
+            if good.is_empty() {
+                None
+            } else {
+                Some(good.iter().sum::<f32>() / good.len() as f32)
+            }
+        };
+        let temp = |a: &str, b: &str, c: &str| -> Option<f32> {
+            let vals = [read_f32(session, a), read_f32(session, b), read_f32(session, c)];
+            let good: Vec<f32> = vals.into_iter().filter(|v| *v > 10.0 && *v < 200.0).collect();
+            if good.is_empty() {
+                None
+            } else {
+                Some(good.iter().sum::<f32>() / good.len() as f32)
+            }
+        };
+        let press = |name: &str| -> Option<f32> {
+            let v = read_f32(session, name);
+            if v > 50.0 && v < 400.0 {
+                Some(v)
+            } else {
+                None
+            }
+        };
+        [
+            TireCorner {
+                wear: wear("LFwearL", "LFwearM", "LFwearR"),
+                temp: temp("LFtempCL", "LFtempCM", "LFtempCR"),
+                pressure: press("LFpressure"),
+            },
+            TireCorner {
+                wear: wear("RFwearL", "RFwearM", "RFwearR"),
+                temp: temp("RFtempCL", "RFtempCM", "RFtempCR"),
+                pressure: press("RFpressure"),
+            },
+            TireCorner {
+                wear: wear("LRwearL", "LRwearM", "LRwearR"),
+                temp: temp("LRtempCL", "LRtempCM", "LRtempCR"),
+                pressure: press("LRpressure"),
+            },
+            TireCorner {
+                wear: wear("RRwearL", "RRwearM", "RRwearR"),
+                temp: temp("RRtempCL", "RRtempCM", "RRtempCR"),
+                pressure: press("RRpressure"),
+            },
+        ]
     }
 
     unsafe fn car_left_right(session: &Session) -> (bool, bool, bool, bool) {

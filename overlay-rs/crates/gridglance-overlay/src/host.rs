@@ -5,7 +5,10 @@ use crate::chrome::color_with_alpha;
 use crate::layered;
 use crate::state::{PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
-use crate::telemetry::{demo::DemoFeed, finalize_frame, IrsdkReader};
+use crate::telemetry::{
+    demo::DemoFeed, finalize_frame, IrsdkReader, LapCompareState, LapExtras, LapLogAccum,
+    SectorTimer,
+};
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
 use eframe::egui::{self, CornerRadius, Pos2, Rect, Sense, Stroke, ViewportBuilder, ViewportCommand, ViewportId};
@@ -50,6 +53,9 @@ pub struct OverlayApp {
     resizing: Arc<Mutex<Option<ResizeDrag>>>,
     last_click_through: HashMap<String, bool>,
     gl: Option<Arc<glow::Context>>,
+    sector_timer: SectorTimer,
+    lap_compare: LapCompareState,
+    lap_log: LapLogAccum,
 }
 
 impl OverlayApp {
@@ -66,6 +72,9 @@ impl OverlayApp {
             dragging: Arc::new(Mutex::new(None)),
             resizing: Arc::new(Mutex::new(None)),
             gl,
+            sector_timer: SectorTimer::new(),
+            lap_compare: LapCompareState::new(),
+            lap_log: LapLogAccum::new(),
         }
     }
 
@@ -88,6 +97,39 @@ impl OverlayApp {
         };
         let cfg = Arc::clone(&self.state.read().config);
         finalize_frame(&mut frame, cfg.as_ref());
+
+        self.sector_timer.update(
+            frame.player_lap_dist_pct,
+            frame.cur_lap_s,
+            frame.last_lap_s,
+        );
+        let show_delta = cfg.bool_key("sector_timing", "show_sector_delta", false);
+        frame.sectors_ui = self.sector_timer.snapshot(
+            frame.cur_lap_s,
+            frame.last_lap_s,
+            frame.best_lap_s,
+            show_delta,
+        );
+
+        self.lap_compare
+            .update(frame.player_lap_dist_pct, frame.cur_lap_s, frame.last_lap_s);
+        frame.lap_compare = self.lap_compare.view(frame.session_time);
+
+        self.lap_log.observe(
+            frame.lap,
+            frame.last_lap_s,
+            frame.track_temp,
+            LapExtras {
+                fuel_l: Some(frame.fuel_l),
+                incidents: Some(frame.incidents),
+                personal_best: frame.best_lap_s,
+                ..Default::default()
+            },
+        );
+        if !self.lap_log.laps.is_empty() {
+            frame.lap_log = self.lap_log.build_rows(cfg.as_ref());
+        }
+
         self.sysstats.sample_into(&mut frame);
         self.state.write().frame = Arc::new(frame);
     }

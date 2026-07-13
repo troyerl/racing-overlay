@@ -33,6 +33,12 @@ pub struct TableRow {
     pub is_speaking: bool,
     /// Relative strategy cue: `"undercut"` | `"cover"` when fuel window is open.
     pub strat_tag: Option<String>,
+    pub class_position: i32,
+    pub status_kind: Option<String>,
+    pub closing: Option<f32>,
+    pub team: String,
+    pub nickname: String,
+    pub laps: i32,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -144,6 +150,12 @@ impl TableRow {
             inactive,
             is_speaking: c.is_speaking,
             strat_tag: None,
+            class_position: c.class_position,
+            status_kind: c.status_kind.clone(),
+            closing: None,
+            team: String::new(),
+            nickname: String::new(),
+            laps: c.lap,
         }
     }
 }
@@ -469,6 +481,22 @@ pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     }
     frame.radar_left = frame.radar.left;
     frame.radar_right = frame.radar.right;
+
+    // Pit engineer advice + mirror fuel add / window into pit_* fields.
+    let advice = super::pit_advice::compute_pit_advice(frame, cfg);
+    if frame.pit_fuel_to_add.is_none() {
+        frame.pit_fuel_to_add = frame.fuel.add;
+    }
+    if frame.pit_fuel_add_l.is_none() {
+        frame.pit_fuel_add_l = frame.fuel.add;
+    }
+    if frame.pit_laps_to_go.is_none() {
+        if let Some((a, _)) = frame.fuel.window {
+            let remain = (a - frame.lap).max(0);
+            frame.pit_laps_to_go = Some(remain);
+        }
+    }
+    frame.pit_advice = Some(advice);
 }
 
 fn needs_irating_projection(cfg: &OverlayConfig) -> bool {

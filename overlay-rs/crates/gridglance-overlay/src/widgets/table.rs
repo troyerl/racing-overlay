@@ -475,6 +475,117 @@ fn paint_row_cols(
                     false,
                 );
             }
+            "pit" => {
+                let s = if row.in_pit || row.on_pit { "PIT" } else { "—" };
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    s,
+                    fs * 0.85,
+                    if row.in_pit || row.on_pit {
+                        cfg.color(section, "badge_pit_text", "#ffd23a")
+                    } else if dim {
+                        dim_text
+                    } else {
+                        text
+                    },
+                    true,
+                );
+            }
+            "class_pos" => {
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    &format!("{}", row.class_position.max(0)),
+                    fs,
+                    if dim { dim_text } else { text },
+                    true,
+                );
+            }
+            "status" => {
+                let s = row.status_kind.as_deref().unwrap_or("—");
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    s,
+                    fs * 0.85,
+                    if dim { dim_text } else { text },
+                    false,
+                );
+            }
+            "laps" => {
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    &format!("{}", row.laps.max(0)),
+                    fs,
+                    if dim { dim_text } else { text },
+                    false,
+                );
+            }
+            "closing" => {
+                let s = row
+                    .closing
+                    .map(|c| format!("{c:+.2}"))
+                    .unwrap_or_else(|| "—".into());
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    &s,
+                    fs * 0.9,
+                    if dim { dim_text } else { text },
+                    false,
+                );
+            }
+            "gap_ahead" | "gap_leader" => {
+                let s = if row.gap_text.is_empty() {
+                    "—"
+                } else {
+                    row.gap_text.as_str()
+                };
+                label(
+                    ui,
+                    Pos2::new(cx + cw - gutter, cy),
+                    Align2::RIGHT_CENTER,
+                    s,
+                    fs * gap_font_scale,
+                    if dim { dim_text } else { text },
+                    false,
+                );
+            }
+            "team" | "nickname" => {
+                let s = if col == "team" {
+                    &row.team
+                } else {
+                    &row.nickname
+                };
+                let show = if s.is_empty() { "—" } else { s.as_str() };
+                label(
+                    ui,
+                    Pos2::new(cx + 4.0, cy),
+                    Align2::LEFT_CENTER,
+                    show,
+                    fs * 0.9,
+                    if dim { dim_text } else { text },
+                    false,
+                );
+            }
+            "car_flag" | "qual_pos" | "qual_best" | "gap_pole" => {
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    "—",
+                    fs * 0.9,
+                    dim_text,
+                    false,
+                );
+            }
             _ => {}
         }
         cx += cw + gutter;
@@ -873,10 +984,14 @@ fn default_width(col: &str) -> f32 {
         "badge" => 0.95,
         "position" => 1.25,
         "car_number" => 1.60,
-        "gap" => 1.70,
+        "gap" | "gap_ahead" | "gap_leader" | "gap_pole" => 1.70,
         "irating" => 1.20,
         "license" => 1.35,
-        "last_lap" | "best_lap" => 2.90,
+        "pit" => 2.10,
+        "last_lap" | "best_lap" | "qual_best" => 2.90,
+        "class_pos" | "status" | "car_flag" | "laps" | "qual_pos" => 1.35,
+        "closing" => 1.80,
+        "team" | "nickname" => 2.20,
         "gutter" => 0.18,
         _ => 1.2,
     }

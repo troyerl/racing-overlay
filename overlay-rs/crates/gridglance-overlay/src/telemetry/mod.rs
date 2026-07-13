@@ -4,11 +4,23 @@ use serde::{Deserialize, Serialize};
 
 mod fuel;
 mod irsdk;
+mod lap_compare;
+mod lap_log;
+mod pit_advice;
+mod pit_service;
+mod sector_timer;
 mod strategy_hints;
 mod tables;
 
 pub use fuel::{build_fuel_snapshot, FuelCalcState, FuelInputs, FuelScenario};
 pub use irsdk::IrsdkReader;
+pub use lap_compare::{LapCompareState, LapCompareView};
+#[allow(unused_imports)] // parse_delta_str / CompletedLap used by callers / tests later
+pub use lap_log::{parse_delta_str, signed_delta_1, CompletedLap, LapExtras, LapLogAccum};
+pub use pit_advice::PitAdvice;
+#[allow(unused_imports)] // IRSDK feed will call decode_pit_flags / any_requested
+pub use pit_service::{any_requested, decode_flags as decode_pit_flags, PitService};
+pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
 pub use tables::{finalize_frame, RadarState, TableRow, TableSlotItem, TableSlots, slot_label};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -98,6 +110,10 @@ pub struct TelemetryFrame {
     pub chan_latency: Option<f32>,
     pub ers_pct: Option<f32>,
     pub ers_mode: Option<String>,
+    pub have_hybrid: bool,
+    pub ers_battery_pct: Option<f32>,
+    pub ers_boost_active: bool,
+    pub ers_p2p_active: bool,
     pub cars: Vec<CarRow>,
     /// Pre-built relative / standings views (Python `set_data` rows).
     pub relative_cars: Vec<TableRow>,
@@ -114,11 +130,33 @@ pub struct TelemetryFrame {
     pub radar_left: bool,
     pub radar_right: bool,
     pub sector_times: Vec<Option<f64>>,
+    /// Live sector timing snapshot for the sector_timing widget.
+    #[serde(default)]
+    pub sectors_ui: SectorSnapshot,
+    /// Lap-compare delta / spark / turn losses.
+    #[serde(default)]
+    pub lap_compare: LapCompareView,
     pub lap_log: Vec<LapLogRow>,
     pub tire_temps: [f32; 4],
     pub tire_pressures: [f32; 4],
+    /// Per-corner wear / temp / pressure for tire_panel (lf, rf, lr, rr).
+    #[serde(default)]
+    pub tire_corners: [TireCorner; 4],
     pub pit_laps_to_go: Option<i32>,
     pub pit_fuel_to_add: Option<f32>,
+    /// Requested pit services (from PitSvFlags).
+    #[serde(default)]
+    pub pit_services: Vec<PitService>,
+    /// True when any service is requested / board should show.
+    #[serde(default)]
+    pub pit_active: bool,
+    #[serde(default)]
+    pub pit_compound: Option<i32>,
+    /// Fuel to add (litres); preferred by pit_board over `pit_fuel_to_add`.
+    #[serde(default)]
+    pub pit_fuel_add_l: Option<f32>,
+    #[serde(default)]
+    pub pit_repairs: Option<i32>,
     pub radio_name: Option<String>,
     /// Active radio transmitter row (Python radio_tower `rows[0]`).
     pub radio: Option<RadioSpeaker>,
@@ -129,6 +167,16 @@ pub struct TelemetryFrame {
     pub fuel_use_per_hour: f32,
     pub session_laps_remain: Option<f32>,
     pub session_time_remain: Option<f32>,
+    /// Pit engineer recommendation (filled in finalize_frame).
+    #[serde(default)]
+    pub pit_advice: Option<PitAdvice>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TireCorner {
+    pub wear: Option<f32>,
+    pub temp: Option<f32>,
+    pub pressure: Option<f32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -147,7 +195,55 @@ pub struct RadioSpeaker {
 pub struct LapLogRow {
     pub lap: i32,
     pub time: String,
+    /// Display delta (e.g. `"+0.2"`); kept for IPC / legacy consumers.
     pub delta: String,
+    /// Signed seconds vs baseline; preferred for color (neg = faster).
+    #[serde(default)]
+    pub delta_s: Option<f32>,
+    #[serde(default)]
+    pub temp: String,
+    #[serde(default)]
+    pub fuel: Option<String>,
+    #[serde(default)]
+    pub tires: Option<String>,
+    #[serde(default)]
+    pub incidents: Option<String>,
+    #[serde(default)]
+    pub tag: Option<String>,
+}
+
+impl LapLogRow {
+    pub fn from_parts(
+        lap: i32,
+        time: String,
+        delta_s: Option<f32>,
+        temp: String,
+        fuel: Option<String>,
+        tires: Option<String>,
+        incidents: Option<String>,
+        tag: Option<String>,
+    ) -> Self {
+        let delta = delta_s
+            .map(lap_log::signed_delta_1)
+            .unwrap_or_else(|| "—".into());
+        Self {
+            lap,
+            time,
+            delta,
+            delta_s,
+            temp,
+            fuel,
+            tires,
+            incidents,
+            tag,
+        }
+    }
+
+    /// Numeric delta: prefer `delta_s`, else parse `delta` string.
+    pub fn delta_seconds(&self) -> Option<f32> {
+        self.delta_s
+            .or_else(|| lap_log::parse_delta_str(&self.delta))
+    }
 }
 
 pub mod demo {
@@ -240,6 +336,11 @@ pub mod demo {
             let rpm = 5600.0 + (t * 0.6).sin() as f32 * 400.0;
             let speed_mps = 147.0 / 2.236_936_3;
             let fuel_l = 15.5 / 0.264_172_05;
+            let player_pct = cars[player_i as usize].lap_dist_pct;
+            // Animate lap clock with distance so SectorTimer / LapCompare see motion.
+            let cur_lap_s = Some((player_pct as f64) * lap_est as f64);
+            let last_lap_s = Some(88.442);
+            let best_lap_s = Some(87.901);
             let speaking = (t as i32) % 4 == 0;
             let radio = if speaking {
                 let c = &cars[2];
@@ -256,6 +357,43 @@ pub mod demo {
             } else {
                 None
             };
+
+            let tire_temps = [78.0_f32, 81.0, 79.0, 82.0];
+            let tire_pressures = [27.1_f32, 27.0, 26.9, 27.2];
+            let tire_wear = [0.90_f32, 0.88, 0.86, 0.84];
+            let tire_corners = [
+                TireCorner {
+                    wear: Some(tire_wear[0]),
+                    temp: Some(tire_temps[0]),
+                    pressure: Some(tire_pressures[0]),
+                },
+                TireCorner {
+                    wear: Some(tire_wear[1]),
+                    temp: Some(tire_temps[1]),
+                    pressure: Some(tire_pressures[1]),
+                },
+                TireCorner {
+                    wear: Some(tire_wear[2]),
+                    temp: Some(tire_temps[2]),
+                    pressure: Some(tire_pressures[2]),
+                },
+                TireCorner {
+                    wear: Some(tire_wear[3]),
+                    temp: Some(tire_temps[3]),
+                    pressure: Some(tire_pressures[3]),
+                },
+            ];
+            let ers_pct = 55.0 + 10.0 * (t * 0.25).sin() as f32;
+            let pit_flags = pit_service::LF_TIRE
+                | pit_service::FUEL_FILL
+                | pit_service::TEAROFF
+                | pit_service::RF_TIRE;
+            // Leave RF unchecked in the demo so checkmarks are mixed.
+            let mut pit_services = decode_pit_flags(pit_flags);
+            if let Some(svc) = pit_services.iter_mut().find(|s| s.key == "rf_tire") {
+                svc.checked = false;
+            }
+
             TelemetryFrame {
                 connected: true,
                 session_time: t,
@@ -282,9 +420,9 @@ pub mod demo {
                 lap: 2,
                 laps_total: 50,
                 incidents: 11,
-                last_lap_s: Some(88.442),
-                best_lap_s: Some(87.901),
-                cur_lap_s: Some(42.1),
+                last_lap_s,
+                best_lap_s,
+                cur_lap_s,
                 irating: 2500,
                 irating_delta: None,
                 tire_wear_l: 0.90,
@@ -304,9 +442,13 @@ pub mod demo {
                 fps: Some(144),
                 chan_quality: Some(92.0),
                 chan_latency: Some(28.0),
-                ers_pct: Some(62.0),
+                ers_pct: Some(ers_pct),
                 ers_mode: Some("Balanced".into()),
-                player_lap_dist_pct: cars[player_i as usize].lap_dist_pct,
+                have_hybrid: true,
+                ers_battery_pct: Some(ers_pct),
+                ers_boost_active: (t as i32 % 5) < 2,
+                ers_p2p_active: (t as i32 % 7) < 2,
+                player_lap_dist_pct: player_pct,
                 lap_est_time: lap_est,
                 track_id: Some(1),
                 track_name: Some("Demo Circuit".into()),
@@ -315,24 +457,75 @@ pub mod demo {
                 radar_right: radar.right,
                 sector_times: vec![Some(28.1), Some(31.4), None],
                 lap_log: vec![
-                    LapLogRow {
-                        lap: 4,
-                        time: "1:28.112".into(),
-                        delta: "-0.12".into(),
-                    },
-                    LapLogRow {
-                        lap: 3,
-                        time: "1:28.401".into(),
-                        delta: "+0.17".into(),
-                    },
-                    LapLogRow {
-                        lap: 2,
-                        time: "1:28.230".into(),
-                        delta: "+0.00".into(),
-                    },
+                    LapLogRow::from_parts(
+                        12,
+                        "01:28.112".into(),
+                        Some(-0.12),
+                        "89.6°F".into(),
+                        Some("2.4".into()),
+                        None,
+                        Some("0".into()),
+                        None,
+                    ),
+                    LapLogRow::from_parts(
+                        11,
+                        "01:28.401".into(),
+                        Some(0.17),
+                        "89.4°F".into(),
+                        Some("2.5".into()),
+                        None,
+                        Some("0".into()),
+                        None,
+                    ),
+                    LapLogRow::from_parts(
+                        10,
+                        "01:28.230".into(),
+                        None,
+                        "89.2°F".into(),
+                        Some("2.5".into()),
+                        None,
+                        Some("1".into()),
+                        Some("OUT".into()),
+                    ),
+                    LapLogRow::from_parts(
+                        9,
+                        "01:28.510".into(),
+                        Some(0.28),
+                        "89.0°F".into(),
+                        Some("2.6".into()),
+                        None,
+                        Some("0".into()),
+                        Some("PIT".into()),
+                    ),
+                    LapLogRow::from_parts(
+                        8,
+                        "01:27.901".into(),
+                        Some(-0.41),
+                        "88.8°F".into(),
+                        Some("2.4".into()),
+                        None,
+                        Some("0".into()),
+                        None,
+                    ),
+                    LapLogRow::from_parts(
+                        7,
+                        "01:28.312".into(),
+                        Some(0.09),
+                        "88.7°F".into(),
+                        Some("2.5".into()),
+                        None,
+                        Some("0".into()),
+                        None,
+                    ),
                 ],
-                tire_temps: [78.0, 81.0, 79.0, 82.0],
-                tire_pressures: [27.1, 27.0, 26.9, 27.2],
+                tire_temps,
+                tire_pressures,
+                tire_corners,
+                pit_services,
+                pit_active: (t as i32 % 12) < 3,
+                pit_fuel_add_l: Some(18.5),
+                pit_compound: Some(1),
+                pit_repairs: Some(2),
                 pit_laps_to_go: Some(6),
                 pit_fuel_to_add: Some(18.5),
                 radio_name: radio.as_ref().map(|r| r.name.clone()),

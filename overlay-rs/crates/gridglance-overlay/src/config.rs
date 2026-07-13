@@ -720,6 +720,126 @@ fn default_cfg() -> Value {
             section.insert("stats_header_font_scale".into(), json!(1.0));
             section.insert("stats_row_font_scale".into(), json!(1.0));
         }
+        if *key == "inputs" {
+            section.insert("history_seconds".into(), json!(6.0));
+            section.insert("show_throttle".into(), Value::Bool(true));
+            section.insert("show_brake".into(), Value::Bool(true));
+            section.insert("show_clutch".into(), Value::Bool(false));
+            section.insert("show_steering".into(), Value::Bool(false));
+            section.insert("show_handbrake".into(), Value::Bool(false));
+            section.insert("show_steering_torque".into(), Value::Bool(false));
+            section.insert("show_shift_markers".into(), Value::Bool(false));
+            section.insert("show_brake_threshold".into(), Value::Bool(false));
+            section.insert("brake_threshold".into(), json!(85));
+            section.insert("show_label".into(), Value::Bool(true));
+            section.insert("show_graph".into(), Value::Bool(true));
+            section.insert("show_bars".into(), Value::Bool(true));
+            section.insert("show_gauge".into(), Value::Bool(true));
+            section.insert("label_text".into(), Value::String("TELEMETRY".into()));
+            section.insert("line_width".into(), json!(2.4));
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("accent".into(), Value::String("#e23b3b".into()));
+                colors.insert("label".into(), Value::String("#cdd3db".into()));
+                colors.insert("graph_bg".into(), Value::String("#0b0d11".into()));
+                colors.insert("grid".into(), Value::String("#ffffff14".into()));
+                colors.insert("throttle".into(), Value::String("#46df7a".into()));
+                colors.insert("brake".into(), Value::String("#e23b3b".into()));
+                colors.insert("clutch".into(), Value::String("#3aa0ff".into()));
+                colors.insert("steering".into(), Value::String("#c08bff".into()));
+                colors.insert("brake_abs".into(), Value::String("#ffd23a".into()));
+                colors.insert("brake_over".into(), Value::String("#ff7a1a".into()));
+                colors.insert("threshold".into(), Value::String("#ffffff66".into()));
+                colors.insert("bar_track".into(), Value::String("#262b34".into()));
+                colors.insert("gauge_bg".into(), Value::String("#0b0d11".into()));
+                colors.insert("gauge_ring".into(), Value::String("#333a42".into()));
+            }
+        }
+        if *key == "pit_board" {
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("PIT SERVICES".into()));
+            section.insert("show_pit_banner".into(), Value::Bool(true));
+            section.insert("pit_banner_text".into(), Value::String("PIT STOP ACTIVE".into()));
+            section.insert("show_compound".into(), Value::Bool(true));
+            section.insert("show_fast_repairs".into(), Value::Bool(true));
+            section.insert("show_pressures".into(), Value::Bool(false));
+            section.insert("row_dividers".into(), Value::Bool(true));
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("checked".into(), Value::String("#46df7a".into()));
+            }
+        }
+        if *key == "tire_panel" {
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("TIRES".into()));
+            section.insert("show_wear".into(), Value::Bool(true));
+            section.insert("show_temp".into(), Value::Bool(true));
+            section.insert("show_pressure".into(), Value::Bool(false));
+            section.insert("warn_wear_pct".into(), json!(30.0));
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("wear".into(), Value::String("#46df7a".into()));
+                colors.insert("warn".into(), Value::String("#ff9416".into()));
+                colors.insert("bar_bg".into(), Value::String("#262b34".into()));
+                colors.insert("header".into(), Value::String("#8b93a1".into()));
+            }
+        }
+        if *key == "ers_hybrid" {
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("HYBRID".into()));
+            section.insert("empty_text".into(), Value::String("No hybrid data".into()));
+            section.insert("show_battery".into(), Value::Bool(true));
+            section.insert("show_lap_energy".into(), Value::Bool(true));
+            section.insert("show_boost".into(), Value::Bool(true));
+            section.insert("show_p2p".into(), Value::Bool(true));
+            section.insert("label_battery".into(), Value::String("ERS".into()));
+            section.insert("label_lap".into(), Value::String("LAP".into()));
+            section.insert("label_boost".into(), Value::String("BOOST".into()));
+            section.insert("label_p2p".into(), Value::String("P2P".into()));
+        }
+        if *key == "leaderboard_strip" {
+            section.insert("rows".into(), json!(10));
+            section.insert("show_position".into(), Value::Bool(true));
+            section.insert("show_car_number".into(), Value::Bool(true));
+            section.insert("show_name".into(), Value::Bool(false));
+            section.insert("show_gap".into(), Value::Bool(false));
+            section.insert("show_lap".into(), Value::Bool(false));
+            section.insert("show_mph".into(), Value::Bool(false));
+            section.insert("highlight_player".into(), Value::Bool(true));
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("pylon_bg".into(), Value::String("#000000".into()));
+                colors.insert("digit".into(), Value::String("#ff9416".into()));
+                colors.insert("player".into(), Value::String("#ffffff".into()));
+            }
+        }
+        if *key == "laptime_log" {
+            section.insert("rows".into(), json!(8));
+            section.insert("show_header".into(), Value::Bool(true));
+            section.insert("delta_mode".into(), Value::String("previous".into()));
+            section.insert("temp_icon".into(), Value::Bool(true));
+            section.insert("alt_row_shading".into(), Value::Bool(true));
+            section.insert("row_dividers".into(), Value::Bool(true));
+            section.insert(
+                "column_order".into(),
+                json!(["lap", "time", "delta", "temp"]),
+            );
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("faster".into(), Value::String("#46df7a".into()));
+                colors.insert("slower".into(), Value::String("#e23b3b".into()));
+                colors.insert("header".into(), Value::String("#8b93a1".into()));
+            }
+        }
+        if *key == "sector_timing" {
+            section.insert("sectors".into(), json!(3));
+            section.insert("show_sector_delta".into(), Value::Bool(false));
+            section.insert("show_predicted_lap".into(), Value::Bool(false));
+        }
+        if *key == "pit_advisor" {
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("PIT ENGINEER".into()));
+            section.insert("show_only_when_actionable".into(), Value::Bool(true));
+            section.insert("pit_loss_seconds".into(), json!(25.0));
+            section.insert("undercut_gap_max_s".into(), json!(12.0));
+            section.insert("cover_gap_max_s".into(), json!(8.0));
+            section.insert("low_fuel_laps_threshold".into(), json!(2.0));
+        }
         m.insert((*key).into(), Value::Object(section));
     }
     m.insert("start_overlay_on_launch".into(), Value::Bool(false));
