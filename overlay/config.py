@@ -118,6 +118,12 @@ _TABLE_STYLE: dict = {
         "threat": "#ff505060",
         "lapped": "#2563eb60",
         "speaking_row": "#22c55e50",
+        "undercut_row": "#3aa0ff44",
+        "cover_row": "#ff941644",
+        "undercut_gap": "#3aa0ff",
+        "cover_gap": "#ff9416",
+        "badge_undercut": "#3aa0ff",
+        "badge_cover": "#ff9416",
         "text": "#f4f6f8",
         "muted": "#8b93a1",
         "irating_bg": "#0b0d11cc",
@@ -226,6 +232,12 @@ DEFAULTS: dict = {
         # Per-section: show a Font Awesome icon instead of the text label.
         "header_icons": {"left": False, "center": False, "right": False},
         "footer_icons": {"left": False, "center": False, "right": False},
+        # Undercut / cover cues on relative when the fuel pit window is open.
+        "show_strategy_hints": True,
+        "strategy_fuel_pct_thresh": 0.18,
+        "undercut_gap_max_s": 12.0,
+        "cover_gap_max_s": 8.0,
+        "pit_loss_seconds": 25.0,
     },
     "standings": {
         **copy.deepcopy(_TABLE_STYLE),
@@ -834,6 +846,8 @@ DEFAULTS: dict = {
         "show_p2p_zones": False,
         # Pace car dot (CarIsPaceCar) and sector / traffic marker overlays.
         "show_pace_car": True,
+        # Under caution: dashed pit-exit mark + moving pace-car safety line.
+        "show_pace_safety_line": True,
         "show_sector_boundaries": True,
         "show_traffic_markers": True,
         # Seconds a new ahead/behind/leader candidate must hold before the icon
@@ -874,6 +888,8 @@ DEFAULTS: dict = {
             "wind_text": "#eaf3ff",
             "pace_car": "#0b0e12",
             "pace_car_text": "#ffffff",
+            "pace_safety": "#ff9416ee",
+            "pit_exit_mark": "#ffd23acc",
             "sector_line": "#a78bfa",
             "sector_text": "#c4b5fd",
             "marker_leader": "#ffd23a",

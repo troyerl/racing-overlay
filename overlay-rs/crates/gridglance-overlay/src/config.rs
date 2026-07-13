@@ -557,6 +557,19 @@ fn default_cfg() -> Value {
             );
             section.insert("columns".into(), json!({ "stripe": true }));
             if *key == "relative" {
+                section.insert("show_strategy_hints".into(), Value::Bool(true));
+                section.insert("strategy_fuel_pct_thresh".into(), json!(0.18));
+                section.insert("undercut_gap_max_s".into(), json!(12.0));
+                section.insert("cover_gap_max_s".into(), json!(8.0));
+                section.insert("pit_loss_seconds".into(), json!(25.0));
+                if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                    colors.insert("undercut_row".into(), Value::String("#3aa0ff44".into()));
+                    colors.insert("cover_row".into(), Value::String("#ff941644".into()));
+                    colors.insert("undercut_gap".into(), Value::String("#3aa0ff".into()));
+                    colors.insert("cover_gap".into(), Value::String("#ff9416".into()));
+                    colors.insert("badge_undercut".into(), Value::String("#3aa0ff".into()));
+                    colors.insert("badge_cover".into(), Value::String("#ff9416".into()));
+                }
                 section.insert(
                     "header".into(),
                     json!({"left": "sof", "center": "none", "right": "position"}),
@@ -615,6 +628,7 @@ fn default_cfg() -> Value {
             section.insert("show_p2p_zones".into(), Value::Bool(false));
             section.insert("show_wind".into(), Value::Bool(true));
             section.insert("show_expanded_weather".into(), Value::Bool(false));
+            section.insert("show_pace_safety_line".into(), Value::Bool(true));
             if let Some(Value::Object(colors)) = section.get_mut("colors") {
                 colors.insert("player".into(), Value::String("#46df7a".into()));
                 colors.insert("competitor".into(), Value::String("#b06bff".into()));
@@ -622,6 +636,8 @@ fn default_cfg() -> Value {
                 colors.insert("lapping".into(), Value::String("#ff5050".into()));
                 colors.insert("pit_car".into(), Value::String("#6e747d".into()));
                 colors.insert("pace_car".into(), Value::String("#0b0e12".into()));
+                colors.insert("pace_safety".into(), Value::String("#ff9416ee".into()));
+                colors.insert("pit_exit_mark".into(), Value::String("#ffd23acc".into()));
                 colors.insert("asphalt".into(), Value::String("#333a42".into()));
                 colors.insert("outline".into(), Value::String("#8b93a1".into()));
                 colors.insert("infield".into(), Value::String("#0f1216c8".into()));

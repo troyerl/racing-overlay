@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 mod fuel;
 mod irsdk;
+mod strategy_hints;
 mod tables;
 
 pub use fuel::{build_fuel_snapshot, FuelCalcState, FuelInputs, FuelScenario};

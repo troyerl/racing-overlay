@@ -11,6 +11,8 @@ pub struct TrackPath {
     pub name: String,
     /// LapDistPct of start/finish (0..1).
     pub start_finish: f32,
+    /// LapDistPct of pit exit merge onto the racing loop (0..1), when known.
+    pub pit_out_pct: Option<f32>,
     /// DRS activation ranges as (lo, hi) lap fractions.
     pub drs_zones: Vec<(f32, f32)>,
     /// Push-to-pass ranges as (lo, hi) lap fractions.
@@ -118,15 +120,77 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         .unwrap_or(0.0) as f32;
     let drs_zones = parse_zone_ranges(v.get("drs_zones"));
     let p2p_zones = parse_zone_ranges(v.get("p2p_zones"));
+    let pit_out_pct = parse_pit_out_pct(&v, &pts);
     let target = n.clamp(64, 720);
     let resampled = resample_closed(&pts, target);
     Some(TrackPath {
         points: resampled,
         name,
         start_finish: start_finish.fract().rem_euclid(1.0),
+        pit_out_pct,
         drs_zones,
         p2p_zones,
     })
+}
+
+fn parse_pit_out_pct(v: &Value, loop_pts: &[(f32, f32)]) -> Option<f32> {
+    if let Some(p) = v.get("pit_out_pct").and_then(|x| x.as_f64()) {
+        if p.is_finite() {
+            return Some((p as f32).rem_euclid(1.0));
+        }
+    }
+    // Fallback: project last pit_out point onto the racing loop.
+    let arr = v.get("pit_out")?.as_array()?;
+    let last = arr.last()?.as_array()?;
+    if last.len() < 2 {
+        return None;
+    }
+    let x = last[0].as_f64()? as f32;
+    let y = last[1].as_f64()? as f32;
+    if !x.is_finite() || !y.is_finite() || loop_pts.len() < 2 {
+        return None;
+    }
+    Some(nearest_pct_on_loop(loop_pts, x, y))
+}
+
+/// Closest arc-length fraction on a closed loop to a model-space point.
+pub fn nearest_pct_on_loop(pts: &[(f32, f32)], x: f32, y: f32) -> f32 {
+    if pts.len() < 2 {
+        return 0.0;
+    }
+    let (cum, total) = arc_lengths(pts, true);
+    if total <= 1e-6 {
+        return 0.0;
+    }
+    let mut best_d = f32::MAX;
+    let mut best_s = 0.0_f32;
+    let nseg = pts.len();
+    for i in 0..nseg {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        let abx = b.0 - a.0;
+        let aby = b.1 - a.1;
+        let apx = x - a.0;
+        let apy = y - a.1;
+        let ab2 = abx * abx + aby * aby;
+        let t = if ab2 > 1e-12 {
+            ((apx * abx + apy * aby) / ab2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let px = a.0 + abx * t;
+        let py = a.1 + aby * t;
+        let dx = x - px;
+        let dy = y - py;
+        let d2 = dx * dx + dy * dy;
+        if d2 < best_d {
+            best_d = d2;
+            let seg0 = cum[i];
+            let seg1 = cum[i + 1];
+            best_s = seg0 + (seg1 - seg0) * t;
+        }
+    }
+    (best_s / total).rem_euclid(1.0)
 }
 
 fn parse_zone_ranges(v: Option<&Value>) -> Vec<(f32, f32)> {

@@ -258,6 +258,12 @@ fn paint_row_chrome(
         Some("inactive_row")
     } else if row.is_speaking {
         Some("speaking_row")
+    } else if section == "relative" {
+        match row.strat_tag.as_deref() {
+            Some("undercut") => Some("undercut_row"),
+            Some("cover") => Some("cover_row"),
+            _ => None,
+        }
     } else {
         None
     };
@@ -270,6 +276,8 @@ fn paint_row_chrome(
             "pit_row" => "#8b93a118",
             "inactive_row" => "#8b93a128",
             "speaking_row" => "#22c55e50",
+            "undercut_row" => "#3aa0ff44",
+            "cover_row" => "#ff941644",
             _ => "#ffffff08",
         };
         let accent = cfg.color(section, key, fallback);
@@ -490,12 +498,12 @@ fn gap_display(
             format!("{:.1}", g.abs())
         };
         let gcol = if signed_gaps && section == "relative" && !row.is_player {
-            if g > 0.0 {
-                cfg.color(section, "irating_delta_down", "#ff5050")
-            } else if g < 0.0 {
-                cfg.color(section, "irating_delta_up", "#46df7a")
-            } else {
-                text
+            match row.strat_tag.as_deref() {
+                Some("undercut") => cfg.color(section, "undercut_gap", "#3aa0ff"),
+                Some("cover") => cfg.color(section, "cover_gap", "#ff9416"),
+                _ if g > 0.0 => cfg.color(section, "irating_delta_down", "#ff5050"),
+                _ if g < 0.0 => cfg.color(section, "irating_delta_up", "#46df7a"),
+                _ => text,
             }
         } else {
             text
@@ -562,6 +570,25 @@ fn paint_badge(
             cfg.color(section, "badge_lap", "#7638c4"),
         );
         paint_clock(ui, box_r);
+        return;
+    }
+    if let Some(tag) = row.strat_tag.as_deref() {
+        let (bg, letter) = match tag {
+            "undercut" => (cfg.color(section, "badge_undercut", "#3aa0ff"), "U"),
+            "cover" => (cfg.color(section, "badge_cover", "#ff9416"), "C"),
+            _ => (cfg.color(section, "badge_empty_fill", "#00000078"), "?"),
+        };
+        ui.painter()
+            .rect_filled(box_r, CornerRadius::same(3), bg);
+        label(
+            ui,
+            box_r.center(),
+            Align2::CENTER_CENTER,
+            letter,
+            size * 0.55,
+            cfg.color(section, "badge_strat_text", "#ffffff"),
+            true,
+        );
         return;
     }
 

@@ -177,6 +177,9 @@ HELP_OVERRIDES: dict[str, str] = {
     "map.show_panel": "Draws a rounded card behind the whole map widget.",
     "map.show_drs_zones": "Highlights DRS zones from track JSON (if present).",
     "map.show_p2p_zones": "Highlights push-to-pass zones from track JSON.",
+    "map.show_pace_car": "Shows the pace car dot when CarIsPaceCar is set.",
+    "map.show_pace_safety_line": "Under caution, draws the pit-exit mark and a "
+    "moving pace-car safety line so you can see if rejoining would put you a lap down.",
     "map.car_label": "What each car dot displays: car number or race position.",
     "map.lap_proximity_pct": "Lap-distance window for red 'lapping you' tint "
     "when a car is ~one lap ahead.",
@@ -184,6 +187,13 @@ HELP_OVERRIDES: dict[str, str] = {
     "Off shows a fixed top-N list instead.",
     "relative.rows_ahead": "How many cars to show above you in centered mode.",
     "relative.rows_behind": "How many cars to show below you in centered mode.",
+    "relative.show_strategy_hints": "When the fuel pit window is open, tint nearby "
+    "cars for undercut (ahead) or cover (behind) risk.",
+    "relative.strategy_fuel_pct_thresh": "Fuel fraction that also opens strategy "
+    "hints when the formal pit window is closed (e.g. 0.18 = 18%).",
+    "relative.undercut_gap_max_s": "Max gap ahead (seconds) to tag as undercut opportunity.",
+    "relative.cover_gap_max_s": "Max gap behind (seconds) to tag as cover risk.",
+    "relative.pit_loss_seconds": "Assumed pit-stop time loss (seconds); reserved for strategy math.",
     "standings.center_on_player": "Scrolls the table to keep your row visible.",
     "standings.pin_podium": "Always keeps P1–P3 in the first three rows when centered.",
     "standings.rows": "Number of rows when not using center-on-player mode.",

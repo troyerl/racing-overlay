@@ -91,12 +91,14 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     ctx.map.cached_path.clear();
     ctx.map.cached_track_name.clear();
     ctx.map.cached_start_finish = 0.0;
+    ctx.map.cached_pit_out_pct = None;
     ctx.map.cached_drs_zones.clear();
     ctx.map.cached_p2p_zones.clear();
     if let Some(id) = tid {
         if let Some(tp) = track_path::load_for_track_id(id) {
             ctx.map.cached_track_name = tp.name.clone();
             ctx.map.cached_start_finish = tp.start_finish;
+            ctx.map.cached_pit_out_pct = tp.pit_out_pct;
             ctx.map.cached_path = tp.points;
             ctx.map.cached_drs_zones = tp.drs_zones;
             ctx.map.cached_p2p_zones = tp.p2p_zones;
@@ -105,6 +107,7 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     }
     ctx.map.cached_path = track_path::oval_path(64);
     ctx.map.cached_start_finish = 0.0;
+    ctx.map.cached_pit_out_pct = Some(0.08);
 }
 
 fn fill_infield(ui: &mut Ui, screen: &[Pos2], fill: Color32) {
@@ -153,20 +156,58 @@ fn stroke_closed(ui: &mut Ui, screen: &[Pos2], width: f32, color: Color32) {
 }
 
 fn draw_start_finish(ui: &mut Ui, path: &[(f32, f32)], xform: &PlotXform, pct: f32) {
+    draw_loop_tick(ui, path, xform, pct, 7.0, 3.0, Color32::WHITE, false);
+}
+
+/// Radial tick on the racing loop (S/F, pit exit, pace safety).
+fn draw_loop_tick(
+    ui: &mut Ui,
+    path: &[(f32, f32)],
+    xform: &PlotXform,
+    pct: f32,
+    tick: f32,
+    width: f32,
+    color: Color32,
+    dashed: bool,
+) {
     let (nx, ny) = track_path::point_at(path, pct);
     let (tx, ty) = track_path::tangent_at(path, pct);
-    // Perpendicular in screen space (same orientation as model after uniform scale).
     let px = -ty;
     let py = tx;
     let c = xform.map(nx, ny);
-    // Tick length in pixels (±7).
-    let tick = 7.0_f32;
-    // Convert model-space unit tangent to screen by rotating perpendicular already unit
-    // in model; after uniform scale direction is preserved.
     let a = Pos2::new(c.x + px * tick, c.y + py * tick);
     let b = Pos2::new(c.x - px * tick, c.y - py * tick);
-    ui.painter()
-        .line_segment([a, b], Stroke::new(3.0_f32, Color32::WHITE));
+    if dashed {
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len = (dx * dx + dy * dy).sqrt().max(1.0);
+        let segs = 5;
+        for i in 0..segs {
+            if i % 2 == 1 {
+                continue;
+            }
+            let t0 = i as f32 / segs as f32;
+            let t1 = (i + 1) as f32 / segs as f32;
+            ui.painter().line_segment(
+                [
+                    Pos2::new(a.x + dx * t0, a.y + dy * t0),
+                    Pos2::new(a.x + dx * t1, a.y + dy * t1),
+                ],
+                Stroke::new(width, color),
+            );
+        }
+        let _ = len;
+    } else {
+        ui.painter()
+            .line_segment([a, b], Stroke::new(width, color));
+    }
+}
+
+fn is_caution_flag(flag: Option<&str>) -> bool {
+    matches!(
+        flag,
+        Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
+    )
 }
 
 fn in_pit_lane(car: &CarRow) -> bool {
@@ -807,6 +848,37 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     if show_sf && !modeled.is_empty() {
         // Transform tangent via model: evaluate on modeled path.
         draw_start_finish(ui, &modeled, &xform, ctx.map.cached_start_finish);
+    }
+
+    // Caution: pit-exit reference + moving pace-car safety line ("not a lap down").
+    if ctx.cfg.bool_key(SECTION, "show_pace_safety_line", true)
+        && is_caution_flag(ctx.frame.flag.as_deref())
+        && !modeled.is_empty()
+    {
+        let exit_col = ctx.cfg.color(SECTION, "pit_exit_mark", "#ffd23acc");
+        let safety_col = ctx.cfg.color(SECTION, "pace_safety", "#ff9416ee");
+        if let Some(exit_pct) = ctx.map.cached_pit_out_pct {
+            draw_loop_tick(ui, &modeled, &xform, exit_pct, 9.0, 2.5, exit_col, true);
+        }
+        if let Some(pace) = ctx
+            .frame
+            .cars
+            .iter()
+            .find(|c| c.is_pace_car && c.lap_dist_pct >= 0.0)
+        {
+            // Moving line: pace car position. If you're still in pits when this
+            // passes the pit-exit mark, rejoining puts you a lap down.
+            draw_loop_tick(
+                ui,
+                &modeled,
+                &xform,
+                pace.lap_dist_pct,
+                11.0,
+                3.0,
+                safety_col,
+                true,
+            );
+        }
     }
 
     let player_scale = dot_scale(ctx.cfg.f64_key(SECTION, "dot_radius_frac", 0.05));

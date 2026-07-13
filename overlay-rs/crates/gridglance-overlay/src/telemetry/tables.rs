@@ -31,6 +31,8 @@ pub struct TableRow {
     pub lap_ahead: bool,
     pub inactive: bool,
     pub is_speaking: bool,
+    /// Relative strategy cue: `"undercut"` | `"cover"` when fuel window is open.
+    pub strat_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -141,6 +143,7 @@ impl TableRow {
             lap_ahead: c.lap_ahead,
             inactive,
             is_speaking: c.is_speaking,
+            strat_tag: None,
         }
     }
 }
@@ -408,7 +411,25 @@ fn pick_context_indices(
 pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     apply_irating_projection(frame, cfg);
 
-    let rel = build_relative(&frame.cars, cfg, frame.lap_est_time);
+    // Rebuild fuel first so relative undercut/cover tags can use the pit window.
+    let inp = crate::telemetry::FuelInputs {
+        level: frame.fuel_l,
+        fuel_pct: frame.fuel_pct,
+        fuel_max: frame.fuel_max_l,
+        lap: frame.lap,
+        last_lap_s: frame.last_lap_s,
+        lap_est: frame.lap_est_time,
+        laps_remain: frame.session_laps_remain,
+        time_remain: frame.session_time_remain,
+        fuel_use_per_hour: frame.fuel_use_per_hour,
+        laps_total: frame.laps_total,
+    };
+    frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
+
+    let mut rel = build_relative(&frame.cars, cfg, frame.lap_est_time);
+    if super::strategy_hints::strategy_window_active(&frame.fuel, frame.fuel_pct, cfg) {
+        super::strategy_hints::apply_strategy_hints(&mut rel, cfg);
+    }
     let std = build_standings(&frame.cars, cfg);
     frame.relative_slots = build_table_slots(frame, cfg, "relative", &rel);
     frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
@@ -448,21 +469,6 @@ pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     }
     frame.radar_left = frame.radar.left;
     frame.radar_right = frame.radar.right;
-
-    // Rebuild fuel snapshot from live frame fields + CFG.
-    let inp = crate::telemetry::FuelInputs {
-        level: frame.fuel_l,
-        fuel_pct: frame.fuel_pct,
-        fuel_max: frame.fuel_max_l,
-        lap: frame.lap,
-        last_lap_s: frame.last_lap_s,
-        lap_est: frame.lap_est_time,
-        laps_remain: frame.session_laps_remain,
-        time_remain: frame.session_time_remain,
-        fuel_use_per_hour: frame.fuel_use_per_hour,
-        laps_total: frame.laps_total,
-    };
-    frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 }
 
 fn needs_irating_projection(cfg: &OverlayConfig) -> bool {
