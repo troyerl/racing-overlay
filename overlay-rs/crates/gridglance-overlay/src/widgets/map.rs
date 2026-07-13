@@ -198,7 +198,7 @@ fn car_fill(cfg: &OverlayConfig, car: &CarRow, pit_opacity: f32) -> Color32 {
         return cfg.color(SECTION, "lapping", "#ff5050");
     }
     if car.lapping {
-        return cfg.color(SECTION, "lapped", "#4a8cff");
+        return cfg.color(SECTION, "lapped", "#2563eb");
     }
     cfg.color(SECTION, "competitor", "#b06bff")
 }
@@ -256,7 +256,8 @@ fn draw_car_number_label(
         Color32::from_rgba_unmultiplied(0, 0, 0, 220)
     };
     let stroke_w = if is_player { 1.2_f32 } else { 1.0 };
-    let pos = c;
+    // Pixel-snap so stroked glyphs don't pulse while the dot eases (Python parity).
+    let pos = Pos2::new(c.x.round(), c.y.round());
     let rich = is_player || is_pace;
     let offsets: &[(f32, f32)] = if rich {
         &[

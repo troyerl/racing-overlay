@@ -506,9 +506,7 @@ class BaseTable(QWidget):
             group_icon = str(row.get("group_icon") or "")
             group_color = str(row.get("group_color") or "")
             show_group = (not is_pro) and bool(group_icon) and icons.has(group_icon)
-            if row.get("speaking"):
-                p.setPen(col("badge_speaking_bg"))
-            elif self._row_dimmed(row):
+            if self._row_dimmed(row):
                 p.setPen(col("muted"))
             elif is_pro:
                 p.setPen(col("pro_name"))
@@ -533,9 +531,7 @@ class BaseTable(QWidget):
                     text_x = nx + gw + gap
                     text_w = max(10.0, nw - (gw + gap))
                     p.setFont(tfont(fs, bold=True))
-                    if row.get("speaking"):
-                        p.setPen(col("badge_speaking_bg"))
-                    elif self._row_dimmed(row):
+                    if self._row_dimmed(row):
                         p.setPen(col("muted"))
                     else:
                         p.setPen(col("pro_name"))
@@ -554,9 +550,7 @@ class BaseTable(QWidget):
                     text_x = nx + gw + gap
                     text_w = max(10.0, nw - (gw + gap))
                     p.setFont(tfont(fs, bold=name_bold))
-                    if row.get("speaking"):
-                        p.setPen(col("badge_speaking_bg"))
-                    elif self._row_dimmed(row):
+                    if self._row_dimmed(row):
                         p.setPen(col("muted"))
                     else:
                         p.setPen(col("text"))

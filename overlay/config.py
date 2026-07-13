@@ -107,7 +107,7 @@ _TABLE_STYLE: dict = {
         "border": "#ffffff28",
         "cell_dark": "#0b0e12",
         "row_alt": "#ffffff08",
-        "player_row": "#ff941658",
+        "player_row": "#ff941670",
         "header_bg": "#0b0e12bb",
         "footer_bg": "#0f1216",
         "pit_row": "#8b93a118",
@@ -116,7 +116,7 @@ _TABLE_STYLE: dict = {
         # will lap you; "lapped" (blue) = a car a lap down that you're lapping.
         # Rendered as a soft left-to-right gradient wash in the relative table.
         "threat": "#ff505060",
-        "lapped": "#4a8cff60",
+        "lapped": "#2563eb60",
         "speaking_row": "#22c55e50",
         "text": "#f4f6f8",
         "muted": "#8b93a1",
@@ -849,7 +849,7 @@ DEFAULTS: dict = {
             "infield": "#0f1216c8",
             "player": "#46df7a",
             "competitor": "#b06bff",
-            "lapped": "#4a8cff",
+            "lapped": "#2563eb",
             "lapping": "#ff5050",
             "corner_bg": "#0b0d11cc",
             "corner_border": "#ffffff20",

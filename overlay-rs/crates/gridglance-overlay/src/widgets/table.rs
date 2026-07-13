@@ -264,9 +264,9 @@ fn paint_row_chrome(
 
     if let Some(key) = tint_key {
         let fallback = match key {
-            "player_row" => "#ff941658",
+            "player_row" => "#ff941670",
             "threat" => "#ff505060",
-            "lapped" => "#4a8cff60",
+            "lapped" => "#2563eb60",
             "pit_row" => "#8b93a118",
             "inactive_row" => "#8b93a128",
             "speaking_row" => "#22c55e50",
@@ -374,9 +374,7 @@ fn paint_row_cols(
                 );
             }
             "name" => {
-                let colc = if row.is_speaking {
-                    cfg.color(section, "badge_speaking_bg", "#22c55e")
-                } else if dim {
+                let colc = if dim {
                     dim_text
                 } else {
                     text

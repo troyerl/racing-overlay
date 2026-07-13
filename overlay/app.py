@@ -4417,7 +4417,7 @@ class AdvancedSimHUD:
         if not lapping:
             return base
         if not lap_ahead:
-            return colors.get("lapped", "#4a8cff")
+            return colors.get("lapped", "#2563eb")
         me = self._laps_done(player, car_lap)
         them = self._laps_done(idx, car_lap)
         if me is None or them is None:

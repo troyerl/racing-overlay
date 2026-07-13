@@ -10,7 +10,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let pad = panel_pad(rect.height());
     let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
-    let player = ctx.cfg.color(SECTION, "player_row", "#ff941658");
+    let player = ctx.cfg.color(SECTION, "player_row", "#ff941670");
 
     let cars = &ctx.frame.cars;
     let n = cars.len().min(10);

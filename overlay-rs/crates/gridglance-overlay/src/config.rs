@@ -415,7 +415,7 @@ fn default_colors() -> Map<String, Value> {
         ("flag_debris_text", "#ffffff"),
         ("flag_crossed", "#ff9416cc"),
         ("flag_crossed_text", "#141414"),
-        ("player_row", "#ff941658"),
+        ("player_row", "#ff941670"),
         ("row_alt", "#ffffff08"),
         ("accent", "#70df7a"),
         ("shift_green", "#46df7a"),
@@ -438,7 +438,7 @@ fn default_colors() -> Map<String, Value> {
         ("irating_delta_up", "#46df7a"),
         ("irating_delta_down", "#ff5050"),
         ("threat", "#ff505060"),
-        ("lapped", "#4a8cff60"),
+        ("lapped", "#2563eb60"),
         ("pit_row", "#8b93a118"),
         ("inactive_row", "#8b93a128"),
         ("speaking_row", "#22c55e50"),
@@ -618,7 +618,7 @@ fn default_cfg() -> Value {
             if let Some(Value::Object(colors)) = section.get_mut("colors") {
                 colors.insert("player".into(), Value::String("#46df7a".into()));
                 colors.insert("competitor".into(), Value::String("#b06bff".into()));
-                colors.insert("lapped".into(), Value::String("#4a8cff".into()));
+                colors.insert("lapped".into(), Value::String("#2563eb".into()));
                 colors.insert("lapping".into(), Value::String("#ff5050".into()));
                 colors.insert("pit_car".into(), Value::String("#6e747d".into()));
                 colors.insert("pace_car".into(), Value::String("#0b0e12".into()));
