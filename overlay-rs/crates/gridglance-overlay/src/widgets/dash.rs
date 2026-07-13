@@ -489,7 +489,8 @@ fn draw_primary(
     if !show_l && !show_r {
         return;
     }
-    let cols = if show_l && show_r { 2 } else { 1 };
+    let both = show_l && show_r;
+    let cols = if both { 2 } else { 1 };
     let cell_w = rect.width() / cols as f32;
     let keys: Vec<&str> = match (show_l, show_r) {
         (true, true) => vec![left_key, right_key],
@@ -525,8 +526,12 @@ fn draw_primary(
             vw = text_w(ui, &FontId::proportional(val_px), &val);
             total = iw + if g.is_some() { gap } else { 0.0 } + vw;
         }
-        let mut x = cell.left();
-        let _ = total;
+        // Two columns: right-align each metric in its half. Single: center in strip.
+        let mut x = if both {
+            cell.right() - total
+        } else {
+            cell.left() + (cell.width() - total).max(0.0) * 0.5
+        };
         if g.is_some() {
             icon_paint(
                 ui,

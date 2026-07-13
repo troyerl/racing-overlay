@@ -10,6 +10,7 @@ mod layered;
 mod map_markers;
 mod paths;
 mod state;
+mod sysstats;
 mod telemetry;
 mod track_path;
 mod widgets;

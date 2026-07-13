@@ -4,6 +4,7 @@ use crate::config::WIDGET_KEYS;
 use crate::chrome::color_with_alpha;
 use crate::layered;
 use crate::state::{PanelLayout, StateHandle};
+use crate::sysstats::SysStats;
 use crate::telemetry::{demo::DemoFeed, finalize_frame, IrsdkReader};
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
@@ -26,15 +27,19 @@ struct ResizeDrag {
 
 pub struct OverlayApp {
     state: StateHandle,
-    demo: Option<DemoFeed>,
+    /// Always available; used for `--demo` and as fallback when iRacing is down.
+    demo: DemoFeed,
+    /// `None` when launched with `--demo` (skip IR entirely).
     irsdk: Option<IrsdkReader>,
+    demo_only: bool,
+    sysstats: SysStats,
     last_tick: Instant,
     open_viewports: HashSet<String>,
-    last_click_through: HashMap<String, bool>,
     /// Widget key currently being OS-dragged in edit mode.
     dragging: Arc<Mutex<Option<String>>>,
     /// Active SE-corner resize in edit mode.
     resizing: Arc<Mutex<Option<ResizeDrag>>>,
+    last_click_through: HashMap<String, bool>,
     gl: Option<Arc<glow::Context>>,
 }
 
@@ -42,8 +47,10 @@ impl OverlayApp {
     pub fn new(state: StateHandle, demo: bool, gl: Option<Arc<glow::Context>>) -> Self {
         Self {
             state,
-            demo: if demo { Some(DemoFeed::new()) } else { None },
+            demo: DemoFeed::new(),
             irsdk: if demo { None } else { Some(IrsdkReader::new()) },
+            demo_only: demo,
+            sysstats: SysStats::new(),
             last_tick: Instant::now(),
             open_viewports: HashSet::new(),
             last_click_through: HashMap::new(),
@@ -58,15 +65,21 @@ impl OverlayApp {
             return;
         }
         self.last_tick = Instant::now();
-        let mut frame = if let Some(demo) = &self.demo {
-            demo.tick()
+        let mut frame = if self.demo_only {
+            self.demo.tick()
         } else if let Some(ir) = &mut self.irsdk {
-            ir.tick()
+            let live = ir.tick();
+            if live.connected {
+                live
+            } else {
+                self.demo.tick()
+            }
         } else {
-            return;
+            self.demo.tick()
         };
         let cfg = Arc::clone(&self.state.read().config);
         finalize_frame(&mut frame, cfg.as_ref());
+        self.sysstats.sample_into(&mut frame);
         self.state.write().frame = Arc::new(frame);
     }
 }
