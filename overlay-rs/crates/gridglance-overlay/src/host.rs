@@ -85,7 +85,7 @@ impl OverlayApp {
     }
 
     fn tick_telemetry(&mut self) {
-        if self.last_tick.elapsed().as_millis() < 16 {
+        if self.last_tick.elapsed().as_millis() < 8 {
             return;
         }
         self.last_tick = Instant::now();
@@ -173,7 +173,7 @@ impl eframe::App for OverlayApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.tick_telemetry();
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        ctx.request_repaint_after(std::time::Duration::from_millis(8));
 
         let (running, edit_mode, click_through, keys_layout) = {
             let st = self.state.read();

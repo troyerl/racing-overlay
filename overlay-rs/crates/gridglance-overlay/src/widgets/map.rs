@@ -16,11 +16,13 @@ use std::f32::consts::{PI, TAU};
 
 const SECTION: &str = "map";
 /// Soft pull toward extrapolated telem-now (short = tight tracking).
-const PCT_CORRECT_TAU: f32 = 0.06;
+const PCT_CORRECT_TAU: f32 = 0.04;
 const PCT_PRED_AGE_CAP: f32 = 0.25;
 const PCT_VEL_MIN: f32 = -0.15;
 const PCT_VEL_MAX: f32 = 0.25;
+const PCT_VEL_EMA: f32 = 0.35;
 const SCREEN_EASE_TAU: f32 = 0.05;
+const SCREEN_EASE_RACE_TAU: f32 = 0.03;
 const SCREEN_EASE_SNAP: f32 = 120.0;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
@@ -955,13 +957,14 @@ fn advance_car_pcts(
             },
         );
 
-        // Fresh telem sample → update velocity from delta / dt.
+        // Fresh telem sample → EMA velocity from delta / dt.
         let telem_changed = wrap_lap_delta(telem, st.last_telem).abs() > 1e-6;
         if telem_changed {
             let telem_dt = (wall_secs - st.last_telem_secs) as f32;
             if telem_dt > 1e-4 && telem_dt < 1.0 {
                 let d = wrap_lap_delta(telem, st.last_telem);
-                st.vel = (d / telem_dt).clamp(PCT_VEL_MIN, PCT_VEL_MAX);
+                let raw_vel = (d / telem_dt).clamp(PCT_VEL_MIN, PCT_VEL_MAX);
+                st.vel = st.vel + (raw_vel - st.vel) * PCT_VEL_EMA;
             }
             st.last_telem = telem;
             st.last_telem_secs = wall_secs;
@@ -999,19 +1002,19 @@ fn is_route_key(key: u8) -> bool {
 }
 
 /// Python `_smooth_marker_point`.
-fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32) -> (Pos2, bool) {
+fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) {
     let dx = tgt.x - cur.x;
     let dy = tgt.y - cur.y;
     if dx * dx + dy * dy > SCREEN_EASE_SNAP * SCREEN_EASE_SNAP {
         return (tgt, false);
     }
-    let nx = ease(cur.x, tgt.x, dt, SCREEN_EASE_TAU);
-    let ny = ease(cur.y, tgt.y, dt, SCREEN_EASE_TAU);
+    let nx = ease(cur.x, tgt.x, dt, tau);
+    let ny = ease(cur.y, tgt.y, dt, tau);
     let moving = (nx - tgt.x).abs() > 0.35 || (ny - tgt.y).abs() > 0.35;
     (Pos2::new(nx, ny), moving)
 }
 
-/// Route/pit: light screen ease. Racing line: use predicted-% XY as-is.
+/// Light screen ease for all cars; racing line uses a shorter tau.
 fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
     targets: &HashMap<i32, (Pos2, u8)>,
@@ -1022,19 +1025,20 @@ fn smooth_car_screen_pts(
     for (&idx, &(target, key)) in targets {
         seen.insert(idx);
         let prev = ctx.map.car_screen.get(&idx).copied();
-        let pt = if !is_route_key(key) {
+        let start = match prev {
+            Some(st) => Pos2::new(st.x, st.y),
+            None => target,
+        };
+        let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
+        let tau = if is_route_key(key) {
+            SCREEN_EASE_TAU
+        } else {
+            SCREEN_EASE_RACE_TAU
+        };
+        let pt = if key_changed && start == target {
             target
         } else {
-            let start = match prev {
-                Some(st) => Pos2::new(st.x, st.y),
-                None => target,
-            };
-            let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
-            if key_changed && start == target {
-                target
-            } else {
-                smooth_marker_point(start, target, dt).0
-            }
+            smooth_marker_point(start, target, dt, tau).0
         };
         ctx.map.car_screen.insert(
             idx,
