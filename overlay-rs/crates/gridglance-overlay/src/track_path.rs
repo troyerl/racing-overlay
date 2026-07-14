@@ -16,7 +16,7 @@ pub struct PitLane {
     /// Lane-only OnPitRoad span when known.
     pub span: Option<(f32, f32)>,
     pub speed_ms: Option<f32>,
-    #[allow(dead_code)]
+    /// Scales OnPitRoad progress along `path` (1.0 = lap-% pace).
     pub lane_speed_pct: f32,
     #[allow(dead_code)]
     pub source: Option<String>,
@@ -28,6 +28,7 @@ impl PitLane {
     }
 
     /// Concatenated route for car placement (entry + lane + exit when blends on).
+    #[allow(dead_code)]
     pub fn route(&self, include_blends: bool) -> Vec<(f32, f32)> {
         let mut out = Vec::new();
         if include_blends && self.entry.len() >= 2 {

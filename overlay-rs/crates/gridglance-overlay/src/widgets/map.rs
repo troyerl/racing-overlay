@@ -396,6 +396,103 @@ fn pct_in_interval(pct: f32, lo: f32, hi: f32) -> bool {
     ((pct - lo).rem_euclid(1.0)) <= span
 }
 
+fn hypot2(a: (f32, f32), b: (f32, f32)) -> f32 {
+    let dx = a.0 - b.0;
+    let dy = a.1 - b.1;
+    dx * dx + dy * dy
+}
+
+/// Python `_pit_path_handoff_point`: where pit_in meets pit_path.
+fn pit_path_handoff(lane: &track_path::PitLane) -> Option<(f32, f32)> {
+    if let Some(p) = lane.entry.last() {
+        return Some(*p);
+    }
+    lane.path.first().copied()
+}
+
+/// Python `_pit_path_needs_reverse`.
+fn pit_path_needs_reverse(lane: &track_path::PitLane) -> bool {
+    if lane.path.len() < 2 {
+        return false;
+    }
+    let Some(handoff) = pit_path_handoff(lane) else {
+        return false;
+    };
+    let p0 = lane.path[0];
+    let p1 = *lane.path.last().unwrap();
+    hypot2(p1, handoff) < hypot2(p0, handoff)
+}
+
+/// Project pit_path endpoints onto the racing loop; prefer authored span when
+/// it lies inside that projection (Python `_pit_lane_bounds`).
+fn pit_lane_bounds(
+    racing: &[(f32, f32)],
+    lane: &track_path::PitLane,
+) -> Option<(f32, f32)> {
+    if lane.path.len() < 2 || racing.len() < 2 {
+        return lane.span;
+    }
+    let mut path_lo = track_path::nearest_pct_on_loop(racing, lane.path[0].0, lane.path[0].1);
+    let mut path_hi = {
+        let last = *lane.path.last().unwrap();
+        track_path::nearest_pct_on_loop(racing, last.0, last.1)
+    };
+    if let Some((lane_lo, lane_hi)) = lane.span {
+        if pct_in_interval(lane_lo, path_lo, path_hi) {
+            path_lo = lane_lo;
+        }
+        if pct_in_interval(lane_hi, path_lo, path_hi) {
+            path_hi = lane_hi;
+        }
+    }
+    Some((path_lo, path_hi))
+}
+
+/// Python `_pit_lane_mapping_interval`: wide oval spans use path projection.
+fn pit_lane_mapping_interval(
+    racing: &[(f32, f32)],
+    lane: &track_path::PitLane,
+) -> Option<(f32, f32)> {
+    let path_bounds = pit_lane_bounds(racing, lane);
+    let Some((lane_lo, lane_hi)) = lane.span else {
+        return path_bounds;
+    };
+    let span = (lane_hi - lane_lo).rem_euclid(1.0);
+    if span > 0.5 {
+        if let Some(pb) = path_bounds {
+            return Some(pb);
+        }
+    }
+    Some((lane_lo, lane_hi))
+}
+
+/// Place on pit_path for a lap-% interval (Python `_pit_path_pos_for_route_pct`).
+fn pit_path_pos_for_route_pct(
+    lane: &track_path::PitLane,
+    pct: f32,
+    lo: f32,
+    hi: f32,
+) -> Option<(f32, f32)> {
+    if lane.path.len() < 2 {
+        return None;
+    }
+    let span = (hi - lo).rem_euclid(1.0);
+    if span <= 1e-6 {
+        return None;
+    }
+    let linear = ((pct - lo).rem_euclid(1.0) / span).clamp(0.0, 1.0);
+    let speed = if lane.lane_speed_pct > 0.0 {
+        lane.lane_speed_pct
+    } else {
+        1.0
+    };
+    let mut t = (linear * speed).clamp(0.0, 1.0);
+    if pit_path_needs_reverse(lane) {
+        t = 1.0 - t;
+    }
+    Some(track_path::point_on_open(&lane.path, t))
+}
+
 fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
     let lane = &ctx.map.cached_pit;
     let route_lo = lane
@@ -412,7 +509,8 @@ fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
     for car in cars {
         let idx = car.car_idx;
         seen.insert(idx);
-        let on = car.on_pit || car.in_pit;
+        // Latch on CarIdxOnPitRoad only — not ApproachingPits / stall.
+        let on = car.on_pit;
         let pct = car.lap_dist_pct;
         let prev = ctx.map.pit_prev_on.get(&idx).copied().unwrap_or(false);
         if prev && !on && pct >= 0.0 {
@@ -441,7 +539,6 @@ fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
 
 fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
     car.on_pit
-        || car.in_pit
         || ctx
             .map
             .pit_route_latch
@@ -450,6 +547,7 @@ fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
             .unwrap_or(false)
 }
 
+/// Schematic pit placement (Python `_pos_for_schematic_route`); no full-route fallback.
 fn car_model_xy(
     ctx: &WidgetCtx<'_>,
     car: &CarRow,
@@ -459,7 +557,7 @@ fn car_model_xy(
     pit2: &track_path::PitLane,
     show_blends: bool,
 ) -> (f32, f32) {
-    let on_pit = car.on_pit || car.in_pit;
+    let on_pit = car.on_pit;
     let on_route = car_on_route(ctx, car);
     if !on_route && !on_pit {
         return track_path::point_at(racing, pct);
@@ -475,6 +573,7 @@ fn car_model_xy(
             .unwrap_or(track_path::DEMO_PIT_IN_PCT);
         let out_pct = lane
             .out_pct
+            .or(ctx.map.cached_pit_out_pct)
             .or(lane.span.map(|(_, b)| b))
             .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
         let (lane_lo, lane_hi) = lane
@@ -482,7 +581,7 @@ fn car_model_xy(
             .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
 
         // Exit merge: off pit road, on_route, along pit_out.
-        if show_blends && !on_pit && lane.exit.len() >= 2 {
+        if show_blends && !on_pit && on_route && lane.exit.len() >= 2 {
             let exit_start = ctx
                 .map
                 .pit_exit_latch
@@ -503,20 +602,16 @@ fn car_model_xy(
             }
         }
 
-        // Pit road while OnPitRoad.
+        // Pit road while OnPitRoad only.
         if on_pit && lane.path.len() >= 2 {
-            let t = track_path::route_t_for_pct(pct, lane_lo, lane_hi);
-            return track_path::point_on_open(&lane.path, t);
-        }
-
-        // Latched but still in full route: fall back to concatenated path.
-        if on_route {
-            let route = lane.route(show_blends);
-            if route.len() >= 2 {
-                let t = track_path::route_t_for_pct(pct, in_pct, out_pct);
-                return track_path::point_on_open(&route, t);
+            let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
+                .or(Some((lane_lo, lane_hi)))
+                .unwrap();
+            if let Some(pos) = pit_path_pos_for_route_pct(lane, pct, rlo, rhi) {
+                return pos;
             }
         }
+        // No phase match → racing line (do not map onto concatenated pit route).
     }
     track_path::point_at(racing, pct)
 }
@@ -526,10 +621,6 @@ fn is_caution_flag(flag: Option<&str>) -> bool {
         flag,
         Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
     )
-}
-
-fn in_pit_lane(car: &CarRow) -> bool {
-    car.on_pit || car.in_pit
 }
 
 /// Python `_dot_scale`: frac relative to 0.05 default, clamped.
@@ -547,7 +638,7 @@ fn car_fill(cfg: &OverlayConfig, car: &CarRow, pit_opacity: f32, on_route: bool)
         return cfg.color(SECTION, "pace_car", "#0b0e12");
     }
     // Python `_car_dot_style`: grey when on_pit or on_route (non-player).
-    if (in_pit_lane(car) || on_route) && !car.is_player {
+    if (car.on_pit || on_route) && !car.is_player {
         let pit = cfg.color(SECTION, "pit_car", "#6e747d");
         return color_with_alpha(pit, (pit_opacity.clamp(0.05, 1.0) * 255.0) as u8);
     }
@@ -1388,7 +1479,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         } else {
             9.0 * other_scale
         };
-        if car.is_player && (in_pit_lane(car) || on_route) {
+        if car.is_player && (car.on_pit || on_route) {
             r *= 1.15;
         }
         if let Some(slot) = marker_slots.get(&car.car_idx) {
