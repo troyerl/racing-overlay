@@ -11,8 +11,8 @@ use std::collections::HashMap;
 
 const ROW_SNAP_SLOTS: f32 = 1.25;
 const DENSE_ROW_COUNT: usize = 20;
-const DENSE_ROW_SNAP_SLOTS: f32 = 1.0;
-const DENSE_ROW_EASE_TAU: f32 = 0.12;
+const DENSE_ROW_SNAP_SLOTS: f32 = 0.5;
+const DENSE_ROW_EASE_TAU: f32 = 0.08;
 
 #[derive(Clone, Default)]
 struct RowAnimState {
@@ -179,24 +179,30 @@ pub fn paint_table(
     });
 
     let dividers = cfg.bool_key(section, "row_dividers", true);
-    let mut prev_draw_y: Option<f32> = None;
+    let dense = rows.len() >= DENSE_ROW_COUNT;
+    let body_clip = Rect::from_min_max(
+        Pos2::new(left, body_top),
+        Pos2::new(left + inner_w, body_bottom),
+    )
+    .intersect(ui.clip_rect());
+    let prev_clip = ui.clip_rect();
+    ui.set_clip_rect(body_clip);
+    let mut prev_draw_idx: Option<f32> = None;
     for &i in &draw_order {
         let row = &rows[i];
         if row.empty {
             continue;
         }
         let st = anim.slots.get(&row.key);
-        let slot_y = st.map(|s| s.idx).unwrap_or(i as f32);
+        let slot_idx = st.map(|s| s.idx).unwrap_or(i as f32);
         let opacity = st.map(|s| s.opacity).unwrap_or(1.0);
-        let ry = body_top + slot_y * rh;
-        if ry + rh > body_bottom {
-            continue;
-        }
+        let ry = body_top + slot_idx * rh;
         let row_rect = Rect::from_min_size(Pos2::new(left, ry), Vec2::new(inner_w, rh));
+        let sliding = dense && (slot_idx - i as f32).abs() > 0.02;
         if dividers {
-            if let Some(prev_y) = prev_draw_y {
-                // Python draws the divider at the top of the current row (between rows).
-                if (ry - prev_y).abs() > 0.5 {
+            if let Some(prev_idx) = prev_draw_idx {
+                // Python: divider only between nearly-adjacent settled animated slots.
+                if (slot_idx - prev_idx).abs() <= 1.05 && !sliding {
                     let line = cfg.color(section, "border", "#ffffff28");
                     let a = ((line.a() as f32) * 0.55).max(30.0) as u8;
                     ui.painter().line_segment(
@@ -208,7 +214,7 @@ pub fn paint_table(
                     );
                 }
             }
-            prev_draw_y = Some(ry + rh);
+            prev_draw_idx = Some(slot_idx);
         }
         if opacity < 0.99 {
             // Soft fade-in: tint with alpha via layer (simple multiply on text later).
@@ -235,6 +241,7 @@ pub fn paint_table(
             muted,
         );
     }
+    ui.set_clip_rect(prev_clip);
 
     if show_footer {
         // Full-bleed footer band; slots inset (Python draw_footer).

@@ -55,7 +55,7 @@ pub struct MapAuthoring {
     pub marker_hold: crate::map_markers::HoldStates,
     /// Eased lap_dist_pct per car_idx for smooth map motion.
     pub car_anim: HashMap<i32, f32>,
-    /// Session time of last map paint (for smoothing dt).
+    /// Wall/egui time of last map paint (for car easing dt; not SessionTime).
     pub last_paint_secs: f64,
     /// Hold car on pit route after OnPitRoad clears until past pit_out.
     pub pit_route_latch: HashMap<i32, bool>,

@@ -922,15 +922,15 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-fn ease_car_pcts(ctx: &mut WidgetCtx<'_>) -> HashMap<i32, f32> {
-    let now = ctx.frame.session_time;
+fn ease_car_pcts(ctx: &mut WidgetCtx<'_>, wall_secs: f64) -> HashMap<i32, f32> {
+    // Wall/egui clock like Python track_map._dt — SessionTime stalls/skips live.
     let mut dt = if ctx.map.last_paint_secs > 0.0 {
-        (now - ctx.map.last_paint_secs) as f32
+        (wall_secs - ctx.map.last_paint_secs) as f32
     } else {
         1.0 / 60.0
     };
     dt = dt.clamp(0.0, 0.1);
-    ctx.map.last_paint_secs = now;
+    ctx.map.last_paint_secs = wall_secs;
 
     let mut seen = HashMap::new();
     let mut out = HashMap::new();
@@ -1591,7 +1591,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 3.0);
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
 
-    let eased = ease_car_pcts(ctx);
+    let wall_secs = ui.input(|i| i.time);
+    let eased = ease_car_pcts(ctx, wall_secs);
 
     let markers = if show_markers {
         map_markers::resolve_traffic_markers(
