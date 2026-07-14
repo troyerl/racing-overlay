@@ -922,16 +922,7 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-fn ease_car_pcts(ctx: &mut WidgetCtx<'_>, wall_secs: f64) -> HashMap<i32, f32> {
-    // Wall/egui clock like Python track_map._dt — SessionTime stalls/skips live.
-    let mut dt = if ctx.map.last_paint_secs > 0.0 {
-        (wall_secs - ctx.map.last_paint_secs) as f32
-    } else {
-        1.0 / 60.0
-    };
-    dt = dt.clamp(0.0, 0.1);
-    ctx.map.last_paint_secs = wall_secs;
-
+fn ease_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32) -> HashMap<i32, f32> {
     let mut seen = HashMap::new();
     let mut out = HashMap::new();
     for car in &ctx.frame.cars {
@@ -962,6 +953,67 @@ fn ease_car_pcts(ctx: &mut WidgetCtx<'_>, wall_secs: f64) -> HashMap<i32, f32> {
     }
     ctx.map.car_anim.retain(|k, _| seen.contains_key(k));
     out
+}
+
+const SCREEN_EASE_TAU: f32 = 0.09;
+const SCREEN_EASE_SNAP: f32 = 120.0;
+
+/// Python `_car_motion_key` (schematic): pct vs route + pit flags.
+fn car_motion_key(on_route: bool, on_pit: bool) -> u8 {
+    let mode = if on_route { 1u8 } else { 0u8 };
+    mode | ((on_route as u8) << 1) | ((on_pit as u8) << 2)
+}
+
+/// Python `_smooth_marker_point`.
+fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32) -> (Pos2, bool) {
+    let dx = tgt.x - cur.x;
+    let dy = tgt.y - cur.y;
+    if dx * dx + dy * dy > SCREEN_EASE_SNAP * SCREEN_EASE_SNAP {
+        return (tgt, false);
+    }
+    let nx = ease(cur.x, tgt.x, dt, SCREEN_EASE_TAU);
+    let ny = ease(cur.y, tgt.y, dt, SCREEN_EASE_TAU);
+    let moving = (nx - tgt.x).abs() > 0.35 || (ny - tgt.y).abs() > 0.35;
+    (Pos2::new(nx, ny), moving)
+}
+
+/// Ease screen targets toward telemetry (Python `_build_smooth_car_screen_points`).
+fn smooth_car_screen_pts(
+    ctx: &mut WidgetCtx<'_>,
+    targets: &HashMap<i32, (Pos2, u8)>,
+    dt: f32,
+) -> (HashMap<i32, Pos2>, bool) {
+    let mut pts = HashMap::new();
+    let mut animating = false;
+    let mut seen = std::collections::HashSet::new();
+    for (&idx, &(target, key)) in targets {
+        seen.insert(idx);
+        let prev = ctx.map.car_screen.get(&idx).copied();
+        let (start, key_changed) = match prev {
+            Some(st) if st.key == key => (Pos2::new(st.x, st.y), false),
+            Some(st) => (Pos2::new(st.x, st.y), true),
+            None => (target, true),
+        };
+        let (pt, moving) = if key_changed && start == target {
+            (target, false)
+        } else {
+            smooth_marker_point(start, target, dt)
+        };
+        ctx.map.car_screen.insert(
+            idx,
+            crate::state::CarScreenAnim {
+                x: pt.x,
+                y: pt.y,
+                key,
+            },
+        );
+        pts.insert(idx, pt);
+        if moving {
+            animating = true;
+        }
+    }
+    ctx.map.car_screen.retain(|k, _| seen.contains(k));
+    (pts, animating)
 }
 
 fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
@@ -1592,7 +1644,13 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
 
     let wall_secs = ui.input(|i| i.time);
-    let eased = ease_car_pcts(ctx, wall_secs);
+    let dt = if ctx.map.last_paint_secs > 0.0 {
+        ((wall_secs - ctx.map.last_paint_secs) as f32).clamp(0.0, 0.1)
+    } else {
+        1.0 / 60.0
+    };
+    ctx.map.last_paint_secs = wall_secs;
+    let eased = ease_car_pcts(ctx, dt);
 
     let markers = if show_markers {
         map_markers::resolve_traffic_markers(
@@ -1627,7 +1685,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     update_pit_route_latches(ctx, &cars);
 
-    let mut car_pts: HashMap<i32, Pos2> = HashMap::new();
+    // Raw telem targets, then screen-space ease (Python `_build_smooth_car_screen_points`).
+    let mut targets: HashMap<i32, (Pos2, u8)> = HashMap::new();
     for car in &cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
@@ -1644,7 +1703,22 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
-        car_pts.insert(car.car_idx, p);
+        let key = car_motion_key(on_route, car.on_pit);
+        targets.insert(car.car_idx, (p, key));
+    }
+    let (car_pts, car_animating) = smooth_car_screen_pts(ctx, &targets, dt);
+    if car_animating {
+        ui.ctx().request_repaint();
+    }
+
+    for car in &cars {
+        if car.is_pace_car && car.lap_dist_pct < 0.0 {
+            continue;
+        }
+        let Some(&p) = car_pts.get(&car.car_idx) else {
+            continue;
+        };
+        let on_route = car_on_route(ctx, car);
         let mut r = if car.is_player {
             12.5 * player_scale
         } else {

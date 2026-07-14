@@ -10,6 +10,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
+/// Per-car screen-space ease state (Python track_map `_car_anim` screen pts).
+#[derive(Debug, Clone, Copy)]
+pub struct CarScreenAnim {
+    pub x: f32,
+    pub y: f32,
+    /// Packed motion key: mode (pct=0/route=1) | on_route<<1 | on_pit<<2.
+    pub key: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct MapAuthoring {
     pub pit_edit: bool,
@@ -55,6 +64,8 @@ pub struct MapAuthoring {
     pub marker_hold: crate::map_markers::HoldStates,
     /// Eased lap_dist_pct per car_idx for smooth map motion.
     pub car_anim: HashMap<i32, f32>,
+    /// Screen-space eased car dots (Python `_car_anim` screen pts).
+    pub car_screen: HashMap<i32, CarScreenAnim>,
     /// Wall/egui time of last map paint (for car easing dt; not SessionTime).
     pub last_paint_secs: f64,
     /// Hold car on pit route after OnPitRoad clears until past pit_out.
@@ -104,6 +115,7 @@ impl Default for MapAuthoring {
             pit_drag: None,
             marker_hold: crate::map_markers::fresh_hold_states(),
             car_anim: HashMap::new(),
+            car_screen: HashMap::new(),
             last_paint_secs: 0.0,
             pit_route_latch: HashMap::new(),
             pit_prev_on: HashMap::new(),
