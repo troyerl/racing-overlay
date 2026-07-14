@@ -8,8 +8,8 @@ use crate::track_path;
 use crate::state::MapAuthoring;
 use egui::{
     epaint::{PathShape, PathStroke},
-    Align2, Color32, CursorIcon, FontFamily, FontId, PointerButton, Pos2, Rect, Sense, Shape,
-    Stroke, Ui, Vec2,
+    Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, PointerButton, Pos2, Rect,
+    Sense, Shape, Stroke, Ui, Vec2,
 };
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -493,8 +493,8 @@ fn draw_car_number_label(
         Color32::from_rgba_unmultiplied(0, 0, 0, 220)
     };
     let stroke_w = if is_player { 1.2_f32 } else { 1.0 };
-    // Pixel-snap so stroked glyphs don't pulse while the dot eases (Python parity).
-    let pos = Pos2::new(c.x.round(), c.y.round());
+    // Use the same subpixel center as the eased dot (no pixel-snap lag).
+    let pos = c;
     let rich = is_player || is_pace;
     let offsets: &[(f32, f32)] = if rich {
         &[
@@ -1118,9 +1118,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             screen.iter().map(|p| p.y).sum::<f32>() / n,
         )
     };
-    if ctx.cfg.bool_key(SECTION, "show_sector_boundaries", true) && !path.is_empty() {
-        let sect_col = ctx.cfg.color(SECTION, "sector_boundary", "#ffffff55");
-        draw_sector_boundaries(ui, ctx, &path, &xform, mirror, rot, sect_col);
+    if ctx.cfg.bool_key(SECTION, "show_sector_boundaries", true) && !modeled.is_empty() {
+        draw_sector_boundaries(ui, ctx, &modeled, &xform, screen_centroid);
     }
     if ctx.cfg.bool_key(SECTION, "show_corners", true) && !ctx.map.cached_corners.is_empty() {
         draw_corners(ui, ctx, &path, &xform, mirror, rot, screen_centroid);
@@ -1403,33 +1402,71 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 }
 
+/// Python `_draw_sector_boundaries`: purple ticks + S2/S3… pills at sector starts.
 fn draw_sector_boundaries(
     ui: &mut Ui,
     ctx: &WidgetCtx<'_>,
-    path: &[(f32, f32)],
+    modeled: &[(f32, f32)],
     xform: &PlotXform,
-    mirror: bool,
-    rot: i32,
-    col: Color32,
+    centroid: Pos2,
 ) {
-    let mut pcts: Vec<f32> = ctx
-        .map
-        .cached_corners
+    let mut starts: Vec<f32> = ctx
+        .frame
+        .sectors_ui
+        .starts
         .iter()
-        .map(|c| c.pct)
+        .map(|s| *s as f32)
         .filter(|p| p.is_finite())
         .collect();
-    if pcts.len() < 2 {
-        let n = ctx.map.num_turns.max(3) as i32;
-        pcts = (0..n).map(|i| i as f32 / n as f32).collect();
+    if starts.is_empty() {
+        let n = ctx
+            .cfg
+            .f64_key("sector_timing", "sectors", 3.0)
+            .round()
+            .max(1.0) as usize;
+        starts = (0..n).map(|i| i as f32 / n as f32).collect();
     }
-    pcts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    for pct in pcts {
-        let (nx, ny) = track_path::point_at(path, pct);
-        let (mx, my) = model_point(nx, ny, mirror, rot);
-        let p = xform.map(mx, my);
+    starts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    starts.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
+
+    let sf = ctx.map.cached_start_finish;
+    let line = ctx.cfg.color(SECTION, "sector_line", "#a78bfa");
+    let text_col = ctx.cfg.color(SECTION, "sector_text", "#c4b5fd");
+    let asph = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
+    let text_scale = ctx.cfg.text_scale(SECTION);
+    let sz = (7.0 * text_scale).max(5.0);
+    let label_off = asph * 0.5 + sz + 6.0;
+    let mut label_num = 2_i32;
+
+    for start in starts {
+        // Skip start/finish (Python: near 0 or sf_frac).
+        if start.abs() < 1e-4 || (start - sf).abs() < 0.01 {
+            continue;
+        }
+        draw_loop_tick(ui, modeled, xform, start, 6.0, 2.0, line, false);
+
+        let (nx, ny) = track_path::point_at(modeled, start);
+        let pt = xform.map(nx, ny);
+        let outward = outward_from(pt, centroid, label_off);
+        let tag = format!("S{label_num}");
+        label_num += 1;
+
+        let font = FontId::new(sz, FontFamily::Name(crate::icons::BOLD_FAMILY.into()));
+        let galley = ui.fonts(|f| f.layout_no_wrap(tag.clone(), font, text_col));
+        let bw = galley.size().x.max(sz + 2.0) + 8.0;
+        let bh = galley.size().y + 2.0;
+        let rect = Rect::from_center_size(outward, Vec2::new(bw, bh));
         ui.painter()
-            .circle_filled(p, 2.5, color_with_alpha(col, 180));
+            .rect_filled(rect, CornerRadius::same(3), line);
+        label(
+            ui,
+            rect.center(),
+            Align2::CENTER_CENTER,
+            &tag,
+            sz,
+            text_col,
+            true,
+        );
     }
 }
 

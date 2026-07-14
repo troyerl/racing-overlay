@@ -678,9 +678,13 @@ fn default_cfg() -> Value {
                 colors.insert("drs_zone".into(), Value::String("#46df7a88".into()));
                 colors.insert("p2p_zone".into(), Value::String("#3aa0ff88".into()));
                 colors.insert("active_sector".into(), Value::String("#ffd23a66".into()));
+                colors.insert("sector_line".into(), Value::String("#a78bfa".into()));
+                colors.insert("sector_text".into(), Value::String("#c4b5fd".into()));
                 colors.insert("wind".into(), Value::String("#9fd0ff".into()));
                 colors.insert("wind_text".into(), Value::String("#eaf3ff".into()));
             }
+            section.insert("show_sector_boundaries".into(), Value::Bool(true));
+            section.insert("show_corners".into(), Value::Bool(true));
         }
         if *key == "radar" {
             section.insert("show_panel".into(), Value::Bool(false));
