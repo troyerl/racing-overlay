@@ -60,6 +60,41 @@ def make_irsdk(demo: bool = False):
     return ir
 
 
+def in_garage_from_ir(ir) -> bool:
+    """True when the player is in garage or the garage UI is showing.
+
+    ``IsInGarage`` covers car physics in the garage. Spectators / out-of-car
+    clients often have that false while the enter-car screen is open —
+    ``IsGarageVisible`` covers that case.
+    """
+    if ir is None:
+        return False
+
+    def _flag(key: str) -> bool:
+        try:
+            return bool(ir[key])
+        except Exception:
+            return False
+
+    return _flag("IsInGarage") or _flag("IsGarageVisible")
+
+
+def sync_context_from_ir(ir) -> str:
+    """Set garage/race from telemetry; clear a conflicting Settings preview pin.
+
+    Returns the telemetry-derived context (``\"garage\"`` or ``\"race\"``).
+    """
+    from . import config
+
+    ctx = "garage" if in_garage_from_ir(ir) else "race"
+    if ctx != config.active_context():
+        config.set_context(ctx)
+    pin = config.preview_context()
+    if pin is not None and pin != ctx:
+        config.set_preview_context(None)
+    return ctx
+
+
 def set_windows_click_through(widget: QWidget, enabled: bool) -> None:
     """Set or clear the Win32 extended styles for genuine click-through.
 

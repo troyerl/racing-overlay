@@ -92,6 +92,23 @@ def test_garage_visible_without_in_garage():
     config.set_preview_context(None)
 
 
+def test_in_garage_from_ir_helper():
+    from overlay.common import in_garage_from_ir, sync_context_from_ir
+
+    assert in_garage_from_ir(None) is False
+    assert in_garage_from_ir({"IsInGarage": False, "IsGarageVisible": False}) is False
+    assert in_garage_from_ir({"IsInGarage": True}) is True
+    assert in_garage_from_ir({"IsInGarage": False, "IsGarageVisible": True}) is True
+
+    config.set_preview_context(None)
+    config.set_context("race", notify=False)
+    config.set_preview_context("race")
+    assert sync_context_from_ir({"IsGarageVisible": True}) == "garage"
+    assert config.active_context() == "garage"
+    assert config.preview_context() is None
+    config.set_preview_context(None)
+
+
 def test_race_when_neither_garage_flag():
     config.set_preview_context(None)
     config.set_context("garage", notify=False)

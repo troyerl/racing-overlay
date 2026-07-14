@@ -47,7 +47,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     let config = config::OverlayConfig::load().unwrap_or_default();
     let click_through = !args.no_clickthrough;
-    let state = state::new_state(config, click_through);
+    let state = state::new_state(config, click_through, args.demo);
     if args.stopped {
         state.write().running = false;
     }

@@ -698,27 +698,8 @@ class AdvancedSimHUD:
             self._finish_profile_loading()
 
     def _update_context(self) -> None:
-        """Pick the 'garage' or 'race' profile from telemetry.
-
-        ``IsInGarage`` is true when the player's car has garage physics running.
-        Spectators / out-of-car clients often have that false while the garage
-        UI is open — ``IsGarageVisible`` covers that case.
-        """
-        def _flag(key: str) -> bool:
-            try:
-                return bool(self.ir[key])
-            except Exception:
-                return False
-
-        in_garage = _flag("IsInGarage") or _flag("IsGarageVisible")
-        ctx = "garage" if in_garage else "race"
-        if ctx != config.active_context():
-            config.set_context(ctx)
-        # Settings pins a preview context for editing; that must not block
-        # telemetry-driven garage/race switching on the live overlay.
-        pin = config.preview_context()
-        if pin is not None and pin != ctx:
-            config.set_preview_context(None)
+        """Pick the 'garage' or 'race' profile from telemetry."""
+        oc.sync_context_from_ir(self.ir)
         self._maybe_auto_switch_preset()
 
     def current_car(self) -> tuple[str, str]:
@@ -5949,6 +5930,26 @@ def _main_rust() -> int:
         )
         hold["remote"] = remote
         config.on_preset_change(lambda _name: remote.apply_active_preset())
+        config.on_context_change(lambda _ctx: remote.apply_active_preset())
+
+        # Garage/race profile for the hybrid path (Python HUD does this in
+        # AdvancedSimHUD._update_context; Rust paint alone never sees IR garage flags).
+        context_ir = oc.make_irsdk(demo=demo)
+
+        def _poll_garage_context() -> None:
+            try:
+                oc.sync_context_from_ir(context_ir)
+            except Exception:  # noqa: BLE001
+                pass
+
+        _poll_garage_context()
+        garage_timer = QTimer()
+        garage_timer.setInterval(400)
+        garage_timer.timeout.connect(_poll_garage_context)
+        garage_timer.start()
+        hold["garage_timer"] = garage_timer
+        hold["context_ir"] = context_ir
+
         # Push full live CFG (not sparse disk merge) so show flags match Settings.
         try:
             remote.apply_active_preset()

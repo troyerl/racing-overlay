@@ -96,6 +96,20 @@ def test_remote_overlay_map_api(qapp):
     remote.set_pit_edit_mode(True, phase="road", lane="primary")
     assert seen["method"] == "map.set_pit_edit"
     assert seen["params"]["enabled"] is True
+    assert seen["params"]["lane"] == "primary"
+
+    port2 = 19894
+    seen2 = {}
+
+    def handler2(req):
+        seen2["params"] = req.get("params")
+        return {"id": req["id"], "ok": True, "result": {}}
+
+    _serve_once(handler2, port2)
+    remote2 = RemoteOverlay(OverlayIpcClient(port=port2, timeout=2.0))
+    remote2.set_pit_edit_mode(True, phase="entry", lane=2)
+    assert seen2["params"]["lane"] == "secondary"
+    assert seen2["params"]["phase"] == "entry"
 
 
 def test_remote_overlay_hud_api(qapp):

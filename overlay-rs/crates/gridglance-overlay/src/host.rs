@@ -200,12 +200,19 @@ impl eframe::App for OverlayApp {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|d| d.key.clone());
+        let resizing_key = self
+            .resizing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(|r| r.key.clone());
 
         for (key, lay) in keys_layout {
             still_open.insert(key.clone());
             let vid = ViewportId::from_hash_of(&key);
             let title = win_click::panel_title(&key);
             let is_dragging = dragging_key.as_deref() == Some(key.as_str());
+            let is_resizing = resizing_key.as_deref() == Some(key.as_str());
 
             let mut builder = ViewportBuilder::default()
                 .with_title(title.clone())
@@ -213,11 +220,13 @@ impl eframe::App for OverlayApp {
                 .with_transparent(true)
                 .with_always_on_top()
                 .with_taskbar(false)
-                .with_mouse_passthrough(passthrough)
-                .with_inner_size([lay.w as f32, lay.h as f32]);
-            // While manually dragging, do not fight OuterPosition with builder position.
+                .with_mouse_passthrough(passthrough);
+            // While manually dragging/resizing, do not fight OS geometry with the builder.
             if !is_dragging {
                 builder = builder.with_position(egui::pos2(lay.x as f32, lay.y as f32));
+            }
+            if !is_resizing {
+                builder = builder.with_inner_size([lay.w as f32, lay.h as f32]);
             }
 
             let state = self.state.clone();
@@ -313,13 +322,18 @@ impl eframe::App for OverlayApp {
                                                 .max(MIN_PANEL_H as f32)
                                                 as i32;
                                             drop(guard);
-                                            let mut st = state.write();
-                                            let lay = st
-                                                .layout
-                                                .entry(key_clone.clone())
-                                                .or_insert_with(PanelLayout::default);
-                                            lay.w = nw;
-                                            lay.h = nh;
+                                            {
+                                                let mut st = state.write();
+                                                let lay = st
+                                                    .layout
+                                                    .entry(key_clone.clone())
+                                                    .or_insert_with(PanelLayout::default);
+                                                lay.w = nw;
+                                                lay.h = nh;
+                                            }
+                                            vp_ctx.send_viewport_cmd(ViewportCommand::InnerSize(
+                                                egui::vec2(nw as f32, nh as f32),
+                                            ));
                                         }
                                     }
                                 }

@@ -278,8 +278,15 @@ class RemoteOverlay:
     # --- Track Scan / authoring ------------------------------------------
 
     def set_pit_edit_mode(self, enabled: bool, phase: str = "road",
-                          lane: str = "primary") -> None:
-        self.ipc.map_set_pit_edit(enabled, phase=phase, lane=lane)
+                          lane="primary") -> None:
+        # Track Scan panel passes lane as 1/2; Rust IPC expects primary/secondary.
+        if lane in (1, "1", "primary"):
+            lane_s = "primary"
+        elif lane in (2, "2", "secondary"):
+            lane_s = "secondary"
+        else:
+            lane_s = str(lane) if lane else "primary"
+        self.ipc.map_set_pit_edit(enabled, phase=phase, lane=lane_s)
 
     def set_corner_edit_mode(self, enabled: bool) -> None:
         self.ipc.map_set_corner_edit(enabled)
