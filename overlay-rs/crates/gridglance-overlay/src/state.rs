@@ -3,7 +3,7 @@
 use crate::config::{default_geom, OverlayConfig, WIDGET_KEYS};
 use crate::paths;
 use crate::telemetry::TelemetryFrame;
-use crate::track_path::PitLane;
+use crate::track_path::{CornerMark, PitLane};
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -22,6 +22,10 @@ pub struct MapAuthoring {
     pub entry_pts: Vec<(f32, f32)>,
     pub road_pts: Vec<(f32, f32)>,
     pub merge_pts: Vec<(f32, f32)>,
+    /// Draft polylines for lane 2.
+    pub entry_pts_2: Vec<(f32, f32)>,
+    pub road_pts_2: Vec<(f32, f32)>,
+    pub merge_pts_2: Vec<(f32, f32)>,
     pub pit_speed_ms: f64,
     pub pit_lane_speed_pct: f64,
     pub num_turns: i32,
@@ -36,6 +40,17 @@ pub struct MapAuthoring {
     pub cached_pit2: PitLane,
     pub cached_drs_zones: Vec<(f32, f32)>,
     pub cached_p2p_zones: Vec<(f32, f32)>,
+    /// Corner markers from track JSON / authoring.
+    pub cached_corners: Vec<CornerMark>,
+    /// Corner being dragged in edit mode (`None` = none).
+    pub drag_corner: Option<usize>,
+    /// Pit-edit view: zoom factor (1 = fit).
+    pub pit_edit_zoom: f32,
+    /// Pit-edit view: screen-space pan (pixels).
+    pub pit_edit_pan: (f32, f32),
+    /// Active handle drag: (lane 1|2, phase code, idx).
+    /// Phase: 0=entry 1=road 2=merge 3=joint 4=entry_joint.
+    pub pit_drag: Option<(u8, u8, usize)>,
     /// Hold-before-switch state for ahead/behind/leader markers.
     pub marker_hold: crate::map_markers::HoldStates,
     /// Eased lap_dist_pct per car_idx for smooth map motion.
@@ -43,6 +58,10 @@ pub struct MapAuthoring {
     /// Session time of last map paint (for smoothing dt).
     pub last_paint_secs: f64,
 }
+
+/// Pit-edit zoom clamp (match Python `_PIT_EDIT_ZOOM_*`).
+pub const PIT_EDIT_ZOOM_MIN: f32 = 0.5;
+pub const PIT_EDIT_ZOOM_MAX: f32 = 12.0;
 
 impl Default for MapAuthoring {
     fn default() -> Self {
@@ -56,6 +75,9 @@ impl Default for MapAuthoring {
             entry_pts: Vec::new(),
             road_pts: Vec::new(),
             merge_pts: Vec::new(),
+            entry_pts_2: Vec::new(),
+            road_pts_2: Vec::new(),
+            merge_pts_2: Vec::new(),
             pit_speed_ms: 0.0,
             pit_lane_speed_pct: 1.0,
             num_turns: 0,
@@ -69,6 +91,11 @@ impl Default for MapAuthoring {
             cached_pit2: PitLane::default(),
             cached_drs_zones: Vec::new(),
             cached_p2p_zones: Vec::new(),
+            cached_corners: Vec::new(),
+            drag_corner: None,
+            pit_edit_zoom: 1.0,
+            pit_edit_pan: (0.0, 0.0),
+            pit_drag: None,
             marker_hold: crate::map_markers::fresh_hold_states(),
             car_anim: HashMap::new(),
             last_paint_secs: 0.0,
@@ -85,26 +112,102 @@ impl MapAuthoring {
         }
     }
 
+    pub fn lane_is_2(&self) -> bool {
+        matches!(self.lane.as_str(), "2" | "secondary")
+    }
+
     pub fn active_pts_mut(&mut self) -> &mut Vec<(f32, f32)> {
-        match self.phase_key() {
-            "entry" => &mut self.entry_pts,
-            "merge" => &mut self.merge_pts,
-            _ => &mut self.road_pts,
+        let lane2 = self.lane_is_2();
+        match (self.phase_key(), lane2) {
+            ("entry", false) => &mut self.entry_pts,
+            ("merge", false) => &mut self.merge_pts,
+            (_, false) => &mut self.road_pts,
+            ("entry", true) => &mut self.entry_pts_2,
+            ("merge", true) => &mut self.merge_pts_2,
+            (_, true) => &mut self.road_pts_2,
         }
     }
 
-    pub fn clear_phase(&mut self, phase: &str) {
-        match phase {
-            "entry" => self.entry_pts.clear(),
-            "merge" => self.merge_pts.clear(),
-            "road" | "pit" | "pit_road" => self.road_pts.clear(),
-            "all" => {
-                self.entry_pts.clear();
-                self.road_pts.clear();
-                self.merge_pts.clear();
+    pub fn clear_phase(&mut self, phase: &str, lane2: Option<bool>) {
+        let lanes: &[bool] = match lane2 {
+            Some(true) => &[true],
+            Some(false) => &[false],
+            None => {
+                if phase == "all" {
+                    &[false, true]
+                } else if self.lane_is_2() {
+                    &[true]
+                } else {
+                    &[false]
+                }
             }
-            _ => self.road_pts.clear(),
+        };
+        for &l2 in lanes {
+            let (entry, road, merge) = if l2 {
+                (
+                    &mut self.entry_pts_2,
+                    &mut self.road_pts_2,
+                    &mut self.merge_pts_2,
+                )
+            } else {
+                (
+                    &mut self.entry_pts,
+                    &mut self.road_pts,
+                    &mut self.merge_pts,
+                )
+            };
+            match phase {
+                "entry" => entry.clear(),
+                "merge" => merge.clear(),
+                "road" | "pit" | "pit_road" => road.clear(),
+                "all" => {
+                    entry.clear();
+                    road.clear();
+                    merge.clear();
+                }
+                _ => road.clear(),
+            }
         }
+    }
+
+    pub fn load_pit_from_cache(&mut self, force: bool) -> bool {
+        let has_draft = self.entry_pts.len() >= 2
+            || self.road_pts.len() >= 2
+            || self.merge_pts.len() >= 2
+            || self.entry_pts_2.len() >= 2
+            || self.road_pts_2.len() >= 2
+            || self.merge_pts_2.len() >= 2;
+        if has_draft && !force {
+            return true;
+        }
+        let mut loaded = false;
+        for (lane2, pit) in [(false, &self.cached_pit.clone()), (true, &self.cached_pit2.clone())]
+        {
+            let mut entry = pit.entry.clone();
+            if entry.len() >= 2 {
+                let (a, b) = (entry[0], *entry.last().unwrap());
+                if (a.0 - b.0).abs() < 1e-6 && (a.1 - b.1).abs() < 1e-6 {
+                    entry.clear();
+                }
+            }
+            let road = pit.path.clone();
+            let merge = pit.exit.clone();
+            if road.len() < 2 && merge.len() < 2 && entry.len() < 2 {
+                continue;
+            }
+            if lane2 {
+                self.entry_pts_2 = entry;
+                self.road_pts_2 = road;
+                self.merge_pts_2 = merge;
+            } else {
+                self.entry_pts = entry;
+                self.road_pts = road;
+                self.merge_pts = merge;
+            }
+            self.sync_joints(lane2);
+            loaded = true;
+        }
+        loaded
     }
 
     /// Drop cached track geometry so the next paint reloads from disk.
@@ -118,6 +221,221 @@ impl MapAuthoring {
         self.cached_pit2 = PitLane::default();
         self.cached_drs_zones.clear();
         self.cached_p2p_zones.clear();
+        self.cached_corners.clear();
+        self.drag_corner = None;
+    }
+
+    pub fn reset_pit_edit_view(&mut self) {
+        self.pit_edit_zoom = 1.0;
+        self.pit_edit_pan = (0.0, 0.0);
+        self.pit_drag = None;
+    }
+
+    fn bufs_mut(&mut self, lane2: bool) -> (&mut Vec<(f32, f32)>, &mut Vec<(f32, f32)>, &mut Vec<(f32, f32)>) {
+        if lane2 {
+            (
+                &mut self.entry_pts_2,
+                &mut self.road_pts_2,
+                &mut self.merge_pts_2,
+            )
+        } else {
+            (
+                &mut self.entry_pts,
+                &mut self.road_pts,
+                &mut self.merge_pts,
+            )
+        }
+    }
+
+    fn pts_coincide(a: (f32, f32), b: (f32, f32)) -> bool {
+        (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5
+    }
+
+    pub fn has_joint(&self, lane2: bool) -> bool {
+        let (road, merge) = if lane2 {
+            (&self.road_pts_2, &self.merge_pts_2)
+        } else {
+            (&self.road_pts, &self.merge_pts)
+        };
+        matches!((road.last(), merge.first()), (Some(&r), Some(&m)) if Self::pts_coincide(r, m))
+    }
+
+    pub fn has_entry_joint(&self, lane2: bool) -> bool {
+        let (entry, road) = if lane2 {
+            (&self.entry_pts_2, &self.road_pts_2)
+        } else {
+            (&self.entry_pts, &self.road_pts)
+        };
+        matches!((entry.last(), road.first()), (Some(&e), Some(&r)) if Self::pts_coincide(e, r))
+    }
+
+    /// Keep merge start tied to road end (Python `_sync_pit_joint`).
+    pub fn sync_joints(&mut self, lane2: bool) {
+        let (_, road, merge) = self.bufs_mut(lane2);
+        if let (Some(r), Some(m0)) = (road.last().copied(), merge.first_mut()) {
+            *m0 = r;
+        }
+    }
+
+    /// Seed road start from entry end when switching to road with empty road.
+    pub fn seed_road_from_entry(&mut self, lane2: bool) {
+        let (entry, road, _) = self.bufs_mut(lane2);
+        if road.is_empty() {
+            if let Some(&pt) = entry.last() {
+                road.push(pt);
+            }
+        }
+    }
+
+    /// Append a click in the active phase (Python `_append_pit_edit_at`).
+    pub fn append_pit_edit_at(&mut self, x: f32, y: f32) {
+        let lane2 = self.lane_is_2();
+        let phase = self.phase_key().to_string();
+        let has_ej = self.has_entry_joint(lane2);
+        let (entry, road, merge) = self.bufs_mut(lane2);
+        match phase.as_str() {
+            "entry" => {
+                if !road.is_empty() && !entry.is_empty() && has_ej {
+                    let joint_idx = entry.len() - 1;
+                    entry.insert(joint_idx, (x, y));
+                } else if !road.is_empty() && entry.is_empty() {
+                    entry.push((x, y));
+                    entry.push(road[0]);
+                } else {
+                    entry.push((x, y));
+                    if !road.is_empty() {
+                        entry.push(road[0]);
+                    }
+                }
+            }
+            "merge" => {
+                if merge.is_empty() {
+                    if let Some(&r) = road.last() {
+                        merge.push(r);
+                    }
+                }
+                merge.push((x, y));
+            }
+            _ => {
+                if road.is_empty() {
+                    if let Some(&e) = entry.last() {
+                        road.push(e);
+                    }
+                }
+                road.push((x, y));
+            }
+        }
+        if phase == "road" || phase == "pit" || phase == "pit_road" {
+            self.sync_joints(lane2);
+        }
+    }
+
+    /// Move one handle; joint endpoints stay linked (Python `_set_pit_edit_point`).
+    pub fn set_point_with_joints(&mut self, lane2: bool, phase: u8, idx: usize, x: f32, y: f32) {
+        let (entry, road, merge) = self.bufs_mut(lane2);
+        match phase {
+            3 => {
+                // joint = road end + merge start
+                if let Some(r) = road.last_mut() {
+                    *r = (x, y);
+                }
+                if let Some(m) = merge.first_mut() {
+                    *m = (x, y);
+                }
+            }
+            4 => {
+                // entry_joint = entry end + road start
+                if let Some(e) = entry.last_mut() {
+                    *e = (x, y);
+                }
+                if let Some(r) = road.first_mut() {
+                    *r = (x, y);
+                }
+            }
+            0 => {
+                if idx < entry.len() {
+                    entry[idx] = (x, y);
+                    if idx + 1 == entry.len() {
+                        if let Some(r) = road.first_mut() {
+                            *r = (x, y);
+                        }
+                    }
+                }
+            }
+            1 => {
+                if idx < road.len() {
+                    road[idx] = (x, y);
+                    if idx == 0 {
+                        if let Some(e) = entry.last_mut() {
+                            *e = (x, y);
+                        }
+                    }
+                    if idx + 1 == road.len() {
+                        if let Some(m) = merge.first_mut() {
+                            *m = (x, y);
+                        }
+                    }
+                }
+            }
+            2 => {
+                if idx < merge.len() {
+                    merge[idx] = (x, y);
+                    if idx == 0 {
+                        if let Some(r) = road.last_mut() {
+                            *r = (x, y);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    pub fn clamp_pit_zoom(z: f32) -> f32 {
+        z.clamp(PIT_EDIT_ZOOM_MIN, PIT_EDIT_ZOOM_MAX)
+    }
+}
+
+#[cfg(test)]
+mod pit_edit_tests {
+    use super::*;
+
+    #[test]
+    fn joint_drag_moves_road_end_and_merge_start() {
+        let mut m = MapAuthoring::default();
+        m.road_pts = vec![(0.0, 0.0), (1.0, 0.0)];
+        m.merge_pts = vec![(1.0, 0.0), (2.0, 1.0)];
+        m.set_point_with_joints(false, 3, 0, 5.0, 6.0);
+        assert_eq!(*m.road_pts.last().unwrap(), (5.0, 6.0));
+        assert_eq!(*m.merge_pts.first().unwrap(), (5.0, 6.0));
+    }
+
+    #[test]
+    fn entry_joint_drag_moves_entry_end_and_road_start() {
+        let mut m = MapAuthoring::default();
+        m.entry_pts = vec![(0.0, 0.0), (1.0, 1.0)];
+        m.road_pts = vec![(1.0, 1.0), (2.0, 2.0)];
+        m.set_point_with_joints(false, 4, 0, 3.0, 4.0);
+        assert_eq!(*m.entry_pts.last().unwrap(), (3.0, 4.0));
+        assert_eq!(*m.road_pts.first().unwrap(), (3.0, 4.0));
+    }
+
+    #[test]
+    fn seed_road_and_reset_view() {
+        let mut m = MapAuthoring::default();
+        m.entry_pts = vec![(1.0, 2.0)];
+        m.phase = "road".into();
+        m.seed_road_from_entry(false);
+        assert_eq!(m.road_pts, vec![(1.0, 2.0)]);
+        m.pit_edit_zoom = 2.5;
+        m.pit_edit_pan = (10.0, 20.0);
+        m.pit_drag = Some((1, 1, 0));
+        m.reset_pit_edit_view();
+        assert_eq!(m.pit_edit_zoom, 1.0);
+        assert_eq!(m.pit_edit_pan, (0.0, 0.0));
+        assert!(m.pit_drag.is_none());
+        assert_eq!(MapAuthoring::clamp_pit_zoom(0.1), PIT_EDIT_ZOOM_MIN);
+        assert_eq!(MapAuthoring::clamp_pit_zoom(99.0), PIT_EDIT_ZOOM_MAX);
     }
 }
 
@@ -285,52 +603,81 @@ impl SharedState {
         let entry_count = self.map.entry_pts.len();
         let road_count = self.map.road_pts.len();
         let merge_count = self.map.merge_pts.len();
-        let n_pts = match phase {
-            "entry" => entry_count,
-            "merge" => merge_count,
-            _ => road_count,
+        let entry_count_2 = self.map.entry_pts_2.len();
+        let road_count_2 = self.map.road_pts_2.len();
+        let merge_count_2 = self.map.merge_pts_2.len();
+        let n_pts = if lane_num == 2 {
+            match phase {
+                "entry" => entry_count_2,
+                "merge" => merge_count_2,
+                _ => road_count_2,
+            }
+        } else {
+            match phase {
+                "entry" => entry_count,
+                "merge" => merge_count,
+                _ => road_count,
+            }
         };
-        json!({
-            "pit_edit": self.map.pit_edit,
-            "pit_edit_mode": self.map.pit_edit,
-            "phase": phase,
-            "pit_edit_phase": phase,
-            "lane": self.map.lane,
-            "pit_edit_lane": lane_num,
-            "corner_edit": self.map.corner_edit,
-            "sf_edit": self.map.sf_edit,
-            "interactive": self.map.interactive,
-            "pit_points": n_pts,
-            "entry_count": entry_count,
-            "road_count": road_count,
-            "merge_count": merge_count,
-            "entry_count_2": 0,
-            "road_count_2": 0,
-            "merge_count_2": 0,
-            "entry_points": Self::pts_json(&self.map.entry_pts),
-            "road_points": Self::pts_json(&self.map.road_pts),
-            "merge_points": Self::pts_json(&self.map.merge_pts),
-            "loop_points": Self::pts_json(&loop_pts),
-            "start_finish": self.map.cached_start_finish,
-            "has_loop": has_loop,
-            "has_saved_pit": has_saved_pit,
-            "has_saved_pit_2": has_saved_pit_2,
-            "pit_speed_ms": self.map.pit_speed_ms,
-            "pit_lane_speed_pct": self.map.pit_lane_speed_pct,
-            "num_turns": self.map.num_turns,
-            "alias_ids": self.map.alias_ids,
-            "alias_track_ids": self.map.alias_ids,
-            "track_id": tid,
-            "track_name": self.frame.track_name,
-            "authoring_track_id": tid,
-            "canonical_track_id": tid,
-            "in_sim": !self.demo && tid.is_some(),
-            "demo": self.demo,
-            "has_track": can_author && !self.demo,
-            "can_author_map": can_author,
-            "corner_count": 0,
-            "has_pit_geometry": has_saved_pit,
-        })
+        let corners = Value::Array(
+            self.map
+                .cached_corners
+                .iter()
+                .map(|c| {
+                    let mut o = serde_json::Map::new();
+                    o.insert("pct".into(), json!(c.pct));
+                    o.insert("label".into(), json!(c.label));
+                    o.insert("ox".into(), json!(c.ox));
+                    o.insert("oy".into(), json!(c.oy));
+                    Value::Object(o)
+                })
+                .collect(),
+        );
+        let mut m = serde_json::Map::new();
+        m.insert("pit_edit".into(), json!(self.map.pit_edit));
+        m.insert("pit_edit_mode".into(), json!(self.map.pit_edit));
+        m.insert("phase".into(), json!(phase));
+        m.insert("pit_edit_phase".into(), json!(phase));
+        m.insert("lane".into(), json!(self.map.lane));
+        m.insert("pit_edit_lane".into(), json!(lane_num));
+        m.insert("corner_edit".into(), json!(self.map.corner_edit));
+        m.insert("sf_edit".into(), json!(self.map.sf_edit));
+        m.insert("interactive".into(), json!(self.map.interactive));
+        m.insert("pit_points".into(), json!(n_pts));
+        m.insert("entry_count".into(), json!(entry_count));
+        m.insert("road_count".into(), json!(road_count));
+        m.insert("merge_count".into(), json!(merge_count));
+        m.insert("entry_count_2".into(), json!(entry_count_2));
+        m.insert("road_count_2".into(), json!(road_count_2));
+        m.insert("merge_count_2".into(), json!(merge_count_2));
+        m.insert("entry_points".into(), Self::pts_json(&self.map.entry_pts));
+        m.insert("road_points".into(), Self::pts_json(&self.map.road_pts));
+        m.insert("merge_points".into(), Self::pts_json(&self.map.merge_pts));
+        m.insert("entry_points_2".into(), Self::pts_json(&self.map.entry_pts_2));
+        m.insert("road_points_2".into(), Self::pts_json(&self.map.road_pts_2));
+        m.insert("merge_points_2".into(), Self::pts_json(&self.map.merge_pts_2));
+        m.insert("loop_points".into(), Self::pts_json(&loop_pts));
+        m.insert("start_finish".into(), json!(self.map.cached_start_finish));
+        m.insert("corners".into(), corners);
+        m.insert("has_loop".into(), json!(has_loop));
+        m.insert("has_saved_pit".into(), json!(has_saved_pit));
+        m.insert("has_saved_pit_2".into(), json!(has_saved_pit_2));
+        m.insert("pit_speed_ms".into(), json!(self.map.pit_speed_ms));
+        m.insert("pit_lane_speed_pct".into(), json!(self.map.pit_lane_speed_pct));
+        m.insert("num_turns".into(), json!(self.map.num_turns));
+        m.insert("alias_ids".into(), json!(self.map.alias_ids));
+        m.insert("alias_track_ids".into(), json!(self.map.alias_ids));
+        m.insert("track_id".into(), json!(tid));
+        m.insert("track_name".into(), json!(self.frame.track_name));
+        m.insert("authoring_track_id".into(), json!(tid));
+        m.insert("canonical_track_id".into(), json!(tid));
+        m.insert("in_sim".into(), json!(!self.demo && tid.is_some()));
+        m.insert("demo".into(), json!(self.demo));
+        m.insert("has_track".into(), json!(can_author && !self.demo));
+        m.insert("can_author_map".into(), json!(can_author));
+        m.insert("corner_count".into(), json!(self.map.cached_corners.len()));
+        m.insert("has_pit_geometry".into(), json!(has_saved_pit));
+        Value::Object(m)
     }
 }
 

@@ -113,7 +113,7 @@ def build_loop_doc(
     num_turns: int | None = None,
     alias_track_ids: list | None = None,
     pit_source: str = "manual",
-) -> dict:
+) -> dict:  # noqa: D401 — shared helper
     """Racing loop (+ optional corners) for v2 track save."""
     try:
         doc_tid = int(tid)

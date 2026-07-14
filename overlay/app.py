@@ -5817,10 +5817,12 @@ def _main_rust() -> int:
         # Garage/race profile for the hybrid path (Python HUD does this in
         # AdvancedSimHUD._update_context; Rust paint alone never sees IR garage flags).
         context_ir = oc.make_irsdk(demo=demo)
+        remote.bind_context_ir(context_ir)
 
         def _poll_garage_context() -> None:
             try:
                 oc.sync_context_from_ir(context_ir)
+                remote.maybe_auto_switch_preset()
             except Exception:  # noqa: BLE001
                 pass
 

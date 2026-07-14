@@ -5,7 +5,8 @@ use crate::state::StateHandle;
 use anyhow::Result;
 use gridglance_ipc::{
     methods, ConfigApplyParams, LayoutSetParams, MapAliasIdsParams, MapBoolParams,
-    MapClearPitParams, MapLaneSpeedParams, MapNumTurnsParams, MapPitEditParams, MapSpeedParams,
+    MapClearPitParams, MapLaneSpeedParams, MapLoadPitParams, MapNumTurnsParams, MapPitEditParams,
+    MapSetCornersParams, MapSetLoopParams, MapSetStartFinishParams, MapSpeedParams,
     OverlayModeParams, PingResult, Request, Response, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
@@ -177,6 +178,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             let params: MapPitEditParams =
                 serde_json::from_value(req.params).unwrap_or_default();
             let mut st = state.write();
+            let was = st.map.pit_edit;
             st.map.pit_edit = params.enabled;
             st.map.phase = params.phase;
             st.map.lane = params.lane;
@@ -184,6 +186,15 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                 st.map.interactive = true;
                 st.map.corner_edit = false;
                 st.map.sf_edit = false;
+                if !was {
+                    st.map.reset_pit_edit_view();
+                }
+                let lane2 = st.map.lane_is_2();
+                if st.map.phase_key() == "road" {
+                    st.map.seed_road_from_entry(lane2);
+                }
+            } else {
+                st.map.pit_drag = None;
             }
             Response::ok(id, st.map_state_json())
         }
@@ -201,13 +212,23 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             let phase = params
                 .phase
                 .unwrap_or_else(|| st.map.phase_key().to_string());
-            st.map.clear_phase(&phase);
+            let lane2 = params.lane.as_deref().map(|l| matches!(l, "2" | "secondary"));
+            st.map.clear_phase(&phase, lane2);
             Response::ok(id, st.map_state_json())
         }
-        methods::MAP_RESET_VIEW => Response::ok(id, json!({"reset": true})),
+        methods::MAP_RESET_VIEW => {
+            let mut st = state.write();
+            st.map.reset_pit_edit_view();
+            Response::ok(id, json!({"reset": true}))
+        }
         methods::MAP_SAVE_PIT => {
             let st = state.read();
-            let n = st.map.entry_pts.len() + st.map.road_pts.len() + st.map.merge_pts.len();
+            let n = st.map.entry_pts.len()
+                + st.map.road_pts.len()
+                + st.map.merge_pts.len()
+                + st.map.entry_pts_2.len()
+                + st.map.road_pts_2.len()
+                + st.map.merge_pts_2.len();
             Response::ok(
                 id,
                 json!({"ok": true, "points": n, "msg": "pit draft held in overlay"}),
@@ -217,6 +238,88 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
         methods::MAP_INVALIDATE_TRACK => {
             state.write().map.invalidate_track_cache();
             Response::ok(id, json!({"ok": true}))
+        }
+        methods::MAP_LOAD_PIT => {
+            let params: MapLoadPitParams =
+                serde_json::from_value(req.params).unwrap_or_default();
+            let mut st = state.write();
+            // Ensure cache is warm from disk when possible.
+            if st.map.cached_path.is_empty() {
+                if let Some(id) = st.frame.track_id {
+                    if let Some(tp) = crate::track_path::load_for_track_id(id) {
+                        st.map.cached_track_id = Some(id);
+                        st.map.cached_path = tp.points;
+                        st.map.cached_track_name = tp.name;
+                        st.map.cached_start_finish = tp.start_finish;
+                        st.map.cached_pit_out_pct = tp.pit_out_pct;
+                        st.map.cached_pit = tp.pit;
+                        st.map.cached_pit2 = tp.pit2;
+                        st.map.cached_drs_zones = tp.drs_zones;
+                        st.map.cached_p2p_zones = tp.p2p_zones;
+                        st.map.cached_corners = tp.corners;
+                    }
+                }
+            }
+            let ok = st.map.load_pit_from_cache(params.force);
+            let mut out = st.map_state_json();
+            if let Some(obj) = out.as_object_mut() {
+                obj.insert("loaded".into(), json!(ok));
+            }
+            Response::ok(id, out)
+        }
+        methods::MAP_SET_LOOP => {
+            let params: MapSetLoopParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => return Response::err(id, e.to_string()),
+            };
+            let mut pts: Vec<(f32, f32)> = params
+                .points
+                .iter()
+                .map(|p| (p[0] as f32, p[1] as f32))
+                .filter(|(x, y)| x.is_finite() && y.is_finite())
+                .collect();
+            if pts.len() < 3 {
+                return Response::err(id, "loop needs at least 3 points");
+            }
+            let corners = parse_corner_values(&params.corners);
+            let mut st = state.write();
+            st.frame = {
+                let mut f = (*st.frame).clone();
+                f.track_id = Some(params.track_id);
+                if !params.name.is_empty() {
+                    f.track_name = Some(params.name.clone());
+                }
+                Arc::new(f)
+            };
+            st.map.cached_track_id = Some(params.track_id);
+            st.map.cached_path = std::mem::take(&mut pts);
+            st.map.cached_track_name = params.name;
+            st.map.cached_start_finish = params.start_finish as f32;
+            st.map.cached_corners = corners;
+            st.map.cached_pit = crate::track_path::PitLane::default();
+            st.map.cached_pit2 = crate::track_path::PitLane::default();
+            st.map.cached_pit_out_pct = None;
+            st.map.clear_phase("all", None);
+            if let Some(n) = params.num_turns {
+                st.map.num_turns = n;
+            }
+            Response::ok(id, st.map_state_json())
+        }
+        methods::MAP_SET_CORNERS => {
+            let params: MapSetCornersParams =
+                serde_json::from_value(req.params).unwrap_or_default();
+            let mut st = state.write();
+            st.map.cached_corners = parse_corner_values(&params.corners);
+            Response::ok(id, st.map_state_json())
+        }
+        methods::MAP_SET_START_FINISH => {
+            let params: MapSetStartFinishParams = match serde_json::from_value(req.params) {
+                Ok(p) => p,
+                Err(e) => return Response::err(id, e.to_string()),
+            };
+            let mut st = state.write();
+            st.map.cached_start_finish = (params.pct as f32).rem_euclid(1.0);
+            Response::ok(id, st.map_state_json())
         }
         methods::MAP_SET_INTERACTIVE => {
             let params: MapBoolParams = serde_json::from_value(req.params).unwrap_or_default();
@@ -280,4 +383,29 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
         }
         other => Response::err(id, format!("unknown method: {other}")),
     }
+}
+
+fn parse_corner_values(vals: &[Value]) -> Vec<crate::track_path::CornerMark> {
+    let mut out = Vec::new();
+    for (i, c) in vals.iter().enumerate() {
+        let pct = c.get("pct").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        let label = if let Some(s) = c.get("label").and_then(|x| x.as_str()) {
+            s.to_string()
+        } else if let Some(n) = c.get("label").and_then(|x| x.as_i64()) {
+            n.to_string()
+        } else {
+            (i + 1).to_string()
+        };
+        let ox = c.get("ox").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        let oy = c.get("oy").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        if pct.is_finite() {
+            out.push(crate::track_path::CornerMark {
+                pct: pct.rem_euclid(1.0),
+                label,
+                ox,
+                oy,
+            });
+        }
+    }
+    out
 }

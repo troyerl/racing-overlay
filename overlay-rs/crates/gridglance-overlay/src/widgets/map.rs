@@ -5,9 +5,11 @@ use crate::icons;
 use crate::map_markers::{self, TrafficMarker};
 use crate::telemetry::CarRow;
 use crate::track_path;
+use crate::state::MapAuthoring;
 use egui::{
     epaint::{PathShape, PathStroke},
-    Align2, Color32, FontFamily, FontId, Pos2, Rect, Sense, Shape, Stroke, Ui,
+    Align2, Color32, CursorIcon, FontFamily, FontId, PointerButton, Pos2, Rect, Sense, Shape,
+    Stroke, Ui, Vec2,
 };
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -16,6 +18,7 @@ const SECTION: &str = "map";
 const CAR_EASE_TAU: f32 = 0.09;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
+#[derive(Clone, Copy)]
 struct PlotXform {
     origin: Pos2,
     scale: f32,
@@ -65,6 +68,15 @@ impl PlotXform {
         let y = self.min.1 + (p.y - self.origin.y) / self.scale;
         (x, y)
     }
+
+    /// Apply pit-edit zoom/pan on top of a fit transform.
+    fn with_view(&self, zoom: f32, pan: (f32, f32)) -> Self {
+        Self {
+            origin: Pos2::new(self.origin.x + pan.0, self.origin.y + pan.1),
+            scale: self.scale * zoom.max(1e-6),
+            min: self.min,
+        }
+    }
 }
 
 /// Python model-space: mirror then 90° rotation steps.
@@ -96,6 +108,7 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     ctx.map.cached_pit2 = track_path::PitLane::default();
     ctx.map.cached_drs_zones.clear();
     ctx.map.cached_p2p_zones.clear();
+    ctx.map.cached_corners.clear();
     if let Some(id) = tid {
         if let Some(tp) = track_path::load_for_track_id(id) {
             ctx.map.cached_track_name = tp.name.clone();
@@ -106,6 +119,7 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
             ctx.map.cached_pit2 = tp.pit2;
             ctx.map.cached_drs_zones = tp.drs_zones;
             ctx.map.cached_p2p_zones = tp.p2p_zones;
+            ctx.map.cached_corners = tp.corners;
             return;
         }
     }
@@ -358,18 +372,25 @@ fn car_model_xy(
     pct: f32,
     racing: &[(f32, f32)],
     pit: &track_path::PitLane,
+    pit2: &track_path::PitLane,
     show_blends: bool,
 ) -> (f32, f32) {
-    if in_pit_lane(car) && pit.has_drawable() {
-        let route = pit.route(show_blends);
-        if route.len() >= 2 {
-            let in_pct = pit
+    if in_pit_lane(car) {
+        for lane in [pit, pit2] {
+            if !lane.has_drawable() {
+                continue;
+            }
+            let route = lane.route(show_blends);
+            if route.len() < 2 {
+                continue;
+            }
+            let in_pct = lane
                 .in_pct
-                .or(pit.span.map(|(a, _)| a))
+                .or(lane.span.map(|(a, _)| a))
                 .unwrap_or(track_path::DEMO_PIT_IN_PCT);
-            let out_pct = pit
+            let out_pct = lane
                 .out_pct
-                .or(pit.span.map(|(_, b)| b))
+                .or(lane.span.map(|(_, b)| b))
                 .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
             let t = track_path::route_t_for_pct(pct, in_pct, out_pct);
             return track_path::point_on_open(&route, t);
@@ -1001,7 +1022,26 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             }
         }
     }
-    let xform = PlotXform::fit(plot, &modeled, pad_px);
+    if ctx.map.pit_edit {
+        for pts in [
+            &ctx.map.entry_pts,
+            &ctx.map.road_pts,
+            &ctx.map.merge_pts,
+            &ctx.map.entry_pts_2,
+            &ctx.map.road_pts_2,
+            &ctx.map.merge_pts_2,
+        ] {
+            for &(x, y) in pts {
+                modeled.push(model_point(x, y, mirror, rot));
+            }
+        }
+    }
+    let base_xform = PlotXform::fit(plot, &modeled, pad_px);
+    let xform = if ctx.map.pit_edit {
+        base_xform.with_view(ctx.map.pit_edit_zoom, ctx.map.pit_edit_pan)
+    } else {
+        base_xform
+    };
     let screen: Vec<Pos2> = path
         .iter()
         .map(|&(x, y)| {
@@ -1048,6 +1088,23 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     if show_sf && !modeled.is_empty() {
         // Transform tangent via model: evaluate on modeled path.
         draw_start_finish(ui, &modeled, &xform, ctx.map.cached_start_finish);
+    }
+
+    let screen_centroid = if screen.is_empty() {
+        plot.center()
+    } else {
+        let n = screen.len() as f32;
+        Pos2::new(
+            screen.iter().map(|p| p.x).sum::<f32>() / n,
+            screen.iter().map(|p| p.y).sum::<f32>() / n,
+        )
+    };
+    if ctx.cfg.bool_key(SECTION, "show_sector_boundaries", true) && !path.is_empty() {
+        let sect_col = ctx.cfg.color(SECTION, "sector_boundary", "#ffffff55");
+        draw_sector_boundaries(ui, ctx, &path, &xform, mirror, rot, sect_col);
+    }
+    if ctx.cfg.bool_key(SECTION, "show_corners", true) && !ctx.map.cached_corners.is_empty() {
+        draw_corners(ui, ctx, &path, &xform, mirror, rot, screen_centroid);
     }
 
     // Caution: pit-exit reference + moving pace-car safety line ("not a lap down").
@@ -1121,6 +1178,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
     let pit_lane = ctx.map.cached_pit.clone();
+    let pit_lane2 = ctx.map.cached_pit2.clone();
 
     let mut car_pts: HashMap<i32, Pos2> = HashMap::new();
     for car in &cars {
@@ -1134,7 +1192,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if pct < 0.0 {
             continue;
         }
-        let (nx, ny) = car_model_xy(car, pct, &path, &pit_lane, show_blends);
+        let (nx, ny) = car_model_xy(car, pct, &path, &pit_lane, &pit_lane2, show_blends);
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
         car_pts.insert(car.car_idx, p);
@@ -1220,75 +1278,100 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     // Authoring drafts: entry yellow / road red / merge blue (match Python Track Scan).
     let phase = ctx.map.phase_key().to_string();
+    let lane2 = ctx.map.lane_is_2();
     let entry_col = Color32::from_rgb(255, 210, 58);
     let road_col = Color32::from_rgb(255, 90, 90);
     let merge_col = Color32::from_rgb(90, 160, 255);
-    let phases = [
-        ("entry", ctx.map.entry_pts.clone(), entry_col),
-        ("road", ctx.map.road_pts.clone(), road_col),
-        ("merge", ctx.map.merge_pts.clone(), merge_col),
-    ];
-    for (name, pts, col) in &phases {
-        if pts.is_empty() {
-            continue;
-        }
-        let active = *name == phase.as_str();
-        let width = if active { 3.0_f32 } else { 2.0_f32 };
-        let dot_r = if active { 5.0_f32 } else { 3.5_f32 };
-        let stroke_col = if active {
-            *col
-        } else {
-            Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 170)
-        };
-        for (i, (nx, ny)) in pts.iter().enumerate() {
-            let (mx, my) = model_point(*nx, *ny, mirror, rot);
-            let p = xform.map(mx, my);
-            ui.painter().circle_filled(p, dot_r, stroke_col);
-            if i > 0 {
-                let (px, py) = pts[i - 1];
-                let (pmx, pmy) = model_point(px, py, mirror, rot);
-                let prev = xform.map(pmx, pmy);
-                ui.painter()
-                    .line_segment([prev, p], Stroke::new(width, stroke_col));
-            }
-        }
-    }
+    let entry2_col = Color32::from_rgb(200, 240, 120);
+    let road2_col = Color32::from_rgb(70, 210, 170);
+    let merge2_col = Color32::from_rgb(100, 200, 255);
+    let asphalt_w_f = asphalt_w;
+    let handle_r = if ctx.map.pit_edit {
+        let base_r = (asphalt_w_f * 0.35).max(4.0);
+        (base_r * ctx.map.pit_edit_zoom.max(1.0).sqrt()).max(8.0)
+    } else {
+        5.0
+    };
+    let pit_hits = draw_pit_edit_drafts(
+        ui,
+        &ctx.map,
+        &xform,
+        mirror,
+        rot,
+        handle_r,
+        [
+            (entry_col, road_col, merge_col),
+            (entry2_col, road2_col, merge2_col),
+        ],
+    );
 
     if ctx.map.pit_edit && ctx.map.interactive {
-        let resp = ui.interact(plot, ui.id().with("map_pit"), Sense::click());
-        if resp.clicked() {
-            if let Some(pos) = resp.interact_pointer_pos() {
-                let (mx, my) = xform.unmap(pos);
-                // Inverse model (approx): undo rot then mirror.
-                let (rx, ry) = inverse_model(mx, my, mirror, rot);
-                ctx.map.active_pts_mut().push((rx, ry));
-            }
-        }
+        handle_pit_edit(
+            ui,
+            ctx,
+            plot,
+            &base_xform,
+            &xform,
+            mirror,
+            rot,
+            handle_r,
+            &pit_hits,
+        );
         let label_col = match phase.as_str() {
-            "entry" => entry_col,
-            "merge" => merge_col,
-            _ => road_col,
+            "entry" => {
+                if lane2 {
+                    entry2_col
+                } else {
+                    entry_col
+                }
+            }
+            "merge" => {
+                if lane2 {
+                    merge2_col
+                } else {
+                    merge_col
+                }
+            }
+            _ => {
+                if lane2 {
+                    road2_col
+                } else {
+                    road_col
+                }
+            }
         };
         label(
             ui,
             Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
             Align2::LEFT_TOP,
-            &format!("PIT EDIT ({})", phase),
+            &format!("PIT EDIT ({} L{})", phase, if lane2 { 2 } else { 1 }),
             12.0,
             label_col,
             true,
         );
-    } else if ctx.map.corner_edit {
+    } else if ctx.map.corner_edit && ctx.map.interactive {
+        handle_corner_edit(ui, ctx, plot, &path, &xform, mirror, rot, screen_centroid);
         label(
             ui,
             Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
             Align2::LEFT_TOP,
             "CORNER EDIT",
             12.0,
-            accent,
+            Color32::from_rgb(255, 200, 60),
             true,
         );
-    } else if ctx.map.sf_edit {
+    } else if ctx.map.sf_edit && ctx.map.interactive {
+        let resp = ui.interact(plot, ui.id().with("map_sf"), Sense::click());
+        if resp.clicked() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                let (mx, my) = xform.unmap(pos);
+                let (rx, ry) = inverse_model(mx, my, mirror, rot);
+                if path.len() >= 2 {
+                    ctx.map.cached_start_finish =
+                        track_path::nearest_pct_on_loop(&path, rx, ry);
+                }
+            }
+        }
         label(
             ui,
             Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
@@ -1298,6 +1381,415 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             accent,
             true,
         );
+    }
+}
+
+fn draw_sector_boundaries(
+    ui: &mut Ui,
+    ctx: &WidgetCtx<'_>,
+    path: &[(f32, f32)],
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    col: Color32,
+) {
+    let mut pcts: Vec<f32> = ctx
+        .map
+        .cached_corners
+        .iter()
+        .map(|c| c.pct)
+        .filter(|p| p.is_finite())
+        .collect();
+    if pcts.len() < 2 {
+        let n = ctx.map.num_turns.max(3) as i32;
+        pcts = (0..n).map(|i| i as f32 / n as f32).collect();
+    }
+    pcts.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    for pct in pcts {
+        let (nx, ny) = track_path::point_at(path, pct);
+        let (mx, my) = model_point(nx, ny, mirror, rot);
+        let p = xform.map(mx, my);
+        ui.painter()
+            .circle_filled(p, 2.5, color_with_alpha(col, 180));
+    }
+}
+
+fn draw_corners(
+    ui: &mut Ui,
+    ctx: &WidgetCtx<'_>,
+    path: &[(f32, f32)],
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    centroid: Pos2,
+) {
+    let asphalt_w = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
+    let text_scale = ctx.cfg.text_scale(SECTION);
+    let sz = (8.0 * text_scale).max(5.0);
+    let off = asphalt_w * 0.5 + sz + 8.0;
+    let corners = ctx.map.cached_corners.clone();
+    for (idx, c) in corners.iter().enumerate() {
+        let (nx, ny) = track_path::point_at(path, c.pct);
+        let (mx, my) = model_point(nx, ny, mirror, rot);
+        let s = xform.map(mx, my);
+        let dx = s.x - centroid.x;
+        let dy = s.y - centroid.y;
+        let ln = (dx * dx + dy * dy).sqrt().max(1.0);
+        let mut ax = s.x + dx / ln * off;
+        let mut ay = s.y + dy / ln * off;
+        // ox/oy are model-space deltas applied after model xform scale.
+        if c.ox != 0.0 || c.oy != 0.0 {
+            let (omx, omy) = model_point(c.ox, c.oy, mirror, rot);
+            ax += omx * xform.scale * 0.15;
+            ay += omy * xform.scale * 0.15;
+        }
+        let label_txt = &c.label;
+        let font = FontId::new(sz, FontFamily::Proportional);
+        let galley = ui.fonts(|f| {
+            f.layout_no_wrap(
+                label_txt.clone(),
+                font,
+                ctx.cfg.color(SECTION, "corner_text", "#d6dce2"),
+            )
+        });
+        let bw = galley.size().x.max(sz + 4.0) + 12.0;
+        let bh = galley.size().y + 4.0;
+        let rect = Rect::from_center_size(Pos2::new(ax, ay), egui::vec2(bw, bh));
+        let fill = if ctx.map.corner_edit {
+            let a = if ctx.map.drag_corner == Some(idx) {
+                220
+            } else {
+                160
+            };
+            Color32::from_rgba_unmultiplied(255, 200, 60, a)
+        } else {
+            Color32::from_rgba_unmultiplied(15, 18, 22, 200)
+        };
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(4), fill);
+        ui.painter().galley(
+            Pos2::new(
+                rect.center().x - galley.size().x * 0.5,
+                rect.center().y - galley.size().y * 0.5,
+            ),
+            galley,
+            Color32::WHITE,
+        );
+    }
+}
+
+/// Hit target: lane(1|2), phase(0=entry,1=road,2=merge,3=joint,4=entry_joint), idx.
+type PitHit = (u8, u8, usize);
+
+fn draw_pit_edit_drafts(
+    ui: &mut Ui,
+    ctx: &MapAuthoring,
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    handle_r: f32,
+    colors: [(Color32, Color32, Color32); 2],
+) -> Vec<(Pos2, PitHit)> {
+    let mut hits = Vec::new();
+    let active_lane2 = ctx.lane_is_2();
+    for (lane_i, (entry_col, road_col, merge_col)) in colors.into_iter().enumerate() {
+        let lane2 = lane_i == 1;
+        let lane_u = if lane2 { 2_u8 } else { 1_u8 };
+        let (entry, road, merge) = if lane2 {
+            (&ctx.entry_pts_2, &ctx.road_pts_2, &ctx.merge_pts_2)
+        } else {
+            (&ctx.entry_pts, &ctx.road_pts, &ctx.merge_pts)
+        };
+        if entry.is_empty() && road.is_empty() && merge.is_empty() {
+            continue;
+        }
+        let active = lane2 == active_lane2;
+        let fade = |c: Color32| -> Color32 {
+            if active {
+                c
+            } else {
+                Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), 170)
+            }
+        };
+        let entry_col = fade(entry_col);
+        let road_col = fade(road_col);
+        let merge_col = fade(merge_col);
+        let road_w = if active { 3.5_f32 } else { 2.5_f32 };
+        let blend_w = if active { 3.0_f32 } else { 2.0_f32 };
+
+        let stroke_poly = |pts: &[(f32, f32)], col: Color32, width: f32| {
+            for i in 1..pts.len() {
+                let (mx0, my0) = model_point(pts[i - 1].0, pts[i - 1].1, mirror, rot);
+                let (mx1, my1) = model_point(pts[i].0, pts[i].1, mirror, rot);
+                ui.painter().line_segment(
+                    [xform.map(mx0, my0), xform.map(mx1, my1)],
+                    Stroke::new(width, col),
+                );
+            }
+        };
+        stroke_poly(entry, entry_col, blend_w);
+        stroke_poly(road, road_col, road_w);
+        stroke_poly(merge, merge_col, blend_w);
+
+        let has_joint = ctx.has_joint(lane2);
+        let has_entry_joint = ctx.has_entry_joint(lane2);
+        let phases: [(&str, u8, &[(f32, f32)], Color32); 3] = [
+            ("entry", 0, entry, entry_col),
+            ("road", 1, road, road_col),
+            ("merge", 2, merge, merge_col),
+        ];
+        for (_name, phase_code, pts, col) in phases {
+            for (idx, &(nx, ny)) in pts.iter().enumerate() {
+                if has_entry_joint
+                    && ((phase_code == 0 && idx + 1 == pts.len())
+                        || (phase_code == 1 && idx == 0))
+                {
+                    continue;
+                }
+                if has_joint
+                    && ((phase_code == 1 && idx + 1 == pts.len())
+                        || (phase_code == 2 && idx == 0))
+                {
+                    continue;
+                }
+                let (mx, my) = model_point(nx, ny, mirror, rot);
+                let p = xform.map(mx, my);
+                let dragging = ctx.pit_drag == Some((lane_u, phase_code, idx));
+                let fill = if dragging || active {
+                    col
+                } else {
+                    Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 170)
+                };
+                ui.painter().circle_filled(p, handle_r, fill);
+                ui.painter().circle_stroke(
+                    p,
+                    handle_r,
+                    Stroke::new(
+                        1.5_f32,
+                        Color32::from_rgb(
+                            col.r().saturating_mul(3) / 4,
+                            col.g().saturating_mul(3) / 4,
+                            col.b().saturating_mul(3) / 4,
+                        ),
+                    ),
+                );
+                hits.push((p, (lane_u, phase_code, idx)));
+            }
+        }
+        if has_entry_joint {
+            if let Some(&(nx, ny)) = entry.last() {
+                let (mx, my) = model_point(nx, ny, mirror, rot);
+                let p = xform.map(mx, my);
+                let jcol = Color32::from_rgb(
+                    entry_col.r().saturating_add(20).min(255),
+                    entry_col.g().saturating_add(20).min(255),
+                    entry_col.b().saturating_add(10).min(255),
+                );
+                let dragging = ctx.pit_drag == Some((lane_u, 4, 0));
+                let fill = if dragging || active {
+                    jcol
+                } else {
+                    Color32::from_rgba_unmultiplied(jcol.r(), jcol.g(), jcol.b(), 200)
+                };
+                ui.painter().circle_filled(p, handle_r, fill);
+                ui.painter()
+                    .circle_stroke(p, handle_r, Stroke::new(1.5_f32, jcol));
+                hits.push((p, (lane_u, 4, 0)));
+            }
+        }
+        if has_joint {
+            if let Some(&(nx, ny)) = road.last() {
+                let (mx, my) = model_point(nx, ny, mirror, rot);
+                let p = xform.map(mx, my);
+                let jcol = if lane2 {
+                    Color32::from_rgb(120, 220, 180)
+                } else {
+                    Color32::from_rgb(255, 170, 50)
+                };
+                let dragging = ctx.pit_drag == Some((lane_u, 3, 0));
+                let fill = if dragging || active {
+                    jcol
+                } else {
+                    Color32::from_rgba_unmultiplied(jcol.r(), jcol.g(), jcol.b(), 200)
+                };
+                ui.painter().circle_filled(p, handle_r, fill);
+                ui.painter()
+                    .circle_stroke(p, handle_r, Stroke::new(1.5_f32, jcol));
+                hits.push((p, (lane_u, 3, 0)));
+            }
+        }
+    }
+    hits
+}
+
+fn pit_handle_at(hits: &[(Pos2, PitHit)], pos: Pos2, r: f32) -> Option<PitHit> {
+    let r2 = r * r;
+    for &(p, hit) in hits.iter().rev() {
+        let dx = p.x - pos.x;
+        let dy = p.y - pos.y;
+        if dx * dx + dy * dy <= r2 {
+            return Some(hit);
+        }
+    }
+    None
+}
+
+fn handle_pit_edit(
+    ui: &mut Ui,
+    ctx: &mut WidgetCtx<'_>,
+    plot: Rect,
+    base_xform: &PlotXform,
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    handle_r: f32,
+    hits: &[(Pos2, PitHit)],
+) {
+    // Scroll zoom toward pointer (Python wheelEvent).
+    let scroll = ui.input(|i| i.smooth_scroll_delta);
+    if scroll.y.abs() > 0.0 {
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()).filter(|p| plot.contains(*p)) {
+            let (wx, wy) = xform.unmap(pos);
+            let factor = if scroll.y > 0.0 { 1.12_f32 } else { 1.0 / 1.12 };
+            let new_zoom = MapAuthoring::clamp_pit_zoom(ctx.map.pit_edit_zoom * factor);
+            let new_scale = base_xform.scale * new_zoom;
+            ctx.map.pit_edit_pan = (
+                pos.x - base_xform.origin.x - (wx - base_xform.min.0) * new_scale,
+                pos.y - base_xform.origin.y - (wy - base_xform.min.1) * new_scale,
+            );
+            ctx.map.pit_edit_zoom = new_zoom;
+            ui.ctx().request_repaint();
+        }
+    }
+
+    let resp = ui.interact(plot, ui.id().with("map_pit"), Sense::click_and_drag());
+    let pointer = resp.interact_pointer_pos();
+    let shift = ui.input(|i| i.modifiers.shift);
+    let middle_down = ui.input(|i| i.pointer.button_down(PointerButton::Middle));
+    let primary_down = ui.input(|i| i.pointer.button_down(PointerButton::Primary));
+
+    // Start / continue handle drag (press on handle, not Shift-pan).
+    let primary_pressed = ui.input(|i| i.pointer.primary_pressed());
+    if let Some(pos) = pointer {
+        if primary_pressed && !shift {
+            if let Some(hit) = pit_handle_at(hits, pos, handle_r) {
+                ctx.map.pit_drag = Some(hit);
+            }
+        }
+        if primary_down && !shift {
+            if let Some((lane_u, phase, idx)) = ctx.map.pit_drag {
+                let (mx, my) = xform.unmap(pos);
+                let (rx, ry) = inverse_model(mx, my, mirror, rot);
+                ctx.map
+                    .set_point_with_joints(lane_u == 2, phase, idx, rx, ry);
+                ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            }
+        }
+    }
+    if ctx.map.pit_drag.is_some() && !primary_down {
+        ctx.map.pit_drag = None;
+    }
+
+    // Pan: middle-drag or Shift+primary (not on handle).
+    let panning = middle_down
+        || (primary_down && shift && ctx.map.pit_drag.is_none());
+    if panning {
+        let delta = ui.input(|i| i.pointer.delta());
+        if delta != Vec2::ZERO {
+            ctx.map.pit_edit_pan.0 += delta.x;
+            ctx.map.pit_edit_pan.1 += delta.y;
+            ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
+            ui.ctx().request_repaint();
+        } else {
+            ui.ctx().set_cursor_icon(CursorIcon::Grab);
+        }
+    } else if ctx.map.pit_drag.is_none() {
+        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()).filter(|p| plot.contains(*p)) {
+            if pit_handle_at(hits, pos, handle_r).is_some() || shift {
+                ui.ctx().set_cursor_icon(CursorIcon::Grab);
+            } else {
+                ui.ctx().set_cursor_icon(CursorIcon::Crosshair);
+            }
+        }
+    }
+
+    // Primary click empty → append (avoid after handle drag).
+    if resp.clicked() && ctx.map.pit_drag.is_none() && !shift {
+        if let Some(pos) = pointer {
+            if pit_handle_at(hits, pos, handle_r).is_none() {
+                let (mx, my) = xform.unmap(pos);
+                let (rx, ry) = inverse_model(mx, my, mirror, rot);
+                ctx.map.append_pit_edit_at(rx, ry);
+            }
+        }
+    }
+
+    // Secondary click → pop last of active phase.
+    if resp.secondary_clicked() {
+        ctx.map.active_pts_mut().pop();
+    }
+}
+
+fn handle_corner_edit(
+    ui: &mut Ui,
+    ctx: &mut WidgetCtx<'_>,
+    plot: Rect,
+    path: &[(f32, f32)],
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    centroid: Pos2,
+) {
+    let asphalt_w = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
+    let text_scale = ctx.cfg.text_scale(SECTION);
+    let sz = (8.0 * text_scale).max(5.0);
+    let off = asphalt_w * 0.5 + sz + 8.0;
+    let corners = ctx.map.cached_corners.clone();
+    for (idx, c) in corners.iter().enumerate() {
+        let (nx, ny) = track_path::point_at(path, c.pct);
+        let (mx, my) = model_point(nx, ny, mirror, rot);
+        let s = xform.map(mx, my);
+        let dx = s.x - centroid.x;
+        let dy = s.y - centroid.y;
+        let ln = (dx * dx + dy * dy).sqrt().max(1.0);
+        let ax = s.x + dx / ln * off;
+        let ay = s.y + dy / ln * off;
+        let hit = Rect::from_center_size(Pos2::new(ax, ay), egui::vec2(28.0, 22.0));
+        let resp = ui.interact(hit, ui.id().with(("corner", idx)), Sense::drag());
+        if resp.drag_started() {
+            ctx.map.drag_corner = Some(idx);
+        }
+        if resp.dragged() {
+            if let Some(pos) = resp.interact_pointer_pos() {
+                // Store screen delta back as ox/oy in a lightweight model space.
+                let scale = xform.scale.max(1e-3);
+                if let Some(c) = ctx.map.cached_corners.get_mut(idx) {
+                    c.ox += resp.drag_delta().x / (scale * 0.15);
+                    c.oy += resp.drag_delta().y / (scale * 0.15);
+                    let _ = pos;
+                }
+            }
+        }
+        if resp.drag_stopped() {
+            ctx.map.drag_corner = None;
+        }
+    }
+    let resp = ui.interact(plot, ui.id().with("corner_bg"), Sense::click());
+    if resp.clicked() && ctx.map.drag_corner.is_none() {
+        if let Some(pos) = resp.interact_pointer_pos() {
+            let (mx, my) = xform.unmap(pos);
+            let (rx, ry) = inverse_model(mx, my, mirror, rot);
+            if path.len() >= 2 {
+                let pct = track_path::nearest_pct_on_loop(path, rx, ry);
+                let label = (ctx.map.cached_corners.len() + 1).to_string();
+                ctx.map.cached_corners.push(track_path::CornerMark {
+                    pct,
+                    label,
+                    ox: 0.0,
+                    oy: 0.0,
+                });
+            }
+        }
     }
 }
 

@@ -28,6 +28,10 @@ def qapp():
 
 
 def _serve_once(handler: Callable[[dict], dict], port: int) -> threading.Thread:
+    return _serve_n(handler, port, n=1)
+
+
+def _serve_n(handler: Callable[[dict], dict], port: int, n: int = 1) -> threading.Thread:
     def run() -> None:
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -38,11 +42,14 @@ def _serve_once(handler: Callable[[dict], dict], port: int) -> threading.Thread:
             conn, _ = srv.accept()
             with conn:
                 f = conn.makefile("rwb")
-                line = f.readline()
-                req = json.loads(line.decode())
-                resp = handler(req)
-                f.write((json.dumps(resp) + "\n").encode())
-                f.flush()
+                for _ in range(n):
+                    line = f.readline()
+                    if not line:
+                        break
+                    req = json.loads(line.decode())
+                    resp = handler(req)
+                    f.write((json.dumps(resp) + "\n").encode())
+                    f.flush()
         finally:
             srv.close()
 
@@ -85,27 +92,32 @@ def test_error_raises():
 def test_remote_overlay_map_api(qapp):
     port = 19892
     seen = {}
+    methods = []
 
     def handler(req):
+        methods.append(req["method"])
         seen["method"] = req["method"]
         seen["params"] = req.get("params")
-        return {"id": req["id"], "ok": True, "result": {"pit_edit": True}}
+        return {"id": req["id"], "ok": True, "result": {"pit_edit": True, "loaded": True}}
 
-    _serve_once(handler, port)
+    # enable loads saved pit then set_pit_edit
+    _serve_n(handler, port, n=2)
     remote = RemoteOverlay(OverlayIpcClient(port=port, timeout=2.0))
     remote.set_pit_edit_mode(True, phase="road", lane="primary")
-    assert seen["method"] == "map.set_pit_edit"
+    assert "map.set_pit_edit" in methods
     assert seen["params"]["enabled"] is True
     assert seen["params"]["lane"] == "primary"
 
     port2 = 19894
     seen2 = {}
+    methods2 = []
 
     def handler2(req):
+        methods2.append(req["method"])
         seen2["params"] = req.get("params")
-        return {"id": req["id"], "ok": True, "result": {}}
+        return {"id": req["id"], "ok": True, "result": {"loaded": True}}
 
-    _serve_once(handler2, port2)
+    _serve_n(handler2, port2, n=2)
     remote2 = RemoteOverlay(OverlayIpcClient(port=port2, timeout=2.0))
     remote2.set_pit_edit_mode(True, phase="entry", lane=2)
     assert seen2["params"]["lane"] == "secondary"

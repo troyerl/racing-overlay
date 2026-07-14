@@ -136,6 +136,41 @@ pub struct MapClearPitParams {
     /// When omitted, clear the currently active phase.
     #[serde(default)]
     pub phase: Option<String>,
+    /// `"primary"` / `"secondary"` / `"1"` / `"2"`. Omit = active lane (or both for `all`).
+    #[serde(default)]
+    pub lane: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MapLoadPitParams {
+    #[serde(default)]
+    pub force: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MapSetLoopParams {
+    pub track_id: i32,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub points: Vec<[f64; 2]>,
+    #[serde(default)]
+    pub start_finish: f64,
+    #[serde(default)]
+    pub corners: Vec<Value>,
+    #[serde(default)]
+    pub num_turns: Option<i32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MapSetCornersParams {
+    #[serde(default)]
+    pub corners: Vec<Value>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MapSetStartFinishParams {
+    pub pct: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -169,6 +204,10 @@ pub mod methods {
     pub const MAP_SET_NUM_TURNS: &str = "map.set_num_turns";
     pub const MAP_SET_ALIAS_IDS: &str = "map.set_alias_ids";
     pub const MAP_INVALIDATE_TRACK: &str = "map.invalidate_track";
+    pub const MAP_LOAD_PIT: &str = "map.load_pit";
+    pub const MAP_SET_LOOP: &str = "map.set_loop";
+    pub const MAP_SET_CORNERS: &str = "map.set_corners";
+    pub const MAP_SET_START_FINISH: &str = "map.set_start_finish";
     pub const TRACK_AUTHORING_STATE: &str = "track.authoring_state";
 }
 

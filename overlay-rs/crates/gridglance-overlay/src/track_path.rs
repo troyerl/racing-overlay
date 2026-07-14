@@ -51,6 +51,15 @@ impl PitLane {
     }
 }
 
+/// Corner marker from track JSON.
+#[derive(Debug, Clone, Default)]
+pub struct CornerMark {
+    pub pct: f32,
+    pub label: String,
+    pub ox: f32,
+    pub oy: f32,
+}
+
 /// Closed track polyline in normalized (or raw) XY space.
 #[derive(Debug, Clone, Default)]
 pub struct TrackPath {
@@ -68,6 +77,7 @@ pub struct TrackPath {
     pub drs_zones: Vec<(f32, f32)>,
     /// Push-to-pass ranges as (lo, hi) lap fractions.
     pub p2p_zones: Vec<(f32, f32)>,
+    pub corners: Vec<CornerMark>,
 }
 
 /// Directories to search for track JSON (user data tracks only).
@@ -285,6 +295,7 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
             .map(|a| a.iter().any(|x| x.as_i64() == Some(1)))
             .unwrap_or(false);
 
+    let corners = parse_corners(v.get("corners"));
     let mut tp = TrackPath {
         points: resampled,
         name,
@@ -294,6 +305,7 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         pit2,
         drs_zones,
         p2p_zones,
+        corners,
     };
     if is_demo && !tp.pit.has_drawable() {
         if let Some(synth) = synthesize_demo_pit(&tp.points) {
@@ -302,6 +314,48 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         }
     }
     Some(tp)
+}
+
+fn parse_corners(v: Option<&Value>) -> Vec<CornerMark> {
+    let Some(arr) = v.and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (i, c) in arr.iter().enumerate() {
+        let pct = if let Some(p) = c.get("pct").and_then(|x| x.as_f64()) {
+            p as f32
+        } else if let Some(a) = c.as_array() {
+            a.first().and_then(|x| x.as_f64()).unwrap_or(0.0) as f32
+        } else {
+            continue;
+        };
+        let label = if let Some(s) = c.get("label").and_then(|x| x.as_str()) {
+            s.to_string()
+        } else if let Some(n) = c.get("label").and_then(|x| x.as_i64()) {
+            n.to_string()
+        } else if let Some(a) = c.as_array() {
+            a.get(1)
+                .and_then(|x| {
+                    x.as_str()
+                        .map(|s| s.to_string())
+                        .or_else(|| x.as_i64().map(|n| n.to_string()))
+                })
+                .unwrap_or_else(|| (i + 1).to_string())
+        } else {
+            (i + 1).to_string()
+        };
+        let ox = c.get("ox").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        let oy = c.get("oy").and_then(|x| x.as_f64()).unwrap_or(0.0) as f32;
+        if pct.is_finite() {
+            out.push(CornerMark {
+                pct: pct.rem_euclid(1.0),
+                label,
+                ox,
+                oy,
+            });
+        }
+    }
+    out
 }
 
 fn parse_pit_out_pct(v: &Value, loop_pts: &[(f32, f32)]) -> Option<f32> {

@@ -382,6 +382,8 @@ class FakeIRSDK:
                         "CarClassID": 0,
                         "TeamName": f"Team {_DEMO_DRIVERS[i][0]}",
                         "UserNickName": _DEMO_DRIVERS[i][1].split()[0],
+                        "CarPath": "demo/gt3",
+                        "CarScreenName": "Demo GT3",
                     }
                     for i in range(self.num_cars)
                 ] + [{
@@ -393,6 +395,8 @@ class FakeIRSDK:
                     "CarClassColor": "#111111",
                     "CarClassID": 0,
                     "CarIsPaceCar": True,
+                    "CarPath": "safety/pc",
+                    "CarScreenName": "Pace Car",
                 }],
             }
 
