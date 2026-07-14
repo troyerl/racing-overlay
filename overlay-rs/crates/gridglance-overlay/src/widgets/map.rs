@@ -226,6 +226,8 @@ fn draw_loop_tick(
     }
 }
 
+/// Dashed open polyline with a continuous dash phase along the whole path
+/// (Python QPen DashLine). Resetting per segment looks solid on dense tracks.
 fn stroke_open_dashed(
     ui: &mut Ui,
     screen: &[Pos2],
@@ -240,6 +242,8 @@ fn stroke_open_dashed(
     let dash = dash.max(1.0);
     let gap = gap.max(0.5);
     let pattern = dash + gap;
+    let stroke = Stroke::new(width, color);
+    let mut phase = 0.0_f32; // distance into current dash+gap cycle
     for w in screen.windows(2) {
         let a = w[0];
         let b = w[1];
@@ -251,17 +255,31 @@ fn stroke_open_dashed(
         }
         let ux = dx / len;
         let uy = dy / len;
-        let mut d = 0.0_f32;
-        while d < len {
-            let d1 = (d + dash).min(len);
-            ui.painter().line_segment(
-                [
-                    Pos2::new(a.x + ux * d, a.y + uy * d),
-                    Pos2::new(a.x + ux * d1, a.y + uy * d1),
-                ],
-                Stroke::new(width, color),
-            );
-            d += pattern;
+        let mut consumed = 0.0_f32;
+        while consumed < len {
+            let in_dash = phase < dash;
+            let remain = if in_dash {
+                dash - phase
+            } else {
+                pattern - phase
+            };
+            let step = remain.min(len - consumed);
+            if in_dash && step > 1e-4 {
+                let t0 = consumed;
+                let t1 = consumed + step;
+                ui.painter().line_segment(
+                    [
+                        Pos2::new(a.x + ux * t0, a.y + uy * t0),
+                        Pos2::new(a.x + ux * t1, a.y + uy * t1),
+                    ],
+                    stroke,
+                );
+            }
+            consumed += step;
+            phase += step;
+            if phase >= pattern - 1e-6 {
+                phase = 0.0;
+            }
         }
     }
 }
