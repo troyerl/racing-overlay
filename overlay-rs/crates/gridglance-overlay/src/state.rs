@@ -57,6 +57,12 @@ pub struct MapAuthoring {
     pub car_anim: HashMap<i32, f32>,
     /// Session time of last map paint (for smoothing dt).
     pub last_paint_secs: f64,
+    /// Hold car on pit route after OnPitRoad clears until past pit_out.
+    pub pit_route_latch: HashMap<i32, bool>,
+    /// Previous OnPitRoad per car (for exit edge).
+    pub pit_prev_on: HashMap<i32, bool>,
+    /// Lap % when OnPitRoad fell (schematic exit placement).
+    pub pit_exit_latch: HashMap<i32, f32>,
 }
 
 /// Pit-edit zoom clamp (match Python `_PIT_EDIT_ZOOM_*`).
@@ -99,6 +105,9 @@ impl Default for MapAuthoring {
             marker_hold: crate::map_markers::fresh_hold_states(),
             car_anim: HashMap::new(),
             last_paint_secs: 0.0,
+            pit_route_latch: HashMap::new(),
+            pit_prev_on: HashMap::new(),
+            pit_exit_latch: HashMap::new(),
         }
     }
 }

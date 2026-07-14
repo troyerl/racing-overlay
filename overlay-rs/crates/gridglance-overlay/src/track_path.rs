@@ -384,6 +384,15 @@ pub const DEMO_PIT_OUT_PCT: f32 = 0.12;
 pub const DEMO_PIT_LANE_LO: f32 = 0.95;
 pub const DEMO_PIT_LANE_HI: f32 = 0.06;
 
+/// True when `pct` is on the demo pit-road span (wraps across 1.0).
+pub fn pct_in_demo_pit_lane(pct: f32) -> bool {
+    let span = (DEMO_PIT_LANE_HI - DEMO_PIT_LANE_LO).rem_euclid(1.0);
+    if span <= 1e-6 {
+        return false;
+    }
+    ((pct.rem_euclid(1.0) - DEMO_PIT_LANE_LO).rem_euclid(1.0)) <= span
+}
+
 /// Build inward-offset entry / lane / exit from a racing loop (demo / oval).
 pub fn synthesize_demo_pit(pts: &[(f32, f32)]) -> Option<PitLane> {
     let n = pts.len();

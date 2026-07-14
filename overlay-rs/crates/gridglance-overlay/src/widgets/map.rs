@@ -316,6 +316,9 @@ fn draw_pit_lane(
     mirror: bool,
     rot: i32,
     asphalt: Color32,
+    show_entry: bool,
+    show_road: bool,
+    show_exit: bool,
 ) {
     if !lane.has_drawable() {
         return;
@@ -331,17 +334,17 @@ fn draw_pit_lane(
     let blend_out = color_with_alpha(ctx.cfg.color(SECTION, "pit_blend_out", "#3aa0ff"), a);
     let asphalt_u = color_with_alpha(asphalt, a_asphalt);
 
-    if show_blends && lane.entry.len() >= 2 {
+    if show_blends && show_entry && lane.entry.len() >= 2 {
         let m = model_poly(&lane.entry, mirror, rot);
         let s = screen_poly(xform, &m);
         stroke_open_dashed(ui, &s, 2.5, blend_in, 3.0, 4.0);
     }
-    if show_blends && lane.exit.len() >= 2 {
+    if show_blends && show_exit && lane.exit.len() >= 2 {
         let m = model_poly(&lane.exit, mirror, rot);
         let s = screen_poly(xform, &m);
         stroke_open_dashed(ui, &s, 2.5, blend_out, 3.0, 4.0);
     }
-    if lane.path.len() >= 2 {
+    if show_road && lane.path.len() >= 2 {
         let m = model_poly(&lane.path, mirror, rot);
         let s = screen_poly(xform, &m);
         stroke_open(ui, &s, 7.0, asphalt_u);
@@ -385,7 +388,70 @@ fn draw_pit_lane(
     }
 }
 
+fn pct_in_interval(pct: f32, lo: f32, hi: f32) -> bool {
+    let span = (hi - lo).rem_euclid(1.0);
+    if span <= 1e-6 {
+        return false;
+    }
+    ((pct - lo).rem_euclid(1.0)) <= span
+}
+
+fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
+    let lane = &ctx.map.cached_pit;
+    let route_lo = lane
+        .in_pct
+        .or(lane.span.map(|(a, _)| a))
+        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+    let route_hi = lane
+        .out_pct
+        .or(ctx.map.cached_pit_out_pct)
+        .or(lane.span.map(|(_, b)| b))
+        .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
+
+    let mut seen = std::collections::HashSet::new();
+    for car in cars {
+        let idx = car.car_idx;
+        seen.insert(idx);
+        let on = car.on_pit || car.in_pit;
+        let pct = car.lap_dist_pct;
+        let prev = ctx.map.pit_prev_on.get(&idx).copied().unwrap_or(false);
+        if prev && !on && pct >= 0.0 {
+            ctx.map.pit_exit_latch.insert(idx, pct.rem_euclid(1.0));
+        }
+        ctx.map.pit_prev_on.insert(idx, on);
+
+        if on {
+            ctx.map.pit_route_latch.insert(idx, true);
+            continue;
+        }
+        let latched = ctx.map.pit_route_latch.get(&idx).copied().unwrap_or(false);
+        if latched {
+            if pct >= 0.0 && pct_in_interval(pct, route_lo, route_hi) {
+                ctx.map.pit_route_latch.insert(idx, true);
+            } else {
+                ctx.map.pit_route_latch.insert(idx, false);
+                ctx.map.pit_exit_latch.remove(&idx);
+            }
+        }
+    }
+    ctx.map.pit_route_latch.retain(|k, _| seen.contains(k));
+    ctx.map.pit_prev_on.retain(|k, _| seen.contains(k));
+    ctx.map.pit_exit_latch.retain(|k, _| seen.contains(k));
+}
+
+fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
+    car.on_pit
+        || car.in_pit
+        || ctx
+            .map
+            .pit_route_latch
+            .get(&car.car_idx)
+            .copied()
+            .unwrap_or(false)
+}
+
 fn car_model_xy(
+    ctx: &WidgetCtx<'_>,
     car: &CarRow,
     pct: f32,
     racing: &[(f32, f32)],
@@ -393,25 +459,63 @@ fn car_model_xy(
     pit2: &track_path::PitLane,
     show_blends: bool,
 ) -> (f32, f32) {
-    if in_pit_lane(car) {
-        for lane in [pit, pit2] {
-            if !lane.has_drawable() {
-                continue;
+    let on_pit = car.on_pit || car.in_pit;
+    let on_route = car_on_route(ctx, car);
+    if !on_route && !on_pit {
+        return track_path::point_at(racing, pct);
+    }
+
+    for lane in [pit, pit2] {
+        if !lane.has_drawable() {
+            continue;
+        }
+        let in_pct = lane
+            .in_pct
+            .or(lane.span.map(|(a, _)| a))
+            .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+        let out_pct = lane
+            .out_pct
+            .or(lane.span.map(|(_, b)| b))
+            .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
+        let (lane_lo, lane_hi) = lane
+            .span
+            .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
+
+        // Exit merge: off pit road, on_route, along pit_out.
+        if show_blends && !on_pit && lane.exit.len() >= 2 {
+            let exit_start = ctx
+                .map
+                .pit_exit_latch
+                .get(&car.car_idx)
+                .copied()
+                .unwrap_or(lane_hi);
+            if pct_in_interval(pct, exit_start, out_pct) {
+                let t = track_path::route_t_for_pct(pct, exit_start, out_pct);
+                return track_path::point_on_open(&lane.exit, t);
             }
+        }
+
+        // Entry blend.
+        if show_blends && !on_pit && on_route && lane.entry.len() >= 2 {
+            if pct_in_interval(pct, in_pct, lane_lo) {
+                let t = track_path::route_t_for_pct(pct, in_pct, lane_lo);
+                return track_path::point_on_open(&lane.entry, t);
+            }
+        }
+
+        // Pit road while OnPitRoad.
+        if on_pit && lane.path.len() >= 2 {
+            let t = track_path::route_t_for_pct(pct, lane_lo, lane_hi);
+            return track_path::point_on_open(&lane.path, t);
+        }
+
+        // Latched but still in full route: fall back to concatenated path.
+        if on_route {
             let route = lane.route(show_blends);
-            if route.len() < 2 {
-                continue;
+            if route.len() >= 2 {
+                let t = track_path::route_t_for_pct(pct, in_pct, out_pct);
+                return track_path::point_on_open(&route, t);
             }
-            let in_pct = lane
-                .in_pct
-                .or(lane.span.map(|(a, _)| a))
-                .unwrap_or(track_path::DEMO_PIT_IN_PCT);
-            let out_pct = lane
-                .out_pct
-                .or(lane.span.map(|(_, b)| b))
-                .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
-            let t = track_path::route_t_for_pct(pct, in_pct, out_pct);
-            return track_path::point_on_open(&route, t);
         }
     }
     track_path::point_at(racing, pct)
@@ -438,11 +542,12 @@ fn dot_scale(frac: f64) -> f32 {
 }
 
 /// Python map colors: player / competitor / lap tint / pit / pace — not class color.
-fn car_fill(cfg: &OverlayConfig, car: &CarRow, pit_opacity: f32) -> Color32 {
+fn car_fill(cfg: &OverlayConfig, car: &CarRow, pit_opacity: f32, on_route: bool) -> Color32 {
     if car.is_pace_car {
         return cfg.color(SECTION, "pace_car", "#0b0e12");
     }
-    if in_pit_lane(car) && !car.is_player {
+    // Python `_car_dot_style`: grey when on_pit or on_route (non-player).
+    if (in_pit_lane(car) || on_route) && !car.is_player {
         let pit = cfg.color(SECTION, "pit_car", "#6e747d");
         return color_with_alpha(pit, (pit_opacity.clamp(0.05, 1.0) * 255.0) as u8);
     }
@@ -1083,9 +1188,51 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     if ctx.cfg.bool_key(SECTION, "show_pit", true) {
         let pit = ctx.map.cached_pit.clone();
         let pit2 = ctx.map.cached_pit2.clone();
-        draw_pit_lane(ui, ctx, &pit, &xform, mirror, rot, asphalt);
+        let hide = ctx.map.pit_edit;
+        // Python: hide saved segments while corresponding edit buffers are active.
+        let show1_entry = !(hide && !ctx.map.entry_pts.is_empty());
+        let show1_road = !(hide && !ctx.map.road_pts.is_empty());
+        let show1_exit = !(hide && !ctx.map.merge_pts.is_empty());
+        let show_lane1 = !(hide
+            && (!ctx.map.road_pts.is_empty()
+                || !ctx.map.merge_pts.is_empty()
+                || !ctx.map.entry_pts.is_empty()));
+        if show_lane1 {
+            draw_pit_lane(
+                ui,
+                ctx,
+                &pit,
+                &xform,
+                mirror,
+                rot,
+                asphalt,
+                show1_entry,
+                show1_road,
+                show1_exit,
+            );
+        }
         if pit2.has_drawable() {
-            draw_pit_lane(ui, ctx, &pit2, &xform, mirror, rot, asphalt);
+            let show2_entry = !(hide && !ctx.map.entry_pts_2.is_empty());
+            let show2_road = !(hide && !ctx.map.road_pts_2.is_empty());
+            let show2_exit = !(hide && !ctx.map.merge_pts_2.is_empty());
+            let show_lane2 = !(hide
+                && (!ctx.map.road_pts_2.is_empty()
+                    || !ctx.map.merge_pts_2.is_empty()
+                    || !ctx.map.entry_pts_2.is_empty()));
+            if show_lane2 {
+                draw_pit_lane(
+                    ui,
+                    ctx,
+                    &pit2,
+                    &xform,
+                    mirror,
+                    rot,
+                    asphalt,
+                    show2_entry,
+                    show2_road,
+                    show2_exit,
+                );
+            }
         }
     }
 
@@ -1216,6 +1363,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let pit_lane = ctx.map.cached_pit.clone();
     let pit_lane2 = ctx.map.cached_pit2.clone();
 
+    update_pit_route_latches(ctx, &cars);
+
     let mut car_pts: HashMap<i32, Pos2> = HashMap::new();
     for car in &cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
@@ -1228,7 +1377,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if pct < 0.0 {
             continue;
         }
-        let (nx, ny) = car_model_xy(car, pct, &path, &pit_lane, &pit_lane2, show_blends);
+        let on_route = car_on_route(ctx, car);
+        let (nx, ny) =
+            car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
         car_pts.insert(car.car_idx, p);
@@ -1237,7 +1388,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         } else {
             9.0 * other_scale
         };
-        if car.is_player && in_pit_lane(car) {
+        if car.is_player && (in_pit_lane(car) || on_route) {
             r *= 1.15;
         }
         if let Some(slot) = marker_slots.get(&car.car_idx) {
@@ -1248,7 +1399,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                     .circle_stroke(p, r + 5.0, Stroke::new(2.6_f32, ring));
             }
         }
-        let fill = car_fill(ctx.cfg, car, pit_opacity);
+        let fill = car_fill(ctx.cfg, car, pit_opacity, on_route);
         if car.is_player {
             draw_player_dot(ui, p, r, fill);
         } else {
@@ -1312,79 +1463,77 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
     }
 
-    // Authoring drafts: entry yellow / road red / merge blue (match Python Track Scan).
-    let phase = ctx.map.phase_key().to_string();
-    let lane2 = ctx.map.lane_is_2();
-    let entry_col = Color32::from_rgb(255, 210, 58);
-    let road_col = Color32::from_rgb(255, 90, 90);
-    let merge_col = Color32::from_rgb(90, 160, 255);
-    let entry2_col = Color32::from_rgb(200, 240, 120);
-    let road2_col = Color32::from_rgb(70, 210, 170);
-    let merge2_col = Color32::from_rgb(100, 200, 255);
-    let asphalt_w_f = asphalt_w;
-    let handle_r = if ctx.map.pit_edit {
+    // Authoring drafts: only while Track Scan pit edit Enabled.
+    if ctx.map.pit_edit {
+        let phase = ctx.map.phase_key().to_string();
+        let lane2 = ctx.map.lane_is_2();
+        let entry_col = Color32::from_rgb(255, 210, 58);
+        let road_col = Color32::from_rgb(255, 90, 90);
+        let merge_col = Color32::from_rgb(90, 160, 255);
+        let entry2_col = Color32::from_rgb(200, 240, 120);
+        let road2_col = Color32::from_rgb(70, 210, 170);
+        let merge2_col = Color32::from_rgb(100, 200, 255);
+        let asphalt_w_f = asphalt_w;
         let base_r = (asphalt_w_f * 0.35).max(4.0);
-        (base_r * ctx.map.pit_edit_zoom.max(1.0).sqrt()).max(8.0)
-    } else {
-        5.0
-    };
-    let pit_hits = draw_pit_edit_drafts(
-        ui,
-        &ctx.map,
-        &xform,
-        mirror,
-        rot,
-        handle_r,
-        [
-            (entry_col, road_col, merge_col),
-            (entry2_col, road2_col, merge2_col),
-        ],
-    );
-
-    if ctx.map.pit_edit && ctx.map.interactive {
-        handle_pit_edit(
+        let handle_r = (base_r * ctx.map.pit_edit_zoom.max(1.0).sqrt()).max(8.0);
+        let pit_hits = draw_pit_edit_drafts(
             ui,
-            ctx,
-            plot,
-            &base_xform,
+            &ctx.map,
             &xform,
             mirror,
             rot,
             handle_r,
-            &pit_hits,
+            [
+                (entry_col, road_col, merge_col),
+                (entry2_col, road2_col, merge2_col),
+            ],
         );
-        let label_col = match phase.as_str() {
-            "entry" => {
-                if lane2 {
-                    entry2_col
-                } else {
-                    entry_col
+
+        if ctx.map.interactive {
+            handle_pit_edit(
+                ui,
+                ctx,
+                plot,
+                &base_xform,
+                &xform,
+                mirror,
+                rot,
+                handle_r,
+                &pit_hits,
+            );
+            let label_col = match phase.as_str() {
+                "entry" => {
+                    if lane2 {
+                        entry2_col
+                    } else {
+                        entry_col
+                    }
                 }
-            }
-            "merge" => {
-                if lane2 {
-                    merge2_col
-                } else {
-                    merge_col
+                "merge" => {
+                    if lane2 {
+                        merge2_col
+                    } else {
+                        merge_col
+                    }
                 }
-            }
-            _ => {
-                if lane2 {
-                    road2_col
-                } else {
-                    road_col
+                _ => {
+                    if lane2 {
+                        road2_col
+                    } else {
+                        road_col
+                    }
                 }
-            }
-        };
-        label(
-            ui,
-            Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
-            Align2::LEFT_TOP,
-            &format!("PIT EDIT ({} L{})", phase, if lane2 { 2 } else { 1 }),
-            12.0,
-            label_col,
-            true,
-        );
+            };
+            label(
+                ui,
+                Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
+                Align2::LEFT_TOP,
+                &format!("PIT EDIT ({} L{})", phase, if lane2 { 2 } else { 1 }),
+                12.0,
+                label_col,
+                true,
+            );
+        }
     } else if ctx.map.corner_edit && ctx.map.interactive {
         handle_corner_edit(ui, ctx, plot, &path, &xform, mirror, rot, screen_centroid);
         label(

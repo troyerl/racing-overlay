@@ -330,6 +330,11 @@ pub mod demo {
                 let f2 = i as f32 * 0.85;
                 let licenses = ["A 4.12", "B 3.80", "A 2.99", "A 3.50", "C 2.10", "B 4.00"];
                 let last_s = 88.0 + (i as f64) * 0.11;
+                // Car 8 visits the demo pit once per lap: OnPitRoad only on the
+                // lane span (not entry/exit blends), matching Python demo.
+                let visit_pit = i == 8 && ((t * 0.03 + i as f64 * 0.08) as i32 / 1) % 3 == 0;
+                let on_pit_lane = visit_pit
+                    && crate::track_path::pct_in_demo_pit_lane(pct);
                 cars.push(CarRow {
                     car_idx: i,
                     position: i + 1,
@@ -348,7 +353,7 @@ pub mod demo {
                     class_id: 0,
                     license: licenses[i as usize % licenses.len()].into(),
                     class_color: "#3aa0ff".into(),
-                    on_pit: i == 8 && (t as i32 % 20) < 4,
+                    on_pit: on_pit_lane,
                     in_pit: false,
                     on_track: true,
                     is_player: i == player_i,
@@ -362,7 +367,7 @@ pub mod demo {
                     f2_time: f2,
                     lap: 12 - (i / 4),
                     speed_mps: 55.0 + (i as f32) * 1.5 + 3.0 * (t as f32 * 0.4).sin(),
-                    status_kind: if i == 8 && (t as i32 % 20) < 4 {
+                    status_kind: if on_pit_lane {
                         Some("pit".into())
                     } else {
                         None
