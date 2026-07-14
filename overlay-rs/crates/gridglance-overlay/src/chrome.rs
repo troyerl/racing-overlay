@@ -207,11 +207,15 @@ pub fn label(
     text: &str,
     size: f32,
     color: Color32,
-    _bold: bool,
+    bold: bool,
 ) {
-    // Single draw — no stroke-style faux-bold (was smear/hard to read).
-    // `_bold` kept for API until a real Bold face is registered.
-    let font = FontId::new(size.max(1.0), FontFamily::Proportional);
+    // Real Bold face when requested (registered in icons::install_fonts).
+    let family = if bold {
+        FontFamily::Name(crate::icons::BOLD_FAMILY.into())
+    } else {
+        FontFamily::Proportional
+    };
+    let font = FontId::new(size.max(1.0), family);
     ui.painter().text(pos, align, text, font, color);
 }
 

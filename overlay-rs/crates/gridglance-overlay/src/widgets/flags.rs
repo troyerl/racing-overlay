@@ -22,15 +22,15 @@ const SPEC: &[(&str, &str, &str, &str)] = &[
 ];
 
 fn text_width(ui: &Ui, text: &str, size: f32, bold: bool) -> f32 {
-    let font = egui::FontId::proportional(size.max(1.0));
-    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE));
-    let w = galley.size().x;
-    // Fake-bold widens slightly.
-    if bold {
-        w + 0.9
+    let family = if bold {
+        egui::FontFamily::Name(crate::icons::BOLD_FAMILY.into())
     } else {
-        w
-    }
+        egui::FontFamily::Proportional
+    };
+    let font = egui::FontId::new(size.max(1.0), family);
+    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE))
+        .size()
+        .x
 }
 
 fn draw_checker(painter: &egui::Painter, rect: Rect, color: Color32) {

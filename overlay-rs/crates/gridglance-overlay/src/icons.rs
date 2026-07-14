@@ -1,4 +1,5 @@
 //! Font Awesome 6 Free Solid glyphs (parity with Python `overlay.widgets.icons`).
+//! Also registers Noto Sans Regular/Bold for HUD labels.
 
 use egui::{FontData, FontDefinitions, FontFamily, FontId};
 use std::sync::Arc;
@@ -6,7 +7,12 @@ use std::sync::Arc;
 /// Family name registered with egui.
 pub const FAMILY: &str = "fa-solid";
 
+/// Named family for bold HUD text (`chrome::label` when bold).
+pub const BOLD_FAMILY: &str = "Bold";
+
 const FA_TTF: &[u8] = include_bytes!("../../../../assets/fonts/fa-solid-900.ttf");
+const NOTO_REGULAR: &[u8] = include_bytes!("../../../../assets/fonts/NotoSans-Regular.ttf");
+const NOTO_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/NotoSans-Bold.ttf");
 
 const CODEPOINTS: &[(&str, u32)] = &[
     ("speed", 0xF625),
@@ -71,10 +77,25 @@ pub fn install_fonts(ctx: &egui::Context) {
         FAMILY.to_owned(),
         Arc::new(FontData::from_static(FA_TTF)),
     );
+    fonts.font_data.insert(
+        "NotoSans-Regular".to_owned(),
+        Arc::new(FontData::from_static(NOTO_REGULAR)),
+    );
+    fonts.font_data.insert(
+        "NotoSans-Bold".to_owned(),
+        Arc::new(FontData::from_static(NOTO_BOLD)),
+    );
     fonts
         .families
         .insert(FontFamily::Name(FAMILY.into()), vec![FAMILY.to_owned()]);
-    // Keep proportional/monospace defaults; icons use the named family only.
+    fonts.families.insert(
+        FontFamily::Name(BOLD_FAMILY.into()),
+        vec!["NotoSans-Bold".to_owned()],
+    );
+    // Prefer Noto Sans for HUD body text; keep egui builtins as fallback.
+    if let Some(prop) = fonts.families.get_mut(&FontFamily::Proportional) {
+        prop.insert(0, "NotoSans-Regular".to_owned());
+    }
     ctx.set_fonts(fonts);
 }
 
