@@ -15,8 +15,9 @@ use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 const SECTION: &str = "map";
-/// Soft pull toward telem after coasting (higher = creamier).
-const PCT_CORRECT_TAU: f32 = 0.18;
+/// Soft pull toward extrapolated telem-now (short = tight tracking).
+const PCT_CORRECT_TAU: f32 = 0.06;
+const PCT_PRED_AGE_CAP: f32 = 0.25;
 const PCT_VEL_MIN: f32 = -0.15;
 const PCT_VEL_MAX: f32 = 0.25;
 const SCREEN_EASE_TAU: f32 = 0.05;
@@ -927,15 +928,14 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Coast along estimated vel, soft-correct to telem, refresh vel on telem change.
+/// Extrapolate telem to now, then short-ease anim pct (no stale-target pull).
 fn advance_car_pcts(
     ctx: &mut WidgetCtx<'_>,
     dt: f32,
     wall_secs: f64,
-) -> (HashMap<i32, f32>, bool) {
+) -> HashMap<i32, f32> {
     let mut seen = HashMap::new();
     let mut out = HashMap::new();
-    let mut animating = false;
 
     for car in &ctx.frame.cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
@@ -955,9 +955,8 @@ fn advance_car_pcts(
             },
         );
 
-        // Fresh telem sample → update coast velocity from delta / dt.
-        let telem_changed = (telem - st.last_telem).abs() > 1e-6
-            || wrap_lap_delta(telem, st.last_telem).abs() > 1e-6;
+        // Fresh telem sample → update velocity from delta / dt.
+        let telem_changed = wrap_lap_delta(telem, st.last_telem).abs() > 1e-6;
         if telem_changed {
             let telem_dt = (wall_secs - st.last_telem_secs) as f32;
             if telem_dt > 1e-4 && telem_dt < 1.0 {
@@ -968,34 +967,35 @@ fn advance_car_pcts(
             st.last_telem_secs = wall_secs;
         }
 
-        // Coast.
-        st.pct = (st.pct + st.vel * dt).rem_euclid(1.0);
+        // Predict telem at "now" so we track the car, not a frozen sample.
+        let age = ((wall_secs - st.last_telem_secs) as f32).clamp(0.0, PCT_PRED_AGE_CAP);
+        let predicted = (st.last_telem + st.vel * age).rem_euclid(1.0);
 
-        // Soft-correct toward telem.
-        let err = wrap_lap_delta(telem, st.pct);
+        let err = wrap_lap_delta(predicted, st.pct);
         if err.abs() > 0.35 {
-            st.pct = telem;
+            st.pct = predicted;
             st.vel = 0.0;
         } else if err.abs() > 1e-5 {
             st.pct = (st.pct + ease(0.0, err, dt, PCT_CORRECT_TAU)).rem_euclid(1.0);
-        }
-
-        let residual = wrap_lap_delta(telem, st.pct).abs();
-        if residual > 1e-5 || st.vel.abs() > 1e-4 {
-            animating = true;
+        } else {
+            st.pct = predicted;
         }
 
         ctx.map.car_anim.insert(car.car_idx, st);
         out.insert(car.car_idx, st.pct);
     }
     ctx.map.car_anim.retain(|k, _| seen.contains_key(k));
-    (out, animating)
+    out
 }
 
 /// Python `_car_motion_key` (schematic): pct vs route + pit flags.
 fn car_motion_key(on_route: bool, on_pit: bool) -> u8 {
     let mode = if on_route { 1u8 } else { 0u8 };
     mode | ((on_route as u8) << 1) | ((on_pit as u8) << 2)
+}
+
+fn is_route_key(key: u8) -> bool {
+    key & 1 != 0
 }
 
 /// Python `_smooth_marker_point`.
@@ -1011,27 +1011,30 @@ fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32) -> (Pos2, bool) {
     (Pos2::new(nx, ny), moving)
 }
 
-/// Light screen softener for all cars (pct + route).
+/// Route/pit: light screen ease. Racing line: use predicted-% XY as-is.
 fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
     targets: &HashMap<i32, (Pos2, u8)>,
     dt: f32,
-) -> (HashMap<i32, Pos2>, bool) {
+) -> HashMap<i32, Pos2> {
     let mut pts = HashMap::new();
-    let mut animating = false;
     let mut seen = std::collections::HashSet::new();
     for (&idx, &(target, key)) in targets {
         seen.insert(idx);
         let prev = ctx.map.car_screen.get(&idx).copied();
-        let start = match prev {
-            Some(st) => Pos2::new(st.x, st.y),
-            None => target,
-        };
-        let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
-        let (pt, moving) = if key_changed && start == target {
-            (target, false)
+        let pt = if !is_route_key(key) {
+            target
         } else {
-            smooth_marker_point(start, target, dt)
+            let start = match prev {
+                Some(st) => Pos2::new(st.x, st.y),
+                None => target,
+            };
+            let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
+            if key_changed && start == target {
+                target
+            } else {
+                smooth_marker_point(start, target, dt).0
+            }
         };
         ctx.map.car_screen.insert(
             idx,
@@ -1042,12 +1045,9 @@ fn smooth_car_screen_pts(
             },
         );
         pts.insert(idx, pt);
-        if moving {
-            animating = true;
-        }
     }
     ctx.map.car_screen.retain(|k, _| seen.contains(k));
-    (pts, animating)
+    pts
 }
 
 fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
@@ -1684,7 +1684,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         1.0 / 60.0
     };
     ctx.map.last_paint_secs = wall_secs;
-    let (eased, pct_animating) = advance_car_pcts(ctx, dt, wall_secs);
+    let eased = advance_car_pcts(ctx, dt, wall_secs);
 
     let markers = if show_markers {
         map_markers::resolve_traffic_markers(
@@ -1740,10 +1740,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let key = car_motion_key(on_route, car.on_pit);
         targets.insert(car.car_idx, (p, key));
     }
-    let (car_pts, screen_animating) = smooth_car_screen_pts(ctx, &targets, dt);
-    if pct_animating || screen_animating {
-        ui.ctx().request_repaint();
-    }
+    let car_pts = smooth_car_screen_pts(ctx, &targets, dt);
 
     for car in &cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {

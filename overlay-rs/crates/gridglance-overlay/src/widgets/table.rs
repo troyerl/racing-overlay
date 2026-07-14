@@ -12,7 +12,7 @@ use std::collections::HashMap;
 const ROW_SNAP_SLOTS: f32 = 1.25;
 const DENSE_ROW_COUNT: usize = 20;
 const DENSE_ROW_SNAP_SLOTS: f32 = 0.5;
-const DENSE_ROW_EASE_TAU: f32 = 0.08;
+const DENSE_ROW_EASE_TAU: f32 = 0.06;
 
 #[derive(Clone, Default)]
 struct RowAnimState {
@@ -102,7 +102,7 @@ pub fn paint_table(
         };
         anim.last_ms = now;
 
-        let mut tau = cfg.f64_key(section, "row_ease_tau", 0.16) as f32;
+        let mut tau = cfg.f64_key(section, "row_ease_tau", 0.10) as f32;
         let fade_tau = cfg.f64_key(section, "fade_ease_tau", 0.12) as f32;
         let dense = rows.len() >= DENSE_ROW_COUNT;
         let snap = if dense {
