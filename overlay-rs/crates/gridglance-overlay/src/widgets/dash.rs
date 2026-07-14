@@ -404,7 +404,7 @@ fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) 
     let yel0 = n as f32 * (1.0 - red_f - yel_f);
     let green = cfg.color(SECTION, "shift_green", "#46df7a");
     let yel = cfg.color(SECTION, "shift_yellow", "#ffd23a");
-    let red = cfg.color(SECTION, "shift_red", "#ff5050");
+    let red = cfg.color(SECTION, "shift_red", "#e23b3b");
     let off = cfg.color(SECTION, "shift_off", "#333a42");
 
     // Blink: dark half forces all segments to off ticks (Python `_draw_shift`).
@@ -967,7 +967,7 @@ fn draw_ring_arc(
         frac = 0.0;
     }
     let lit = frac * n as f32;
-    let off = cfg.color(SECTION, "ring_track", "#ffffff18");
+    let off = cfg.color(SECTION, "ring_track", "#333a42");
     let glow = color_with_alpha(on_color, 75);
 
     // Glow pass then solid pass (Python draws arcs from 90° CCW).
@@ -1074,7 +1074,7 @@ fn draw_pedals(
         ui.painter().rect_filled(
             Rect::from_min_size(Pos2::new(x, top), Vec2::new(bar_w, area_h)),
             egui::CornerRadius::same(rad as u8),
-            cfg.color(SECTION, "pedal_track", "#ffffff18"),
+            cfg.color(SECTION, "pedal_track", "#333a42"),
         );
         let fh = area_h * val.clamp(0.0, 1.0);
         if fh > 0.5 {
@@ -1234,7 +1234,7 @@ fn draw_delta_bar(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFra
     ui.painter().rect_filled(
         rect,
         egui::CornerRadius::same(r as u8),
-        cfg.color(SECTION, "track", "#ffffff18"),
+        cfg.color(SECTION, "track", "#262b34"),
     );
     let rng = cfg.f64_key(SECTION, "delta_bar_range", 1.0).max(0.001) as f32;
     let delta = f.delta.unwrap_or(0.0) as f32;
@@ -1251,7 +1251,7 @@ fn draw_delta_bar(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFra
         let col = if t < 0.0 {
             cfg.color(SECTION, "faster", "#46df7a")
         } else {
-            cfg.color(SECTION, "slower", "#ff5050")
+            cfg.color(SECTION, "slower", "#e23b3b")
         };
         ui.painter()
             .rect_filled(fill, egui::CornerRadius::same(r as u8), col);

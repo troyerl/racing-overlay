@@ -382,61 +382,67 @@ fn default_colors() -> Map<String, Value> {
         ("bg_bottom", "#0f1216f2"),
         ("border", "#ffffff28"),
         ("text", "#f4f6f8"),
+        ("title", "#f4f6f8"),
         ("muted", "#8b93a1"),
         ("row_dim_text", "#5a616c"),
         ("header_bg", "#0b0e12bb"),
         ("cell_dark", "#0b0e12"),
         ("faster", "#46df7a"),
-        ("slower", "#ff5050"),
-        ("track", "#ffffff18"),
+        ("slower", "#e23b3b"),
+        ("track", "#262b34"),
+        ("center", "#8b93a1"),
         ("fill", "#46df7a"),
-        ("idle_text", "#8b93a1"),
-        ("flag_yellow", "#ffd23acc"),
-        ("flag_yellow_text", "#141414"),
-        ("flag_black", "#1a1a1acc"),
+        ("idle_bg", "#1f242c"),
+        ("idle_text", "#9fb0a4"),
+        ("flag_yellow", "#ffd23a"),
+        ("flag_yellow_text", "#1a1400"),
+        ("flag_black", "#0a0a0a"),
         ("flag_black_text", "#ffffff"),
-        ("flag_green", "#46df7acc"),
-        ("flag_green_text", "#141414"),
-        ("flag_white_bg", "#ebeef0cc"),
-        ("flag_white_text", "#141414"),
-        ("flag_red", "#ff5050cc"),
+        ("flag_green", "#46df7a"),
+        ("flag_green_text", "#06210f"),
+        ("flag_white_bg", "#eef1f4"),
+        ("flag_white_text", "#14171c"),
+        ("flag_red", "#d11f2d"),
         ("flag_red_text", "#ffffff"),
-        ("flag_blue", "#4a8cffcc"),
+        ("flag_blue", "#2f6bd8"),
         ("flag_blue_text", "#ffffff"),
-        ("flag_checker_bg", "#1a1a1acc"),
-        ("flag_checker_text", "#ffffff"),
-        ("flag_meatball", "#ff9416cc"),
-        ("flag_meatball_text", "#141414"),
-        ("flag_furled", "#ffd23acc"),
-        ("flag_furled_text", "#141414"),
-        ("flag_dq", "#ff5050cc"),
+        ("flag_checker_bg", "#14171c"),
+        ("flag_checker_text", "#f4f6f8"),
+        ("flag_meatball", "#ff7a1a"),
+        ("flag_meatball_text", "#1a0d00"),
+        ("flag_furled", "#caa23a"),
+        ("flag_furled_text", "#1a1400"),
+        ("flag_dq", "#c0392b"),
         ("flag_dq_text", "#ffffff"),
-        ("flag_debris", "#8b93a1cc"),
-        ("flag_debris_text", "#ffffff"),
-        ("flag_crossed", "#ff9416cc"),
-        ("flag_crossed_text", "#141414"),
+        ("flag_debris", "#e0a72e"),
+        ("flag_debris_text", "#1a1400"),
+        ("flag_crossed", "#2a2f38"),
+        ("flag_crossed_text", "#f4f6f8"),
         ("player_row", "#ff941670"),
         ("row_alt", "#ffffff08"),
-        ("accent", "#70df7a"),
+        ("accent", "#e23b3b"),
         ("shift_green", "#46df7a"),
         ("shift_yellow", "#ffd23a"),
-        ("shift_red", "#ff5050"),
+        ("shift_red", "#e23b3b"),
         ("shift_off", "#333a42"),
         ("shift_idle", "#ffffff18"),
         ("throttle", "#46df7a"),
-        ("brake", "#ff5050"),
+        ("brake", "#e23b3b"),
         ("clutch", "#4a8cff"),
         ("abs", "#ffd23a"),
-        ("ring_track", "#ffffff18"),
-        ("pedal_track", "#ffffff18"),
+        ("ring_track", "#333a42"),
+        ("pedal_track", "#333a42"),
         ("cell_border", "#ffffff20"),
         ("orange", "#ff9416"),
         ("warn", "#e0a93a"),
         ("gear", "#ffffff"),
         ("label", "#8b93a1"),
         ("value", "#f4f6f8"),
+        ("irating_bg", "#0b0d11cc"),
+        ("irating_border", "#ffffff20"),
+        ("irating_text", "#f4f6f8"),
         ("irating_delta_up", "#46df7a"),
-        ("irating_delta_down", "#ff5050"),
+        ("irating_delta_down", "#e23b3b"),
         ("threat", "#ff505060"),
         ("lapped", "#2563eb60"),
         ("pit_row", "#8b93a118"),
@@ -498,7 +504,7 @@ fn default_cfg() -> Value {
     for key in WIDGET_KEYS {
         let mut section = Map::new();
         section.insert("show".into(), Value::Bool(default_show(key)));
-        section.insert("corner_radius_frac".into(), json!(0.08));
+        section.insert("corner_radius_frac".into(), json!(0.0));
         section.insert("colors".into(), Value::Object(default_colors()));
         section.insert(
             "title".into(),
@@ -522,13 +528,13 @@ fn default_cfg() -> Value {
         section.insert("show_clutch".into(), Value::Bool(false));
         section.insert("center_mode".into(), Value::String("ring".into()));
         section.insert("top_right".into(), Value::String("incidents".into()));
-        section.insert("primary_left".into(), Value::String("laps_left".into()));
+        section.insert("primary_left".into(), Value::String("lap_count".into()));
         section.insert("primary_right".into(), Value::String("speed".into()));
         section.insert("stat_left".into(), Value::String("tires".into()));
         section.insert("stat_right".into(), Value::String("fuel_stack".into()));
-        section.insert("strip_left".into(), Value::String("car_number".into()));
-        section.insert("strip_center".into(), Value::String("lap_count".into()));
-        section.insert("strip_right".into(), Value::String("irating".into()));
+        section.insert("strip_left".into(), Value::String("air_temp".into()));
+        section.insert("strip_center".into(), Value::String("track_temp".into()));
+        section.insert("strip_right".into(), Value::String("last_lap".into()));
         section.insert("text_scale".into(), json!(1.0));
         section.insert("shift_blink".into(), Value::Bool(true));
         section.insert("shift_blink_hz".into(), json!(7.0));
@@ -539,8 +545,9 @@ fn default_cfg() -> Value {
         section.insert("shift_yellow_frac".into(), json!(0.24));
         section.insert("ring_segments".into(), json!(16));
         section.insert("delta_bar_range".into(), json!(1.0));
-        section.insert("show_irating_projection".into(), Value::Bool(true));
-        section.insert("irating_abbreviate".into(), Value::Bool(false));
+        section.insert("show_irating_projection".into(), Value::Bool(false));
+        section.insert("irating_abbreviate".into(), Value::Bool(true));
+        section.insert("irating_show_icon".into(), Value::Bool(true));
         // Table / radar defaults (Python parity) so demo works without a full CFG dump.
         if *key == "relative" || *key == "standings" {
             section.insert("rows_ahead".into(), json!(if *key == "relative" { 3 } else { 4 }));
@@ -643,7 +650,7 @@ fn default_cfg() -> Value {
                 colors.insert("lapped".into(), Value::String("#2563eb".into()));
                 colors.insert("lapping".into(), Value::String("#ff5050".into()));
                 colors.insert("pit_car".into(), Value::String("#6e747d".into()));
-                colors.insert("pit".into(), Value::String("#e23b3b".into()));
+                colors.insert("pit".into(), Value::String("#ff4d4d".into()));
                 colors.insert("pit_text".into(), Value::String("#ffffff".into()));
                 colors.insert("pit_blend".into(), Value::String("#ffd23a".into()));
                 colors.insert("pit_blend_out".into(), Value::String("#3aa0ff".into()));
@@ -698,9 +705,9 @@ fn default_cfg() -> Value {
             );
             if let Some(Value::Object(colors)) = section.get_mut("colors") {
                 colors.insert("car".into(), Value::String("#f4f6f8".into()));
-                colors.insert("axis".into(), Value::String("#ffffff28".into()));
-                colors.insert("nose".into(), Value::String("#f4f6f8".into()));
-                colors.insert("red".into(), Value::String("#ff5050".into()));
+                colors.insert("axis".into(), Value::String("#46df7a3a".into()));
+                colors.insert("nose".into(), Value::String("#46df7ae6".into()));
+                colors.insert("red".into(), Value::String("#e23b3b".into()));
                 colors.insert("yellow".into(), Value::String("#ffd23a".into()));
             }
         }

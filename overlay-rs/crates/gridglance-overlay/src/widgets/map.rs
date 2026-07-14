@@ -308,7 +308,7 @@ fn draw_pit_lane(
     let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
     let show_speed = ctx.cfg.bool_key(SECTION, "show_pit_speed", true);
 
-    let pit_col = color_with_alpha(ctx.cfg.color(SECTION, "pit", "#e23b3b"), a);
+    let pit_col = color_with_alpha(ctx.cfg.color(SECTION, "pit", "#ff4d4d"), a);
     let blend_in = color_with_alpha(ctx.cfg.color(SECTION, "pit_blend", "#ffd23a"), a);
     let blend_out = color_with_alpha(ctx.cfg.color(SECTION, "pit_blend_out", "#3aa0ff"), a);
     let asphalt_u = color_with_alpha(asphalt, a_asphalt);
@@ -338,7 +338,7 @@ fn draw_pit_lane(
                 let anchor = s[s.len() / 2];
                 let txt = format!("PIT {val:.0} {unit}");
                 let bg = color_with_alpha(
-                    ctx.cfg.color(SECTION, "pit", "#e23b3b"),
+                    ctx.cfg.color(SECTION, "pit", "#ff4d4d"),
                     235,
                 );
                 let fg = ctx.cfg.color(SECTION, "pit_text", "#ffffff");

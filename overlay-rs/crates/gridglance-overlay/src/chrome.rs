@@ -1,10 +1,10 @@
 //! Shared panel chrome helpers (card / header / cells).
 
 use crate::config::OverlayConfig;
-use egui::{Color32, CornerRadius, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use egui::{Color32, CornerRadius, FontFamily, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 pub fn panel_pad(h: f32) -> f32 {
-    (h * 0.06).clamp(6.0, 14.0)
+    (h * 0.08).max(8.0)
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
@@ -19,6 +19,37 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
         lerp_u8(a.b(), b.b(), t),
         lerp_u8(a.a(), b.a(), t),
     )
+}
+
+/// Mix `c` toward dark chrome (Python `soften_color`).
+pub fn soften_color(c: Color32, toward: Color32, mix: f32) -> Color32 {
+    let m = mix.clamp(0.0, 1.0);
+    // Un-premultiply for mixing.
+    let ca = c.a().max(1) as f32;
+    let ta = toward.a().max(1) as f32;
+    let r = (c.r() as f32 * 255.0 / ca) * (1.0 - m) + (toward.r() as f32 * 255.0 / ta) * m;
+    let g = (c.g() as f32 * 255.0 / ca) * (1.0 - m) + (toward.g() as f32 * 255.0 / ta) * m;
+    let b = (c.b() as f32 * 255.0 / ca) * (1.0 - m) + (toward.b() as f32 * 255.0 / ta) * m;
+    Color32::from_rgba_unmultiplied(
+        r.round().clamp(0.0, 255.0) as u8,
+        g.round().clamp(0.0, 255.0) as u8,
+        b.round().clamp(0.0, 255.0) as u8,
+        c.a(),
+    )
+}
+
+/// Light-on-dark or dark-on-light text for a solid BG (Python `contrast_text`).
+pub fn contrast_text(bg: Color32) -> Color32 {
+    let a = bg.a().max(1) as f32;
+    let r = bg.r() as f32 * 255.0 / a;
+    let g = bg.g() as f32 * 255.0 / a;
+    let b = bg.b() as f32 * 255.0 / a;
+    let lum = (0.299 * r + 0.587 * g + 0.114 * b) / 255.0;
+    if lum > 0.6 {
+        Color32::from_rgb(20, 22, 26)
+    } else {
+        Color32::WHITE
+    }
 }
 
 /// Horizontal inset so a square band stays inside the rounded corner silhouette.
@@ -40,9 +71,6 @@ fn corner_band_inset(r: f32, y: f32, top: f32, bottom: f32) -> f32 {
 }
 
 /// Smooth vertical `top`→`bottom` fill with rounded corners (Python QLinearGradient parity).
-///
-/// Paints a rounded base, then inset square bands so mid-band edges never poke through
-/// the corner fillets when band height is smaller than the radius.
 fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bottom: Color32) {
     const BANDS: usize = 24;
     let r = radius
@@ -52,7 +80,6 @@ fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bo
     let ru = r.round().clamp(0.0, 255.0) as u8;
     let h = rect.height().max(1.0);
 
-    // Opaque rounded silhouette so corners stay clean under the stroke.
     ui.painter()
         .rect_filled(rect, CornerRadius::same(ru), top);
 
@@ -77,7 +104,8 @@ fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bo
 
 pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> (Rect, f32) {
     let h = rect.height();
-    let radius = (h * cfg.f64_key(section, "corner_radius_frac", 0.08) as f32).max(8.0);
+    // Python: max(8, h * frac) — floor stays 8 even when frac is 0.
+    let radius = (h * cfg.f64_key(section, "corner_radius_frac", 0.0) as f32).max(8.0);
     let top = cfg.color(section, "bg_top", "#1b1f26f2");
     let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
     let border = cfg.color(section, "border", "#ffffff28");
@@ -104,34 +132,62 @@ pub fn draw_section_header(
     ui.painter().rect_filled(
         rect,
         CornerRadius {
-            nw: radius_top as u8,
-            ne: radius_top as u8,
+            nw: radius_top.round().clamp(0.0, 255.0) as u8,
+            ne: radius_top.round().clamp(0.0, 255.0) as u8,
             sw: 0,
             se: 0,
         },
         bg,
     );
-    ui.painter().text(
+    // Python draw_edge_band: top + bottom hairlines.
+    let edge = color_with_alpha(cfg.color(section, "border", "#ffffff28"), 70);
+    let inset = radius_top.max(0.0);
+    ui.painter().line_segment(
+        [
+            Pos2::new(rect.left() + inset, rect.top() + 0.5),
+            Pos2::new(rect.right() - inset, rect.top() + 0.5),
+        ],
+        Stroke::new(1.0_f32, edge),
+    );
+    ui.painter().line_segment(
+        [
+            Pos2::new(rect.left() + inset, rect.bottom() - 0.5),
+            Pos2::new(rect.right() - inset, rect.bottom() - 0.5),
+        ],
+        Stroke::new(1.0_f32, edge),
+    );
+    let size = (rect.height() * 0.55).max(10.0);
+    label(
+        ui,
         rect.left_center() + Vec2::new(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
         title,
-        egui::FontId::proportional((rect.height() * 0.55).clamp(11.0, 18.0)),
-        cfg.color(section, "muted", "#8b93a1"),
+        size,
+        cfg.color(section, "title", "#f4f6f8"),
+        true,
     );
 }
 
 pub fn draw_dark_cell(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect, radius: f32) {
+    let r = radius.round().clamp(0.0, 255.0) as u8;
     ui.painter().rect_filled(
         rect,
-        CornerRadius::same(radius as u8),
+        CornerRadius::same(r),
         cfg.color(section, "cell_dark", "#0b0e12"),
+    );
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(r),
+        Stroke::new(1.0_f32, cfg.color(section, "cell_border", "#ffffff20")),
+        egui::StrokeKind::Inside,
     );
 }
 
 /// Nested panel (top/bottom containers). Defaults match Python alpha chrome.
 pub fn draw_panel_rect(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> f32 {
-    let frac = cfg.f64_key(section, "corner_radius_frac", 0.08) as f32;
-    let radius = (rect.width().min(rect.height()) * frac).max(6.0);
+    let frac = cfg.f64_key(section, "corner_radius_frac", 0.0) as f32;
+    // Python: min(w,h) * frac — frac 0 yields sharp corners.
+    let radius = rect.width().min(rect.height()) * frac;
     let top = cfg.color(section, "bg_top", "#1b1f26f2");
     let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
     fill_vertical_gradient(ui, rect, radius, top, bottom);
@@ -153,11 +209,14 @@ pub fn label(
     color: Color32,
     bold: bool,
 ) {
-    let font = if bold {
-        egui::FontId::new(size, egui::FontFamily::Proportional)
-    } else {
-        egui::FontId::proportional(size)
-    };
+    let font = FontId::new(size.max(1.0), FontFamily::Proportional);
+    if bold {
+        // Fake-bold (no separate Bold face registered): offset copies then primary.
+        for (dx, dy) in [(0.45_f32, 0.0), (-0.45, 0.0), (0.0, 0.4), (0.0, -0.4)] {
+            ui.painter()
+                .text(pos + Vec2::new(dx, dy), align, text, font.clone(), color);
+        }
+    }
     ui.painter().text(pos, align, text, font, color);
 }
 
@@ -196,11 +255,10 @@ pub fn draw_row_tint(ui: &mut Ui, rect: Rect, accent: Color32) {
             Pos2::new(rect.left(), rect.top() + h * 0.12),
             Vec2::new(stripe_w, h * 0.76),
         ),
-        CornerRadius::same(2), // ~Python 1.5; egui uses u8 radii
+        CornerRadius::same(2),
         color_with_alpha(accent, edge_a),
     );
 
-    // True horizontal gradient (Python QLinearGradient stops).
     let stops = [(0.0_f32, 0.42_f32), (0.35, 0.22), (0.72, 0.08), (1.0, 0.0)];
     let mut mesh = egui::Mesh::default();
     for w in stops.windows(2) {
@@ -231,7 +289,8 @@ pub fn draw_row_tint(ui: &mut Ui, rect: Rect, accent: Color32) {
             uv: egui::epaint::WHITE_UV,
             color: c0,
         });
-        mesh.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+        mesh.indices
+            .extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
     }
     ui.painter().add(egui::Shape::mesh(mesh));
 

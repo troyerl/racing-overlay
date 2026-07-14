@@ -1,10 +1,12 @@
 //! Shared BaseTable-style painter for relative / standings (Python parity).
 
-use crate::chrome::{color_with_alpha, draw_card, draw_row_tint, ease, label, panel_pad};
+use crate::chrome::{
+    color_with_alpha, contrast_text, draw_card, draw_row_tint, ease, label, soften_color,
+};
 use crate::config::{parse_color_str, OverlayConfig};
 use crate::icons;
 use crate::telemetry::{slot_label, TableRow, TableSlotItem, TableSlots};
-use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use std::collections::HashMap;
 
 const ROW_SNAP_SLOTS: f32 = 1.25;
@@ -35,9 +37,15 @@ pub fn paint_table(
 ) {
     let rect = crate::chrome::full_rect(ui);
     let (card, radius) = draw_card(ui, cfg, section, rect);
-    let pad = panel_pad(card.height());
     let show_footer = cfg.bool_key(section, "show_footer", true);
     let rh = cfg.f64_key(section, "row_height_px", 36.0) as f32;
+    // Python table pad: fixed row height → 8px; else max(8, h*0.025).
+    // Not shared chrome `panel_pad` (h*0.08), which oversizes relative/standings.
+    let pad = if rh > 0.0 {
+        8.0
+    } else {
+        (card.height() * 0.025).max(8.0)
+    };
     let scale = cfg.text_scale(section);
     let font_scale = cfg.f64_key(section, "font_scale", 0.40) as f32;
     let gap_font_scale = cfg.f64_key(section, "gap_font_scale", 1.12) as f32;
@@ -50,27 +58,34 @@ pub fn paint_table(
         0.0
     };
 
-    let mut y = card.top() + pad;
     let inner_w = card.width() - 2.0 * pad;
     let left = card.left() + pad;
 
-    // Header band
-    let hdr = Rect::from_min_size(Pos2::new(left, y), Vec2::new(inner_w, header_h));
+    // Header band: full card width; slots inset by pad (Python draw_header).
+    let hdr_band = Rect::from_min_size(
+        Pos2::new(card.left(), card.top()),
+        Vec2::new(card.width(), pad + header_h),
+    );
+    let hdr_content = Rect::from_min_size(
+        Pos2::new(left, card.top() + pad),
+        Vec2::new(inner_w, header_h),
+    );
     draw_edge_band(
         ui,
         cfg,
         section,
-        hdr,
+        hdr_band,
+        hdr_content,
         radius,
         true,
         &slots.header_left,
         &slots.header_center,
         &slots.header_right,
     );
-    y += header_h + 2.0;
 
+    let body_top = card.top() + pad + header_h;
     let body_bottom = if show_footer {
-        card.bottom() - pad - footer_h - 2.0
+        card.bottom() - pad * 0.5 - footer_h
     } else {
         card.bottom() - pad
     };
@@ -142,7 +157,6 @@ pub fn paint_table(
     let muted = cfg.color(section, "muted", "#8b93a1");
     let fs = (rh * font_scale * scale).clamp(9.0, 22.0);
 
-    let body_top = y;
     let mut draw_order: Vec<usize> = (0..rows.len()).collect();
     draw_order.sort_by(|&a, &b| {
         let ia = if rows[a].empty {
@@ -223,13 +237,22 @@ pub fn paint_table(
     }
 
     if show_footer {
-        let fy = card.bottom() - pad - footer_h;
-        let frect = Rect::from_min_size(Pos2::new(left, fy), Vec2::new(inner_w, footer_h));
+        // Full-bleed footer band; slots inset (Python draw_footer).
+        let band_top = card.bottom() - pad * 0.5 - footer_h;
+        let ftr_band = Rect::from_min_max(
+            Pos2::new(card.left(), band_top),
+            Pos2::new(card.right(), card.bottom()),
+        );
+        let ftr_content = Rect::from_min_size(
+            Pos2::new(left, band_top),
+            Vec2::new(inner_w, footer_h),
+        );
         draw_edge_band(
             ui,
             cfg,
             section,
-            frect,
+            ftr_band,
+            ftr_content,
             radius,
             false,
             &slots.footer_left,
@@ -371,10 +394,11 @@ fn paint_row_cols(
                         );
                     }
                 }
+                // Python: left-aligned after class stripe inset.
                 label(
                     ui,
-                    Pos2::new(cx + cw * 0.55, cy),
-                    Align2::CENTER_CENTER,
+                    Pos2::new(cx + rh * 0.2, cy),
+                    Align2::LEFT_CENTER,
                     &format!("{}", row.position.max(0)),
                     fs,
                     if dim { dim_text } else { text },
@@ -399,41 +423,58 @@ fn paint_row_cols(
                 );
             }
             "license" => {
-                let letter = row.lic_class.chars().next().unwrap_or(' ');
-                let bg = license_color(cfg, section, &row.lic_class);
-                let pill = Rect::from_center_size(
-                    Pos2::new(cx + cw * 0.5, cy),
-                    Vec2::new(cw * 0.9, rh * 0.55),
+                let letter = row
+                    .lic_class
+                    .chars()
+                    .next()
+                    .map(|c| c.to_ascii_uppercase())
+                    .unwrap_or(' ');
+                let bg = soften_color(
+                    license_color(cfg, section, &row.lic_class),
+                    parse_color_str("#1b1f26"),
+                    0.20,
                 );
-                ui.painter()
-                    .rect_filled(pill, CornerRadius::same(3), bg);
-                let txt = if row.sr.is_empty() {
+                // Python: `"R 3.34"` — letter + space + full SR string.
+                let txt = if letter != ' ' && !row.sr.is_empty() {
+                    format!("{letter} {}", row.sr)
+                } else if !row.sr.is_empty() {
+                    row.sr.clone()
+                } else if letter != ' ' {
                     letter.to_string()
                 } else {
-                    format!("{letter}{}", truncate_sr(&row.sr))
+                    "—".into()
                 };
+                let font_sz = fs * 0.84;
+                let tw = text_advance(ui, &txt, font_sz);
+                let pad_x = fs * 0.28;
+                let pill_h = rh * 0.54;
+                let pill_w = (tw + 2.0 * pad_x).min(cw);
+                let pill = Rect::from_min_size(
+                    Pos2::new(cx, cy - pill_h * 0.5),
+                    Vec2::new(pill_w.max(4.0), pill_h),
+                );
+                let edge_a = ((bg.a() as f32 * 0.55) as u16 + 60).min(255) as u8;
+                let edge = color_with_alpha(bg, edge_a);
+                ui.painter()
+                    .rect_filled(pill, CornerRadius::same(4), bg);
+                ui.painter().rect_stroke(
+                    pill,
+                    CornerRadius::same(4),
+                    Stroke::new(1.0_f32, edge),
+                    StrokeKind::Inside,
+                );
                 label(
                     ui,
                     pill.center(),
                     Align2::CENTER_CENTER,
                     &txt,
-                    fs * 0.72,
-                    Color32::WHITE,
+                    font_sz,
+                    contrast_text(bg),
                     true,
                 );
             }
             "irating" => {
-                let abbrev = cfg.bool_key(section, "irating_abbreviate", true);
-                let s = fmt_ir(row.irating, abbrev);
-                label(
-                    ui,
-                    Pos2::new(cx + cw - gutter, cy),
-                    Align2::RIGHT_CENTER,
-                    &s,
-                    fs * 0.9,
-                    if dim { dim_text } else { text },
-                    false,
-                );
+                paint_irating_cell(ui, cfg, section, row, cx, cy, cw, rh, fs, dim, dim_text);
             }
             "gap" => {
                 let (gtxt, gcol) = gap_display(row, signed_gaps, section, cfg, text);
@@ -589,6 +630,194 @@ fn paint_row_cols(
             _ => {}
         }
         cx += cw + gutter;
+    }
+}
+
+fn text_advance(ui: &Ui, text: &str, size: f32) -> f32 {
+    let font = FontId::proportional(size.max(1.0));
+    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE))
+        .size()
+        .x
+}
+
+fn paint_irating_cell(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    section: &str,
+    row: &TableRow,
+    cx: f32,
+    cy: f32,
+    cw: f32,
+    rh: f32,
+    fs: f32,
+    dim: bool,
+    dim_text: Color32,
+) {
+    let cell = Rect::from_min_size(
+        Pos2::new(cx, cy - rh * 0.3),
+        Vec2::new(cw, rh * 0.6),
+    );
+    let show_icon = cfg.bool_key(section, "irating_show_icon", true);
+    let muted = if dim {
+        dim_text
+    } else {
+        cfg.color(section, "muted", "#8b93a1")
+    };
+    let mut pill_left = cell.left();
+    if show_icon {
+        if let Some(g) = icons::glyph("irating") {
+            let ic_px = cell.height() * 0.48;
+            let font = icons::font_id(ic_px);
+            let ic_w = ui
+                .fonts(|f| f.layout_no_wrap(g.clone(), font.clone(), Color32::WHITE))
+                .size()
+                .x;
+            ui.painter().text(
+                Pos2::new(cell.left(), cell.center().y),
+                Align2::LEFT_CENTER,
+                g,
+                font,
+                muted,
+            );
+            pill_left = cell.left() + ic_w + fs * 0.10;
+        }
+    }
+
+    let pill = Rect::from_min_max(
+        Pos2::new(pill_left, cell.top()),
+        Pos2::new(cell.right(), cell.bottom()),
+    );
+    if pill.width() < 4.0 {
+        return;
+    }
+    ui.painter().rect_filled(
+        pill,
+        CornerRadius::same(4),
+        cfg.color(section, "irating_bg", "#0b0d11cc"),
+    );
+    ui.painter().rect_stroke(
+        pill,
+        CornerRadius::same(4),
+        Stroke::new(
+            1.0_f32,
+            cfg.color(section, "irating_border", "#ffffff20"),
+        ),
+        StrokeKind::Inside,
+    );
+
+    let abbrev = cfg.bool_key(section, "irating_abbreviate", true);
+    let ir_txt = fmt_ir(row.irating, abbrev);
+    if ir_txt.is_empty() {
+        label(
+            ui,
+            pill.center(),
+            Align2::CENTER_CENTER,
+            "—",
+            fs * 0.82,
+            muted,
+            false,
+        );
+        return;
+    }
+
+    let ir_col = if dim {
+        dim_text
+    } else {
+        cfg.color(section, "irating_text", "#f4f6f8")
+    };
+    let show_delta = cfg.bool_key(section, "show_irating_projection", false)
+        && row.irating_delta.is_some()
+        && ir_txt != "--";
+
+    if show_delta {
+        let delta = row.irating_delta.unwrap_or(0);
+        let dcol = if delta > 0 {
+            cfg.color(section, "irating_delta_up", "#46df7a")
+        } else if delta < 0 {
+            cfg.color(section, "irating_delta_down", "#ff5050")
+        } else {
+            muted
+        };
+        let ir_sz = fs * 0.82;
+        let ir_w = text_advance(ui, &ir_txt, ir_sz);
+        let gap = fs * 0.50;
+        let use_icons = delta != 0
+            && icons::glyph("irating_up").is_some()
+            && icons::glyph("irating_down").is_some();
+        let (d_w, dtxt): (f32, String) = if use_icons {
+            let dtxt = format!("{}", delta.abs());
+            let n_sz = fs * 0.78;
+            let n_w = text_advance(ui, &dtxt, n_sz);
+            let icon_slot = fs * 0.42;
+            (icon_slot + fs * 0.10 + n_w, dtxt)
+        } else {
+            let dtxt = if delta == 0 {
+                "0".into()
+            } else {
+                format!("{delta:+}")
+            };
+            (text_advance(ui, &dtxt, ir_sz), dtxt)
+        };
+        let total = ir_w + gap + d_w;
+        let pad_x = fs * 0.18;
+        let left = pill.left() + pad_x.max((pill.width() - total) * 0.5);
+        label(
+            ui,
+            Pos2::new(left, pill.center().y),
+            Align2::LEFT_CENTER,
+            &ir_txt,
+            ir_sz,
+            ir_col,
+            true,
+        );
+        let dx = left + ir_w + gap;
+        if use_icons {
+            let gname = if delta > 0 {
+                "irating_up"
+            } else {
+                "irating_down"
+            };
+            if let Some(g) = icons::glyph(gname) {
+                let icon_slot = fs * 0.42;
+                let ifont = icons::font_id(fs * 0.55);
+                ui.painter().text(
+                    Pos2::new(dx + icon_slot * 0.5, pill.center().y),
+                    Align2::CENTER_CENTER,
+                    g,
+                    ifont,
+                    dcol,
+                );
+                label(
+                    ui,
+                    Pos2::new(dx + icon_slot + fs * 0.10, pill.center().y),
+                    Align2::LEFT_CENTER,
+                    &dtxt,
+                    fs * 0.78,
+                    dcol,
+                    false,
+                );
+            }
+        } else {
+            label(
+                ui,
+                Pos2::new(dx, pill.center().y),
+                Align2::LEFT_CENTER,
+                &dtxt,
+                ir_sz,
+                dcol,
+                false,
+            );
+        }
+    } else {
+        label(
+            ui,
+            pill.center(),
+            Align2::CENTER_CENTER,
+            &ir_txt,
+            fs * 0.82,
+            ir_col,
+            true,
+        );
     }
 }
 
@@ -763,7 +992,8 @@ fn draw_edge_band(
     ui: &mut Ui,
     cfg: &OverlayConfig,
     section: &str,
-    rect: Rect,
+    band: Rect,
+    content: Rect,
     radius: f32,
     is_header: bool,
     left: &TableSlotItem,
@@ -790,10 +1020,11 @@ fn draw_edge_band(
             se: radius as u8,
         }
     };
-    ui.painter().rect_filled(rect, cr, bg);
+    ui.painter().rect_filled(band, cr, bg);
     let muted = cfg.color(section, "muted", "#8b93a1");
     let text = cfg.color(section, "text", "#f4f6f8");
-    let fs = (rect.height() * 0.48).clamp(9.0, 16.0) * cfg.text_scale(section);
+    // Font from content height (Python: h * 0.42), not the padded band.
+    let fs = (content.height() * 0.42).clamp(9.0, 16.0) * cfg.text_scale(section);
     let icons_group = if is_header {
         "header_icons"
     } else {
@@ -807,7 +1038,7 @@ fn draw_edge_band(
         icons_group,
         "left",
         left,
-        Pos2::new(rect.left() + 8.0, rect.center().y),
+        Pos2::new(content.left(), content.center().y),
         Align2::LEFT_CENTER,
         fs,
         muted,
@@ -820,7 +1051,7 @@ fn draw_edge_band(
         icons_group,
         "center",
         center,
-        rect.center(),
+        content.center(),
         Align2::CENTER_CENTER,
         fs,
         muted,
@@ -833,7 +1064,7 @@ fn draw_edge_band(
         icons_group,
         "right",
         right,
-        Pos2::new(rect.right() - 8.0, rect.center().y),
+        Pos2::new(content.right(), content.center().y),
         Align2::RIGHT_CENTER,
         fs,
         muted,
@@ -1034,10 +1265,3 @@ fn fmt_ir(ir: i32, abbrev: bool) -> String {
     }
 }
 
-fn truncate_sr(sr: &str) -> String {
-    if let Ok(v) = sr.parse::<f32>() {
-        format!("{v:.1}")
-    } else {
-        sr.chars().take(4).collect()
-    }
-}
