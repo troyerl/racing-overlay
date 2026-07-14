@@ -1,5 +1,8 @@
 {
   "track_id": "_demo",
+  "alias_track_ids": [
+    1
+  ],
   "name": "Demo Speedpark",
   "start_finish": 0.0,
   "points": [

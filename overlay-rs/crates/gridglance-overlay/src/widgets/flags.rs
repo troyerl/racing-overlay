@@ -21,7 +21,12 @@ const SPEC: &[(&str, &str, &str, &str)] = &[
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let f = ctx.frame;
-    if f.flag.is_none() && !ctx.edit_mode && !f.incident_warn {
+    let have_secondary = f
+        .secondary
+        .as_deref()
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
+    if f.flag.is_none() && !ctx.edit_mode && !f.incident_warn && !have_secondary {
         let _ = full_rect(ui);
         return;
     }
@@ -61,7 +66,12 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             fg,
             true,
         );
-        if let Some(ctx_line) = f.flag_context.as_deref() {
+        let detail = f
+            .flag_context
+            .as_deref()
+            .or(f.secondary.as_deref())
+            .filter(|s| !s.is_empty());
+        if let Some(ctx_line) = detail {
             label(
                 ui,
                 egui::pos2(inner.center().x, inner.bottom() - pad * 0.8),
@@ -74,7 +84,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
     } else {
         draw_dark_cell(ui, ctx.cfg, SECTION, inner, (inner.height() * 0.34).min(22.0));
-        let idle = ctx.cfg.str_key(SECTION, "idle_text", "TRACK CLEAR");
+        let idle = if let Some(sec) = f.secondary.as_deref().filter(|s| !s.is_empty()) {
+            sec.to_string()
+        } else {
+            ctx.cfg.str_key(SECTION, "idle_text", "TRACK CLEAR")
+        };
         label(
             ui,
             inner.center(),

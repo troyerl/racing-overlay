@@ -3750,13 +3750,15 @@ class AdvancedSimHUD:
         tid = self._resolve_demo_track_id()
         self._demo_track_pending_id = tid
         legacy_demo = tid in ("_demo", "demo")
-        default_demo = str(tid) == str(demo_data.DEMO_TRACK_ID)
+        default_demo = (
+            str(tid) == str(demo_data.DEMO_TRACK_ID)
+            or tid in ("1", 1)
+        )
         if default_demo and self._shared_demo_track_id is None:
-            self.map_widget.set_track_is_oval(True)
-            self.map_widget.set_num_turns(4)
+            self.map_widget.set_track_is_oval(False)
+            self.map_widget.set_num_turns(8)
 
         loaded = self._try_apply_track_file(tid)
-
         if not loaded:
             loaded = self._try_apply_track_file("_demo")
         if not loaded and (legacy_demo or default_demo):
@@ -3768,7 +3770,7 @@ class AdvancedSimHUD:
                 self._sync_demo_pit_from_meta(meta)
             loaded = True
         elif not loaded:
-            label = "Chicagoland" if default_demo else tid
+            label = "Demo Speedpark" if default_demo else tid
             self.map_widget.flash_hint(f"Loading {label} from cloud…")
         elif not self._pit_path:
             meta = self._demo_pit_geometry(self.map_widget.path)
@@ -3776,7 +3778,7 @@ class AdvancedSimHUD:
                 self._apply_pit_meta(meta)
                 self._sync_demo_pit_from_meta(meta)
 
-        if not legacy_demo:
+        if not legacy_demo and not default_demo:
             self._track_sync.fetch_async(tid)
 
     def _demo_pit_geometry(self, pts):
@@ -4787,6 +4789,10 @@ class AdvancedSimHUD:
         if sf & self._FLAG_CROSSED:
             return "crossed"
         if now < self._green_until:
+            return "green"
+        # Demo packs continuous green bits so the flags panel stays busy; live
+        # sessions only flash green briefly after a yellow (handled above).
+        if (self.demo or self._demo_active) and (sf & self._FLAG_GREEN):
             return "green"
         return None
 

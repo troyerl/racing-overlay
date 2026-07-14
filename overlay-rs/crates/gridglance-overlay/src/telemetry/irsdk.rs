@@ -56,6 +56,7 @@ mod win {
         track_name: Option<String>,
         redline: f32,
         laps_total: i32,
+        incidents_limit: i32,
         drivers: HashMap<i32, DriverInfo>,
     }
 
@@ -180,10 +181,14 @@ mod win {
         let sf = read_i32(session, "SessionFlags");
         let flag = map_flag(sf);
         let flag_context = flag_context_for(flag.as_deref(), sf);
-        let incident_warn = sf & (FLAG_YELLOW | FLAG_YELLOW_WAVING | FLAG_CAUTION | FLAG_CAUTION_WAVING) != 0
-            && (sf & FLAG_BLUE != 0 || sf & FLAG_BLACK != 0);
+        // Incident warn is computed in finalize_frame from count/limit + settings.
+        let incident_warn = false;
+        let incidents_limit = cache.incidents_limit;
+        let engine_warn = read_i32(session, "EngineWarnings");
+        let pit_limiter = (engine_warn & 0x10) != 0;
 
-        let delta = read_delta(session);
+        let (delta_session_best, delta_best_lap, delta_optimal) = read_deltas(session);
+        let delta = delta_session_best;
 
         let skies = weather_skies(session);
         let humidity = read_f32_opt(session, "RelativeHumidity").map(|h| {
@@ -315,6 +320,11 @@ mod win {
             incident_warn,
             secondary: None,
             delta,
+            delta_session_best,
+            delta_best_lap,
+            delta_optimal,
+            incidents_limit,
+            pit_limiter,
             speed_mps: speed,
             rpm,
             redline,
@@ -494,21 +504,23 @@ mod win {
         }
     }
 
-    unsafe fn read_delta(session: &Session) -> Option<f64> {
-        for (val_name, ok_name) in [
-            ("LapDeltaToSessionBestLap", "LapDeltaToSessionBestLap_OK"),
-            ("LapDeltaToBestLap", "LapDeltaToBestLap_OK"),
-            ("LapDeltaToOptimalLap", "LapDeltaToOptimalLap_OK"),
-        ] {
+    unsafe fn read_deltas(session: &Session) -> (Option<f64>, Option<f64>, Option<f64>) {
+        let named = |val_name: &str, ok_name: &str| -> Option<f64> {
             if !read_bool(session, ok_name) {
-                continue;
+                return None;
             }
             let v = read_f32(session, val_name) as f64;
             if v.is_finite() && v.abs() < 600.0 {
-                return Some(v);
+                Some(v)
+            } else {
+                None
             }
-        }
-        None
+        };
+        let session_best = named("LapDeltaToSessionBestLap", "LapDeltaToSessionBestLap_OK");
+        let best = named("LapDeltaToBestLap", "LapDeltaToBestLap_OK");
+        let optimal = named("LapDeltaToOptimalLap", "LapDeltaToOptimalLap_OK")
+            .or_else(|| named("LapDeltaToSessionOptimalLap", "LapDeltaToSessionOptimalLap_OK"));
+        (session_best, best, optimal)
     }
 
     unsafe fn weather_skies(session: &Session) -> Option<String> {
@@ -811,6 +823,11 @@ mod win {
         if let Some(v) = yaml_i32(yaml, "SessionLaps") {
             if v > 0 && v < 100_000 {
                 cache.laps_total = v;
+            }
+        }
+        if let Some(v) = yaml_i32(yaml, "IncidentLimit") {
+            if v > 0 && v < 10_000 {
+                cache.incidents_limit = v;
             }
         }
         cache.drivers = parse_drivers(yaml);

@@ -17,17 +17,17 @@ import time
 
 from . import common as oc
 
-# Default demo map: Chicagoland Speedway (iRacing TrackID 123).
-DEMO_TRACK_ID = 123
+# Default demo map: local `tracks/_demo.json` (same as Rust DemoFeed track_id 1).
+DEMO_TRACK_ID = 1
 
 _DEFAULT_WEEKEND_INFO = {
     "TrackID": DEMO_TRACK_ID,
-    "TrackDisplayName": "Chicagoland Speedway",
-    "TrackConfigName": "Oval",
-    "TrackLength": "2.25 km",
-    "TrackType": "oval course",
-    "Category": "Oval",
-    "TrackNumTurns": 4,
+    "TrackDisplayName": "Demo Speedpark",
+    "TrackConfigName": "Default",
+    "TrackLength": "3.2 km",
+    "TrackType": "road course",
+    "Category": "Road",
+    "TrackNumTurns": 8,
     "Skies": "Clear",
     "RelativeHumidity": 45,
     "FogLevel": 8,
@@ -561,20 +561,36 @@ class FakeIRSDK:
             return _in_demo_pit(frac)
 
         if key == "EnergyERSBattery":
+            # Keep battery under budget so hybrid % is a believable 40–90% swing.
             t = time.time() - self._start
-            return 4_000_000.0 + 500_000.0 * math.sin(t * 0.1)
+            budget = float(self["EnergyBudgetBattToMGU_KLap"])
+            return budget * (0.55 + 0.25 * math.sin(t * 0.25))
 
         if key == "EnergyBatteryToMGU_KLap":
-            return 120_000.0
+            t = time.time() - self._start
+            return 80_000.0 + 40_000.0 * (0.5 + 0.5 * math.sin(t * 0.3))
 
         if key == "EnergyBudgetBattToMGU_KLap":
             return 2_000_000.0
+
+        if key == "EnergyERSBatteryPct":
+            t = time.time() - self._start
+            return 55.0 + 25.0 * math.sin(t * 0.25)
 
         if key == "ManualBoost":
             return (time.time() - self._start) % 8.0 < 1.5
 
         if key == "PushToPass":
-            return False
+            return (time.time() - self._start) % 11.0 < 2.0
+
+        if key == "TireSetsAvailable":
+            return 4
+
+        if key == "TireSetsUsed":
+            return 2
+
+        if key == "PlayerCarDryTireSetLimit":
+            return 6
 
         if key == "FogLevel":
             return 8.0
@@ -619,42 +635,44 @@ class FakeIRSDK:
             return True
 
         if key == "SessionFlags":
-            # Cycle through the states so the dash flag indicator is visible in
-            # demo: caution -> red -> blue -> debris -> white -> black ->
-            # meatball -> furled -> DQ -> crossed -> checkered -> green.
-            cyc = (time.time() - self._start) % 60.0
-            if cyc < 2.0:
+            # Dense cycle so flags/dash banners stay visible most of the minute.
+            # Caution blocks at the front give a brief green window when they end;
+            # remaining windows use discrete flags (no long blank "green bit only"
+            # gaps that Python's live flag logic otherwise hides).
+            cyc = (time.time() - self._start) % 48.0
+            if cyc < 3.0:
                 return 0x00004000 | 0x00008000   # caution waving
-            if cyc < 4.0:
-                return 0x00004000 | 0x00000200   # caution + 1 lap to green
-            if cyc < 6.0:
-                return 0x00004000 | 0x00001000   # caution + 5 to go
-            if 9.0 <= cyc < 12.0:
-                return 0x00000010                # red flag (session stopped)
-            if 14.0 <= cyc < 17.0:
-                return 0x00000020                # blue flag (let faster car by)
-            if 19.0 <= cyc < 22.0:
+            if cyc < 5.0:
+                return 0x00004000 | 0x00000200   # caution + 1 to green
+            if cyc < 8.0:
+                return 0x00000004                # green (honored briefly after yellow)
+            if cyc < 11.0:
+                return 0x00000010                # red
+            if cyc < 14.0:
+                return 0x00000020                # blue
+            if cyc < 17.0:
                 return 0x00000040                # debris
-            if 24.0 <= cyc < 27.0:
-                return 0x00000002                # white flag (final lap)
-            if 30.0 <= cyc < 33.0:
-                return 0x00010000                # black flag
-            if 36.0 <= cyc < 39.0:
-                return 0x00100000                # meatball (repair)
-            if 42.0 <= cyc < 45.0:
-                return 0x00080000                # furled (warning)
-            if 48.0 <= cyc < 51.0:
-                return 0x00020000                # disqualified
-            if 51.0 <= cyc < 54.0:
-                return 0x00000080                # crossed (race halfway)
-            if 54.0 <= cyc < 57.0:
-                return 0x00000001                # checkered (finish)
+            if cyc < 20.0:
+                return 0x00000002                # white
+            if cyc < 23.0:
+                return 0x00010000                # black
+            if cyc < 26.0:
+                return 0x00100000                # meatball
+            if cyc < 29.0:
+                return 0x00080000                # furled
+            if cyc < 32.0:
+                return 0x00020000                # DQ
+            if cyc < 35.0:
+                return 0x00000080                # crossed
+            if cyc < 38.0:
+                return 0x00000001                # checkered
+            if cyc < 41.0:
+                return 0x00004000 | 0x00008000   # caution again (for green flash)
             return 0x00000004                    # green
 
         if key == "IsInGarage":
-            # Spend the first ~10s of each 60s cycle "in the garage" so the
-            # garage-vs-track profile switch is observable in the demo.
-            return ((time.time() - self._start) % 60.0) < 10.0
+            # Brief garage window so profile switch can be observed.
+            return ((time.time() - self._start) % 60.0) < 6.0
 
         if key == "IsGarageVisible":
             # Match IsInGarage so spectators/out-of-car garage UI is covered.
@@ -663,9 +681,6 @@ class FakeIRSDK:
         if key == "CamCarIdx":
             # Camera focus cycles so spectator Relative/Map have a center car.
             return int((time.time() - self._start) // 4.0) % self.num_cars
-
-        if key == "PlayerCarMyIncidentCount":
-            return 11
 
         if key == "WeekendInfo":
             return dict(_weekend_info)
@@ -696,15 +711,29 @@ class FakeIRSDK:
             return oc.LR_CLEAR
 
         if key == "FuelLevel":
+            # Burn into the pit-advisor low-fuel window within ~2 minutes so the
+            # engineer panel can show an actionable rec without a long wait.
             t = time.time() - self._start
-            return max(2.0, 60.0 - t * self._fuel_burn_per_sec())
+            return max(1.5, 18.0 - t * 0.12)
 
         if key == "FuelLevelPct":
             return self["FuelLevel"] / 60.0
 
+        if key == "PlayerCarMyIncidentCount":
+            # High enough vs IncidentLimit 17 to trip incident_warn (~75%).
+            return 13
+
         if key == "LapDeltaToSessionBest" or key == "LapDeltaToSessionBestLap":
             t = time.time() - self._start
             return math.sin(t * 0.6) * 0.45  # gentle +/- swing
+
+        if key in (
+            "LapDeltaToSessionBestLap_OK",
+            "LapDeltaToBestLap_OK",
+            "LapDeltaToOptimalLap_OK",
+            "LapDeltaToSessionOptimalLap_OK",
+        ):
+            return True
 
         if key == "Speed":
             # Held near the pit limit (~55 km/h) while on pit road.

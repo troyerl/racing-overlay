@@ -422,6 +422,8 @@ fn pick_context_indices(
 /// Fill relative_cars / standings_cars and enrich radar from cars + cfg.
 pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     apply_irating_projection(frame, cfg);
+    resolve_delta_mode(frame, cfg);
+    apply_flag_config(frame, cfg);
 
     // Rebuild fuel first so relative undercut/cover tags can use the pit window.
     let inp = crate::telemetry::FuelInputs {
@@ -497,6 +499,117 @@ pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
         }
     }
     frame.pit_advice = Some(advice);
+}
+
+/// Pick `frame.delta` from raw SDK/demo values using `delta_bar.mode`.
+fn resolve_delta_mode(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
+    let mode = cfg.str_key("delta_bar", "mode", "session_best");
+    frame.delta = match mode.as_str() {
+        "best_lap" => frame.delta_best_lap.or(frame.delta_session_best),
+        "optimal" => frame
+            .delta_optimal
+            .or(frame.delta_best_lap)
+            .or(frame.delta_session_best),
+        "last_lap" => match (frame.cur_lap_s, frame.last_lap_s) {
+            (Some(cur), Some(last)) if cur > 0.0 && last > 0.0 => Some(cur - last),
+            _ => None,
+        },
+        "leader_last" => {
+            let cur = frame.cur_lap_s.filter(|v| *v > 0.0);
+            let leader_last = frame
+                .cars
+                .iter()
+                .find(|c| c.position == 1)
+                .and_then(|c| parse_lap_clock(&c.last_lap));
+            match (cur, leader_last) {
+                (Some(c), Some(l)) => Some(c - l),
+                _ => None,
+            }
+        }
+        // session_best (default)
+        _ => frame
+            .delta_session_best
+            .or(frame.delta_best_lap)
+            .or(frame.delta_optimal)
+            .or(frame.delta),
+    };
+}
+
+fn parse_lap_clock(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() || s == "—" || s == "--" {
+        return None;
+    }
+    // "1:23.456" or "83.456"
+    if let Some((m, rest)) = s.split_once(':') {
+        let mins: f64 = m.parse().ok()?;
+        let secs: f64 = rest.parse().ok()?;
+        return Some(mins * 60.0 + secs);
+    }
+    s.parse().ok()
+}
+
+/// Honor flags widget toggles after IRSDK/demo fill the frame.
+fn apply_flag_config(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
+    let thresh = cfg.f64_key("flags", "incident_warn_pct", 0.75).clamp(0.0, 1.0);
+    if cfg.bool_key("flags", "show_incident_warning", true) && frame.incidents_limit > 0 {
+        let pct = frame.incidents as f64 / frame.incidents_limit as f64;
+        if pct >= thresh && frame.flag.is_none() {
+            frame.incident_warn = true;
+            if frame.secondary.is_none() {
+                frame.secondary = Some(format!(
+                    "Incidents {}/{}",
+                    frame.incidents, frame.incidents_limit
+                ));
+            }
+        } else if !frame.incident_warn {
+            // keep IRSDK-set warn if any, else clear stale incident secondary
+        }
+    } else if !cfg.bool_key("flags", "show_incident_warning", true) {
+        frame.incident_warn = false;
+        if frame
+            .secondary
+            .as_deref()
+            .map(|s| s.starts_with("Incidents "))
+            .unwrap_or(false)
+        {
+            frame.secondary = None;
+        }
+    }
+
+    if frame.flag.as_deref() == Some("blue")
+        && !cfg.bool_key("flags", "show_blue_detail", true)
+    {
+        frame.flag_context = Some("Faster car approaching — let them pass".into());
+    }
+
+    if frame.flag.as_deref() == Some("checkered")
+        && !cfg.bool_key("flags", "show_finish_position", true)
+    {
+        frame.flag_context = Some("Session complete".into());
+    } else if frame.flag.as_deref() == Some("checkered")
+        && cfg.bool_key("flags", "show_finish_position", true)
+        && frame.position > 0
+    {
+        let ctx = frame.flag_context.as_deref().unwrap_or("");
+        if !ctx.contains("P") {
+            frame.flag_context = Some(format!("Session complete — P{}", frame.position));
+        }
+    }
+
+    if cfg.bool_key("flags", "show_pit_limiter", true) && frame.pit_limiter {
+        if frame.secondary.is_none() {
+            frame.secondary = Some("Pit limiter active".into());
+        }
+    } else if !cfg.bool_key("flags", "show_pit_limiter", true)
+        && frame
+            .secondary
+            .as_deref()
+            .map(|s| s.contains("Pit limiter"))
+            .unwrap_or(false)
+    {
+        frame.secondary = None;
+    }
 }
 
 fn needs_irating_projection(cfg: &OverlayConfig) -> bool {

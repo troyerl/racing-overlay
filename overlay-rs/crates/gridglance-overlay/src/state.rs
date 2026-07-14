@@ -3,6 +3,7 @@
 use crate::config::{default_geom, OverlayConfig, WIDGET_KEYS};
 use crate::paths;
 use crate::telemetry::TelemetryFrame;
+use crate::track_path::PitLane;
 use parking_lot::RwLock;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -28,6 +29,8 @@ pub struct MapAuthoring {
     pub cached_track_name: String,
     pub cached_start_finish: f32,
     pub cached_pit_out_pct: Option<f32>,
+    pub cached_pit: PitLane,
+    pub cached_pit2: PitLane,
     pub cached_drs_zones: Vec<(f32, f32)>,
     pub cached_p2p_zones: Vec<(f32, f32)>,
     /// Hold-before-switch state for ahead/behind/leader markers.
@@ -57,6 +60,8 @@ impl Default for MapAuthoring {
             cached_track_name: String::new(),
             cached_start_finish: 0.0,
             cached_pit_out_pct: None,
+            cached_pit: PitLane::default(),
+            cached_pit2: PitLane::default(),
             cached_drs_zones: Vec::new(),
             cached_p2p_zones: Vec::new(),
             marker_hold: crate::map_markers::fresh_hold_states(),

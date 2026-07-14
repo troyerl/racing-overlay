@@ -60,6 +60,10 @@ pub struct OverlayApp {
 
 impl OverlayApp {
     pub fn new(state: StateHandle, demo: bool, gl: Option<Arc<glow::Context>>) -> Self {
+        let mut lap_log = LapLogAccum::new();
+        if demo {
+            lap_log.seed_demo(12);
+        }
         Self {
             state,
             demo: DemoFeed::new(),
@@ -74,7 +78,7 @@ impl OverlayApp {
             gl,
             sector_timer: SectorTimer::new(),
             lap_compare: LapCompareState::new(),
-            lap_log: LapLogAccum::new(),
+            lap_log,
         }
     }
 

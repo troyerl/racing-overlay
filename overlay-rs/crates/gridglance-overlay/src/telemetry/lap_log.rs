@@ -93,6 +93,38 @@ impl LapLogAccum {
         self.laps.truncate(MAX_STORED);
     }
 
+    /// Seed a few historical laps so the laptime log isn't empty at demo start.
+    pub fn seed_demo(&mut self, current_lap: i32) {
+        if !self.laps.is_empty() {
+            return;
+        }
+        let best = 87.90;
+        let seeds: &[(i32, f64, Option<&str>)] = &[
+            (current_lap - 1, 88.11, None),
+            (current_lap - 2, 88.40, None),
+            (current_lap - 3, 88.23, None),
+            (current_lap - 4, 88.51, Some("OUT")),
+            (current_lap - 5, 87.90, Some("PIT")),
+            (current_lap - 6, 88.31, None),
+        ];
+        for (lap, secs, tag) in seeds {
+            if *lap < 1 {
+                continue;
+            }
+            self.laps.push(CompletedLap {
+                lap: *lap,
+                secs: *secs,
+                temp_c: Some(31.5),
+                fuel_l: Some(2.4),
+                tires: None,
+                incidents: Some(0),
+                tag: tag.map(|s| s.to_string()),
+                personal_best: Some(best),
+            });
+        }
+        self.prev_lap = Some(current_lap);
+    }
+
     /// Build widget rows from stored laps using CFG `rows` / `delta_mode`.
     pub fn build_rows(&self, cfg: &OverlayConfig) -> Vec<LapLogRow> {
         let n = cfg.f64_key("laptime_log", "rows", 8.0).max(1.0) as usize;

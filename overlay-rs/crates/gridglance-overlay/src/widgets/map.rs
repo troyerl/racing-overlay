@@ -92,6 +92,8 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     ctx.map.cached_track_name.clear();
     ctx.map.cached_start_finish = 0.0;
     ctx.map.cached_pit_out_pct = None;
+    ctx.map.cached_pit = track_path::PitLane::default();
+    ctx.map.cached_pit2 = track_path::PitLane::default();
     ctx.map.cached_drs_zones.clear();
     ctx.map.cached_p2p_zones.clear();
     if let Some(id) = tid {
@@ -100,6 +102,8 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
             ctx.map.cached_start_finish = tp.start_finish;
             ctx.map.cached_pit_out_pct = tp.pit_out_pct;
             ctx.map.cached_path = tp.points;
+            ctx.map.cached_pit = tp.pit;
+            ctx.map.cached_pit2 = tp.pit2;
             ctx.map.cached_drs_zones = tp.drs_zones;
             ctx.map.cached_p2p_zones = tp.p2p_zones;
             return;
@@ -107,7 +111,12 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     }
     ctx.map.cached_path = track_path::oval_path(64);
     ctx.map.cached_start_finish = 0.0;
-    ctx.map.cached_pit_out_pct = Some(0.08);
+    if let Some(synth) = track_path::synthesize_demo_pit(&ctx.map.cached_path) {
+        ctx.map.cached_pit_out_pct = synth.out_pct;
+        ctx.map.cached_pit = synth;
+    } else {
+        ctx.map.cached_pit_out_pct = Some(0.08);
+    }
 }
 
 fn fill_infield(ui: &mut Ui, screen: &[Pos2], fill: Color32) {
@@ -201,6 +210,172 @@ fn draw_loop_tick(
         ui.painter()
             .line_segment([a, b], Stroke::new(width, color));
     }
+}
+
+fn stroke_open_dashed(
+    ui: &mut Ui,
+    screen: &[Pos2],
+    width: f32,
+    color: Color32,
+    dash: f32,
+    gap: f32,
+) {
+    if screen.len() < 2 {
+        return;
+    }
+    let dash = dash.max(1.0);
+    let gap = gap.max(0.5);
+    let pattern = dash + gap;
+    for w in screen.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        let dx = b.x - a.x;
+        let dy = b.y - a.y;
+        let len = (dx * dx + dy * dy).sqrt();
+        if len < 1e-3 {
+            continue;
+        }
+        let ux = dx / len;
+        let uy = dy / len;
+        let mut d = 0.0_f32;
+        while d < len {
+            let d1 = (d + dash).min(len);
+            ui.painter().line_segment(
+                [
+                    Pos2::new(a.x + ux * d, a.y + uy * d),
+                    Pos2::new(a.x + ux * d1, a.y + uy * d1),
+                ],
+                Stroke::new(width, color),
+            );
+            d += pattern;
+        }
+    }
+}
+
+fn stroke_open(ui: &mut Ui, screen: &[Pos2], width: f32, color: Color32) {
+    if screen.len() < 2 {
+        return;
+    }
+    for w in screen.windows(2) {
+        ui.painter()
+            .line_segment([w[0], w[1]], Stroke::new(width, color));
+    }
+}
+
+fn model_poly(
+    pts: &[(f32, f32)],
+    mirror: bool,
+    rot: i32,
+) -> Vec<(f32, f32)> {
+    pts.iter()
+        .map(|&(x, y)| model_point(x, y, mirror, rot))
+        .collect()
+}
+
+fn screen_poly(xform: &PlotXform, modeled: &[(f32, f32)]) -> Vec<Pos2> {
+    modeled.iter().map(|&(x, y)| xform.map(x, y)).collect()
+}
+
+fn draw_pit_lane(
+    ui: &mut Ui,
+    ctx: &WidgetCtx<'_>,
+    lane: &track_path::PitLane,
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    asphalt: Color32,
+) {
+    if !lane.has_drawable() {
+        return;
+    }
+    let opacity = ctx.cfg.f64_key(SECTION, "pit_lane_opacity", 1.0).clamp(0.05, 1.0) as f32;
+    let a = (opacity * 255.0) as u8;
+    let a_asphalt = (opacity * 0.85 * 255.0) as u8;
+    let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
+    let show_speed = ctx.cfg.bool_key(SECTION, "show_pit_speed", true);
+
+    let pit_col = color_with_alpha(ctx.cfg.color(SECTION, "pit", "#e23b3b"), a);
+    let blend_in = color_with_alpha(ctx.cfg.color(SECTION, "pit_blend", "#ffd23a"), a);
+    let blend_out = color_with_alpha(ctx.cfg.color(SECTION, "pit_blend_out", "#3aa0ff"), a);
+    let asphalt_u = color_with_alpha(asphalt, a_asphalt);
+
+    if show_blends && lane.entry.len() >= 2 {
+        let m = model_poly(&lane.entry, mirror, rot);
+        let s = screen_poly(xform, &m);
+        stroke_open_dashed(ui, &s, 2.5, blend_in, 3.0, 4.0);
+    }
+    if show_blends && lane.exit.len() >= 2 {
+        let m = model_poly(&lane.exit, mirror, rot);
+        let s = screen_poly(xform, &m);
+        stroke_open_dashed(ui, &s, 2.5, blend_out, 3.0, 4.0);
+    }
+    if lane.path.len() >= 2 {
+        let m = model_poly(&lane.path, mirror, rot);
+        let s = screen_poly(xform, &m);
+        stroke_open(ui, &s, 7.0, asphalt_u);
+        stroke_open_dashed(ui, &s, 2.2, pit_col, 4.0, 3.0);
+
+        if show_speed {
+            if let Some(ms) = lane.speed_ms.filter(|v| *v > 0.0) {
+                let (val, unit) = (
+                    ctx.cfg.conv_speed(ms),
+                    ctx.cfg.speed_unit(),
+                );
+                let anchor = s[s.len() / 2];
+                let txt = format!("PIT {val:.0} {unit}");
+                let bg = color_with_alpha(
+                    ctx.cfg.color(SECTION, "pit", "#e23b3b"),
+                    235,
+                );
+                let fg = ctx.cfg.color(SECTION, "pit_text", "#ffffff");
+                let font = FontId::new(11.0, FontFamily::Proportional);
+                let galley = ui.fonts(|f| f.layout_no_wrap(txt, font, fg));
+                let pad = 4.0;
+                let rect = Rect::from_min_size(
+                    Pos2::new(
+                        anchor.x - galley.size().x * 0.5 - pad,
+                        anchor.y - galley.size().y - pad * 2.0,
+                    ),
+                    egui::vec2(galley.size().x + pad * 2.0, galley.size().y + pad),
+                );
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::same(4),
+                    bg,
+                );
+                ui.painter().galley(
+                    Pos2::new(rect.left() + pad, rect.top() + pad * 0.5),
+                    galley,
+                    fg,
+                );
+            }
+        }
+    }
+}
+
+fn car_model_xy(
+    car: &CarRow,
+    pct: f32,
+    racing: &[(f32, f32)],
+    pit: &track_path::PitLane,
+    show_blends: bool,
+) -> (f32, f32) {
+    if in_pit_lane(car) && pit.has_drawable() {
+        let route = pit.route(show_blends);
+        if route.len() >= 2 {
+            let in_pct = pit
+                .in_pct
+                .or(pit.span.map(|(a, _)| a))
+                .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+            let out_pct = pit
+                .out_pct
+                .or(pit.span.map(|(_, b)| b))
+                .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
+            let t = track_path::route_t_for_pct(pct, in_pct, out_pct);
+            return track_path::point_on_open(&route, t);
+        }
+    }
+    track_path::point_at(racing, pct)
 }
 
 fn is_caution_flag(flag: Option<&str>) -> bool {
@@ -814,14 +989,30 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let plot = rect; // fit uses absolute pad inside
 
     let path = ctx.map.cached_path.clone();
-    let modeled: Vec<(f32, f32)> = path
+    let mut modeled: Vec<(f32, f32)> = path
         .iter()
         .map(|&(x, y)| model_point(x, y, mirror, rot))
         .collect();
+    // Expand fit bbox so pit polylines are not clipped off the plot.
+    if ctx.cfg.bool_key(SECTION, "show_pit", true) {
+        for lane in [&ctx.map.cached_pit, &ctx.map.cached_pit2] {
+            for &(x, y) in &lane.all_points() {
+                modeled.push(model_point(x, y, mirror, rot));
+            }
+        }
+    }
     let xform = PlotXform::fit(plot, &modeled, pad_px);
-    let screen: Vec<Pos2> = modeled
+    let screen: Vec<Pos2> = path
         .iter()
-        .map(|&(x, y)| xform.map(x, y))
+        .map(|&(x, y)| {
+            let (mx, my) = model_point(x, y, mirror, rot);
+            xform.map(mx, my)
+        })
+        .collect();
+    // Modeled racing loop only (for S/F / ticks) — drop pit expanders.
+    let modeled: Vec<(f32, f32)> = path
+        .iter()
+        .map(|&(x, y)| model_point(x, y, mirror, rot))
         .collect();
 
     if show_infield {
@@ -830,6 +1021,15 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     // Dual stroke: thick asphalt under thinner outline (Python recipe).
     stroke_closed(ui, &screen, asphalt_w, asphalt);
     stroke_closed(ui, &screen, outline_w, outline);
+
+    if ctx.cfg.bool_key(SECTION, "show_pit", true) {
+        let pit = ctx.map.cached_pit.clone();
+        let pit2 = ctx.map.cached_pit2.clone();
+        draw_pit_lane(ui, ctx, &pit, &xform, mirror, rot, asphalt);
+        if pit2.has_drawable() {
+            draw_pit_lane(ui, ctx, &pit2, &xform, mirror, rot, asphalt);
+        }
+    }
 
     let zone_w = (asphalt_w * 1.35).max(4.0);
     if ctx.cfg.bool_key(SECTION, "show_drs_zones", false) && !ctx.map.cached_drs_zones.is_empty()
@@ -919,6 +1119,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let mut cars: Vec<&CarRow> = ctx.frame.cars.iter().collect();
     cars.sort_by_key(|c| (c.is_speaking, c.is_player));
 
+    let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
+    let pit_lane = ctx.map.cached_pit.clone();
+
     let mut car_pts: HashMap<i32, Pos2> = HashMap::new();
     for car in &cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
@@ -931,7 +1134,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if pct < 0.0 {
             continue;
         }
-        let (nx, ny) = track_path::point_at(&path, pct);
+        let (nx, ny) = car_model_xy(car, pct, &path, &pit_lane, show_blends);
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
         car_pts.insert(car.car_idx, p);

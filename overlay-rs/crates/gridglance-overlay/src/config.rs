@@ -620,6 +620,10 @@ fn default_cfg() -> Value {
             section.insert("dot_radius_frac".into(), json!(0.05));
             section.insert("other_dot_radius_frac".into(), json!(0.05));
             section.insert("pit_dot_opacity".into(), json!(0.45));
+            section.insert("show_pit".into(), Value::Bool(true));
+            section.insert("show_pit_blends".into(), Value::Bool(true));
+            section.insert("show_pit_speed".into(), Value::Bool(true));
+            section.insert("pit_lane_opacity".into(), json!(1.0));
             section.insert("car_label".into(), Value::String("number".into()));
             section.insert("show_traffic_markers".into(), Value::Bool(true));
             section.insert("marker_hold_seconds".into(), json!(3.0));
@@ -635,6 +639,10 @@ fn default_cfg() -> Value {
                 colors.insert("lapped".into(), Value::String("#2563eb".into()));
                 colors.insert("lapping".into(), Value::String("#ff5050".into()));
                 colors.insert("pit_car".into(), Value::String("#6e747d".into()));
+                colors.insert("pit".into(), Value::String("#e23b3b".into()));
+                colors.insert("pit_text".into(), Value::String("#ffffff".into()));
+                colors.insert("pit_blend".into(), Value::String("#ffd23a".into()));
+                colors.insert("pit_blend_out".into(), Value::String("#3aa0ff".into()));
                 colors.insert("pace_car".into(), Value::String("#0b0e12".into()));
                 colors.insert("pace_safety".into(), Value::String("#ff9416ee".into()));
                 colors.insert("pit_exit_mark".into(), Value::String("#ffd23acc".into()));

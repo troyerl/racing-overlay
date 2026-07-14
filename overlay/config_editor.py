@@ -460,22 +460,92 @@ _WIDGET_HINTS = {
 # the user can write, so it stays absent for read-only users).
 SETTINGS_SECTION_KEYS = {"__general__", "__app__", "__scan__"}
 
-# Map widget settings page: hide keys that are track-data or unused table chrome.
-MAP_SETTINGS_SKIP = frozenset({"auto_corners", "row_dividers", "data_font_bold"})
-
-# Per-section keys in DEFAULTS that must not appear in Settings (no UI effect).
+# Keys the Rust overlay ignores (or that are track-authoring only). Kept in
+# DEFAULTS for merges / --python / existing configs, but hidden from Settings.
+_DATA_FONT_BOLD = frozenset({"data_font_bold"})
 _ROW_DIVIDERS_SKIP = frozenset({"row_dividers"})
+_TABLE_RUST_ORPHANS = frozenset({
+    "pit_mode", "irating_show_icon", "max_row_height_frac", "data_font_bold",
+})
+
+MAP_SETTINGS_SKIP = frozenset({
+    "auto_corners", "row_dividers", "data_font_bold",
+    "palette", "lap_proximity_pct", "show_pace_car",
+})
+
 SECTION_SETTINGS_SKIP: dict[str, frozenset[str]] = {
+    "relative": _TABLE_RUST_ORPHANS | frozenset({"pit_loss_seconds"}),
+    "standings": _TABLE_RUST_ORPHANS,
+    "laptime_log": _DATA_FONT_BOLD,
+    "fuel_calc": frozenset({
+        "history_laps", "show_stints", "stint_laps", "legal_fuel_buffer_l",
+        "data_font_bold", "text_scale",
+    }),
+    "radar": _ROW_DIVIDERS_SKIP | frozenset({
+        "closing_rate_color", "closing_rate_full", "data_font_bold",
+    }),
+    "dash": frozenset({
+        "shift_blink", "shift_blink_hz", "shift_blink_pct", "shift_blink_max_sec",
+        "flag_pulse", "flag_pulse_seconds", "flag_blink_hz", "flag_green_seconds",
+        "delta_bar_mode", "row_dividers", "data_font_bold",
+    }),
+    "inputs": _ROW_DIVIDERS_SKIP | frozenset({
+        "show_handbrake", "show_steering_torque", "show_tc_abs",
+        "data_font_bold", "text_scale",
+    }),
+    "delta_bar": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),
+    "flags": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),
+    "lap_compare": frozenset({
+        "min_time_loss", "show_live_delta", "reference_mode",
+        "show_brake_markers", "show_lift_markers", "show_gear_rpm",
+        "exclude_wet_laps", "wetness_delta_threshold",
+        "row_height_px", "max_row_height_frac", "row_dividers",
+        "data_font_bold", "text_scale",
+    }),
+    "sector_timing": _ROW_DIVIDERS_SKIP | frozenset({
+        "sectors", "highlight_active_sector_on_map", "data_font_bold",
+    }),
     "map": MAP_SETTINGS_SKIP,
-    "radar": _ROW_DIVIDERS_SKIP,
-    "delta_bar": _ROW_DIVIDERS_SKIP,
-    "flags": _ROW_DIVIDERS_SKIP,
-    "inputs": _ROW_DIVIDERS_SKIP,
-    "ers_hybrid": _ROW_DIVIDERS_SKIP,
-    "tire_panel": _ROW_DIVIDERS_SKIP,
-    "sector_timing": _ROW_DIVIDERS_SKIP,
-    "radio_tower": _ROW_DIVIDERS_SKIP,
-    "pit_advisor": _ROW_DIVIDERS_SKIP,
+    "tire_panel": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),
+    "pit_board": frozenset({"show_pressures", "data_font_bold", "text_scale"}),
+    "weather_panel": frozenset({
+        "show_trend", "trend_window_seconds", "row_height_px",
+        "max_row_height_frac", "row_dividers", "data_font_bold", "text_scale",
+    }),
+    "leaderboard_strip": frozenset({
+        "show_class_color", "data_font_bold", "text_scale", "row_dividers",
+    }),
+    "radio_tower": _ROW_DIVIDERS_SKIP | frozenset({
+        "max_row_height_frac", "data_font_bold",
+    }),
+    "ers_hybrid": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),
+    "system_panel": frozenset({
+        "show_icons", "text_scale", "max_row_height_frac", "row_dividers",
+        "data_font_bold",
+    }),
+    "pit_advisor": _ROW_DIVIDERS_SKIP | frozenset({
+        "race_tire_sets_total", "tire_sets_reserve", "min_stint_laps",
+        "legal_fuel_buffer_l", "caution_fuel_multiplier",
+        "track_wetness_tire_suppress", "opponent_stint_due_laps",
+        "opponent_splash_pit_max_s", "final_laps_optional_suppress",
+        "show_field_context", "show_tire_inventory", "text_scale",
+        "top_positions_stay_out", "field_pit_follow_threshold",
+        "caution_pit_pra_threshold", "caution_pit_lead_loss_max",
+        "recent_pit_laps_window", "green_run_caution_bias_laps",
+        "post_pit_quiet_min_laps", "lapped_danger_fuel_min_laps",
+        "reentry_window_pct", "tire_warn_wear_pct", "tire_critical_wear_pct",
+        "low_tire_laps_threshold", "ahead_scan_positions", "ahead_pace_delta_s",
+        "fresh_tire_lap_delta", "caution_overdue_ratio",
+        "field_chaos_high_threshold", "caution_wait_min_fuel_laps",
+        "cover_closing_min_rate", "green_pos_lost_max",
+        "caution_prb_stay_out_threshold", "caution_prb_pit_threshold",
+        "use_measured_pit_loss", "pit_loss_ema_alpha",
+        "pit_loss_measured_min_s", "pit_loss_measured_max_s",
+        "pit_menu_hard_gate", "opponent_tire_inference_enabled",
+        "ahead_profile_scan_positions", "strategic_pit_min_net_positions",
+        "green_pos_tradeoff_override", "caution_bankrupt_ahead_min",
+        "data_font_bold",
+    }),
 }
 
 # Left-nav widget order grouped by usage (keys must exist in config.DEFAULTS).
@@ -520,18 +590,18 @@ def ordered_settings_sections(
 
 # Purpose-based setting groups for widget pages (top-level DEFAULTS dict keys).
 # Keys not listed fall through ungrouped at the bottom of the page.
+# Omits Rust-unused keys (also covered by SECTION_SETTINGS_SKIP).
 _TABLE_SETTING_GROUPS = [
     ("Content", [
         "title", "center_on_player", "pin_podium", "rows", "rows_ahead",
-        "rows_behind", "show_footer", "pit_mode", "text_scale",
+        "rows_behind", "show_footer", "text_scale",
     ]),
     ("Typography", [
         "font_scale", "gap_font_scale", "header_font_scale", "footer_font_scale",
-        "name_font_bold", "data_font_bold", "irating_abbreviate",
-        "show_irating_projection", "irating_show_icon",
+        "name_font_bold", "irating_abbreviate", "show_irating_projection",
     ]),
     ("Row layout", [
-        "row_height_px", "max_row_height_frac", "row_dividers", "alt_row_shading",
+        "row_height_px", "row_dividers", "alt_row_shading",
         "corner_radius_frac", "row_ease_tau", "fade_ease_tau",
     ]),
     ("Header & footer", ["header", "footer", "header_icons", "footer_icons"]),
@@ -544,9 +614,9 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     "relative": [
         ("Content", [
             "center_on_player", "rows_ahead", "rows_behind", "show_footer",
-            "pit_mode", "text_scale",
+            "text_scale",
             "show_strategy_hints", "strategy_fuel_pct_thresh",
-            "undercut_gap_max_s", "cover_gap_max_s", "pit_loss_seconds",
+            "undercut_gap_max_s", "cover_gap_max_s",
         ]),
         *_TABLE_SETTING_GROUPS[1:],
     ],
@@ -556,8 +626,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "rows", "delta_mode", "column_order", "show_header", "temp_icon",
             "text_scale",
         ]),
-        ("Typography", ["font_scale", "header_font_scale", "row_dividers",
-                        "data_font_bold"]),
+        ("Typography", ["font_scale", "header_font_scale", "row_dividers"]),
         ("Row layout", [
             "row_height_px", "max_row_height_frac", "alt_row_shading",
             "corner_radius_frac",
@@ -568,51 +637,41 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ("Visibility", [
             "show_title", "show_pill", "show_add", "show_gauge", "show_stats",
             "show_strip", "show_time", "show_laps", "show_live_burn",
-            "show_tank_pct", "show_stints", "show_low_fuel_alert",
-            "show_pit_compare",
+            "show_tank_pct", "show_low_fuel_alert", "show_pit_compare",
         ]),
         ("Content", [
-            "title", "history_laps", "pit_loss_seconds", "stint_laps",
-            "legal_fuel_buffer_l", "low_fuel_laps_threshold",
-            "low_fuel_time_threshold", "text_scale",
+            "title", "pit_loss_seconds", "low_fuel_laps_threshold",
+            "low_fuel_time_threshold",
         ]),
         ("Row layout", [
             "row_height_px", "max_row_height_frac", "stats_header_font_scale",
             "stats_row_font_scale", "corner_radius_frac", "row_dividers",
-            "data_font_bold",
         ]),
         ("Colors", ["colors"]),
     ],
     "radar": [
         ("Behavior", [
             "range_pct", "show_front", "show_rear", "side_span_pct",
-            "side_proximity_color", "show_side_labels", "closing_rate_color",
-            "closing_rate_full", "show_clear_timer", "alongside_zone_pct",
+            "side_proximity_color", "show_side_labels",
+            "show_clear_timer", "alongside_zone_pct",
             "ease_side_tau", "ease_glow_tau",
         ]),
         ("Display", ["show_nose", "show_axis", "show_panel", "text_scale"]),
-        ("Layout", ["corner_radius_frac", "data_font_bold", "sizes"]),
+        ("Layout", ["corner_radius_frac", "sizes"]),
         ("Colors", ["colors"]),
     ],
     "dash": [
         ("Layout", [
             "corner_radius_frac", "shift_segments", "shift_red_frac",
-            "shift_yellow_frac", "ring_segments", "text_scale", "row_dividers",
-            "data_font_bold",
+            "shift_yellow_frac", "ring_segments", "text_scale",
         ]),
-        ("Shift bar", [
-            "show_shift_bar", "shift_blink", "shift_blink_hz", "shift_blink_pct",
-            "shift_blink_max_sec",
-        ]),
+        ("Shift bar", ["show_shift_bar"]),
         ("Center medallion", [
             "center_mode", "show_ring", "show_throttle", "show_brake",
             "show_clutch",
         ]),
-        ("Flags", [
-            "show_flags", "flag_green_seconds", "flag_pulse",
-            "flag_pulse_seconds", "flag_blink_hz",
-        ]),
-        ("Delta bar", ["show_delta_bar", "delta_bar_mode", "delta_bar_range"]),
+        ("Flags", ["show_flags"]),
+        ("Delta bar", ["show_delta_bar", "delta_bar_range"]),
         ("Metrics & slots", [
             "show_position", "top_right", "primary_left", "primary_right",
             "stat_left", "stat_right", "strip_left", "strip_center",
@@ -627,82 +686,68 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
         ]),
         ("Trace", [
             "history_seconds", "show_throttle", "show_brake", "show_clutch",
-            "show_steering", "show_handbrake", "show_steering_torque",
-            "show_tc_abs", "show_shift_markers", "show_brake_threshold",
+            "show_steering", "show_shift_markers", "show_brake_threshold",
             "brake_threshold", "line_width",
         ]),
-        ("Typography", ["text_scale", "data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "delta_bar": [
-        ("Behavior", ["mode", "range", "show_value", "text_scale"]),
-        ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Behavior", ["mode", "range", "show_value"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "flags": [
         ("Content", [
             "idle_text", "show_incident_warning", "incident_warn_pct",
             "show_blue_detail", "show_pit_limiter", "show_finish_position",
-            "text_scale",
         ]),
-        ("Layout", ["data_font_bold"]),
         ("Colors", ["colors"]),
     ],
     "lap_compare": [
-        ("Content", [
-            "reference_mode", "max_turns", "min_time_loss", "show_live_delta",
-            "show_graph", "show_brake_markers", "show_lift_markers",
-            "show_gear_rpm", "exclude_wet_laps", "wetness_delta_threshold",
-            "text_scale",
-        ]),
-        ("Row layout", [
-            "row_height_px", "max_row_height_frac", "alt_row_shading",
-        ]),
-        ("Layout", ["row_dividers", "data_font_bold"]),
+        ("Content", ["max_turns", "show_graph"]),
+        ("Row layout", ["alt_row_shading"]),
         ("Colors", ["colors"]),
     ],
     "sector_timing": [
         ("Content", [
-            "sectors", "show_sector_delta", "show_predicted_lap",
-            "highlight_active_sector_on_map", "text_scale",
+            "show_sector_delta", "show_predicted_lap", "text_scale",
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "tire_panel": [
         ("Content", [
             "show_title", "title", "show_wear", "show_temp", "show_pressure",
-            "warn_wear_pct", "text_scale",
+            "warn_wear_pct",
         ]),
-        ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "pit_board": [
         ("Content", [
             "show_title", "title", "show_pit_banner", "pit_banner_text",
-            "show_pressures", "show_fast_repairs", "show_compound", "text_scale",
+            "show_fast_repairs", "show_compound",
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac", "row_dividers"]),
         ("Colors", ["colors"]),
     ],
     "weather_panel": [
         ("Content", [
             "show_title", "title", "show_skies", "show_rain", "show_temps",
-            "show_wind", "show_trend", "trend_window_seconds", "text_scale",
+            "show_wind",
         ]),
-        ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "leaderboard_strip": [
         ("Content", [
             "rows", "show_position", "show_car_number", "show_lap", "show_mph",
-            "show_name", "show_gap", "highlight_player", "text_scale",
+            "show_name", "show_gap", "highlight_player",
         ]),
         ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "radio_tower": [
@@ -710,66 +755,47 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "show_title", "title", "show_position", "show_car_number",
             "show_name", "highlight_player", "text_scale",
         ]),
-        ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Row layout", ["row_height_px"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "system_panel": [
         ("Content", [
-            "show_title", "title", "show_icons", "show_cpu", "show_mem", "show_gpu",
-            "show_fps", "show_network", "text_scale",
+            "show_title", "title", "show_cpu", "show_mem", "show_gpu",
+            "show_fps", "show_network",
         ]),
-        ("Row layout", ["row_height_px", "max_row_height_frac"]),
-        ("Layout", ["corner_radius_frac", "row_dividers", "data_font_bold"]),
+        ("Row layout", ["row_height_px"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "pit_advisor": [
-        ("Race", [
-            "race_tire_sets_total", "tire_sets_reserve", "min_stint_laps",
-            "pit_loss_seconds", "legal_fuel_buffer_l", "caution_fuel_multiplier",
-            "track_wetness_tire_suppress", "opponent_stint_due_laps",
-            "opponent_splash_pit_max_s", "final_laps_optional_suppress",
-        ]),
         ("Content", [
-            "show_title", "title", "show_only_when_actionable", "show_field_context",
-            "show_tire_inventory", "text_scale", "low_fuel_laps_threshold",
-            "undercut_gap_max_s", "cover_gap_max_s", "top_positions_stay_out",
-            "field_pit_follow_threshold", "caution_pit_pra_threshold",
-            "caution_pit_lead_loss_max", "recent_pit_laps_window",
-            "post_pit_quiet_min_laps", "lapped_danger_fuel_min_laps",
-            "reentry_window_pct", "tire_warn_wear_pct", "tire_critical_wear_pct",
-            "low_tire_laps_threshold", "ahead_scan_positions", "ahead_pace_delta_s",
-            "fresh_tire_lap_delta", "caution_overdue_ratio",
-            "field_chaos_high_threshold", "caution_wait_min_fuel_laps",
-            "cover_closing_min_rate", "green_pos_lost_max",
-            "caution_prb_stay_out_threshold", "caution_prb_pit_threshold",
-            "use_measured_pit_loss", "pit_loss_ema_alpha", "pit_menu_hard_gate",
-            "opponent_tire_inference_enabled", "ahead_profile_scan_positions",
-            "strategic_pit_min_net_positions", "green_pos_tradeoff_override",
-            "caution_bankrupt_ahead_min",
+            "show_title", "title", "show_only_when_actionable",
+            "low_fuel_laps_threshold", "undercut_gap_max_s", "cover_gap_max_s",
+            "pit_loss_seconds",
         ]),
-        ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "ers_hybrid": [
         ("Content", [
             "show_title", "title", "label_battery", "label_lap", "label_boost",
             "label_p2p", "empty_text", "show_battery", "show_lap_energy",
-            "show_boost", "show_p2p", "text_scale",
+            "show_boost", "show_p2p",
         ]),
-        ("Layout", ["corner_radius_frac", "data_font_bold"]),
+        ("Layout", ["corner_radius_frac"]),
         ("Colors", ["colors"]),
     ],
     "map": [
         ("Display", [
             "show_infield", "show_corners", "show_start_finish",
             "show_wind", "show_expanded_weather", "show_car_status",
-            "show_drs_zones", "show_p2p_zones", "show_panel", "show_pace_car",
+            "show_drs_zones", "show_p2p_zones", "show_panel",
             "show_pace_safety_line",
             "show_sector_boundaries", "show_traffic_markers",
         ]),
         ("Traffic & markers", [
-            "lap_proximity_pct", "marker_hold_seconds", "car_label",
+            "marker_hold_seconds", "car_label",
             "dot_radius_frac", "other_dot_radius_frac",
         ]),
         ("Pit lane", [
@@ -780,7 +806,7 @@ SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
             "rotation", "mirror", "asphalt_width", "outline_width",
             "corner_radius_frac", "text_scale",
         ]),
-        ("Colors", ["colors", "palette"]),
+        ("Colors", ["colors"]),
     ],
 }
 

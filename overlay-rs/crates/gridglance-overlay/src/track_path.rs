@@ -4,6 +4,53 @@ use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// One pit road: entry blend, lane, exit blend + lap-% extents.
+#[derive(Debug, Clone, Default)]
+pub struct PitLane {
+    pub path: Vec<(f32, f32)>,
+    pub entry: Vec<(f32, f32)>,
+    pub exit: Vec<(f32, f32)>,
+    /// Full route extents (diverge → rejoin), wrapping OK.
+    pub in_pct: Option<f32>,
+    pub out_pct: Option<f32>,
+    /// Lane-only OnPitRoad span when known.
+    pub span: Option<(f32, f32)>,
+    pub speed_ms: Option<f32>,
+    #[allow(dead_code)]
+    pub lane_speed_pct: f32,
+    #[allow(dead_code)]
+    pub source: Option<String>,
+}
+
+impl PitLane {
+    pub fn has_drawable(&self) -> bool {
+        self.path.len() >= 2 || self.entry.len() >= 2 || self.exit.len() >= 2
+    }
+
+    /// Concatenated route for car placement (entry + lane + exit when blends on).
+    pub fn route(&self, include_blends: bool) -> Vec<(f32, f32)> {
+        let mut out = Vec::new();
+        if include_blends && self.entry.len() >= 2 {
+            out.extend_from_slice(&self.entry);
+        }
+        if self.path.len() >= 2 {
+            out.extend_from_slice(&self.path);
+        }
+        if include_blends && self.exit.len() >= 2 {
+            out.extend_from_slice(&self.exit);
+        }
+        out
+    }
+
+    pub fn all_points(&self) -> Vec<(f32, f32)> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.entry);
+        out.extend_from_slice(&self.path);
+        out.extend_from_slice(&self.exit);
+        out
+    }
+}
+
 /// Closed track polyline in normalized (or raw) XY space.
 #[derive(Debug, Clone, Default)]
 pub struct TrackPath {
@@ -13,6 +60,10 @@ pub struct TrackPath {
     pub start_finish: f32,
     /// LapDistPct of pit exit merge onto the racing loop (0..1), when known.
     pub pit_out_pct: Option<f32>,
+    /// Primary pit road geometry.
+    pub pit: PitLane,
+    /// Optional second pit road.
+    pub pit2: PitLane,
     /// DRS activation ranges as (lo, hi) lap fractions.
     pub drs_zones: Vec<(f32, f32)>,
     /// Push-to-pass ranges as (lo, hi) lap fractions.
@@ -89,6 +140,95 @@ fn json_matches_track_id(path: &Path, track_id: i32, id_str: &str) -> bool {
     path.file_stem().and_then(|s| s.to_str()) == Some(id_str)
 }
 
+fn parse_polyline(v: Option<&Value>) -> Vec<(f32, f32)> {
+    let Some(arr) = v.and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for p in arr {
+        let Some(pair) = p.as_array() else {
+            continue;
+        };
+        if pair.len() < 2 {
+            continue;
+        }
+        let x = pair[0].as_f64().unwrap_or(f64::NAN) as f32;
+        let y = pair[1].as_f64().unwrap_or(f64::NAN) as f32;
+        if x.is_finite() && y.is_finite() {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
+fn parse_span(v: Option<&Value>) -> Option<(f32, f32)> {
+    let arr = v?.as_array()?;
+    if arr.len() < 2 {
+        return None;
+    }
+    let a = arr[0].as_f64()? as f32;
+    let b = arr[1].as_f64()? as f32;
+    if a.is_finite() && b.is_finite() {
+        Some((a.rem_euclid(1.0), b.rem_euclid(1.0)))
+    } else {
+        None
+    }
+}
+
+fn parse_pit_lane(v: &Value, suffix: &str) -> PitLane {
+    let key = |base: &str| -> String {
+        if suffix.is_empty() {
+            base.to_string()
+        } else {
+            format!("{base}{suffix}")
+        }
+    };
+    let mut path = parse_polyline(v.get(&key("pit_path")));
+    if path.len() < 2 && suffix.is_empty() {
+        path = parse_polyline(v.get("pit_lane_points"));
+    }
+    let entry = parse_polyline(v.get(&key("pit_in")));
+    let exit = parse_polyline(v.get(&key("pit_out")));
+    let in_pct = v
+        .get(&key("pit_in_pct"))
+        .and_then(|x| x.as_f64())
+        .map(|p| (p as f32).rem_euclid(1.0));
+    let out_pct = v
+        .get(&key("pit_out_pct"))
+        .and_then(|x| x.as_f64())
+        .map(|p| (p as f32).rem_euclid(1.0));
+    let span = parse_span(v.get(&key("pit_span")));
+    let speed_ms = v
+        .get("pit_speed")
+        .and_then(|x| x.as_f64())
+        .map(|s| s as f32)
+        .filter(|s| *s > 0.0);
+    let lane_speed_pct = v
+        .get(&key("pit_lane_speed_pct"))
+        .and_then(|x| x.as_f64())
+        .map(|s| s as f32)
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0);
+    let source = if suffix.is_empty() {
+        v.get("pit_source")
+            .and_then(|x| x.as_str())
+            .map(|s| s.to_string())
+    } else {
+        None
+    };
+    PitLane {
+        path,
+        entry,
+        exit,
+        in_pct,
+        out_pct,
+        span,
+        speed_ms,
+        lane_speed_pct,
+        source,
+    }
+}
+
 /// Load `points` from a track JSON; resample to ~n points by arc length.
 pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
     let text = fs::read_to_string(path).ok()?;
@@ -120,17 +260,48 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         .unwrap_or(0.0) as f32;
     let drs_zones = parse_zone_ranges(v.get("drs_zones"));
     let p2p_zones = parse_zone_ranges(v.get("p2p_zones"));
-    let pit_out_pct = parse_pit_out_pct(&v, &pts);
+    let mut pit = parse_pit_lane(&v, "");
+    let pit2 = parse_pit_lane(&v, "_2");
+    let mut pit_out_pct = parse_pit_out_pct(&v, &pts);
+    if pit_out_pct.is_none() {
+        pit_out_pct = pit.out_pct;
+    }
+    if pit.out_pct.is_none() {
+        pit.out_pct = pit_out_pct;
+    }
     let target = n.clamp(64, 720);
     let resampled = resample_closed(&pts, target);
-    Some(TrackPath {
+    let is_demo = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|s| s == "_demo" || s == "1")
+        .unwrap_or(false)
+        || v.get("track_id")
+            .and_then(|t| t.as_str())
+            .map(|s| s == "_demo")
+            .unwrap_or(false)
+        || v.get("alias_track_ids")
+            .and_then(|a| a.as_array())
+            .map(|a| a.iter().any(|x| x.as_i64() == Some(1)))
+            .unwrap_or(false);
+
+    let mut tp = TrackPath {
         points: resampled,
         name,
         start_finish: start_finish.fract().rem_euclid(1.0),
         pit_out_pct,
+        pit,
+        pit2,
         drs_zones,
         p2p_zones,
-    })
+    };
+    if is_demo && !tp.pit.has_drawable() {
+        if let Some(synth) = synthesize_demo_pit(&tp.points) {
+            tp.pit = synth;
+            tp.pit_out_pct = tp.pit.out_pct.or(tp.pit_out_pct);
+        }
+    }
+    Some(tp)
 }
 
 fn parse_pit_out_pct(v: &Value, loop_pts: &[(f32, f32)]) -> Option<f32> {
@@ -151,6 +322,85 @@ fn parse_pit_out_pct(v: &Value, loop_pts: &[(f32, f32)]) -> Option<f32> {
         return None;
     }
     Some(nearest_pct_on_loop(loop_pts, x, y))
+}
+
+/// Demo pit spans matching Python `demo_data.DEMO_PIT_*` + `_demo_pit_geometry`.
+pub const DEMO_PIT_IN_PCT: f32 = 0.90;
+pub const DEMO_PIT_OUT_PCT: f32 = 0.12;
+pub const DEMO_PIT_LANE_LO: f32 = 0.95;
+pub const DEMO_PIT_LANE_HI: f32 = 0.06;
+
+/// Build inward-offset entry / lane / exit from a racing loop (demo / oval).
+pub fn synthesize_demo_pit(pts: &[(f32, f32)]) -> Option<PitLane> {
+    let n = pts.len();
+    if n < 24 {
+        return None;
+    }
+    let cx: f32 = pts.iter().map(|p| p.0).sum::<f32>() / n as f32;
+    let cy: f32 = pts.iter().map(|p| p.1).sum::<f32>() / n as f32;
+    let min_x = pts.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+    let max_x = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+    let min_y = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+    let max_y = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+    let diag = ((max_x - min_x).hypot(max_y - min_y)).max(1e-6);
+    let off = 0.045 * diag;
+
+    let at = |pct: f32| -> (f32, f32) {
+        let i = (((pct.rem_euclid(1.0)) * n as f32) as usize) % n;
+        pts[i]
+    };
+    let inward = |p: (f32, f32), frac: f32| -> (f32, f32) {
+        let dx = cx - p.0;
+        let dy = cy - p.1;
+        let ln = dx.hypot(dy).max(1e-6);
+        (p.0 + dx / ln * off * frac, p.1 + dy / ln * off * frac)
+    };
+    let span_pts = |a: f32, b: f32, steps: usize, f0: f32, f1: f32| -> Vec<(f32, f32)> {
+        let s = (b - a).rem_euclid(1.0);
+        let mut out = Vec::with_capacity(steps + 1);
+        for k in 0..=steps {
+            let t = k as f32 / steps as f32;
+            out.push(inward(at(a + s * t), f0 + (f1 - f0) * t));
+        }
+        out
+    };
+
+    Some(PitLane {
+        entry: span_pts(DEMO_PIT_IN_PCT, DEMO_PIT_LANE_LO, 14, 0.0, 1.0),
+        path: span_pts(DEMO_PIT_LANE_LO, DEMO_PIT_LANE_HI, 44, 1.0, 1.0),
+        exit: span_pts(DEMO_PIT_LANE_HI, DEMO_PIT_OUT_PCT, 14, 1.0, 0.0),
+        in_pct: Some(DEMO_PIT_IN_PCT),
+        out_pct: Some(DEMO_PIT_OUT_PCT),
+        span: Some((DEMO_PIT_LANE_LO, DEMO_PIT_LANE_HI)),
+        speed_ms: Some(22.0),
+        lane_speed_pct: 0.38,
+        source: Some("schematic".into()),
+    })
+}
+
+/// Open polyline sample: `t` in 0..1 along arc length.
+pub fn point_on_open(pts: &[(f32, f32)], t: f32) -> (f32, f32) {
+    if pts.is_empty() {
+        return (0.5, 0.5);
+    }
+    if pts.len() == 1 {
+        return pts[0];
+    }
+    let (cum, total) = arc_lengths(pts, false);
+    if total <= 1e-6 {
+        return pts[0];
+    }
+    let target = t.clamp(0.0, 1.0) * total;
+    sample_at_dist(pts, &cum, target, false)
+}
+
+/// Map lap% through a wrapping [in_pct, out_pct] span onto 0..1 along the route.
+pub fn route_t_for_pct(pct: f32, in_pct: f32, out_pct: f32) -> f32 {
+    let span = (out_pct - in_pct).rem_euclid(1.0);
+    if span <= 1e-6 {
+        return 0.0;
+    }
+    ((pct - in_pct).rem_euclid(1.0) / span).clamp(0.0, 1.0)
 }
 
 /// Closest arc-length fraction on a closed loop to a model-space point.
@@ -217,7 +467,14 @@ fn parse_zone_ranges(v: Option<&Value>) -> Vec<(f32, f32)> {
 /// Load track for id, or None if not found / invalid.
 pub fn load_for_track_id(track_id: i32) -> Option<TrackPath> {
     let path = find_track_file(track_id)?;
-    load_points(&path, 360)
+    let mut tp = load_points(&path, 360)?;
+    if track_id == 1 && !tp.pit.has_drawable() {
+        if let Some(synth) = synthesize_demo_pit(&tp.points) {
+            tp.pit = synth;
+            tp.pit_out_pct = tp.pit.out_pct.or(tp.pit_out_pct);
+        }
+    }
+    Some(tp)
 }
 
 fn arc_lengths(pts: &[(f32, f32)], closed: bool) -> (Vec<f32>, f32) {
@@ -340,5 +597,19 @@ mod tests {
         let oval = oval_path(32);
         let r = resample_closed(&oval, 100);
         assert_eq!(r.len(), 100);
+    }
+
+    #[test]
+    fn synthesize_demo_has_blends_and_lane() {
+        let oval = oval_path(64);
+        let pit = synthesize_demo_pit(&oval).expect("synth");
+        assert!(pit.entry.len() >= 2);
+        assert!(pit.path.len() >= 2);
+        assert!(pit.exit.len() >= 2);
+        assert!(pit.has_drawable());
+        let route = pit.route(true);
+        assert!(route.len() > pit.path.len());
+        let t = route_t_for_pct(0.0, DEMO_PIT_IN_PCT, DEMO_PIT_OUT_PCT);
+        assert!((0.0..=1.0).contains(&t));
     }
 }
