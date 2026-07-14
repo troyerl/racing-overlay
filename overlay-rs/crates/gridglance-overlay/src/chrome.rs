@@ -207,16 +207,11 @@ pub fn label(
     text: &str,
     size: f32,
     color: Color32,
-    bold: bool,
+    _bold: bool,
 ) {
+    // Single draw — no stroke-style faux-bold (was smear/hard to read).
+    // `_bold` kept for API until a real Bold face is registered.
     let font = FontId::new(size.max(1.0), FontFamily::Proportional);
-    if bold {
-        // Fake-bold (no separate Bold face registered): offset copies then primary.
-        for (dx, dy) in [(0.45_f32, 0.0), (-0.45, 0.0), (0.0, 0.4), (0.0, -0.4)] {
-            ui.painter()
-                .text(pos + Vec2::new(dx, dy), align, text, font.clone(), color);
-        }
-    }
     ui.painter().text(pos, align, text, font, color);
 }
 
