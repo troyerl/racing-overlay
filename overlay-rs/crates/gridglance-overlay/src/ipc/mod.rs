@@ -5,8 +5,8 @@ use crate::state::StateHandle;
 use anyhow::Result;
 use gridglance_ipc::{
     methods, ConfigApplyParams, LayoutSetParams, MapAliasIdsParams, MapBoolParams,
-    MapLaneSpeedParams, MapNumTurnsParams, MapPitEditParams, MapSpeedParams, OverlayModeParams,
-    PingResult, Request, Response, PROTOCOL_VERSION,
+    MapClearPitParams, MapLaneSpeedParams, MapNumTurnsParams, MapPitEditParams, MapSpeedParams,
+    OverlayModeParams, PingResult, Request, Response, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
@@ -189,25 +189,35 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
         }
         methods::MAP_UNDO_POINT => {
             let mut st = state.write();
-            st.map.pit_points.pop();
-            Response::ok(id, json!({"points": st.map.pit_points.len()}))
+            let pts = st.map.active_pts_mut();
+            pts.pop();
+            let n = pts.len();
+            Response::ok(id, json!({"points": n}))
         }
         methods::MAP_CLEAR_PIT => {
+            let params: MapClearPitParams =
+                serde_json::from_value(req.params).unwrap_or_default();
             let mut st = state.write();
-            st.map.pit_points.clear();
-            Response::ok(id, json!({"points": 0}))
+            let phase = params
+                .phase
+                .unwrap_or_else(|| st.map.phase_key().to_string());
+            st.map.clear_phase(&phase);
+            Response::ok(id, st.map_state_json())
         }
         methods::MAP_RESET_VIEW => Response::ok(id, json!({"reset": true})),
         methods::MAP_SAVE_PIT => {
-            // Persistence of track JSON remains Python-authored for now;
-            // acknowledge and return point count.
             let st = state.read();
+            let n = st.map.entry_pts.len() + st.map.road_pts.len() + st.map.merge_pts.len();
             Response::ok(
                 id,
-                json!({"ok": true, "points": st.map.pit_points.len(), "msg": "pit draft held in overlay"}),
+                json!({"ok": true, "points": n, "msg": "pit draft held in overlay"}),
             )
         }
         methods::MAP_SAVE_LOOP => Response::ok(id, json!({"ok": true})),
+        methods::MAP_INVALIDATE_TRACK => {
+            state.write().map.invalidate_track_cache();
+            Response::ok(id, json!({"ok": true}))
+        }
         methods::MAP_SET_INTERACTIVE => {
             let params: MapBoolParams = serde_json::from_value(req.params).unwrap_or_default();
             state.write().map.interactive = params.enabled;

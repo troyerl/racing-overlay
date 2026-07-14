@@ -131,6 +131,14 @@ pub struct MapNumTurnsParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MapClearPitParams {
+    /// When set, clear only that phase (`entry` / `road` / `merge` / `all`).
+    /// When omitted, clear the currently active phase.
+    #[serde(default)]
+    pub phase: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MapAliasIdsParams {
     #[serde(default)]
     pub ids: Vec<i32>,
@@ -160,6 +168,7 @@ pub mod methods {
     pub const MAP_SET_PIT_LANE_SPEED: &str = "map.set_pit_lane_speed";
     pub const MAP_SET_NUM_TURNS: &str = "map.set_num_turns";
     pub const MAP_SET_ALIAS_IDS: &str = "map.set_alias_ids";
+    pub const MAP_INVALIDATE_TRACK: &str = "map.invalidate_track";
     pub const TRACK_AUTHORING_STATE: &str = "track.authoring_state";
 }
 

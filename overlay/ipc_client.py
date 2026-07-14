@@ -8,6 +8,7 @@ Apply and Track Scan authoring when the overlay backend is Rust.
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from typing import Any
@@ -134,8 +135,11 @@ class OverlayIpcClient:
     def map_undo_point(self) -> Any:
         return self.call("map.undo_point")
 
-    def map_clear_pit(self) -> Any:
-        return self.call("map.clear_pit")
+    def map_clear_pit(self, phase: str | None = None) -> Any:
+        params = {}
+        if phase is not None:
+            params["phase"] = phase
+        return self.call("map.clear_pit", params)
 
     def map_reset_view(self) -> Any:
         return self.call("map.reset_view")
@@ -145,6 +149,9 @@ class OverlayIpcClient:
 
     def map_save_loop(self) -> Any:
         return self.call("map.save_loop")
+
+    def map_invalidate_track(self) -> Any:
+        return self.call("map.invalidate_track")
 
     def map_set_interactive(self, enabled: bool) -> Any:
         return self.call("map.set_interactive", {"enabled": enabled})
@@ -317,27 +324,141 @@ class RemoteOverlay:
         return self.ipc.map_get_state()
 
     def save_pit_v2(self) -> tuple[bool, str]:
+        from . import paths
+        from . import track_authoring as ta
+
         try:
-            r = self.ipc.map_save_pit() or {}
-            return bool(r.get("ok", True)), str(r.get("msg") or "saved")
+            state = self.pit_edit_state()
         except OverlayIpcError as exc:
             return False, str(exc)
+        tid = state.get("authoring_track_id") or state.get("track_id")
+        loop = ta.xy_list(state.get("loop_points"))
+        entry = ta.xy_list(state.get("entry_points"))
+        road = ta.xy_list(state.get("road_points"))
+        merge = ta.xy_list(state.get("merge_points"))
+        tracks = paths.tracks_dir()
+
+        def _ensure(_canonical) -> bool:
+            path = os.path.join(tracks, f"{_canonical}.json")
+            if os.path.isfile(path):
+                return True
+            # Create a loop-only file first so update_track_meta can patch pit.
+            if len(loop) < 3 or tid is None:
+                return False
+            doc = ta.build_loop_doc(
+                tid,
+                loop=loop,
+                name=str(state.get("track_name") or tid),
+                start_finish=float(state.get("start_finish") or 0.0),
+                num_turns=state.get("num_turns") or None,
+                alias_track_ids=state.get("alias_track_ids") or None,
+            )
+            ta.write_track_json(tracks, _canonical, doc)
+            return True
+
+        ok, msg, _meta = ta.save_pit_patch(
+            tracks,
+            tid=tid,
+            loop=loop,
+            entry=entry,
+            road=road,
+            merge=merge,
+            pit_speed_ms=float(state.get("pit_speed_ms") or 0.0),
+            pit_lane_speed_pct=float(state.get("pit_lane_speed_pct") or 1.0),
+            demo=bool(state.get("demo")),
+            upload_async=None,
+            ensure_file=_ensure,
+        )
+        if ok:
+            try:
+                self.ipc.map_invalidate_track()
+            except OverlayIpcError:
+                pass
+        return ok, msg
 
     def save_loop_v2(self) -> tuple[bool, str]:
+        from . import paths
+        from . import track_authoring as ta
+        from . import track_store
+
         try:
-            self.ipc.map_save_loop()
-            return True, "saved"
+            state = self.pit_edit_state()
         except OverlayIpcError as exc:
             return False, str(exc)
+        tid = state.get("authoring_track_id") or state.get("track_id")
+        if tid is None:
+            return False, ("No TrackID — join a session on track, or import "
+                           "members HTML with id=\"track-map-123\".")
+        loop = ta.xy_list(state.get("loop_points"))
+        if len(loop) < 3:
+            return False, "No track loop loaded."
+        tracks = paths.tracks_dir()
+        canonical = track_store.resolve_track_id(tracks, tid) or tid
+        block = ta.cloud_blocks_track_save(canonical)
+        if block:
+            return False, block
+        doc = ta.build_loop_doc(
+            tid,
+            loop=loop,
+            name=str(state.get("track_name") or tid),
+            start_finish=float(state.get("start_finish") or 0.0),
+            num_turns=state.get("num_turns") or None,
+            alias_track_ids=state.get("alias_track_ids") or None,
+            pit_source="loop",
+        )
+        path = ta.write_track_json(tracks, canonical, doc)
+        try:
+            self.ipc.map_invalidate_track()
+        except OverlayIpcError:
+            pass
+        msg = f"Saved loop to {path} (no pit lane)."
+        if track_store.can_write():
+            msg += " Uploaded to cloud."
+        if state.get("demo"):
+            msg += " Demo map updated for this session."
+        return True, msg
 
     def save_manual_track_v2(self) -> tuple[bool, str]:
-        return False, "manual track save not available on Rust overlay yet"
+        from . import paths
+        from . import track_authoring as ta
+
+        try:
+            state = self.pit_edit_state()
+        except OverlayIpcError as exc:
+            return False, str(exc)
+        tid = state.get("authoring_track_id") or state.get("track_id")
+        loop = ta.xy_list(state.get("loop_points"))
+        entry = ta.xy_list(state.get("entry_points"))
+        road = ta.xy_list(state.get("road_points"))
+        merge = ta.xy_list(state.get("merge_points"))
+        tracks = paths.tracks_dir()
+        ok, msg, _lane1 = ta.save_manual_track(
+            tracks,
+            tid=tid,
+            loop=loop,
+            entry=entry,
+            road=road,
+            merge=merge,
+            name=str(state.get("track_name") or tid),
+            start_finish=float(state.get("start_finish") or 0.0),
+            num_turns=state.get("num_turns") or None,
+            alias_track_ids=state.get("alias_track_ids") or None,
+            pit_speed_ms=float(state.get("pit_speed_ms") or 0.0),
+            pit_lane_speed_pct=float(state.get("pit_lane_speed_pct") or 1.0),
+            demo=bool(state.get("demo")),
+        )
+        if ok:
+            try:
+                self.ipc.map_invalidate_track()
+            except OverlayIpcError:
+                pass
+        return ok, msg
 
     def load_pit_into_editor(self, force: bool = False) -> bool:
         return False
 
     def clear_pit_edit_phase(self, phase: str, lane: str = "primary") -> None:
-        self.ipc.map_clear_pit()
+        self.ipc.map_clear_pit(phase=phase)
 
     def parse_loop_v2(self, path: str):
         return False, "loop import not available on Rust overlay yet", None, None
@@ -346,7 +467,12 @@ class RemoteOverlay:
         return False, "loop import not available on Rust overlay yet"
 
     def effective_track_id(self):
-        return None
+        state = {}
+        try:
+            state = self.pit_edit_state()
+        except OverlayIpcError:
+            pass
+        return state.get("authoring_track_id") or state.get("track_id")
 
     # --- profile / identity stubs (settings pages) -----------------------
 
@@ -374,13 +500,13 @@ class _RemoteMap:
         self._ipc.map_undo_point()
 
     def clear_pit_edit(self) -> None:
-        self._ipc.map_clear_pit()
+        self._ipc.map_clear_pit(phase="all")
 
     def clear_pit(self) -> None:
-        self._ipc.map_clear_pit()
+        self._ipc.map_clear_pit(phase="all")
 
     def clear_pit_edit_phase(self, phase: str, lane: str = "primary") -> None:
-        self._ipc.map_clear_pit()
+        self._ipc.map_clear_pit(phase=phase)
 
     def reset_pit_edit_view(self) -> None:
         self._ipc.map_reset_view()

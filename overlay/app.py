@@ -1166,57 +1166,37 @@ class AdvancedSimHUD:
 
     def _orientation_from_cfg(self) -> tuple[int, bool]:
         """Map rotation/mirror stamped into saved track JSON."""
-        mcfg = config.CFG.get("map", {})
-        rot = int(round((mcfg.get("rotation", 0) or 0) / 90.0)) * 90 % 360
-        return rot, bool(mcfg.get("mirror", False))
+        from . import track_authoring as ta
+        return ta.orientation_from_cfg()
 
     def _build_loop_doc(self, tid) -> dict:
         """Racing loop + corners for v2 track save (no pit geometry)."""
+        from . import track_authoring as ta
+        from .widgets import track_map
+
         canonical = self._canonical_track_id(tid)
-        try:
-            doc_tid = int(canonical)
-        except (TypeError, ValueError):
-            doc_tid = canonical
         loop = [(p[0], p[1]) for p in self.map_widget.path]
-        rot, mirror = self._orientation_from_cfg()
-        doc: dict = {
-            "schema": 2,
-            "import_version": 2,
-            "pit_source": "manual",
-            "track_id": doc_tid,
-            "name": (self._learn_name or self._v2_authoring_name or str(tid)),
-            "start_finish": float(self.map_widget.start_finish),
-            "points": [[round(p[0], 7), round(p[1], 7)] for p in loop],
-            "corners": track_map.corners_to_json(
-                self.map_widget.display_corners()),
-            "map_rotation": rot,
-            "map_mirror": mirror,
-        }
-        if self._track_turns:
-            doc["num_turns"] = int(self._track_turns)
-        elif self.map_widget.num_turns:
-            doc["num_turns"] = int(self.map_widget.num_turns)
+        doc = ta.build_loop_doc(
+            canonical,
+            loop=loop,
+            name=(self._learn_name or self._v2_authoring_name or str(tid)),
+            start_finish=float(self.map_widget.start_finish),
+            corners=track_map.corners_to_json(self.map_widget.display_corners()),
+            num_turns=(
+                int(self._track_turns) if self._track_turns
+                else (int(self.map_widget.num_turns) if self.map_widget.num_turns else None)
+            ),
+            alias_track_ids=getattr(self, "_alias_track_ids", None),
+        )
         if self._v2_loop_doc:
             for key in ("import_version",):
                 if key in self._v2_loop_doc:
                     doc[key] = self._v2_loop_doc[key]
-        aliases = getattr(self, "_alias_track_ids", None)
-        if aliases:
-            doc["alias_track_ids"] = list(aliases)
         return doc
 
     def _write_track_json(self, tid, doc: dict) -> str:
-        path = os.path.join(self.tracks_dir, f"{tid}.json")
-        os.makedirs(self.tracks_dir, exist_ok=True)
-        stamped = dict(doc)
-        stamped["updated_at"] = datetime.now(timezone.utc).isoformat()
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(stamped, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, path)
-        track_store.invalidate_alias_cache()
-        return path
+        from . import track_authoring as ta
+        return ta.write_track_json(self.tracks_dir, tid, doc)
 
     def _apply_track_orientation(self, meta: dict) -> None:
         """Apply per-track map rotation/mirror from saved JSON into base config."""
@@ -1247,13 +1227,8 @@ class AdvancedSimHUD:
 
     def _cloud_blocks_track_save(self, canonical) -> str | None:
         """Error message when cloud already has this track; None if save may proceed."""
-        if not track_store.can_write():
-            return None
-        exists = track_store.cloud_track_exists(canonical)
-        if exists is True:
-            return (f"TrackID {canonical} is already in the shared library "
-                    "— save skipped.")
-        return None
+        from . import track_authoring as ta
+        return ta.cloud_blocks_track_save(canonical)
 
     def save_loop_v2(self) -> tuple[bool, str]:
         """Write loop + corners only; upload without pit lane."""
@@ -1284,133 +1259,83 @@ class AdvancedSimHUD:
         self, loop, entry, road, merge,
     ) -> dict:
         """Schematic pit pipeline for one lane -> pit_path / blends / pcts."""
-        if len(road) < 2 or len(merge) < 2:
-            return {}
-        from tools.schematic_to_track import (
-            _connect_blend_to_loop,
-            _pct_on_loop,
-            _pit_span_on_loop,
-            _resample_open,
-        )
-
-        pit_path = _resample_open(road, 140)
-        pit_out_raw = _resample_open(merge, 41)
-        pit_out = _connect_blend_to_loop(
-            pit_out_raw, loop, attach_end=True, n_loop=20, pit_path=pit_path)
-        pit_out = _resample_open(pit_out, 41)
-
-        lane_lo, lane_hi = _pit_span_on_loop(loop, pit_path)
-        pit_out_pct = round(_pct_on_loop(loop, pit_out[-1]), 5)
-        fields: dict = {
-            "pit_path": [[round(x, 7), round(y, 7)] for x, y in pit_path],
-            "pit_out": [[round(x, 7), round(y, 7)] for x, y in pit_out],
-            "pit_in_pct": None,
-            "pit_span": [round(lane_lo, 5), round(lane_hi, 5)],
-            "pit_out_pct": pit_out_pct,
-        }
-        if len(entry) >= 2:
-            pit_in_seed = _resample_open(entry, 24)
-            pit_in = _connect_blend_to_loop(
-                pit_in_seed, loop, attach_end=False, n_loop=12, max_pts=24)
-            if pit_path:
-                pit_in = list(pit_in)
-                pit_in[-1] = pit_path[0]
-            pit_in = _resample_open(pit_in, 24)
-            fields["pit_in"] = [[round(x, 7), round(y, 7)] for x, y in pit_in]
-            fields["pit_in_pct"] = round(_pct_on_loop(loop, pit_in[0]), 5)
-        else:
-            fields["pit_in_pct"] = round(lane_lo, 5)
-        return fields
+        from . import track_authoring as ta
+        return ta.build_manual_pit_lane_fields(loop, entry, road, merge)
 
     @staticmethod
     def _suffix_pit_lane_keys(fields: dict, suffix: str) -> dict:
-        if not suffix:
-            return dict(fields)
-        out: dict = {}
-        for key, val in fields.items():
-            out[f"{key}{suffix}"] = val
-        return out
+        from . import track_authoring as ta
+        return ta.suffix_pit_lane_keys(fields, suffix)
 
     def save_manual_track_v2(self) -> tuple[bool, str]:
         """Finalize manual pit geometry and write tracks/<TrackID>.json."""
+        from . import track_authoring as ta
+        from .widgets import track_map
+
         tid = self._authoring_track_id()
         if tid is None:
             return False, ("No TrackID — join a session on track, or import "
                            "members HTML with id=\"track-map-123\".")
         if not self.map_widget.path or len(self.map_widget.path) < 3:
             return False, "No track loop loaded."
-        road_snap = self.map_widget.pit_edit_snapshot(lane=1)
-        entry, road, merge = road_snap
-        if len(road) < 2:
-            return False, "Need at least 2 pit road points."
-        if len(merge) < 2:
-            return False, "Need at least 2 merge points."
-
-        canonical = self._canonical_track_id(tid)
-        block = self._cloud_blocks_track_save(canonical)
-        if block:
-            self.map_widget.flash_hint(block)
-            return False, block
-
-        loop = [(p[0], p[1]) for p in self.map_widget.path]
-        lane1 = self._build_manual_pit_lane_fields(loop, entry, road, merge)
-        doc = self._build_loop_doc(tid)
-        doc.update(lane1)
-        if self._pit_speed_ms > 0:
-            doc["pit_speed"] = round(self._pit_speed_ms, 3)
-        if self._pit_lane_speed_pct != 1.0:
-            doc["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
-
+        entry, road, merge = self.map_widget.pit_edit_snapshot(lane=1)
         entry2, road2, merge2 = self.map_widget.pit_edit_snapshot(lane=2)
+        loop = [(p[0], p[1]) for p in self.map_widget.path]
+        ok, msg, lane1 = ta.save_manual_track(
+            self.tracks_dir,
+            tid=tid,
+            loop=loop,
+            entry=entry,
+            road=road,
+            merge=merge,
+            entry2=entry2,
+            road2=road2,
+            merge2=merge2,
+            name=(self._learn_name or self._v2_authoring_name or str(tid)),
+            start_finish=float(self.map_widget.start_finish),
+            corners=track_map.corners_to_json(self.map_widget.display_corners()),
+            num_turns=(
+                int(self._track_turns) if self._track_turns
+                else (int(self.map_widget.num_turns) if self.map_widget.num_turns else None)
+            ),
+            alias_track_ids=getattr(self, "_alias_track_ids", None),
+            pit_speed_ms=float(self._pit_speed_ms or 0.0),
+            pit_lane_speed_pct=float(self._pit_lane_speed_pct or 1.0),
+            pit_lane_speed_pct_2=float(self._pit_lane_speed_pct_2 or 1.0),
+            demo=self.demo,
+            upload_async=self._track_sync.upload_local_async,
+        )
+        if not ok:
+            if msg and "shared library" in msg:
+                self.map_widget.flash_hint(msg)
+            return False, msg
+
+        # Apply live pit meta + demo preview (same as pre-extract behavior).
+        canonical = self._canonical_track_id(tid)
+        meta = {k: lane1[k] for k in (
+            "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
+            "pit_out_pct",
+        ) if lane1 and k in lane1}
+        if self._pit_speed_ms > 0:
+            meta["pit_speed"] = round(self._pit_speed_ms, 3)
+        if self._pit_lane_speed_pct != 1.0:
+            meta["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
+        if "pit_in" not in meta:
+            meta["pit_in"] = None
+        lane2 = ta.build_manual_pit_lane_fields(loop, entry2, road2, merge2)
         _PIT2_KEYS = (
             "pit_path_2", "pit_in_2", "pit_out_2", "pit_span_2",
             "pit_in_pct_2", "pit_out_pct_2", "pit_lane_speed_pct_2",
         )
-        for key in _PIT2_KEYS:
-            doc.pop(key, None)
-        lane2 = self._build_manual_pit_lane_fields(loop, entry2, road2, merge2)
         if lane2:
-            doc.update(self._suffix_pit_lane_keys(lane2, "_2"))
-            if self._pit_lane_speed_pct_2 != 1.0:
-                doc["pit_lane_speed_pct_2"] = round(
-                    self._pit_lane_speed_pct_2, 4)
-
-        path = self._write_track_json(canonical, doc)
-
-        meta = {k: doc[k] for k in (
-            "pit_span", "pit_path", "pit_in", "pit_out", "pit_in_pct",
-            "pit_out_pct", "pit_speed", "pit_source", "pit_lane_speed_pct",
-            "pit_span_2", "pit_path_2", "pit_in_2", "pit_out_2",
-            "pit_in_pct_2", "pit_out_pct_2", "pit_lane_speed_pct_2",
-        ) if k in doc}
-        # Clearing a previously saved entry on re-save without drawing one.
-        if "pit_in" not in meta:
-            meta["pit_in"] = None
-        if lane2 and "pit_in_2" not in meta:
-            meta["pit_in_2"] = None
-        if not lane2:
+            meta.update(ta.suffix_pit_lane_keys(lane2, "_2"))
+            if "pit_in_2" not in meta:
+                meta["pit_in_2"] = None
+        else:
             for key in _PIT2_KEYS:
                 meta[key] = None
         self._apply_pit_meta(meta)
-        if track_store.can_write():
-            self._track_sync.upload_local_async(
-                self.tracks_dir, canonical)
         self._preview_uploaded_track_in_demo(tid)
-        pit_path = lane1.get("pit_path") or []
-        pit_out = lane1.get("pit_out") or []
-        pit_in = lane1.get("pit_in") or []
-        n_in = len(pit_in)
-        n_path = len(pit_path)
-        n_out = len(pit_out)
-        entry_note = f"entry {n_in}" if n_in else "no entry"
-        msg = (f"Saved {path} — {entry_note}, road {n_path}, "
-               f"merge {n_out} pts")
-        if lane2:
-            msg += f"; lane 2 road {len(lane2.get('pit_path') or [])} pts"
-        if track_store.can_write():
-            msg += " Uploaded to cloud."
-        if self.demo:
-            msg += " Demo map updated for this session."
         return True, msg
 
     def save_pit_v2(self) -> tuple[bool, str]:
@@ -1419,78 +1344,35 @@ class AdvancedSimHUD:
         Unlike Save track, this does not rewrite the racing line and is not blocked
         when the TrackID already exists in the shared library.
         """
+        from . import track_authoring as ta
+
         tid = self._authoring_track_id()
-        if tid is None:
-            return False, ("No TrackID — join a session on track, or import "
-                           "members HTML with id=\"track-map-123\".")
-        if not self.map_widget.path or len(self.map_widget.path) < 3:
-            return False, "No track loop loaded."
         entry, road, merge = self.map_widget.pit_edit_snapshot(lane=1)
-        if len(road) < 2:
-            return False, "Need at least 2 pit road points."
-        if len(merge) < 2:
-            return False, "Need at least 2 merge points."
-
-        canonical = self._canonical_track_id(tid)
-        if not self._ensure_local_track_file():
-            return False, "Could not create local track file."
-
-        loop = [(p[0], p[1]) for p in self.map_widget.path]
-        lane1 = self._build_manual_pit_lane_fields(loop, entry, road, merge)
-        if not lane1:
-            return False, "Could not build pit geometry."
-
-        _PIT2_KEYS = (
-            "pit_path_2", "pit_in_2", "pit_out_2", "pit_span_2",
-            "pit_in_pct_2", "pit_out_pct_2", "pit_lane_speed_pct_2",
-        )
-        meta: dict = dict(lane1)
-        meta["pit_source"] = "manual"
-        if self._pit_speed_ms > 0:
-            meta["pit_speed"] = round(self._pit_speed_ms, 3)
-        if self._pit_lane_speed_pct != 1.0:
-            meta["pit_lane_speed_pct"] = round(self._pit_lane_speed_pct, 4)
-        if "pit_in" not in meta:
-            meta["pit_in"] = None
-
         entry2, road2, merge2 = self.map_widget.pit_edit_snapshot(lane=2)
-        lane2 = self._build_manual_pit_lane_fields(loop, entry2, road2, merge2)
-        if lane2:
-            meta.update(self._suffix_pit_lane_keys(lane2, "_2"))
-            if self._pit_lane_speed_pct_2 != 1.0:
-                meta["pit_lane_speed_pct_2"] = round(
-                    self._pit_lane_speed_pct_2, 4)
-            if "pit_in_2" not in meta:
-                meta["pit_in_2"] = None
-        else:
-            for key in _PIT2_KEYS:
-                meta[key] = None
-
-        try:
-            ok = track_map.update_track_meta(
-                self.tracks_dir, canonical, **meta)
-        except Exception as exc:
-            return False, f"Could not save pit: {exc}"
+        loop = ([(p[0], p[1]) for p in self.map_widget.path]
+                if self.map_widget.path else [])
+        ok, msg, meta = ta.save_pit_patch(
+            self.tracks_dir,
+            tid=tid,
+            loop=loop,
+            entry=entry,
+            road=road,
+            merge=merge,
+            entry2=entry2,
+            road2=road2,
+            merge2=merge2,
+            pit_speed_ms=float(self._pit_speed_ms or 0.0),
+            pit_lane_speed_pct=float(self._pit_lane_speed_pct or 1.0),
+            pit_lane_speed_pct_2=float(self._pit_lane_speed_pct_2 or 1.0),
+            demo=self.demo,
+            upload_async=self._track_sync.upload_local_async,
+            ensure_file=lambda _c: self._ensure_local_track_file(),
+        )
         if not ok:
-            return False, "Could not update local track file."
-
-        self._apply_pit_meta({k: v for k, v in meta.items() if v is not None})
-        if track_store.can_write():
-            self._track_sync.upload_local_async(self.tracks_dir, canonical)
+            return False, msg
+        if meta:
+            self._apply_pit_meta({k: v for k, v in meta.items() if v is not None})
         self._preview_uploaded_track_in_demo(tid)
-
-        pit_path = lane1.get("pit_path") or []
-        pit_out = lane1.get("pit_out") or []
-        pit_in = lane1.get("pit_in") or []
-        entry_note = f"entry {len(pit_in)}" if pit_in else "no entry"
-        msg = (f"Saved pit — {entry_note}, road {len(pit_path)}, "
-               f"merge {len(pit_out)} pts")
-        if lane2:
-            msg += f"; lane 2 road {len(lane2.get('pit_path') or [])} pts"
-        if track_store.can_write():
-            msg += " Uploaded to cloud."
-        if self.demo:
-            msg += " Demo map updated for this session."
         return True, msg
 
     def pit_edit_state(self) -> dict:

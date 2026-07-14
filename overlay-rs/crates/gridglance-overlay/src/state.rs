@@ -18,7 +18,10 @@ pub struct MapAuthoring {
     pub corner_edit: bool,
     pub sf_edit: bool,
     pub interactive: bool,
-    pub pit_points: Vec<(f32, f32)>,
+    /// Draft polylines for Track Scan pit authoring (lane 1).
+    pub entry_pts: Vec<(f32, f32)>,
+    pub road_pts: Vec<(f32, f32)>,
+    pub merge_pts: Vec<(f32, f32)>,
     pub pit_speed_ms: f64,
     pub pit_lane_speed_pct: f64,
     pub num_turns: i32,
@@ -50,7 +53,9 @@ impl Default for MapAuthoring {
             corner_edit: false,
             sf_edit: false,
             interactive: false,
-            pit_points: Vec::new(),
+            entry_pts: Vec::new(),
+            road_pts: Vec::new(),
+            merge_pts: Vec::new(),
             pit_speed_ms: 0.0,
             pit_lane_speed_pct: 1.0,
             num_turns: 0,
@@ -68,6 +73,51 @@ impl Default for MapAuthoring {
             car_anim: HashMap::new(),
             last_paint_secs: 0.0,
         }
+    }
+}
+
+impl MapAuthoring {
+    pub fn phase_key(&self) -> &str {
+        if self.phase.is_empty() {
+            "road"
+        } else {
+            self.phase.as_str()
+        }
+    }
+
+    pub fn active_pts_mut(&mut self) -> &mut Vec<(f32, f32)> {
+        match self.phase_key() {
+            "entry" => &mut self.entry_pts,
+            "merge" => &mut self.merge_pts,
+            _ => &mut self.road_pts,
+        }
+    }
+
+    pub fn clear_phase(&mut self, phase: &str) {
+        match phase {
+            "entry" => self.entry_pts.clear(),
+            "merge" => self.merge_pts.clear(),
+            "road" | "pit" | "pit_road" => self.road_pts.clear(),
+            "all" => {
+                self.entry_pts.clear();
+                self.road_pts.clear();
+                self.merge_pts.clear();
+            }
+            _ => self.road_pts.clear(),
+        }
+    }
+
+    /// Drop cached track geometry so the next paint reloads from disk.
+    pub fn invalidate_track_cache(&mut self) {
+        self.cached_track_id = None;
+        self.cached_path.clear();
+        self.cached_track_name.clear();
+        self.cached_start_finish = 0.0;
+        self.cached_pit_out_pct = None;
+        self.cached_pit = PitLane::default();
+        self.cached_pit2 = PitLane::default();
+        self.cached_drs_zones.clear();
+        self.cached_p2p_zones.clear();
     }
 }
 
@@ -192,10 +242,10 @@ impl SharedState {
     }
 
     /// Resolve loop / pit geometry for Track Scan IPC (may load track JSON).
-    fn authoring_geom(&self) -> (usize, bool, bool) {
+    fn authoring_loop_and_saved_pit(&self) -> (Vec<(f32, f32)>, bool, bool) {
         if self.map.cached_path.len() >= 3 {
             return (
-                self.map.cached_path.len(),
+                self.map.cached_path.clone(),
                 self.map.cached_pit.path.len() >= 2,
                 self.map.cached_pit2.path.len() >= 2,
             );
@@ -203,37 +253,42 @@ impl SharedState {
         if let Some(id) = self.frame.track_id {
             if let Some(tp) = crate::track_path::load_for_track_id(id) {
                 return (
-                    tp.points.len(),
+                    tp.points,
                     tp.pit.path.len() >= 2,
                     tp.pit2.path.len() >= 2,
                 );
             }
             // Paint falls back to an oval when TrackID has no JSON.
-            return (64, false, false);
+            return (crate::track_path::oval_path(64), false, false);
         }
-        (0, false, false)
+        (Vec::new(), false, false)
+    }
+
+    fn pts_json(pts: &[(f32, f32)]) -> Value {
+        Value::Array(
+            pts.iter()
+                .map(|(x, y)| json!([*x as f64, *y as f64]))
+                .collect(),
+        )
     }
 
     pub fn map_state_json(&self) -> Value {
-        let (loop_n, has_saved_pit, has_saved_pit_2) = self.authoring_geom();
-        let has_loop = loop_n >= 3;
+        let (loop_pts, has_saved_pit, has_saved_pit_2) = self.authoring_loop_and_saved_pit();
+        let has_loop = loop_pts.len() >= 3;
         let tid = self.frame.track_id;
-        let has_geom = has_loop;
-        let can_author = tid.is_some() && has_geom;
+        let can_author = tid.is_some() && has_loop;
         let lane_num = match self.map.lane.as_str() {
             "2" | "secondary" => 2,
             _ => 1,
         };
-        let phase = if self.map.phase.is_empty() {
-            "road"
-        } else {
-            self.map.phase.as_str()
-        };
-        let n_pts = self.map.pit_points.len();
-        let (entry_count, road_count, merge_count) = match phase {
-            "entry" => (n_pts, 0, 0),
-            "merge" => (0, 0, n_pts),
-            _ => (0, n_pts, 0),
+        let phase = self.map.phase_key();
+        let entry_count = self.map.entry_pts.len();
+        let road_count = self.map.road_pts.len();
+        let merge_count = self.map.merge_pts.len();
+        let n_pts = match phase {
+            "entry" => entry_count,
+            "merge" => merge_count,
+            _ => road_count,
         };
         json!({
             "pit_edit": self.map.pit_edit,
@@ -252,6 +307,11 @@ impl SharedState {
             "entry_count_2": 0,
             "road_count_2": 0,
             "merge_count_2": 0,
+            "entry_points": Self::pts_json(&self.map.entry_pts),
+            "road_points": Self::pts_json(&self.map.road_pts),
+            "merge_points": Self::pts_json(&self.map.merge_pts),
+            "loop_points": Self::pts_json(&loop_pts),
+            "start_finish": self.map.cached_start_finish,
             "has_loop": has_loop,
             "has_saved_pit": has_saved_pit,
             "has_saved_pit_2": has_saved_pit_2,

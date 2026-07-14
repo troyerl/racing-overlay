@@ -1218,18 +1218,39 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
     }
 
-    // Authoring: pit points in path/raw space (pre-model). Map through model for display.
-    let pit_col = accent;
-    for (i, (nx, ny)) in ctx.map.pit_points.iter().enumerate() {
-        let (mx, my) = model_point(*nx, *ny, mirror, rot);
-        let p = xform.map(mx, my);
-        ui.painter().circle_filled(p, 4.0, pit_col);
-        if i > 0 {
-            let (px, py) = ctx.map.pit_points[i - 1];
-            let (pmx, pmy) = model_point(px, py, mirror, rot);
-            let prev = xform.map(pmx, pmy);
-            ui.painter()
-                .line_segment([prev, p], Stroke::new(2.0_f32, pit_col));
+    // Authoring drafts: entry yellow / road red / merge blue (match Python Track Scan).
+    let phase = ctx.map.phase_key().to_string();
+    let entry_col = Color32::from_rgb(255, 210, 58);
+    let road_col = Color32::from_rgb(255, 90, 90);
+    let merge_col = Color32::from_rgb(90, 160, 255);
+    let phases = [
+        ("entry", ctx.map.entry_pts.clone(), entry_col),
+        ("road", ctx.map.road_pts.clone(), road_col),
+        ("merge", ctx.map.merge_pts.clone(), merge_col),
+    ];
+    for (name, pts, col) in &phases {
+        if pts.is_empty() {
+            continue;
+        }
+        let active = *name == phase.as_str();
+        let width = if active { 3.0_f32 } else { 2.0_f32 };
+        let dot_r = if active { 5.0_f32 } else { 3.5_f32 };
+        let stroke_col = if active {
+            *col
+        } else {
+            Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 170)
+        };
+        for (i, (nx, ny)) in pts.iter().enumerate() {
+            let (mx, my) = model_point(*nx, *ny, mirror, rot);
+            let p = xform.map(mx, my);
+            ui.painter().circle_filled(p, dot_r, stroke_col);
+            if i > 0 {
+                let (px, py) = pts[i - 1];
+                let (pmx, pmy) = model_point(px, py, mirror, rot);
+                let prev = xform.map(pmx, pmy);
+                ui.painter()
+                    .line_segment([prev, p], Stroke::new(width, stroke_col));
+            }
         }
     }
 
@@ -1240,16 +1261,21 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 let (mx, my) = xform.unmap(pos);
                 // Inverse model (approx): undo rot then mirror.
                 let (rx, ry) = inverse_model(mx, my, mirror, rot);
-                ctx.map.pit_points.push((rx, ry));
+                ctx.map.active_pts_mut().push((rx, ry));
             }
         }
+        let label_col = match phase.as_str() {
+            "entry" => entry_col,
+            "merge" => merge_col,
+            _ => road_col,
+        };
         label(
             ui,
             Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
             Align2::LEFT_TOP,
-            &format!("PIT EDIT ({})", ctx.map.phase),
+            &format!("PIT EDIT ({})", phase),
             12.0,
-            accent,
+            label_col,
             true,
         );
     } else if ctx.map.corner_edit {
