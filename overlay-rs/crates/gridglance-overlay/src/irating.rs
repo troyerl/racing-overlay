@@ -111,6 +111,10 @@ fn car_rank(c: &CarRow) -> i32 {
     }
 }
 
+fn car_started(c: &CarRow) -> bool {
+    car_rank(c) > 0 || c.laps_completed > 0
+}
+
 /// CarIdx → projected iRating change, computed per `class_id` (Python parity).
 pub fn project_deltas_by_class(cars: &[CarRow]) -> HashMap<i32, i32> {
     let mut by_class: HashMap<i32, Vec<&CarRow>> = HashMap::new();
@@ -126,7 +130,7 @@ pub fn project_deltas_by_class(cars: &[CarRow]) -> HashMap<i32, i32> {
         let mut starters: Vec<&CarRow> = Vec::new();
         let mut non_starters: Vec<&CarRow> = Vec::new();
         for c in idxs {
-            if car_rank(c) > 0 {
+            if car_started(c) {
                 starters.push(c);
             } else {
                 non_starters.push(c);
@@ -202,5 +206,60 @@ mod tests {
         assert!(d.contains_key(&1));
         assert!(d[&0] > 0);
         assert!(d[&1] < 0);
+    }
+
+    #[test]
+    fn project_started_via_laps_completed() {
+        // Position 0 but completed a lap → starter (not DNS).
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                position: 1,
+                class_position: 1,
+                irating: 2000,
+                class_id: 1,
+                laps_completed: 10,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                position: 0,
+                class_position: 0,
+                irating: 1800,
+                class_id: 1,
+                laps_completed: 8,
+                is_player: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 0,
+                class_position: 0,
+                irating: 1600,
+                class_id: 1,
+                laps_completed: 0,
+                ..Default::default()
+            },
+        ];
+        let d = project_deltas_by_class(&cars);
+        assert!(d.contains_key(&0));
+        assert!(d.contains_key(&1));
+        assert!(d.contains_key(&2));
+        // DNS (car 2) still in field; two starters ordered by rank (car0 first).
+        assert!(d[&0] > d[&1]);
+    }
+
+    #[test]
+    fn calculate_deltas_reference_p5() {
+        let entries = [
+            (3203, true),
+            (3922, true),
+            (2974, true),
+            (1739, true),
+            (1250, true),
+            (2588, false),
+        ];
+        let d = calculate_deltas(&entries);
+        assert_eq!(d[4], -7);
     }
 }

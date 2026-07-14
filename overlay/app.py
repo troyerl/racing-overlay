@@ -3036,6 +3036,14 @@ class AdvancedSimHUD:
         if key == "gpu":
             return self._sys_stats()[2]
         if key == "laps_remain":
+            lead = self._lead_lap(None)
+            try:
+                total = self.ir["SessionLapsTotal"]
+            except (TypeError, ValueError, KeyError):
+                total = None
+            if (isinstance(total, (int, float)) and 0 < total < 2000
+                    and isinstance(lead, int) and lead > 0):
+                return str(max(0, int(total) - lead))
             try:
                 rem = self.ir["SessionLapsRemainEx"]
             except (TypeError, ValueError, KeyError):
@@ -4707,6 +4715,7 @@ class AdvancedSimHUD:
             "lap": self.ir["Lap"] or (car_lap[player]
                                       if car_lap and player is not None else None),
             "laps_total": total,
+            "lead_lap": self._lead_lap(car_lap),
         }
 
         if self._dash_uses_metric("incidents"):
@@ -5266,11 +5275,17 @@ class AdvancedSimHUD:
 
     def _race_remaining(self, lap_avg):
         """(laps_remaining, time_remaining) for the current session, or Nones."""
-        laps = self.ir["SessionLapsRemainEx"]
-        if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
-            laps = self.ir["SessionLapsRemain"]
-        if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
-            laps = None
+        total = self.ir["SessionLapsTotal"]
+        lead = self._lead_lap(None)
+        if (isinstance(total, (int, float)) and 0 < total < 2000
+                and isinstance(lead, int) and lead > 0):
+            laps = max(0, int(total) - lead)
+        else:
+            laps = self.ir["SessionLapsRemainEx"]
+            if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
+                laps = self.ir["SessionLapsRemain"]
+            if not isinstance(laps, (int, float)) or laps < 0 or laps > 32000:
+                laps = None
         t = self.ir["SessionTimeRemain"]
         t = self._sane_session_seconds(t)
         if laps is None and t is not None and lap_avg:
@@ -5278,6 +5293,29 @@ class AdvancedSimHUD:
         if t is None and laps is not None and lap_avg:
             t = laps * lap_avg
         return laps, t
+
+    def _lead_lap(self, car_lap) -> int | None:
+        """Highest competitor lap (lead lap), excluding pace/invalid slots."""
+        laps = car_lap
+        if laps is None:
+            try:
+                laps = self.ir["CarIdxLap"]
+            except (TypeError, ValueError, KeyError):
+                laps = None
+        if not laps:
+            return None
+        best = 0
+        for i, lap in enumerate(laps):
+            if not isinstance(lap, int) or lap <= 0:
+                continue
+            if i in self._pace_idxs:
+                continue
+            d = self._driver_cache.get(i)
+            if isinstance(d, dict) and d.get("IsSpectator"):
+                continue
+            if lap > best:
+                best = lap
+        return best if best > 0 else None
 
     def _update_fuel_calc(self) -> None:
         fcfg = config.CFG["fuel_calc"]

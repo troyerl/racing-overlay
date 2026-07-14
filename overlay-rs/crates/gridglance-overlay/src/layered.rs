@@ -22,19 +22,23 @@ pub fn ensure_layered(hwnd: isize) {
 #[allow(dead_code)]
 pub fn ensure_layered(_hwnd: isize) {}
 
-/// Read the current GL default framebuffer (RGBA, bottom-up) and present with
-/// per-pixel alpha via UpdateLayeredWindow.
+/// Read current GL default framebuffer → premultiplied BGRA (top-down).
+/// Call while the viewport's WGL context is still current (right after paint).
 #[cfg(windows)]
-pub fn present_gl_framebuffer(gl: &glow::Context, hwnd: isize, width: i32, height: i32) {
+pub fn read_gl_to_bgra(gl: &glow::Context, width: i32, height: i32) -> Option<Vec<u8>> {
     if width <= 0 || height <= 0 {
-        return;
+        return None;
     }
-    ensure_layered(hwnd);
-
     let w = width as usize;
     let h = height as usize;
+    // Cap absurd sizes (bad hwnd / transient resize) so we never OOM.
+    if w.saturating_mul(h).saturating_mul(4) > 64 * 1024 * 1024 {
+        return None;
+    }
     let mut rgba = vec![0u8; w * h * 4];
     unsafe {
+        // Drain any stale GL error so a bad pack doesn’t stick across viewports.
+        while gl.get_error() != glow::NO_ERROR {}
         gl.bind_framebuffer(glow::FRAMEBUFFER, None);
         gl.pixel_store_i32(glow::PACK_ALIGNMENT, 1);
         gl.read_pixels(
@@ -46,6 +50,11 @@ pub fn present_gl_framebuffer(gl: &glow::Context, hwnd: isize, width: i32, heigh
             glow::UNSIGNED_BYTE,
             glow::PixelPackData::Slice(Some(&mut rgba)),
         );
+        let err = gl.get_error();
+        while gl.get_error() != glow::NO_ERROR {}
+        if err != glow::NO_ERROR {
+            return None;
+        }
     }
 
     // Convert RGBA (bottom-up) → premultiplied BGRA (top-down) for GDI.
@@ -74,16 +83,27 @@ pub fn present_gl_framebuffer(gl: &glow::Context, hwnd: isize, width: i32, heigh
             }
         }
     }
-
-    present_bgra(hwnd, width, height, &bgra);
+    Some(bgra)
 }
 
 #[cfg(not(windows))]
 #[allow(dead_code)]
-pub fn present_gl_framebuffer(_gl: &eframe::glow::Context, _hwnd: isize, _w: i32, _h: i32) {}
+pub fn read_gl_to_bgra(_gl: &eframe::glow::Context, _w: i32, _h: i32) -> Option<Vec<u8>> {
+    None
+}
 
+/// Push a pre-captured BGRA buffer with UpdateLayeredWindow (no GL).
+/// Call after all viewport GL context switches for the frame are done.
 #[cfg(windows)]
-fn present_bgra(hwnd: isize, width: i32, height: i32, bgra: &[u8]) {
+pub fn present_bgra(hwnd: isize, width: i32, height: i32, bgra: &[u8]) {
+    if width <= 0 || height <= 0 || hwnd == 0 {
+        return;
+    }
+    if bgra.len() < (width as usize) * (height as usize) * 4 {
+        return;
+    }
+    ensure_layered(hwnd);
+
     use windows::Win32::Foundation::{COLORREF, HWND, POINT, SIZE};
     use windows::Win32::Graphics::Gdi::{
         CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
@@ -169,6 +189,23 @@ fn present_bgra(hwnd: isize, width: i32, height: i32, bgra: &[u8]) {
         let _ = ReleaseDC(None, screen_dc);
     }
 }
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn present_bgra(_hwnd: isize, _width: i32, _height: i32, _bgra: &[u8]) {}
+
+/// Convenience: read + present in one call (prefer deferred present in the host).
+#[cfg(windows)]
+#[allow(dead_code)]
+pub fn present_gl_framebuffer(gl: &glow::Context, hwnd: isize, width: i32, height: i32) {
+    if let Some(bgra) = read_gl_to_bgra(gl, width, height) {
+        present_bgra(hwnd, width, height, &bgra);
+    }
+}
+
+#[cfg(not(windows))]
+#[allow(dead_code)]
+pub fn present_gl_framebuffer(_gl: &eframe::glow::Context, _hwnd: isize, _w: i32, _h: i32) {}
 
 /// Client size in physical pixels.
 #[cfg(windows)]

@@ -52,6 +52,8 @@ pub struct OverlayApp {
     /// Active SE-corner resize in edit mode.
     resizing: Arc<Mutex<Option<ResizeDrag>>>,
     last_click_through: HashMap<String, bool>,
+    /// Last applied viewport geometry (x, y, w, h) — avoid builder churn.
+    last_geom: HashMap<String, (i32, i32, i32, i32)>,
     gl: Option<Arc<glow::Context>>,
     sector_timer: SectorTimer,
     lap_compare: LapCompareState,
@@ -74,6 +76,7 @@ impl OverlayApp {
             last_tick: Instant::now(),
             open_viewports: HashSet::new(),
             last_click_through: HashMap::new(),
+            last_geom: HashMap::new(),
             dragging: Arc::new(Mutex::new(None)),
             resizing: Arc::new(Mutex::new(None)),
             gl,
@@ -212,6 +215,7 @@ impl eframe::App for OverlayApp {
                 );
                 self.open_viewports.remove(&key);
                 self.last_click_through.remove(&key);
+                self.last_geom.remove(&key);
             }
             *self.dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *self.resizing.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -221,6 +225,7 @@ impl eframe::App for OverlayApp {
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
         let gl = self.gl.clone();
+        let mut pending_presents: Vec<(isize, i32, i32, Vec<u8>)> = Vec::new();
         let dragging_key = self
             .dragging
             .lock()
@@ -240,6 +245,8 @@ impl eframe::App for OverlayApp {
             let title = win_click::panel_title(&key);
             let is_dragging = dragging_key.as_deref() == Some(key.as_str());
             let is_resizing = resizing_key.as_deref() == Some(key.as_str());
+            let geom = (lay.x, lay.y, lay.w, lay.h);
+            let geom_changed = self.last_geom.get(&key) != Some(&geom);
 
             let mut builder = ViewportBuilder::default()
                 .with_title(title.clone())
@@ -248,12 +255,16 @@ impl eframe::App for OverlayApp {
                 .with_always_on_top()
                 .with_taskbar(false)
                 .with_mouse_passthrough(passthrough);
+            // Only push geometry when it changed — cuts WGL recreate/switch churn.
             // While manually dragging/resizing, do not fight OS geometry with the builder.
-            if !is_dragging {
+            if !is_dragging && geom_changed {
                 builder = builder.with_position(egui::pos2(lay.x as f32, lay.y as f32));
             }
-            if !is_resizing {
+            if !is_resizing && geom_changed {
                 builder = builder.with_inner_size([lay.w as f32, lay.h as f32]);
+            }
+            if geom_changed && !is_dragging && !is_resizing {
+                self.last_geom.insert(key.clone(), geom);
             }
 
             let state = self.state.clone();
@@ -479,10 +490,14 @@ impl eframe::App for OverlayApp {
                 }
             });
 
-            // Per-pixel alpha composite (Windows): read GL backbuffer → UpdateLayeredWindow.
+            // Read pixels while this viewport's GL context is still current.
+            // Defer UpdateLayeredWindow until after all viewports (GDI poisons
+            // the next eframe make_current on Windows).
             if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
                 if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
-                    layered::present_gl_framebuffer(gl, hwnd, w, h);
+                    if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h) {
+                        pending_presents.push((hwnd, w, h, bgra));
+                    }
                 }
                 if self.last_click_through.get(&key) != Some(&passthrough) {
                     win_click::set_click_through(hwnd, passthrough);
@@ -491,6 +506,10 @@ impl eframe::App for OverlayApp {
             }
 
             self.open_viewports.insert(key);
+        }
+
+        for (hwnd, w, h, bgra) in pending_presents {
+            layered::present_bgra(hwnd, w, h, &bgra);
         }
 
         let to_close: Vec<_> = self
@@ -505,6 +524,7 @@ impl eframe::App for OverlayApp {
             );
             self.open_viewports.remove(&key);
             self.last_click_through.remove(&key);
+            self.last_geom.remove(&key);
         }
         self.open_viewports = still_open;
     }

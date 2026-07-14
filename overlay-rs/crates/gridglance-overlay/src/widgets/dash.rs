@@ -79,7 +79,8 @@ fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
         }
         "laps_left" => {
             if f.laps_total > 0 {
-                format!("{}", (f.laps_total - f.lap).max(0))
+                let lead = if f.lead_lap > 0 { f.lead_lap } else { f.lap };
+                format!("{}", (f.laps_total - lead).max(0))
             } else {
                 "--".into()
             }

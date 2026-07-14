@@ -52,6 +52,13 @@ mod win {
         is_pace_car: bool,
     }
 
+    #[derive(Clone, Default)]
+    struct ResultPosEntry {
+        position: i32,
+        class_position: i32,
+        laps_complete: i32,
+    }
+
     #[derive(Default)]
     struct SessionCache {
         update: i32,
@@ -64,6 +71,8 @@ mod win {
         laps_total: i32,
         incidents_limit: i32,
         drivers: HashMap<i32, DriverInfo>,
+        /// From SessionInfo ResultsPositions (race session when present).
+        results: HashMap<i32, ResultPosEntry>,
     }
 
     pub struct IrsdkReader {
@@ -262,7 +271,14 @@ mod win {
                 None
             }
         };
-        let cars = car_rows(session, cache, radio_idx);
+        let cars = car_rows(session, cache, radio_idx, session_state);
+        let lead_lap = cars
+            .iter()
+            .filter(|c| !c.is_pace_car && c.lap > 0)
+            .map(|c| c.lap)
+            .max()
+            .unwrap_or(lap)
+            .max(0);
         let radio = radio_speaker_from_cars(&cars, radio_idx, cache.player_idx);
         let radar = RadarState {
             left,
@@ -285,7 +301,7 @@ mod win {
                 0.0
             }
         };
-        let session_laps_remain = {
+        let session_laps_remain_sdk = {
             let v = read_f32(session, "SessionLapsRemainEx");
             if v.is_finite() && v >= 0.0 && v < 32000.0 {
                 Some(v)
@@ -314,6 +330,12 @@ mod win {
             } else {
                 cache.laps_total
             }
+        };
+        // Lap-limited races: remaining follows the lead lap, not the player.
+        let session_laps_remain = if laps_total > 0 && lead_lap > 0 {
+            Some((laps_total - lead_lap).max(0) as f32)
+        } else {
+            session_laps_remain_sdk
         };
         let pits_open = {
             // PitsOpen may be absent; treat unknown as None.
@@ -368,6 +390,7 @@ mod win {
             car_number: cache.car_number.clone(),
             lap,
             laps_total,
+            lead_lap,
             incidents,
             last_lap_s: positive_opt(last_lap as f64),
             best_lap_s: positive_opt(best_lap as f64),
@@ -769,6 +792,7 @@ mod win {
         session: &Session,
         cache: &SessionCache,
         radio_idx: Option<i32>,
+        session_state: i32,
     ) -> Vec<CarRow> {
         let Some(pcts) = float_arr(session, "CarIdxLapDistPct") else {
             return Vec::new();
@@ -779,6 +803,7 @@ mod win {
         let est = float_arr(session, "CarIdxEstTime");
         let f2 = float_arr(session, "CarIdxF2Time");
         let laps = int_arr(session, "CarIdxLap");
+        let laps_done = int_arr(session, "CarIdxLapCompleted");
         let speeds = float_arr(session, "CarIdxSpeed");
         let surface = int_arr(session, "CarIdxTrackSurface");
         let session_flags = int_arr(session, "CarIdxSessionFlags");
@@ -787,6 +812,7 @@ mod win {
             .as_ref()
             .and_then(|a| a.get(player_idx as usize).copied())
             .unwrap_or(0);
+        let use_results = session_state >= 5 && !cache.results.is_empty();
 
         let mut out = Vec::new();
         for (i, &pct) in pcts.iter().enumerate() {
@@ -794,16 +820,36 @@ mod win {
             if di.map(|d| d.is_pace_car).unwrap_or(false) {
                 // Still include pace car marked so builders can skip.
             }
-            let pos = positions
+            let mut pos = positions
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(0)
                 .max(0);
-            let cpos = class_pos
+            let mut cpos = class_pos
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(pos)
                 .max(0);
+            let mut laps_completed = laps_done
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0)
+                .max(0);
+            if use_results {
+                if let Some(r) = cache.results.get(&(i as i32)) {
+                    if r.position > 0 {
+                        pos = r.position;
+                    }
+                    if r.class_position > 0 {
+                        cpos = r.class_position;
+                    } else if r.position > 0 {
+                        cpos = r.position;
+                    }
+                    if r.laps_complete > laps_completed {
+                        laps_completed = r.laps_complete;
+                    }
+                }
+            }
             let pit = on_pit
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
@@ -912,6 +958,7 @@ mod win {
                 est_time: if est_t.is_finite() { est_t } else { 0.0 },
                 f2_time: if f2_t.is_finite() { f2_t } else { 0.0 },
                 lap: car_lap.max(0),
+                laps_completed,
                 speed_mps,
                 status_kind,
             });
@@ -955,6 +1002,7 @@ mod win {
             }
         }
         cache.drivers = parse_drivers(yaml);
+        cache.results = parse_results_positions(yaml);
         if let Some(d) = cache.drivers.get(&cache.player_idx) {
             if !d.car_number.is_empty() {
                 cache.car_number = d.car_number.clone();
@@ -962,6 +1010,125 @@ mod win {
             if d.irating > 0 {
                 cache.irating = d.irating;
             }
+        }
+    }
+
+    /// Parse SessionInfo ResultsPositions entries (prefer Race session block).
+    fn parse_results_positions(yaml: &str) -> HashMap<i32, ResultPosEntry> {
+        let mut best: HashMap<i32, ResultPosEntry> = HashMap::new();
+        let mut current: HashMap<i32, ResultPosEntry> = HashMap::new();
+        let mut in_results = false;
+        let mut race_session = false;
+        let mut block_is_race = false;
+        let mut cur_idx: Option<i32> = None;
+        let mut cur = ResultPosEntry::default();
+
+        let flush_cur = |map: &mut HashMap<i32, ResultPosEntry>,
+                         idx: &mut Option<i32>,
+                         e: &mut ResultPosEntry| {
+            if let Some(i) = idx.take() {
+                if e.position > 0 || e.class_position > 0 || e.laps_complete > 0 {
+                    map.insert(i, e.clone());
+                }
+            }
+            *e = ResultPosEntry::default();
+        };
+
+        for line in yaml.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("SessionType:") {
+                let v = trimmed
+                    .trim_start_matches("SessionType:")
+                    .trim()
+                    .trim_matches('"');
+                race_session = v.to_ascii_lowercase().contains("race");
+            }
+            if trimmed.starts_with("ResultsPositions:") {
+                flush_cur(&mut current, &mut cur_idx, &mut cur);
+                if !current.is_empty() {
+                    if block_is_race || best.is_empty() {
+                        best = std::mem::take(&mut current);
+                    } else {
+                        current.clear();
+                    }
+                }
+                in_results = true;
+                block_is_race = race_session;
+                continue;
+            }
+            // End of indented results list.
+            if in_results {
+                let indent = line.len() - line.trim_start().len();
+                if !trimmed.is_empty()
+                    && indent == 0
+                    && !trimmed.starts_with('-')
+                {
+                    flush_cur(&mut current, &mut cur_idx, &mut cur);
+                    if !current.is_empty() {
+                        if block_is_race || best.is_empty() {
+                            best = std::mem::take(&mut current);
+                        } else {
+                            current.clear();
+                        }
+                    }
+                    in_results = false;
+                }
+            }
+            if !in_results {
+                continue;
+            }
+            if trimmed.starts_with("- ") || trimmed == "-" {
+                flush_cur(&mut current, &mut cur_idx, &mut cur);
+                if let Some(rest) = trimmed.strip_prefix("- ") {
+                    if let Some((k, v)) = rest.split_once(':') {
+                        apply_result_field(&mut cur_idx, &mut cur, k.trim(), v.trim());
+                    }
+                }
+                continue;
+            }
+            if let Some((k, v)) = trimmed.split_once(':') {
+                apply_result_field(&mut cur_idx, &mut cur, k.trim(), v.trim());
+            }
+        }
+        flush_cur(&mut current, &mut cur_idx, &mut cur);
+        if !current.is_empty() {
+            if block_is_race || best.is_empty() {
+                best = current;
+            }
+        }
+        best
+    }
+
+    fn apply_result_field(
+        cur_idx: &mut Option<i32>,
+        cur: &mut ResultPosEntry,
+        key: &str,
+        raw: &str,
+    ) {
+        let val = raw.trim_matches('"').trim();
+        let n = val.parse::<i32>().ok();
+        match key {
+            "CarIdx" => {
+                if let Some(i) = n {
+                    *cur_idx = Some(i);
+                }
+            }
+            "Position" => {
+                if let Some(i) = n {
+                    cur.position = i.max(0);
+                }
+            }
+            "ClassPosition" => {
+                if let Some(i) = n {
+                    cur.class_position = i.max(0);
+                }
+            }
+            "LapsComplete" | "LapsDriven" => {
+                if let Some(i) = n {
+                    cur.laps_complete = i.max(0);
+                }
+            }
+            _ => {}
         }
     }
 

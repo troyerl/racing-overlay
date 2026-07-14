@@ -112,9 +112,13 @@ def _f_lap_count(d):
 
 
 def _f_laps_left(d):
-    lap, total = _num(d, "lap"), _num(d, "laps_total")
-    if lap is not None and total and total > 0:
-        return f"{max(0, int(total) - int(lap))}"
+    total = _num(d, "laps_total")
+    lead = _num(d, "lead_lap")
+    lap = _num(d, "lap")
+    if total is not None and total > 0:
+        base = lead if lead is not None and lead > 0 else lap
+        if base is not None:
+            return f"{max(0, int(total) - int(base))}"
     return "--"
 
 

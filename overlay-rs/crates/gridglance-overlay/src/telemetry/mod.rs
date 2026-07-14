@@ -54,6 +54,9 @@ pub struct CarRow {
     /// CarIdxF2Time (gap-to-leader style clock).
     pub f2_time: f32,
     pub lap: i32,
+    /// CarIdxLapCompleted (or Results LapsComplete when available).
+    #[serde(default)]
+    pub laps_completed: i32,
     /// CarIdxSpeed (m/s); 0 when unknown.
     #[serde(default)]
     pub speed_mps: f32,
@@ -102,6 +105,9 @@ pub struct TelemetryFrame {
     pub car_number: String,
     pub lap: i32,
     pub laps_total: i32,
+    /// Highest competitor lap in the field (lead lap).
+    #[serde(default)]
+    pub lead_lap: i32,
     pub incidents: i32,
     pub last_lap_s: Option<f64>,
     pub best_lap_s: Option<f64>,
@@ -366,6 +372,7 @@ pub mod demo {
                     est_time: est,
                     f2_time: f2,
                     lap: 12 - (i / 4),
+                    laps_completed: (12 - (i / 4)).max(0),
                     speed_mps: 55.0 + (i as f32) * 1.5 + 3.0 * (t as f32 * 0.4).sin(),
                     status_kind: if on_pit_lane {
                         Some("pit".into())
@@ -469,6 +476,15 @@ pub mod demo {
                 group_color: "#46df7a".into(),
             });
 
+            let lead_lap = cars
+                .iter()
+                .filter(|c| !c.is_pace_car && c.lap > 0)
+                .map(|c| c.lap)
+                .max()
+                .unwrap_or(12);
+            let laps_total = 50;
+            let session_laps_remain = Some((laps_total - lead_lap).max(0) as f32);
+
             TelemetryFrame {
                 connected: true,
                 session_time: t,
@@ -498,7 +514,8 @@ pub mod demo {
                 position: 4,
                 car_number: "48".into(),
                 lap: 12,
-                laps_total: 50,
+                laps_total,
+                lead_lap,
                 incidents: 13,
                 last_lap_s,
                 best_lap_s,
@@ -552,7 +569,7 @@ pub mod demo {
                 cars,
                 fuel_max_l: 60.0,
                 fuel_use_per_hour: 48.0,
-                session_laps_remain: Some(37.5),
+                session_laps_remain,
                 session_time_remain: Some(3300.0 - t as f32 * 0.5),
                 ..Default::default()
             }
