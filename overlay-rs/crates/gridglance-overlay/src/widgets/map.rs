@@ -467,11 +467,13 @@ fn pit_lane_mapping_interval(
 }
 
 /// Place on pit_path for a lap-% interval (Python `_pit_path_pos_for_route_pct`).
+/// Outside `[lo, hi]`, pin to nearer tip (t=0/1) instead of wrapping to the opposite end.
 fn pit_path_pos_for_route_pct(
     lane: &track_path::PitLane,
     pct: f32,
     lo: f32,
     hi: f32,
+    speed: f32,
 ) -> Option<(f32, f32)> {
     if lane.path.len() < 2 {
         return None;
@@ -480,13 +482,20 @@ fn pit_path_pos_for_route_pct(
     if span <= 1e-6 {
         return None;
     }
-    let linear = ((pct - lo).rem_euclid(1.0) / span).clamp(0.0, 1.0);
-    let speed = if lane.lane_speed_pct > 0.0 {
-        lane.lane_speed_pct
+    let speed = if speed > 0.0 { speed } else { 1.0 };
+    let mut t = if pct_in_interval(pct, lo, hi) {
+        let linear = ((pct - lo).rem_euclid(1.0) / span).clamp(0.0, 1.0);
+        (linear * speed).clamp(0.0, 1.0)
     } else {
-        1.0
+        // Closer to hi → end of path; closer to lo → start (no wrap-to-tip).
+        let d_after_hi = (pct - hi).rem_euclid(1.0);
+        let d_before_lo = (lo - pct).rem_euclid(1.0);
+        if d_after_hi <= d_before_lo {
+            1.0
+        } else {
+            0.0
+        }
     };
-    let mut t = (linear * speed).clamp(0.0, 1.0);
     if pit_path_needs_reverse(lane) {
         t = 1.0 - t;
     }
@@ -594,8 +603,8 @@ fn car_model_xy(
             }
         }
 
-        // Entry blend.
-        if show_blends && !on_pit && on_route && lane.entry.len() >= 2 {
+        // Entry blend (also while OnPitRoad — telem often asserts before lane_lo).
+        if show_blends && on_route && lane.entry.len() >= 2 {
             if pct_in_interval(pct, in_pct, lane_lo) {
                 let t = track_path::route_t_for_pct(pct, in_pct, lane_lo);
                 return track_path::point_on_open(&lane.entry, t);
@@ -605,9 +614,15 @@ fn car_model_xy(
         // Pit road while OnPitRoad only.
         if on_pit && lane.path.len() >= 2 {
             let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
+                .or(Some((in_pct, out_pct)))
                 .or(Some((lane_lo, lane_hi)))
                 .unwrap();
-            if let Some(pos) = pit_path_pos_for_route_pct(lane, pct, rlo, rhi) {
+            let speed = if lane.lane_speed_pct > 0.0 {
+                lane.lane_speed_pct
+            } else {
+                ctx.map.pit_lane_speed_pct as f32
+            };
+            if let Some(pos) = pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed) {
                 return pos;
             }
         }
