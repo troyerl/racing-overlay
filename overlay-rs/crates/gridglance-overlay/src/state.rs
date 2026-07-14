@@ -19,6 +19,16 @@ pub struct CarScreenAnim {
     pub key: u8,
 }
 
+/// Coast + correct lap-% animation between chunky telem samples.
+#[derive(Debug, Clone, Copy)]
+pub struct CarPctAnim {
+    pub pct: f32,
+    /// Lap fractions per second (extrapolate between telem updates).
+    pub vel: f32,
+    pub last_telem: f32,
+    pub last_telem_secs: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct MapAuthoring {
     pub pit_edit: bool,
@@ -62,8 +72,8 @@ pub struct MapAuthoring {
     pub pit_drag: Option<(u8, u8, usize)>,
     /// Hold-before-switch state for ahead/behind/leader markers.
     pub marker_hold: crate::map_markers::HoldStates,
-    /// Eased lap_dist_pct per car_idx for smooth map motion.
-    pub car_anim: HashMap<i32, f32>,
+    /// Coast + soft-correct lap_dist_pct per car_idx.
+    pub car_anim: HashMap<i32, CarPctAnim>,
     /// Screen-space eased car dots (Python `_car_anim` screen pts).
     pub car_screen: HashMap<i32, CarScreenAnim>,
     /// Wall/egui time of last map paint (for car easing dt; not SessionTime).
