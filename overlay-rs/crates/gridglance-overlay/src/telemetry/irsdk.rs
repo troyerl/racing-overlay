@@ -20,12 +20,18 @@ mod win {
     const FLAG_CROSSED: i32 = 0x0000_0080;
     const FLAG_YELLOW_WAVING: i32 = 0x0000_0100;
     const FLAG_GREEN_HELD: i32 = 0x0000_0400;
+    const FLAG_ONE_LAP_GREEN: i32 = 0x0000_0200;
+    const FLAG_TEN_TO_GO: i32 = 0x0000_0800;
+    const FLAG_FIVE_TO_GO: i32 = 0x0000_1000;
     const FLAG_CAUTION: i32 = 0x0000_4000;
     const FLAG_CAUTION_WAVING: i32 = 0x0000_8000;
     const FLAG_BLACK: i32 = 0x0001_0000;
     const FLAG_DQ: i32 = 0x0002_0000;
     const FLAG_FURLED: i32 = 0x0008_0000;
     const FLAG_REPAIR: i32 = 0x0010_0000;
+    const FLAG_START_READY: i32 = 0x2000_0000;
+    const FLAG_START_SET: i32 = 0x4000_0000;
+    const FLAG_START_GO: i32 = i32::MIN; // 0x8000_0000
 
     // TrackSurface
     const TRK_NOT_IN_WORLD: i32 = -1;
@@ -180,7 +186,6 @@ mod win {
         let position = player_position(session, cache.player_idx);
         let sf = read_i32(session, "SessionFlags");
         let flag = map_flag(sf);
-        let flag_context = flag_context_for(flag.as_deref(), sf);
         // Incident warn is computed in finalize_frame from count/limit + settings.
         let incident_warn = false;
         let incidents_limit = cache.incidents_limit;
@@ -310,6 +315,24 @@ mod win {
                 cache.laps_total
             }
         };
+        let pits_open = {
+            // PitsOpen may be absent; treat unknown as None.
+            match session.find_var("PitsOpen").map(|v| session.var_value(&v)) {
+                Some(Value::Bool(b)) => Some(b),
+                Some(Value::Int(v)) => Some(v != 0),
+                _ => None,
+            }
+        };
+        let flag_context = flag_context_for(
+            flag.as_deref(),
+            sf,
+            pits_open,
+            session_laps_remain,
+            session_time_remain,
+            lap,
+            laps_total,
+            position,
+        );
 
         TelemetryFrame {
             connected: true,
@@ -491,15 +514,109 @@ mod win {
         None
     }
 
-    fn flag_context_for(flag: Option<&str>, _sf: i32) -> Option<String> {
+    fn fmt_clock(secs: f32) -> String {
+        let s = secs.max(0.0) as i32;
+        let h = s / 3600;
+        let m = (s % 3600) / 60;
+        let sec = s % 60;
+        if h > 0 {
+            format!("{h}:{m:02}:{sec:02}")
+        } else {
+            format!("{m}:{sec:02}")
+        }
+    }
+
+    /// Rich flag context (Python `AdvancedSimHUD._flag_context`).
+    fn flag_context_for(
+        flag: Option<&str>,
+        sf: i32,
+        pits_open: Option<bool>,
+        session_laps_remain: Option<f32>,
+        session_time_remain: Option<f32>,
+        lap: i32,
+        laps_total: i32,
+        position: i32,
+    ) -> Option<String> {
+        if flag.is_none() {
+            if sf & FLAG_START_GO != 0 {
+                return Some("Green light — go".into());
+            }
+            if sf & FLAG_START_SET != 0 {
+                return Some("Start lights set".into());
+            }
+            if sf & FLAG_START_READY != 0 {
+                return Some("Get ready — start imminent".into());
+            }
+            return None;
+        }
         match flag {
-            Some("yellow") | Some("caution") => Some("Caution — pace car out".into()),
-            Some("white") => Some("White flag — final lap".into()),
-            Some("checkered") => Some("Checkered — race complete".into()),
-            Some("blue") => Some("Blue flag — yield to faster traffic".into()),
-            Some("meatball") => Some("Meatball — damage / pit for repairs".into()),
-            Some("black") => Some("Black flag — serve penalty".into()),
-            Some("red") => Some("Red flag — session stopped".into()),
+            Some("yellow") | Some("caution") => {
+                let base = if sf & FLAG_ONE_LAP_GREEN != 0 {
+                    "1 lap to green".to_string()
+                } else if sf & FLAG_TEN_TO_GO != 0 {
+                    "10 to go".to_string()
+                } else if sf & FLAG_FIVE_TO_GO != 0 {
+                    "5 to go".to_string()
+                } else if sf & FLAG_CAUTION_WAVING != 0 {
+                    match pits_open {
+                        Some(true) => "Caution waving — pits open".into(),
+                        _ => "Caution waving — pits closed".into(),
+                    }
+                } else if sf & FLAG_CAUTION != 0 {
+                    "Full course caution — hold position".into()
+                } else if sf & FLAG_YELLOW_WAVING != 0 {
+                    "Local yellow — slow in sector".into()
+                } else if sf & FLAG_YELLOW != 0 {
+                    "Local yellow — slow down".into()
+                } else {
+                    "Slow down — no passing".into()
+                };
+                Some(base)
+            }
+            Some("green") => {
+                if sf & FLAG_GREEN_HELD != 0 {
+                    Some("Green held — stay in formation".into())
+                } else {
+                    Some("Track clear — racing resumes".into())
+                }
+            }
+            Some("red") => {
+                if let Some(remain) = session_time_remain.filter(|t| *t > 0.0) {
+                    Some(format!("Session stopped — {} left", fmt_clock(remain)))
+                } else {
+                    Some("Session stopped — stand by".into())
+                }
+            }
+            Some("white") => {
+                if session_laps_remain.map(|v| v.round() as i32) == Some(1) {
+                    Some("1 lap remaining".into())
+                } else if laps_total > 0 && lap > 0 {
+                    Some(format!("Lap {lap} of {laps_total} — finish this lap"))
+                } else {
+                    Some("Final lap — finish the race".into())
+                }
+            }
+            Some("blue") => Some("Faster car approaching — let them pass".into()),
+            Some("black") => Some("Report to the pits — penalty".into()),
+            Some("meatball") => Some("Mandatory pit — repairs required".into()),
+            Some("furled") => Some("Warning — next infraction is a penalty".into()),
+            Some("dq") => Some("Disqualified — exit the track".into()),
+            Some("debris") => Some("Debris on track — reduce speed".into()),
+            Some("crossed") => {
+                if laps_total > 0 && lap > 0 {
+                    let rem = (laps_total - lap).max(0);
+                    Some(format!("Halfway — {rem} laps to go"))
+                } else {
+                    Some("Halfway point".into())
+                }
+            }
+            Some("checkered") => {
+                if position > 0 {
+                    Some(format!("Session complete — P{position}"))
+                } else {
+                    Some("Session complete".into())
+                }
+            }
             _ => None,
         }
     }
@@ -662,6 +779,7 @@ mod win {
         let est = float_arr(session, "CarIdxEstTime");
         let f2 = float_arr(session, "CarIdxF2Time");
         let laps = int_arr(session, "CarIdxLap");
+        let speeds = float_arr(session, "CarIdxSpeed");
         let surface = int_arr(session, "CarIdxTrackSurface");
         let session_flags = int_arr(session, "CarIdxSessionFlags");
         let player_idx = cache.player_idx;
@@ -708,6 +826,11 @@ mod win {
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(0);
+            let speed_mps = speeds
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .filter(|v| v.is_finite() && *v > 0.0)
+                .unwrap_or(0.0);
 
             // Skip empty world slots.
             let has_driver = di.is_some();
@@ -789,6 +912,7 @@ mod win {
                 est_time: if est_t.is_finite() { est_t } else { 0.0 },
                 f2_time: if f2_t.is_finite() { f2_t } else { 0.0 },
                 lap: car_lap.max(0),
+                speed_mps,
                 status_kind,
             });
         }

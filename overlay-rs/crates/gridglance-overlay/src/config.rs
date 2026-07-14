@@ -530,6 +530,10 @@ fn default_cfg() -> Value {
         section.insert("strip_center".into(), Value::String("lap_count".into()));
         section.insert("strip_right".into(), Value::String("irating".into()));
         section.insert("text_scale".into(), json!(1.0));
+        section.insert("shift_blink".into(), Value::Bool(true));
+        section.insert("shift_blink_hz".into(), json!(7.0));
+        section.insert("shift_blink_pct".into(), json!(0.99));
+        section.insert("shift_blink_max_sec".into(), json!(3.0));
         section.insert("shift_segments".into(), json!(20));
         section.insert("shift_red_frac".into(), json!(0.16));
         section.insert("shift_yellow_frac".into(), json!(0.24));
@@ -666,6 +670,7 @@ fn default_cfg() -> Value {
                 colors.insert("status_furled".into(), Value::String("#ffd23a".into()));
                 colors.insert("drs_zone".into(), Value::String("#46df7a88".into()));
                 colors.insert("p2p_zone".into(), Value::String("#3aa0ff88".into()));
+                colors.insert("active_sector".into(), Value::String("#ffd23a66".into()));
                 colors.insert("wind".into(), Value::String("#9fd0ff".into()));
                 colors.insert("wind_text".into(), Value::String("#eaf3ff".into()));
             }
@@ -838,6 +843,15 @@ fn default_cfg() -> Value {
             section.insert("sectors".into(), json!(3));
             section.insert("show_sector_delta".into(), Value::Bool(false));
             section.insert("show_predicted_lap".into(), Value::Bool(false));
+            section.insert("highlight_active_sector_on_map".into(), Value::Bool(false));
+        }
+        if *key == "lap_compare" {
+            section.insert("reference_mode".into(), Value::String("best".into()));
+            section.insert("show_graph".into(), Value::Bool(true));
+            section.insert("show_brake_markers".into(), Value::Bool(true));
+            section.insert("show_lift_markers".into(), Value::Bool(true));
+            section.insert("max_turns".into(), json!(6));
+            section.insert("alt_row_shading".into(), Value::Bool(true));
         }
         if *key == "pit_advisor" {
             section.insert("show_title".into(), Value::Bool(true));

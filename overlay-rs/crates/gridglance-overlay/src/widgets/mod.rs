@@ -15,6 +15,7 @@ mod pit_board;
 mod radar;
 mod radio_tower;
 mod relative;
+mod scoreboard_digits;
 mod sector_timing;
 mod standings;
 mod system_panel;

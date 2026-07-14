@@ -370,6 +370,26 @@ fn draw_position(ui: &mut Ui, cfg: &OverlayConfig, box_r: Rect, f: &TelemetryFra
     label(ui, box_r.center(), Align2::CENTER_CENTER, &text, fs, orange, true);
 }
 
+#[derive(Clone, Default)]
+struct ShiftBlinkState {
+    since_s: Option<f64>,
+    suppressed: bool,
+}
+
+fn shift_should_blink(cfg: &OverlayConfig, f: &TelemetryFrame) -> bool {
+    if !cfg.bool_key(SECTION, "shift_blink", true) {
+        return false;
+    }
+    if f.rpm <= 0.0 {
+        return false;
+    }
+    // No top_gear on frame — still blink in reverse/neutral skip only when gear <= 0 optional.
+    // Match Python: skip blink in top gear when known; without top_gear, always eligible by rpm.
+    let pct = cfg.f64_key(SECTION, "shift_blink_pct", 0.99) as f32;
+    let redline = f.redline.max(1.0);
+    f.rpm >= redline * pct.clamp(0.5, 1.0)
+}
+
 fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) {
     let n = cfg.f64_key(SECTION, "shift_segments", 20.0).max(1.0) as i32;
     let gap = rect.width() / n as f32 * 0.30;
@@ -386,11 +406,51 @@ fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) 
     let yel = cfg.color(SECTION, "shift_yellow", "#ffd23a");
     let red = cfg.color(SECTION, "shift_red", "#ff5050");
     let off = cfg.color(SECTION, "shift_off", "#333a42");
+
+    // Blink: dark half forces all segments to off ticks (Python `_draw_shift`).
+    let id = egui::Id::new("dash_shift_blink");
+    let now = f.session_time;
+    let eligible = shift_should_blink(cfg, f);
+    let max_sec = cfg.f64_key(SECTION, "shift_blink_max_sec", 3.0);
+    let hz = cfg.f64_key(SECTION, "shift_blink_hz", 7.0).max(0.1);
+    let mut need_repaint = false;
+    let blink_dark = ui.ctx().data_mut(|d| {
+        let st = d.get_temp_mut_or_default::<ShiftBlinkState>(id);
+        if eligible {
+            if st.since_s.is_none() {
+                st.since_s = Some(now);
+                st.suppressed = false;
+            }
+            if !st.suppressed && max_sec > 0.0 {
+                if let Some(since) = st.since_s {
+                    if now - since >= max_sec {
+                        st.suppressed = true;
+                    }
+                }
+            }
+            if !st.suppressed {
+                need_repaint = true;
+                (now * hz) % 1.0 >= 0.5
+            } else {
+                false
+            }
+        } else {
+            st.since_s = None;
+            st.suppressed = false;
+            false
+        }
+    });
+    if need_repaint {
+        ui.ctx().request_repaint();
+    }
+
     let full_h = rect.height();
     let tick_h = rect.height() * 0.5;
     for i in 0..n {
         let x = rect.left() + i as f32 * (bw + gap);
-        let (cc, y, bh) = if (i as f32) < lit {
+        let (cc, y, bh) = if blink_dark {
+            (off, rect.top() + (full_h - tick_h) * 0.5, tick_h)
+        } else if (i as f32) < lit {
             let cc = if (i as f32) >= red0 {
                 red
             } else if (i as f32) >= yel0 {

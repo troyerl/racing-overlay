@@ -18,6 +18,9 @@ pub struct SectorSnapshot {
     pub predicted_lap: Option<f64>,
     pub sectors: Vec<SectorCell>,
     pub active_idx: usize,
+    /// Sector start percentages (lap_dist_pct), for map highlight.
+    #[serde(default)]
+    pub starts: Vec<f64>,
 }
 
 /// Derives sector splits from lap-distance crossings (owned by the host).
@@ -57,7 +60,6 @@ impl SectorTimer {
     }
 
     /// Set sector start percentages. Re-inits in-lap state when they change.
-    #[allow(dead_code)]
     pub fn set_boundaries(&mut self, starts: &[f64]) {
         if starts.is_empty() {
             return;
@@ -253,7 +255,14 @@ impl SectorTimer {
             predicted_lap: self.predicted_lap(),
             sectors,
             active_idx: self.idx,
+            starts: self.starts.clone().unwrap_or_default(),
         }
+    }
+
+    /// Equal divisions when SplitTimeInfo is unavailable (Python fallback).
+    pub fn equal_starts(n: usize) -> Vec<f64> {
+        let n = n.max(1);
+        (0..n).map(|i| i as f64 / n as f64).collect()
     }
 }
 

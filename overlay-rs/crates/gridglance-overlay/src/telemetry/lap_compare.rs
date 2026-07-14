@@ -1,26 +1,48 @@
-//! Simple lap-compare engine: current vs best distance-time curve.
+//! Lap-compare engine: current vs best/last distance-time curve + input markers.
 
 use serde::{Deserialize, Serialize};
 
 const MAX_SAMPLES: usize = 240;
 const SPARK_BINS: usize = 64;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MarkerKind {
+    Brake,
+    Lift,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompareMarker {
+    /// Lap distance 0..1.
+    pub pct: f32,
+    pub kind: MarkerKind,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct LapCompareView {
     pub delta: Option<f64>,
     pub spark: Vec<f32>,
     pub turns: Vec<(String, f32)>,
+    /// "VS BEST" / "VS LAST".
+    #[serde(default)]
+    pub ref_label: String,
+    #[serde(default)]
+    pub markers: Vec<CompareMarker>,
 }
 
-/// Ring of (pct, time) samples for the current lap vs a best-lap reference.
+/// Ring of (pct, time, brake, throttle) samples for the current lap vs a reference.
 #[derive(Debug, Clone, Default)]
 pub struct LapCompareState {
-    cur: Vec<(f32, f64)>,
-    best: Vec<(f32, f64)>,
+    cur: Vec<(f32, f64, f32, f32)>,
+    best: Vec<(f32, f64, f32, f32)>,
+    last: Vec<(f32, f64, f32, f32)>,
     best_time: Option<f64>,
     prev_pct: Option<f32>,
     lap_started: bool,
     last_delta: Option<f64>,
+    prev_brake: f32,
+    prev_throttle: f32,
 }
 
 impl LapCompareState {
@@ -28,11 +50,21 @@ impl LapCompareState {
         Self::default()
     }
 
-    pub fn update(&mut self, pct: f32, cur_lap_s: Option<f64>, last_lap_s: Option<f64>) {
+    pub fn update(
+        &mut self,
+        pct: f32,
+        cur_lap_s: Option<f64>,
+        last_lap_s: Option<f64>,
+        brake: f32,
+        throttle: f32,
+        _ref_mode: &str,
+    ) {
         if pct < 0.0 {
             return;
         }
         let pct = pct.clamp(0.0, 0.999_999);
+        let brake = brake.clamp(0.0, 1.0);
+        let throttle = throttle.clamp(0.0, 1.0);
 
         if let Some(prev) = self.prev_pct {
             if pct + 0.5 < prev {
@@ -40,15 +72,22 @@ impl LapCompareState {
                 self.cur.clear();
                 self.lap_started = true;
                 self.prev_pct = Some(pct);
+                self.prev_brake = brake;
+                self.prev_throttle = throttle;
+                return;
             }
         }
         self.prev_pct = Some(pct);
 
         if let Some(t) = cur_lap_s.filter(|t| *t >= 0.0) {
-            if self.cur.last().map(|(p, _)| (pct - p).abs() > 1e-4).unwrap_or(true) {
-                self.cur.push((pct, t));
+            if self
+                .cur
+                .last()
+                .map(|(p, _, _, _)| (pct - p).abs() > 1e-4)
+                .unwrap_or(true)
+            {
+                self.cur.push((pct, t, brake, throttle));
                 if self.cur.len() > MAX_SAMPLES {
-                    // Decimate: keep every other sample when overfilled.
                     self.cur = self
                         .cur
                         .iter()
@@ -59,6 +98,8 @@ impl LapCompareState {
                 }
             }
         }
+        self.prev_brake = brake;
+        self.prev_throttle = throttle;
     }
 
     fn finish_lap(&mut self, last_lap_s: Option<f64>) {
@@ -68,6 +109,7 @@ impl LapCompareState {
         if self.cur.len() < 8 {
             return;
         }
+        self.last = self.cur.clone();
         let better = self.best_time.map_or(true, |b| lap_t < b);
         if better {
             self.best = self.cur.clone();
@@ -78,7 +120,16 @@ impl LapCompareState {
         }
     }
 
-    fn interp(curve: &[(f32, f64)], pct: f32) -> Option<f64> {
+    fn ref_curve<'a>(&'a self, mode: &str) -> &'a [(f32, f64, f32, f32)] {
+        if mode.eq_ignore_ascii_case("last_lap") || mode.eq_ignore_ascii_case("last") {
+            if !self.last.is_empty() {
+                return &self.last;
+            }
+        }
+        &self.best
+    }
+
+    fn interp(curve: &[(f32, f64, f32, f32)], pct: f32) -> Option<f64> {
         if curve.is_empty() {
             return None;
         }
@@ -91,8 +142,8 @@ impl LapCompareState {
             }
         }
         for w in curve.windows(2) {
-            let (p0, t0) = w[0];
-            let (p1, t1) = w[1];
+            let (p0, t0, _, _) = w[0];
+            let (p1, t1, _, _) = w[1];
             if pct >= p0 && pct <= p1 {
                 let span = (p1 - p0).max(1e-6);
                 let u = (pct - p0) / span;
@@ -102,20 +153,22 @@ impl LapCompareState {
         None
     }
 
-    fn live_delta(&self) -> Option<f64> {
-        if !self.lap_started || self.best.is_empty() {
+    fn live_delta(&self, mode: &str) -> Option<f64> {
+        let reference = self.ref_curve(mode);
+        if !self.lap_started || reference.is_empty() {
             return self.last_delta;
         }
-        let (pct, cur_t) = *self.cur.last()?;
-        let ref_t = Self::interp(&self.best, pct)?;
+        let (pct, cur_t, _, _) = *self.cur.last()?;
+        let ref_t = Self::interp(reference, pct)?;
         Some(cur_t - ref_t)
     }
 
-    fn build_spark(&self) -> Vec<f32> {
-        if self.best.is_empty() || self.cur.is_empty() {
+    fn build_spark(&self, mode: &str) -> Vec<f32> {
+        let reference = self.ref_curve(mode);
+        if reference.is_empty() || self.cur.is_empty() {
             return Vec::new();
         }
-        let upto = self.cur.last().map(|(p, _)| *p).unwrap_or(0.0);
+        let upto = self.cur.last().map(|(p, _, _, _)| *p).unwrap_or(0.0);
         let mut out = Vec::with_capacity(SPARK_BINS);
         for i in 0..SPARK_BINS {
             let pct = i as f32 / (SPARK_BINS - 1).max(1) as f32;
@@ -125,7 +178,7 @@ impl LapCompareState {
             let Some(ct) = Self::interp(&self.cur, pct) else {
                 continue;
             };
-            let Some(rt) = Self::interp(&self.best, pct) else {
+            let Some(rt) = Self::interp(reference, pct) else {
                 continue;
             };
             out.push((ct - rt) as f32);
@@ -133,22 +186,65 @@ impl LapCompareState {
         out
     }
 
+    fn build_markers(&self) -> Vec<CompareMarker> {
+        let mut out = Vec::new();
+        let mut prev_brk = 0.0_f32;
+        let mut prev_thr = 0.0_f32;
+        for &(pct, _, brk, thr) in &self.cur {
+            // Brake onset: 0 → ≥0.15
+            if prev_brk < 0.05 && brk >= 0.15 {
+                out.push(CompareMarker {
+                    pct,
+                    kind: MarkerKind::Brake,
+                });
+            }
+            // Lift: throttle drops while no significant brake.
+            if prev_thr >= 0.40 && thr <= prev_thr - 0.20 && brk < 0.10 {
+                out.push(CompareMarker {
+                    pct,
+                    kind: MarkerKind::Lift,
+                });
+            }
+            prev_brk = brk;
+            prev_thr = thr;
+        }
+        // Cap density.
+        if out.len() > 24 {
+            let step = out.len() / 24;
+            out = out.into_iter().step_by(step.max(1)).collect();
+        }
+        out
+    }
+
     /// Build the widget view; fills synthetic turn losses when none derived.
-    pub fn view(&self, session_time: f64) -> LapCompareView {
-        let delta = self.live_delta();
-        let mut spark = self.build_spark();
+    pub fn view(&self, session_time: f64, ref_mode: &str) -> LapCompareView {
+        let use_last = ref_mode.eq_ignore_ascii_case("last_lap")
+            || ref_mode.eq_ignore_ascii_case("last");
+        let ref_label = if use_last {
+            "VS LAST".into()
+        } else {
+            "VS BEST".into()
+        };
+        let delta = self.live_delta(ref_mode);
+        let mut spark = self.build_spark(ref_mode);
         if spark.is_empty() {
             spark = demo_spark(session_time);
         }
-        let turns = if self.best.is_empty() {
+        let turns = if self.ref_curve(ref_mode).is_empty() {
             demo_turns(session_time)
         } else {
             turns_from_spark(&spark)
         };
+        let mut markers = self.build_markers();
+        if markers.is_empty() && self.cur.is_empty() {
+            markers = demo_markers(session_time);
+        }
         LapCompareView {
             delta: delta.or_else(|| demo_delta(session_time)),
             spark,
             turns,
+            ref_label,
+            markers,
         }
     }
 }
@@ -177,6 +273,23 @@ fn demo_turns(t: f64) -> Vec<(String, f32)> {
     ]
 }
 
+fn demo_markers(t: f64) -> Vec<CompareMarker> {
+    vec![
+        CompareMarker {
+            pct: (0.18 + 0.02 * (t * 0.2).sin()) as f32,
+            kind: MarkerKind::Brake,
+        },
+        CompareMarker {
+            pct: (0.42 + 0.01 * (t * 0.3).cos()) as f32,
+            kind: MarkerKind::Lift,
+        },
+        CompareMarker {
+            pct: 0.71,
+            kind: MarkerKind::Brake,
+        },
+    ]
+}
+
 /// Approximate a few turn loss chips from spark extrema when no map corners exist.
 fn turns_from_spark(spark: &[f32]) -> Vec<(String, f32)> {
     if spark.len() < 8 {
@@ -199,7 +312,7 @@ fn turns_from_spark(spark: &[f32]) -> Vec<(String, f32)> {
                 .iter()
                 .copied()
                 .fold(0.0_f32, |a, b| if b.abs() > a.abs() { b } else { a });
-            ((*label).to_string(), loss)
+            ((*label).into(), loss)
         })
         .collect()
 }

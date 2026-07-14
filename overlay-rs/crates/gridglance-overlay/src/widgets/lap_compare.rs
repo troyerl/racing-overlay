@@ -18,7 +18,14 @@ fn delta_color(ctx: &WidgetCtx<'_>, d: Option<f64>) -> egui::Color32 {
     }
 }
 
-fn draw_spark(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect, spark: &[f32]) {
+fn draw_spark(
+    ui: &mut Ui,
+    ctx: &WidgetCtx<'_>,
+    rect: Rect,
+    spark: &[f32],
+    markers: &[crate::telemetry::CompareMarker],
+) {
+    use crate::telemetry::MarkerKind;
     draw_dark_cell(ui, ctx.cfg, SECTION, rect, 5.0);
     let mid = rect.center().y;
     ui.painter().line_segment(
@@ -44,6 +51,25 @@ fn draw_spark(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect, spark: &[f32]) {
         pts,
         Stroke::new(1.8_f32, ctx.cfg.color(SECTION, "graph_line", "#ffd23a")),
     ));
+    let show_brake = ctx.cfg.bool_key(SECTION, "show_brake_markers", true);
+    let show_lift = ctx.cfg.bool_key(SECTION, "show_lift_markers", true);
+    let brake_col = ctx.cfg.color(SECTION, "marker_brake", "#ff5050");
+    let lift_col = ctx.cfg.color(SECTION, "marker_lift", "#3aa0ff");
+    for m in markers {
+        let col = match m.kind {
+            MarkerKind::Brake if show_brake => brake_col,
+            MarkerKind::Lift if show_lift => lift_col,
+            _ => continue,
+        };
+        let x = rect.left() + m.pct.clamp(0.0, 1.0) * rect.width();
+        ui.painter().line_segment(
+            [
+                Pos2::new(x, rect.top() + 2.0),
+                Pos2::new(x, rect.bottom() - 2.0),
+            ],
+            Stroke::new(1.2_f32, col),
+        );
+    }
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
@@ -73,11 +99,16 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         },
         ctx.cfg.color(SECTION, "header_bg", "#0b0e12bb"),
     );
+    let ref_label = if view.ref_label.is_empty() {
+        "VS BEST"
+    } else {
+        view.ref_label.as_str()
+    };
     label(
         ui,
         Pos2::new(card.left() + pad, y + hh * 0.5),
         Align2::LEFT_CENTER,
-        "VS BEST",
+        ref_label,
         (hh * 0.55 * scale).clamp(11.0, 18.0),
         ctx.cfg.color(SECTION, "accent", "#e23b3b"),
         true,
@@ -105,7 +136,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(card.left() + pad, y),
             egui::vec2(iw, gh),
         );
-        draw_spark(ui, ctx, graph, &view.spark);
+        draw_spark(ui, ctx, graph, &view.spark, &view.markers);
         y += gh + pad * 0.4;
     }
 

@@ -6,8 +6,8 @@ use crate::layered;
 use crate::state::{PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
-    demo::DemoFeed, finalize_frame, IrsdkReader, LapCompareState, LapExtras, LapLogAccum,
-    SectorTimer,
+    demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
+    LapLogAccum, SectorTimer,
 };
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
@@ -56,6 +56,7 @@ pub struct OverlayApp {
     sector_timer: SectorTimer,
     lap_compare: LapCompareState,
     lap_log: LapLogAccum,
+    fuel_burn: FuelBurnTracker,
 }
 
 impl OverlayApp {
@@ -79,6 +80,7 @@ impl OverlayApp {
             sector_timer: SectorTimer::new(),
             lap_compare: LapCompareState::new(),
             lap_log,
+            fuel_burn: FuelBurnTracker::default(),
         }
     }
 
@@ -100,8 +102,26 @@ impl OverlayApp {
             self.demo.tick()
         };
         let cfg = Arc::clone(&self.state.read().config);
+
+        let hist_n = cfg.f64_key("fuel_calc", "history_laps", 10.0).round().max(1.0) as usize;
+        let cap = if frame.fuel_max_l > 0.0 {
+            frame.fuel_max_l
+        } else if frame.fuel_pct > 0.01 {
+            frame.fuel_l / frame.fuel_pct
+        } else {
+            0.0
+        };
+        self.fuel_burn
+            .observe(frame.lap, frame.fuel_l, cap, hist_n);
+        frame.fuel_use_history = self.fuel_burn.uses.clone();
+
         finalize_frame(&mut frame, cfg.as_ref());
 
+        {
+            let n = cfg.f64_key("sector_timing", "sectors", 3.0).round().max(1.0) as usize;
+            let starts = SectorTimer::equal_starts(n);
+            self.sector_timer.set_boundaries(&starts);
+        }
         self.sector_timer.update(
             frame.player_lap_dist_pct,
             frame.cur_lap_s,
@@ -115,9 +135,16 @@ impl OverlayApp {
             show_delta,
         );
 
-        self.lap_compare
-            .update(frame.player_lap_dist_pct, frame.cur_lap_s, frame.last_lap_s);
-        frame.lap_compare = self.lap_compare.view(frame.session_time);
+        let ref_mode = cfg.str_key("lap_compare", "reference_mode", "best");
+        self.lap_compare.update(
+            frame.player_lap_dist_pct,
+            frame.cur_lap_s,
+            frame.last_lap_s,
+            frame.brake,
+            frame.throttle,
+            &ref_mode,
+        );
+        frame.lap_compare = self.lap_compare.view(frame.session_time, &ref_mode);
 
         self.lap_log.observe(
             frame.lap,

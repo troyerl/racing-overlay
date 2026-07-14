@@ -54,6 +54,49 @@ pub struct FuelInputs {
     pub time_remain: Option<f32>,
     pub fuel_use_per_hour: f32,
     pub laps_total: i32,
+    /// Per-lap burn (litres), newest first — Python `fc_use`.
+    pub fc_use: Vec<f32>,
+}
+
+/// Tracks fuel burned each completed lap (Python `_track_fuel_per_lap`).
+#[derive(Debug, Clone, Default)]
+pub struct FuelBurnTracker {
+    prev_lap: Option<i32>,
+    lap_start_fuel: f32,
+    pub uses: Vec<f32>,
+}
+
+impl FuelBurnTracker {
+    pub fn observe(&mut self, lap: i32, fuel: f32, cap: f32, history_n: usize) {
+        if lap <= 0 || !fuel.is_finite() {
+            return;
+        }
+        let cap = if cap > 0.0 { cap } else { 1e9 };
+        match self.prev_lap {
+            None => {
+                self.prev_lap = Some(lap);
+                self.lap_start_fuel = fuel;
+            }
+            Some(prev) if lap > prev => {
+                let used = self.lap_start_fuel - fuel;
+                if used > 0.0 && used < cap {
+                    self.uses.insert(0, used);
+                    let n = history_n.max(1);
+                    if self.uses.len() > n {
+                        self.uses.truncate(n);
+                    }
+                }
+                self.prev_lap = Some(lap);
+                self.lap_start_fuel = fuel;
+            }
+            Some(prev) if lap < prev => {
+                self.uses.clear();
+                self.prev_lap = Some(lap);
+                self.lap_start_fuel = fuel;
+            }
+            _ => {}
+        }
+    }
 }
 
 const MAX_SESSION_SEC: f32 = 48.0 * 3600.0;
@@ -147,7 +190,7 @@ fn scenario(u: Option<f32>, fuel: f32, laps_rem: Option<f32>, cap: Option<f32>) 
     }
 }
 
-/// Port of Python `build_fuel_snapshot` (no lap-history; FuelUsePerHour fallback).
+/// Port of Python `build_fuel_snapshot` (history preferred; FuelUsePerHour fallback).
 pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcState {
     let level = if inp.level.is_finite() && inp.level >= 0.0 {
         Some(inp.level)
@@ -159,17 +202,23 @@ pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcSta
     let lap_avg = fuel_lap_secs(inp.lap_est, inp.last_lap_s);
     let (laps_rem, time_rem) = race_remaining(inp.laps_remain, inp.time_remain, lap_avg);
 
-    let est = if inp.fuel_use_per_hour > 0.05 {
-        lap_avg.map(|s| inp.fuel_use_per_hour * (s / 3600.0))
+    let (u_avg, u_max, u_min) = if !inp.fc_use.is_empty() {
+        let sum: f32 = inp.fc_use.iter().sum();
+        let avg = sum / inp.fc_use.len() as f32;
+        let max = inp.fc_use.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        let min = inp.fc_use.iter().copied().fold(f32::INFINITY, f32::min);
+        (Some(avg), Some(max), Some(min))
     } else {
-        None
+        let est = if inp.fuel_use_per_hour > 0.05 {
+            lap_avg.map(|s| inp.fuel_use_per_hour * (s / 3600.0))
+        } else {
+            None
+        };
+        (est, est.map(|u| u * 1.08), est.map(|u| u * 0.92))
     };
-    let u_avg = est;
-    let u_max = est.map(|u| u * 1.08);
-    let u_min = est.map(|u| u * 0.92);
 
     let live_burn = if cfg.bool_key("fuel_calc", "show_live_burn", false) {
-        u_avg
+        inp.fc_use.first().copied().or(u_avg)
     } else {
         None
     };
@@ -300,6 +349,7 @@ pub fn demo_fuel(t: f64, fuel_l: f32, fuel_pct: f32, lap: i32) -> FuelCalcState 
         time_remain: Some(3300.0 - t as f32 * 0.5),
         fuel_use_per_hour: 48.0,
         laps_total: 50,
+        fc_use: Vec::new(),
     };
     build_fuel_snapshot(&inp, &cfg)
 }
@@ -323,6 +373,7 @@ mod tests {
                 time_remain: Some(2700.0),
                 fuel_use_per_hour: 40.0,
                 laps_total: 40,
+                fc_use: Vec::new(),
             },
             &cfg,
         );

@@ -58,10 +58,17 @@ fn collect_rows(cars: &[CarRow], cap: usize) -> Vec<StripRow> {
             name: c.name.clone(),
             gap: c.gap.clone(),
             lap: if c.lap > 0 { Some(c.lap) } else { None },
-            speed_mph: None,
+            speed_mph: speed_mps_to_mph(c.speed_mps),
             is_player: c.is_player,
         })
         .collect()
+}
+
+fn speed_mps_to_mph(mps: f32) -> Option<f32> {
+    if !mps.is_finite() || mps <= 0.0 {
+        return None;
+    }
+    Some((mps * 2.236_936_3).round())
 }
 
 fn preview_rows() -> Vec<StripRow> {
@@ -73,7 +80,7 @@ fn preview_rows() -> Vec<StripRow> {
             name: String::new(),
             gap: "—".into(),
             lap: None,
-            speed_mph: None,
+            speed_mph: Some(if p.is_player { 148.0 } else { 151.0 }),
             is_player: p.is_player,
         })
         .collect()
@@ -308,21 +315,13 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
         if show_num {
             let num = row.car_number.trim();
-            let display = if num.is_empty() {
-                String::new()
-            } else if num.len() == 1 {
-                format!(" {num}")
-            } else {
-                num.to_string()
-            };
-            if !display.is_empty() {
-                let num_size = (row_h * 0.58).max(14.0);
-                ui.painter().text(
-                    Pos2::new(x_num + num_w * 0.5, row_top + (row_h - 2.0) * 0.5),
-                    Align2::CENTER_CENTER,
-                    &display,
-                    FontId::new(num_size, FontFamily::Monospace),
-                    num_fill,
+            if !num.is_empty() {
+                let num_rect = Rect::from_min_size(
+                    Pos2::new(x_num, row_top),
+                    Vec2::new(num_w, row_h - 2.0),
+                );
+                super::scoreboard_digits::draw_scoreboard_text(
+                    ui, num_rect, num, num_fill, 2,
                 );
             }
         }

@@ -12,9 +12,9 @@ mod sector_timer;
 mod strategy_hints;
 mod tables;
 
-pub use fuel::{build_fuel_snapshot, FuelCalcState, FuelInputs, FuelScenario};
+pub use fuel::{build_fuel_snapshot, FuelBurnTracker, FuelCalcState, FuelInputs, FuelScenario};
 pub use irsdk::IrsdkReader;
-pub use lap_compare::{LapCompareState, LapCompareView};
+pub use lap_compare::{CompareMarker, LapCompareState, LapCompareView, MarkerKind};
 #[allow(unused_imports)] // parse_delta_str / CompletedLap used by callers / tests later
 pub use lap_log::{parse_delta_str, signed_delta_1, CompletedLap, LapExtras, LapLogAccum};
 pub use pit_advice::PitAdvice;
@@ -54,6 +54,9 @@ pub struct CarRow {
     /// CarIdxF2Time (gap-to-leader style clock).
     pub f2_time: f32,
     pub lap: i32,
+    /// CarIdxSpeed (m/s); 0 when unknown.
+    #[serde(default)]
+    pub speed_mps: f32,
     /// Map status badge: pit / off / garage / black / meatball / dq / furled.
     pub status_kind: Option<String>,
 }
@@ -176,6 +179,9 @@ pub struct TelemetryFrame {
     pub radio: Option<RadioSpeaker>,
     /// Fuel calculator snapshot (Python fuel_calc `set_data`).
     pub fuel: FuelCalcState,
+    /// Per-lap burn history (litres, newest first).
+    #[serde(default)]
+    pub fuel_use_history: Vec<f32>,
     /// DriverCarFuelMaxLtr when known.
     pub fuel_max_l: f32,
     pub fuel_use_per_hour: f32,
@@ -355,6 +361,7 @@ pub mod demo {
                     est_time: est,
                     f2_time: f2,
                     lap: 12 - (i / 4),
+                    speed_mps: 55.0 + (i as f32) * 1.5 + 3.0 * (t as f32 * 0.4).sin(),
                     status_kind: if i == 8 && (t as i32 % 20) < 4 {
                         Some("pit".into())
                     } else {

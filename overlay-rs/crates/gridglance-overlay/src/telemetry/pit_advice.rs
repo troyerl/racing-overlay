@@ -1,4 +1,4 @@
-//! Core pit engineer advice (Python pit_strategy subset).
+//! Pit engineer advice (Python `pit_strategy.evaluate_pit_strategy` fuel/gap/caution slice).
 
 use crate::config::OverlayConfig;
 use serde::{Deserialize, Serialize};
@@ -7,7 +7,7 @@ use super::TelemetryFrame;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PitAdvice {
-    /// stay_out | pit_now | pit_next_lap | low_fuel | hold
+    /// hold | stay_out | pit_now | pit_next_lap | marginal | low_fuel
     pub rec: String,
     pub label: String,
     pub rationale: String,
@@ -51,13 +51,23 @@ fn is_caution(flag: Option<&str>) -> bool {
     )
 }
 
-/// Compute a pit recommendation from fuel + relative gaps.
+fn pits_closed_under_caution(frame: &TelemetryFrame) -> bool {
+    is_caution(frame.flag.as_deref())
+        && frame
+            .flag_context
+            .as_deref()
+            .map(|s| s.contains("pits closed"))
+            .unwrap_or(false)
+}
+
+/// Compute a pit recommendation from fuel + relative gaps + caution.
 pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdvice {
     let undercut_max = cfg.f64_key("pit_advisor", "undercut_gap_max_s", 12.0) as f32;
     let cover_max = cfg.f64_key("pit_advisor", "cover_gap_max_s", 8.0) as f32;
     let pit_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0);
     let low_laps = cfg.f64_key("pit_advisor", "low_fuel_laps_threshold", 2.0) as f32;
     let caution = is_caution(frame.flag.as_deref());
+    let green = matches!(frame.flag.as_deref(), Some("green") | None);
 
     let fuel_crit = frame
         .fuel
@@ -66,9 +76,21 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
         .unwrap_or(false)
         || (frame.fuel_pct > 0.0 && frame.fuel_pct < 0.08);
     let window = frame.fuel.window_open;
+    let laps_empty = frame.fuel.laps_empty;
 
     let (gap_ahead, gap_behind, car_ahead, car_behind) = nearest_gaps(frame);
     let win_txt = frame.fuel.window.map(|(a, b)| format!("Best stop: laps {a}–{b}"));
+
+    // HOLD — pits closed under caution (Python PRIORITY).
+    if pits_closed_under_caution(frame) && !fuel_crit {
+        return PitAdvice {
+            rec: "hold".into(),
+            label: "HOLD".into(),
+            rationale: "Hold — pits closed under caution".into(),
+            secondary: win_txt,
+            actionable: false,
+        };
+    }
 
     if fuel_crit {
         return PitAdvice {
@@ -80,17 +102,15 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
         };
     }
 
-    if caution && !fuel_crit {
-        // Under yellow, prefer stay-out unless already in a hard fuel window.
-        if !window {
-            return PitAdvice {
-                rec: "stay_out".into(),
-                label: "STAY OUT".into(),
-                rationale: "Stay out under caution — fuel is comfortable".into(),
-                secondary: win_txt,
-                actionable: false,
-            };
-        }
+    // Under yellow without a hard window: stay out.
+    if caution && !window {
+        return PitAdvice {
+            rec: "stay_out".into(),
+            label: "STAY OUT".into(),
+            rationale: "Stay out under caution — fuel is comfortable".into(),
+            secondary: win_txt,
+            actionable: false,
+        };
     }
 
     if window {
@@ -104,7 +124,7 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
                     rec: "pit_now".into(),
                     label: "PIT NOW".into(),
                     rationale: format!("Pit now — {num} is {g:.1}s behind"),
-                    secondary: win_txt,
+                    secondary: win_txt.clone(),
                     actionable: true,
                 };
             }
@@ -121,11 +141,24 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
                     rationale: format!(
                         "Pit next lap to pass {num} — {g:.1}s ahead, stop costs ~{pit_loss:.0}s"
                     ),
-                    secondary: win_txt,
+                    secondary: win_txt.clone(),
                     actionable: true,
                 };
             }
         }
+
+        // MARGINAL — window open but no clear cover/undercut target.
+        let soft = laps_empty.map(|l| l > low_laps * 1.5).unwrap_or(true);
+        if soft && green {
+            return PitAdvice {
+                rec: "marginal".into(),
+                label: "MARGINAL".into(),
+                rationale: "Pit window open — no clear undercut/cover target".into(),
+                secondary: win_txt,
+                actionable: false,
+            };
+        }
+
         return PitAdvice {
             rec: "pit_now".into(),
             label: "PIT WINDOW".into(),
@@ -133,6 +166,21 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
             secondary: win_txt,
             actionable: true,
         };
+    }
+
+    // Green resume: stay quiet unless fuel is tightening.
+    if green {
+        if let Some(l) = laps_empty {
+            if l <= low_laps * 2.0 {
+                return PitAdvice {
+                    rec: "stay_out".into(),
+                    label: "STAY OUT".into(),
+                    rationale: format!("Stay out — about {l:.1} laps of fuel remaining"),
+                    secondary: win_txt,
+                    actionable: false,
+                };
+            }
+        }
     }
 
     PitAdvice {

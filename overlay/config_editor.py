@@ -478,14 +478,13 @@ SECTION_SETTINGS_SKIP: dict[str, frozenset[str]] = {
     "standings": _TABLE_RUST_ORPHANS,
     "laptime_log": _DATA_FONT_BOLD,
     "fuel_calc": frozenset({
-        "history_laps", "show_stints", "stint_laps", "legal_fuel_buffer_l",
+        "show_stints", "stint_laps", "legal_fuel_buffer_l",
         "data_font_bold", "text_scale",
     }),
     "radar": _ROW_DIVIDERS_SKIP | frozenset({
         "closing_rate_color", "closing_rate_full", "data_font_bold",
     }),
     "dash": frozenset({
-        "shift_blink", "shift_blink_hz", "shift_blink_pct", "shift_blink_max_sec",
         "flag_pulse", "flag_pulse_seconds", "flag_blink_hz", "flag_green_seconds",
         "delta_bar_mode", "row_dividers", "data_font_bold",
     }),
@@ -496,14 +495,13 @@ SECTION_SETTINGS_SKIP: dict[str, frozenset[str]] = {
     "delta_bar": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),
     "flags": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),
     "lap_compare": frozenset({
-        "min_time_loss", "show_live_delta", "reference_mode",
-        "show_brake_markers", "show_lift_markers", "show_gear_rpm",
+        "min_time_loss", "show_live_delta", "show_gear_rpm",
         "exclude_wet_laps", "wetness_delta_threshold",
         "row_height_px", "max_row_height_frac", "row_dividers",
         "data_font_bold", "text_scale",
     }),
     "sector_timing": _ROW_DIVIDERS_SKIP | frozenset({
-        "sectors", "highlight_active_sector_on_map", "data_font_bold",
+        "data_font_bold",
     }),
     "map": MAP_SETTINGS_SKIP,
     "tire_panel": _ROW_DIVIDERS_SKIP | frozenset({"data_font_bold", "text_scale"}),

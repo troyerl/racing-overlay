@@ -437,6 +437,7 @@ pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
         time_remain: frame.session_time_remain,
         fuel_use_per_hour: frame.fuel_use_per_hour,
         laps_total: frame.laps_total,
+        fc_use: frame.fuel_use_history.clone(),
     };
     frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 
@@ -577,10 +578,29 @@ fn apply_flag_config(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
         }
     }
 
-    if frame.flag.as_deref() == Some("blue")
-        && !cfg.bool_key("flags", "show_blue_detail", true)
-    {
-        frame.flag_context = Some("Faster car approaching — let them pass".into());
+    if frame.flag.as_deref() == Some("blue") {
+        if !cfg.bool_key("flags", "show_blue_detail", true) {
+            frame.flag_context = Some("Faster car approaching — let them pass".into());
+        } else {
+            // Prefer "#N +Xs" from nearest ahead relative row when available.
+            let mut best: Option<(f32, String)> = None;
+            for row in &frame.relative_cars {
+                if row.empty || row.is_player {
+                    continue;
+                }
+                let Some(g) = row.gap_secs.filter(|g| *g > 0.0) else {
+                    continue;
+                };
+                if best.as_ref().map(|(d, _)| g < *d).unwrap_or(true) {
+                    best = Some((g, row.car_number.clone()));
+                }
+            }
+            if let Some((g, num)) = best {
+                frame.flag_context = Some(format!("Car #{num} +{g:.1}s"));
+            } else if frame.flag_context.is_none() {
+                frame.flag_context = Some("Faster car approaching — let them pass".into());
+            }
+        }
     }
 
     if frame.flag.as_deref() == Some("checkered")

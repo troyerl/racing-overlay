@@ -1084,6 +1084,25 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let zones = ctx.map.cached_p2p_zones.clone();
         draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col);
     }
+    // Active sector wash (Python `_draw_active_sector`).
+    if ctx
+        .cfg
+        .bool_key("sector_timing", "highlight_active_sector_on_map", false)
+        && !path.is_empty()
+        && !ctx.frame.sectors_ui.starts.is_empty()
+    {
+        let starts = &ctx.frame.sectors_ui.starts;
+        let n = starts.len();
+        let idx = ctx.frame.sectors_ui.active_idx.min(n.saturating_sub(1));
+        let lo = starts[idx] as f32;
+        let hi = if idx + 1 >= n {
+            1.0
+        } else {
+            starts[(idx + 1) % n] as f32
+        };
+        let col = ctx.cfg.color(SECTION, "active_sector", "#ffd23a66");
+        draw_zones(ui, &path, &xform, mirror, rot, &[(lo, hi)], zone_w, col);
+    }
 
     if show_sf && !modeled.is_empty() {
         // Transform tangent via model: evaluate on modeled path.
