@@ -120,6 +120,10 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
             ctx.map.cached_drs_zones = tp.drs_zones;
             ctx.map.cached_p2p_zones = tp.p2p_zones;
             ctx.map.cached_corners = tp.corners;
+            // Match Python widget field synced from track meta.
+            if ctx.map.cached_pit.lane_speed_pct > 0.0 {
+                ctx.map.pit_lane_speed_pct = ctx.map.cached_pit.lane_speed_pct as f64;
+            }
             return;
         }
     }
@@ -127,6 +131,7 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     ctx.map.cached_start_finish = 0.0;
     if let Some(synth) = track_path::synthesize_demo_pit(&ctx.map.cached_path) {
         ctx.map.cached_pit_out_pct = synth.out_pct;
+        ctx.map.pit_lane_speed_pct = synth.lane_speed_pct as f64;
         ctx.map.cached_pit = synth;
     } else {
         ctx.map.cached_pit_out_pct = Some(0.08);
@@ -402,6 +407,113 @@ fn hypot2(a: (f32, f32), b: (f32, f32)) -> f32 {
     dx * dx + dy * dy
 }
 
+fn blend_xy(a: (f32, f32), b: (f32, f32), w: f32) -> (f32, f32) {
+    let w = w.clamp(0.0, 1.0);
+    (a.0 + (b.0 - a.0) * w, a.1 + (b.1 - a.1) * w)
+}
+
+fn open_poly_length(pts: &[(f32, f32)]) -> f32 {
+    if pts.len() < 2 {
+        return 0.0;
+    }
+    pts.windows(2)
+        .map(|w| (w[1].0 - w[0].0).hypot(w[1].1 - w[0].1))
+        .sum()
+}
+
+/// Python `_pit_arc_length`.
+fn pit_arc_length(segments: &[&[(f32, f32)]]) -> f32 {
+    segments
+        .iter()
+        .filter(|s| s.len() >= 2)
+        .map(|s| open_poly_length(s))
+        .sum()
+}
+
+/// Python `_loop_arc_between`: racing-loop arc over wrapping [lo, hi].
+fn loop_arc_between(racing: &[(f32, f32)], lo: f32, hi: f32) -> f32 {
+    if racing.len() < 2 {
+        return 0.0;
+    }
+    let span = (hi - lo).rem_euclid(1.0);
+    if span <= 1e-9 {
+        return 0.0;
+    }
+    let mut total = 0.0_f32;
+    for i in 0..racing.len() {
+        let a = racing[i];
+        let b = racing[(i + 1) % racing.len()];
+        total += (b.0 - a.0).hypot(b.1 - a.1);
+    }
+    span * total
+}
+
+/// Python `_pit_phase_pos` (entry/exit blends only).
+fn pit_phase_pos(
+    pct: f32,
+    lo: f32,
+    hi: f32,
+    seg: &[(f32, f32)],
+    racing: &[(f32, f32)],
+    speed: f32,
+) -> Option<(f32, f32)> {
+    if seg.len() < 2 {
+        return None;
+    }
+    let span = (hi - lo).rem_euclid(1.0);
+    if span <= 1e-6 {
+        return None;
+    }
+    let linear = ((pct - lo).rem_euclid(1.0) / span).clamp(0.0, 1.0);
+    let speed = if speed > 0.0 { speed } else { 1.0 };
+    let pit_arc = pit_arc_length(&[seg]);
+    let loop_arc = loop_arc_between(racing, lo, hi);
+    let t = if pit_arc > 1e-9 && loop_arc > 1e-9 {
+        (linear * (loop_arc / pit_arc) * speed).clamp(0.0, 1.0)
+    } else {
+        (linear * speed).clamp(0.0, 1.0)
+    };
+    Some(track_path::point_on_open(seg, t))
+}
+
+/// Python `_pit_blend_weight` (schematic).
+fn pit_blend_weight(
+    pct: f32,
+    on_route: bool,
+    on_pit: bool,
+    in_entry: bool,
+    in_exit: bool,
+    route_lo: f32,
+    route_hi: f32,
+) -> f32 {
+    if !on_route && !on_pit {
+        return 0.0;
+    }
+    let span = (route_hi - route_lo).rem_euclid(1.0);
+    if span <= 1e-6 {
+        return 0.0;
+    }
+    let feather = (span * 0.12).clamp(0.012, span * 0.35);
+    if in_entry {
+        let d_entry = (pct - route_lo).rem_euclid(1.0);
+        if d_entry < feather {
+            return d_entry / feather;
+        }
+        return 1.0;
+    }
+    if in_exit {
+        let d_exit = (route_hi - pct).rem_euclid(1.0);
+        if d_exit < feather {
+            return if on_route { d_exit / feather } else { 0.0 };
+        }
+        return if on_route { 1.0 } else { 0.0 };
+    }
+    if on_pit || on_route {
+        return 1.0;
+    }
+    0.0
+}
+
 /// Python `_pit_path_handoff_point`: where pit_in meets pit_path.
 fn pit_path_handoff(lane: &track_path::PitLane) -> Option<(f32, f32)> {
     if let Some(p) = lane.entry.last() {
@@ -466,8 +578,7 @@ fn pit_lane_mapping_interval(
     Some((lane_lo, lane_hi))
 }
 
-/// Place on pit_path for a lap-% interval (Python `_pit_path_pos_for_route_pct`).
-/// Outside `[lo, hi]`, pin to nearer tip (t=0/1) instead of wrapping to the opposite end.
+/// Python `_pit_path_pos_for_route_pct` (linear * speed; no tip-pin).
 fn pit_path_pos_for_route_pct(
     lane: &track_path::PitLane,
     pct: f32,
@@ -483,23 +594,23 @@ fn pit_path_pos_for_route_pct(
         return None;
     }
     let speed = if speed > 0.0 { speed } else { 1.0 };
-    let mut t = if pct_in_interval(pct, lo, hi) {
-        let linear = ((pct - lo).rem_euclid(1.0) / span).clamp(0.0, 1.0);
-        (linear * speed).clamp(0.0, 1.0)
-    } else {
-        // Closer to hi → end of path; closer to lo → start (no wrap-to-tip).
-        let d_after_hi = (pct - hi).rem_euclid(1.0);
-        let d_before_lo = (lo - pct).rem_euclid(1.0);
-        if d_after_hi <= d_before_lo {
-            1.0
-        } else {
-            0.0
-        }
-    };
+    let linear = ((pct - lo).rem_euclid(1.0) / span).clamp(0.0, 1.0);
+    let mut t = (linear * speed).clamp(0.0, 1.0);
     if pit_path_needs_reverse(lane) {
         t = 1.0 - t;
     }
     Some(track_path::point_on_open(&lane.path, t))
+}
+
+fn authoring_lane_speed(ctx: &WidgetCtx<'_>, lane: &track_path::PitLane) -> f32 {
+    let authored = ctx.map.pit_lane_speed_pct as f32;
+    if authored > 0.0 {
+        authored
+    } else if lane.lane_speed_pct > 0.0 {
+        lane.lane_speed_pct
+    } else {
+        1.0
+    }
 }
 
 fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
@@ -556,7 +667,67 @@ fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
             .unwrap_or(false)
 }
 
-/// Schematic pit placement (Python `_pos_for_schematic_route`); no full-route fallback.
+/// Python `_pos_for_schematic_route` (raw=True) — phase poly only.
+fn schematic_route_pos(
+    ctx: &WidgetCtx<'_>,
+    car: &CarRow,
+    pct: f32,
+    racing: &[(f32, f32)],
+    lane: &track_path::PitLane,
+    show_blends: bool,
+) -> Option<(f32, f32)> {
+    let on_pit = car.on_pit;
+    let on_route = car_on_route(ctx, car);
+    if !on_route {
+        return None;
+    }
+    if !lane.has_drawable() {
+        return None;
+    }
+    let in_pct = lane
+        .in_pct
+        .or(lane.span.map(|(a, _)| a))
+        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+    let out_pct = lane
+        .out_pct
+        .or(ctx.map.cached_pit_out_pct)
+        .or(lane.span.map(|(_, b)| b))
+        .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
+    let (lane_lo, lane_hi) = lane
+        .span
+        .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
+    let speed = authoring_lane_speed(ctx, lane);
+
+    // Exit blend: pit lane end -> rejoin (off pit road).
+    if show_blends && !on_pit && lane.exit.len() >= 2 {
+        let exit_start = ctx
+            .map
+            .pit_exit_latch
+            .get(&car.car_idx)
+            .copied()
+            .unwrap_or(lane_hi);
+        if pct_in_interval(pct, exit_start, out_pct) {
+            return pit_phase_pos(pct, exit_start, out_pct, &lane.exit, racing, speed);
+        }
+    }
+
+    // Entry blend (also while OnPitRoad — telem often asserts before lane_lo).
+    let entry_end = lane_lo;
+    if show_blends && lane.entry.len() >= 2 && pct_in_interval(pct, in_pct, entry_end) {
+        return pit_phase_pos(pct, in_pct, entry_end, &lane.entry, racing, speed);
+    }
+
+    // Pit road while OnPitRoad.
+    if on_pit && lane.path.len() >= 2 {
+        let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
+            .or(Some((in_pct, out_pct)))
+            .unwrap_or((lane_lo, lane_hi));
+        return pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed);
+    }
+    None
+}
+
+/// Python `_resolve_car_point` schematic branch: route + blend weight vs track.
 fn car_model_xy(
     ctx: &WidgetCtx<'_>,
     car: &CarRow,
@@ -568,67 +739,51 @@ fn car_model_xy(
 ) -> (f32, f32) {
     let on_pit = car.on_pit;
     let on_route = car_on_route(ctx, car);
+    let track = track_path::point_at(racing, pct);
     if !on_route && !on_pit {
-        return track_path::point_at(racing, pct);
+        return track;
     }
 
-    for lane in [pit, pit2] {
-        if !lane.has_drawable() {
-            continue;
-        }
-        let in_pct = lane
-            .in_pct
-            .or(lane.span.map(|(a, _)| a))
-            .unwrap_or(track_path::DEMO_PIT_IN_PCT);
-        let out_pct = lane
-            .out_pct
-            .or(ctx.map.cached_pit_out_pct)
-            .or(lane.span.map(|(_, b)| b))
-            .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
-        let (lane_lo, lane_hi) = lane
-            .span
-            .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
+    let lane = if pit.has_drawable() {
+        pit
+    } else if pit2.has_drawable() {
+        pit2
+    } else {
+        return track;
+    };
 
-        // Exit merge: off pit road, on_route, along pit_out.
-        if show_blends && !on_pit && on_route && lane.exit.len() >= 2 {
-            let exit_start = ctx
-                .map
-                .pit_exit_latch
-                .get(&car.car_idx)
-                .copied()
-                .unwrap_or(lane_hi);
-            if pct_in_interval(pct, exit_start, out_pct) {
-                let t = track_path::route_t_for_pct(pct, exit_start, out_pct);
-                return track_path::point_on_open(&lane.exit, t);
-            }
-        }
+    let in_pct = lane
+        .in_pct
+        .or(lane.span.map(|(a, _)| a))
+        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+    let out_pct = lane
+        .out_pct
+        .or(ctx.map.cached_pit_out_pct)
+        .or(lane.span.map(|(_, b)| b))
+        .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
+    let (lane_lo, lane_hi) = lane
+        .span
+        .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
 
-        // Entry blend (also while OnPitRoad — telem often asserts before lane_lo).
-        if show_blends && on_route && lane.entry.len() >= 2 {
-            if pct_in_interval(pct, in_pct, lane_lo) {
-                let t = track_path::route_t_for_pct(pct, in_pct, lane_lo);
-                return track_path::point_on_open(&lane.entry, t);
-            }
-        }
+    // Python `_pit_route_phases`: entry/exit false while OnPitRoad.
+    let in_entry = !on_pit && pct_in_interval(pct, in_pct, lane_lo);
+    let in_exit = !on_pit && pct_in_interval(pct, lane_hi, out_pct);
 
-        // Pit road while OnPitRoad only.
-        if on_pit && lane.path.len() >= 2 {
-            let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
-                .or(Some((in_pct, out_pct)))
-                .or(Some((lane_lo, lane_hi)))
-                .unwrap();
-            let speed = if lane.lane_speed_pct > 0.0 {
-                lane.lane_speed_pct
-            } else {
-                ctx.map.pit_lane_speed_pct as f32
-            };
-            if let Some(pos) = pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed) {
-                return pos;
-            }
-        }
-        // No phase match → racing line (do not map onto concatenated pit route).
+    let weight = pit_blend_weight(
+        pct, on_route, on_pit, in_entry, in_exit, in_pct, out_pct,
+    );
+    if weight <= 0.0 {
+        return track;
     }
-    track_path::point_at(racing, pct)
+
+    let Some(route) = schematic_route_pos(ctx, car, pct, racing, lane, show_blends) else {
+        return track;
+    };
+    if weight >= 1.0 {
+        route
+    } else {
+        blend_xy(track, route, weight)
+    }
 }
 
 fn is_caution_flag(flag: Option<&str>) -> bool {

@@ -459,6 +459,7 @@ pub fn point_on_open(pts: &[(f32, f32)], t: f32) -> (f32, f32) {
 }
 
 /// Map lap% through a wrapping [in_pct, out_pct] span onto 0..1 along the route.
+#[allow(dead_code)]
 pub fn route_t_for_pct(pct: f32, in_pct: f32, out_pct: f32) -> f32 {
     let span = (out_pct - in_pct).rem_euclid(1.0);
     if span <= 1e-6 {

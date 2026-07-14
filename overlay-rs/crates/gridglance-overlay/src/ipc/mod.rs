@@ -257,6 +257,10 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                         st.map.cached_drs_zones = tp.drs_zones;
                         st.map.cached_p2p_zones = tp.p2p_zones;
                         st.map.cached_corners = tp.corners;
+                        if st.map.cached_pit.lane_speed_pct > 0.0 {
+                            st.map.pit_lane_speed_pct =
+                                st.map.cached_pit.lane_speed_pct as f64;
+                        }
                     }
                 }
             }
