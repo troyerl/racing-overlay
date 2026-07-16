@@ -3,7 +3,7 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
+use tray_icon::{TrayIcon, TrayIconBuilder};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -69,7 +69,7 @@ pub fn spawn() -> anyhow::Result<(Receiver<TrayCommand>, TrayIcon)> {
         }
     });
 
-    let icon = make_icon();
+    let icon = crate::app_icon::tray_icon();
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("GridGlance")
@@ -89,27 +89,4 @@ pub fn poll_events(rx: &Receiver<TrayCommand>) -> Vec<TrayCommand> {
         }
     }
     out
-}
-
-fn make_icon() -> Icon {
-    let size = 32u32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let i = ((y * size + x) * 4) as usize;
-            let edge = x < 2 || y < 2 || x >= size - 2 || y >= size - 2;
-            if edge {
-                rgba[i] = 0x0d;
-                rgba[i + 1] = 0x0f;
-                rgba[i + 2] = 0x12;
-                rgba[i + 3] = 255;
-            } else {
-                rgba[i] = 0x46;
-                rgba[i + 1] = 0xdf;
-                rgba[i + 2] = 0x7a;
-                rgba[i + 3] = 255;
-            }
-        }
-    }
-    Icon::from_rgba(rgba, size, size).expect("tray icon")
 }

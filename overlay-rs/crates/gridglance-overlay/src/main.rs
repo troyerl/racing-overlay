@@ -1,5 +1,6 @@
 //! GridGlance Rust overlay binary — primary process (no Python required).
 
+mod app_icon;
 mod autostart;
 mod chrome;
 mod cloud;
@@ -150,6 +151,7 @@ fn run_import_track(args: &Args) -> Result<()> {
 
 fn main() -> Result<()> {
     cloud::load_dotenv();
+    app_icon::set_windows_app_user_model_id();
 
     let args = Args::parse();
     if args.import_track.is_some() {
@@ -200,13 +202,19 @@ fn main() -> Result<()> {
     cloud::fetch_app_settings_async();
 
     if check_updates {
-        std::thread::spawn(|| match updater::fetch_latest(8) {
+        let state_upd = state.clone();
+        std::thread::spawn(move || match updater::fetch_latest(8) {
             Ok(Some(info)) if updater::is_newer(&info.version, updater::VERSION) => {
                 eprintln!(
                     "[gridglance] update available: {} (current {})",
                     info.version,
                     updater::VERSION
                 );
+                if let Some(mut st) = state_upd.try_write() {
+                    st.pending_update = Some((info.version, info.url));
+                    st.settings_open = true;
+                    st.settings_section = "__app__".into();
+                }
             }
             Ok(_) => {}
             Err(e) => eprintln!("[gridglance] update check: {e}"),
@@ -228,15 +236,19 @@ fn main() -> Result<()> {
     };
 
     // Tiny hidden root — panels are separate immediate viewports.
+    let mut root_viewport = egui::ViewportBuilder::default()
+        .with_title(WINDOW_TITLE)
+        .with_inner_size([1.0, 1.0])
+        .with_position(egui::pos2(-32000.0, -32000.0))
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_taskbar(false)
+        .with_visible(false);
+    if let Some(icon) = app_icon::egui_icon() {
+        root_viewport = root_viewport.with_icon(icon);
+    }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title(WINDOW_TITLE)
-            .with_inner_size([1.0, 1.0])
-            .with_position(egui::pos2(-32000.0, -32000.0))
-            .with_decorations(false)
-            .with_transparent(true)
-            .with_taskbar(false)
-            .with_visible(false),
+        viewport: root_viewport,
         renderer: eframe::Renderer::Glow,
         multisampling: 1,
         ..Default::default()

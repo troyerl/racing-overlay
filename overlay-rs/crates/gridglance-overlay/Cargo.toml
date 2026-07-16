@@ -24,7 +24,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tray-icon = "0.19"
 muda = "0.15"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "ico"] }
 rfd = "0.15"
 regex = "1"
 ureq = { version = "2", default-features = false, features = ["tls", "json"] }
@@ -40,6 +40,7 @@ svgtypes = "0.15"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
 iracing-telem = "0.2.1"

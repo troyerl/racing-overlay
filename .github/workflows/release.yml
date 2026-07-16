@@ -17,19 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pyinstaller pillow
 
       - name: Read version & notes from RELEASE.md
         id: ver
@@ -58,26 +52,33 @@ jobs:
           print(body)
           PY
 
-      - name: Stamp version and repo into the app
+      - name: Stamp Cargo workspace version
         shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
-          APP_REPO: ${{ github.repository }}
         run: |
           python - <<'PY'
           import os, re
           v = os.environ["APP_VERSION"]
-          repo = os.environ["APP_REPO"]
-          p = "overlay/version.py"
-          s = open(p, encoding="utf-8").read()
-          s = re.sub(r'__version__\s*=.*', f'__version__ = "{v}"', s)
-          s = re.sub(r'GITHUB_REPO\s*=.*', f'GITHUB_REPO = "{repo}"', s)
-          open(p, "w", encoding="utf-8").write(s)
-          print(s)
+          path = "overlay-rs/Cargo.toml"
+          text = open(path, encoding="utf-8").read()
+          new, n = re.subn(
+              r'(\[workspace\.package\]\s*\nversion\s*=\s*")[^"]+(")',
+              rf'\g<1>{v}\2',
+              text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f"Could not stamp version in {path} (replacements={n})")
+          open(path, "w", encoding="utf-8").write(new)
+          print(f"Stamped workspace version = {v}")
           PY
 
-      - name: Build the app (PyInstaller)
-        run: python build_windows.py --no-shortcut
+      - name: Build gridglance-overlay (release)
+        working-directory: overlay-rs
+        env:
+          GRIDGLANCE_GITHUB_REPO: ${{ github.repository }}
+        run: cargo build --release -p gridglance-overlay
 
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress

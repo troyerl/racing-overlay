@@ -135,6 +135,18 @@ impl OverlayApp {
                 st.settings_open = true;
             }
         }
+        // Launch-time update check (background thread) → Settings About.
+        if let Some(mut st) = self.state.try_write() {
+            if let Some((ver, url)) = st.pending_update.take() {
+                self.settings_ui.flash(format!("Update available: {ver}"));
+                if let Some(u) = url {
+                    self.settings_ui.update_url = Some(u);
+                }
+                st.settings_open = true;
+                st.settings_section = "__app__".into();
+                self.settings_ui.top_tab = settings::TopTab::Settings;
+            }
+        }
         if let Some(rx) = &self.tray_rx {
             for cmd in crate::shell::poll_events(rx) {
                 match cmd {
@@ -234,7 +246,7 @@ impl OverlayApp {
         }
 
         let size = settings::default_size();
-        let builder = ViewportBuilder::default()
+        let mut builder = ViewportBuilder::default()
             .with_title(settings::window_title())
             .with_inner_size(size)
             .with_min_inner_size(egui::vec2(720.0, 560.0))
@@ -242,6 +254,9 @@ impl OverlayApp {
             .with_transparent(false)
             .with_visible(true)
             .with_taskbar(true);
+        if let Some(icon) = crate::app_icon::egui_icon() {
+            builder = builder.with_icon(icon);
+        }
 
         let state = self.state.clone();
         let mut section = {

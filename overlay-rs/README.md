@@ -41,4 +41,15 @@ IPC still listens on `127.0.0.1:19847` for external tools.
 
 ## Packaging
 
-Windows installer (`installer/gridglance.iss`) ships the release `gridglance-overlay.exe` as `GridGlance.exe`. Legacy `run.py` only locates and spawns that binary.
+Windows installer ([`installer/gridglance.iss`](../installer/gridglance.iss)) ships the
+release `gridglance-overlay.exe` as `GridGlance.exe` plus `assets/app.ico`.
+
+CI (`.github/workflows/release.yml`) on push to `main`:
+
+1. Reads version + notes from root `RELEASE.md`
+2. Stamps that version into `overlay-rs/Cargo.toml`
+3. `cargo build --release -p gridglance-overlay` with `GRIDGLANCE_GITHUB_REPO` set
+   (enables in-app update checks)
+4. Builds the Inno Setup installer and publishes a GitHub Release
+
+Legacy `run.py` only locates and spawns that binary.

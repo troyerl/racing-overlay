@@ -553,6 +553,8 @@ pub struct SharedState {
     pub settings_open: bool,
     /// Active Settings nav section key.
     pub settings_section: String,
+    /// Launch-time update notice: (version, download_url). Consumed by Settings UI.
+    pub pending_update: Option<(String, Option<String>)>,
 }
 
 impl SharedState {
@@ -616,6 +618,7 @@ impl SharedState {
             },
             settings_open: false,
             settings_section: "__general__".into(),
+            pending_update: None,
         }
     }
 
