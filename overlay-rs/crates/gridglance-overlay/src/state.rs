@@ -624,7 +624,13 @@ impl SharedState {
     pub fn map_state_json(&self) -> Value {
         let (loop_pts, has_saved_pit, has_saved_pit_2) = self.authoring_loop_and_saved_pit();
         let has_loop = loop_pts.len() >= 3;
-        let tid = self.frame.track_id;
+        // Prefer HTML-import / authoring cache over live/demo session TrackID.
+        let tid = self.map.cached_track_id.or(self.frame.track_id);
+        let track_name = if !self.map.cached_track_name.is_empty() {
+            Some(self.map.cached_track_name.clone())
+        } else {
+            self.frame.track_name.clone()
+        };
         let can_author = tid.is_some() && has_loop;
         let lane_num = match self.map.lane.as_str() {
             "2" | "secondary" => 2,
@@ -699,7 +705,7 @@ impl SharedState {
         m.insert("alias_ids".into(), json!(self.map.alias_ids));
         m.insert("alias_track_ids".into(), json!(self.map.alias_ids));
         m.insert("track_id".into(), json!(tid));
-        m.insert("track_name".into(), json!(self.frame.track_name));
+        m.insert("track_name".into(), json!(track_name));
         m.insert("authoring_track_id".into(), json!(tid));
         m.insert("canonical_track_id".into(), json!(tid));
         m.insert("in_sim".into(), json!(!self.demo && tid.is_some()));

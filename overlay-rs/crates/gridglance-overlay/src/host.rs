@@ -165,7 +165,17 @@ impl OverlayApp {
         }
 
         self.sysstats.sample_into(&mut frame);
-        self.state.write().frame = Arc::new(frame);
+        {
+            let mut st = self.state.write();
+            // Keep HTML-imported authoring TrackID across demo/live ticks.
+            if let Some(id) = st.map.cached_track_id {
+                frame.track_id = Some(id);
+                if !st.map.cached_track_name.is_empty() {
+                    frame.track_name = Some(st.map.cached_track_name.clone());
+                }
+            }
+            st.frame = Arc::new(frame);
+        }
     }
 }
 

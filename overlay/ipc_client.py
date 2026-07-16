@@ -364,7 +364,7 @@ class RemoteOverlay:
             state = self.pit_edit_state()
         except OverlayIpcError:
             return
-        tid = state.get("authoring_track_id") or state.get("track_id")
+        tid = self.effective_track_id()
         if tid is None:
             return
         corners = state.get("corners") or []
@@ -382,7 +382,7 @@ class RemoteOverlay:
             state = self.pit_edit_state()
         except OverlayIpcError:
             return
-        tid = state.get("authoring_track_id") or state.get("track_id")
+        tid = self.effective_track_id()
         if tid is None:
             return
         sf = float(state.get("start_finish") or 0.0)
@@ -423,7 +423,7 @@ class RemoteOverlay:
             state = self.pit_edit_state()
         except OverlayIpcError as exc:
             return False, str(exc)
-        tid = state.get("authoring_track_id") or state.get("track_id")
+        tid = self.effective_track_id()
         loop = ta.xy_list(state.get("loop_points"))
         entry = ta.xy_list(state.get("entry_points"))
         road = ta.xy_list(state.get("road_points"))
@@ -483,7 +483,7 @@ class RemoteOverlay:
             state = self.pit_edit_state()
         except OverlayIpcError as exc:
             return False, str(exc)
-        tid = state.get("authoring_track_id") or state.get("track_id")
+        tid = self.effective_track_id()
         if tid is None:
             return False, ("No TrackID — join a session on track, or import "
                            "members HTML with id=\"track-map-123\".")
@@ -527,7 +527,7 @@ class RemoteOverlay:
             state = self.pit_edit_state()
         except OverlayIpcError as exc:
             return False, str(exc)
-        tid = state.get("authoring_track_id") or state.get("track_id")
+        tid = self.effective_track_id()
         loop = ta.xy_list(state.get("loop_points"))
         entry = ta.xy_list(state.get("entry_points"))
         road = ta.xy_list(state.get("road_points"))
