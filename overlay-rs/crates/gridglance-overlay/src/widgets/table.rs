@@ -9,9 +9,9 @@ use crate::telemetry::{slot_label, TableRow, TableSlotItem, TableSlots};
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use std::collections::HashMap;
 
-const ROW_SNAP_SLOTS: f32 = 3.5;
+const ROW_SNAP_SLOTS: f32 = 6.0;
 const DENSE_ROW_COUNT: usize = 20;
-const DENSE_ROW_SNAP_SLOTS: f32 = 2.0;
+const DENSE_ROW_SNAP_SLOTS: f32 = 5.0;
 const DENSE_ROW_EASE_TAU: f32 = 0.10;
 
 #[derive(Clone, Default)]
@@ -104,7 +104,7 @@ pub fn paint_table(
         };
         anim.last_ms = now;
 
-        let mut tau = cfg.f64_key(section, "row_ease_tau", 0.10) as f32;
+        let mut tau = cfg.f64_key(section, "row_ease_tau", 0.16) as f32;
         let fade_tau = cfg.f64_key(section, "fade_ease_tau", 0.12) as f32;
         let dense = rows.len() >= DENSE_ROW_COUNT;
         let snap = if dense {
@@ -123,8 +123,8 @@ pub fn paint_table(
             .collect();
         anim.slots.retain(|k, _| active.contains(k));
 
-        // Pass A: ensure slots + count mid-reshuffle movers (multi-car swaps).
-        let mut movers = 0usize;
+        // Fixed tau (no distance/multi scaling) — smoother multi-car reshuffles.
+        let mut still = false;
         for (i, row) in rows.iter().enumerate() {
             if row.empty {
                 continue;
@@ -134,31 +134,11 @@ pub fn paint_table(
                 idx: target,
                 opacity: 0.0,
             });
-            if (st.idx - target).abs() > 0.5 {
-                movers += 1;
-            }
-        }
-        let multi = movers >= 2;
-
-        // Pass B: distance-scaled tau so N-slot jumps settle like 1-slot swaps.
-        let mut still = false;
-        for (i, row) in rows.iter().enumerate() {
-            if row.empty {
-                continue;
-            }
-            let target = i as f32;
-            let Some(st) = anim.slots.get_mut(&row.key) else {
-                continue;
-            };
             let delta = (st.idx - target).abs();
             if delta > snap {
                 st.idx = target;
             } else {
-                let mut eff_tau = tau / delta.max(1.0);
-                if multi {
-                    eff_tau = eff_tau.min(DENSE_ROW_EASE_TAU);
-                }
-                st.idx = ease(st.idx, target, dt, eff_tau);
+                st.idx = ease(st.idx, target, dt, tau);
             }
             st.opacity = ease(st.opacity, 1.0, dt, fade_tau);
             if (st.idx - target).abs() > 0.02 || (st.opacity - 1.0).abs() > 0.01 {
@@ -251,7 +231,15 @@ pub fn paint_table(
                 Color32::from_black_alpha(((1.0 - opacity) * 40.0) as u8),
             );
         }
-        paint_row_chrome(ui, cfg, section, row, row_rect, i, alt);
+        paint_row_chrome(
+            ui,
+            cfg,
+            section,
+            row,
+            row_rect,
+            slot_idx.round().max(0.0) as usize,
+            alt,
+        );
         paint_row_cols(
             ui,
             cfg,

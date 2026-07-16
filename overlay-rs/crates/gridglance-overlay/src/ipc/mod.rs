@@ -111,10 +111,15 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             }
         }
         methods::CONFIG_SAVE => match state.try_write_for(LOCK_WAIT) {
-            Some(mut st) => match Arc::make_mut(&mut st.config).save() {
-                Ok(()) => Response::ok(id, json!({"ok": true, "generation": st.config.generation})),
-                Err(e) => Response::err(id, e.to_string()),
-            },
+            Some(mut st) => {
+                let context = st.effective_context();
+                match Arc::make_mut(&mut st.config).save_for_context(context) {
+                    Ok(()) => {
+                        Response::ok(id, json!({"ok": true, "generation": st.config.generation}))
+                    }
+                    Err(e) => Response::err(id, e.to_string()),
+                }
+            }
             None => Response::err(id, "busy"),
         },
         methods::SETTINGS_OPEN => match state.try_write_for(LOCK_WAIT) {

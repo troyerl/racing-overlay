@@ -5857,27 +5857,10 @@ def _main_rust() -> int:
         )
         hold["remote"] = remote
         config.on_preset_change(lambda _name: remote.apply_active_preset())
-        config.on_context_change(lambda _ctx: remote.apply_active_preset())
-
-        # Garage/race profile for the hybrid path (Python HUD does this in
-        # AdvancedSimHUD._update_context; Rust paint alone never sees IR garage flags).
-        context_ir = oc.make_irsdk(demo=demo)
-        remote.bind_context_ir(context_ir)
-
-        def _poll_garage_context() -> None:
-            try:
-                oc.sync_context_from_ir(context_ir)
-                remote.maybe_auto_switch_preset()
-            except Exception:  # noqa: BLE001
-                pass
-
-        _poll_garage_context()
-        garage_timer = QTimer()
-        garage_timer.setInterval(400)
-        garage_timer.timeout.connect(_poll_garage_context)
-        garage_timer.start()
-        hold["garage_timer"] = garage_timer
-        hold["context_ir"] = context_ir
+        # Rust host switches garage/race from IsInGarage / IsGarageVisible.
+        # Do not poll IR here and re-apply CFG — that deep-merges garage
+        # overrides onto race after Rust already rebuilt race context.
+        remote.maybe_auto_switch_preset()
 
         # Push full live CFG (not sparse disk merge) so show flags match Settings.
         try:

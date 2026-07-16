@@ -526,6 +526,54 @@ fn layout_from_value(value: &Value) -> HashMap<String, PanelLayout> {
     layout
 }
 
+/// Merge legacy `overlay_layout.json` into a race layout (not garage).
+fn merge_overlay_layout_json(layout: &mut HashMap<String, PanelLayout>) {
+    let Ok(text) = fs::read_to_string(paths::layout_path()) else {
+        return;
+    };
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    for (k, v) in map {
+        if let Some(arr) = v.as_array() {
+            if arr.len() >= 4 {
+                layout.insert(
+                    k,
+                    PanelLayout {
+                        x: arr[0].as_i64().unwrap_or(0) as i32,
+                        y: arr[1].as_i64().unwrap_or(0) as i32,
+                        w: arr[2].as_i64().unwrap_or(280) as i32,
+                        h: arr[3].as_i64().unwrap_or(160) as i32,
+                    },
+                );
+            }
+        } else if let Some(obj) = v.as_object() {
+            layout.insert(
+                k,
+                PanelLayout {
+                    x: obj.get("x").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                    y: obj.get("y").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                    w: obj.get("w").and_then(|x| x.as_i64()).unwrap_or(280) as i32,
+                    h: obj.get("h").and_then(|x| x.as_i64()).unwrap_or(160) as i32,
+                },
+            );
+        }
+    }
+}
+
+/// Preset layout for `context`, plus race-only legacy JSON merge (startup parity).
+fn load_layout_for_context(
+    config: &OverlayConfig,
+    context: ConfigContext,
+) -> HashMap<String, PanelLayout> {
+    let mut layout = layout_from_value(&config.active_layout_doc(context));
+    if context == ConfigContext::Race {
+        merge_overlay_layout_json(&mut layout);
+    }
+    ensure_default_layouts(&mut layout);
+    layout
+}
+
 fn ensure_default_layouts(layout: &mut HashMap<String, PanelLayout>) {
     for key in WIDGET_KEYS {
         layout.entry((*key).to_string()).or_insert_with(|| {
@@ -559,43 +607,7 @@ pub struct SharedState {
 
 impl SharedState {
     pub fn new(config: OverlayConfig, click_through: bool, demo: bool) -> Self {
-        let mut layout = layout_from_value(&config.active_layout_doc(ConfigContext::Race));
-        // Load overlay_layout.json if present.
-        if let Ok(text) = fs::read_to_string(paths::layout_path()) {
-            if let Ok(Value::Object(map)) = serde_json::from_str::<Value>(&text) {
-                for (k, v) in map {
-                    if let Some(arr) = v.as_array() {
-                        if arr.len() >= 4 {
-                            layout.insert(
-                                k,
-                                PanelLayout {
-                                    x: arr[0].as_i64().unwrap_or(0) as i32,
-                                    y: arr[1].as_i64().unwrap_or(0) as i32,
-                                    w: arr[2].as_i64().unwrap_or(280) as i32,
-                                    h: arr[3].as_i64().unwrap_or(160) as i32,
-                                },
-                            );
-                        }
-                    } else if let Some(obj) = v.as_object() {
-                        layout.insert(
-                            k,
-                            PanelLayout {
-                                x: obj.get("x").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
-                                y: obj.get("y").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
-                                w: obj.get("w").and_then(|x| x.as_i64()).unwrap_or(280) as i32,
-                                h: obj.get("h").and_then(|x| x.as_i64()).unwrap_or(160) as i32,
-                            },
-                        );
-                    }
-                }
-            }
-        }
-        for key in WIDGET_KEYS {
-            layout.entry((*key).to_string()).or_insert_with(|| {
-                let (x, y, w, h) = default_geom(key);
-                PanelLayout { x, y, w, h }
-            });
-        }
+        let layout = load_layout_for_context(&config, ConfigContext::Race);
         Self {
             config: Arc::new(config),
             frame: Arc::new(TelemetryFrame::default()),
@@ -670,8 +682,7 @@ impl SharedState {
         let context = self.effective_context();
         let cfg = Arc::make_mut(&mut self.config);
         cfg.apply_context(context);
-        self.layout = layout_from_value(&cfg.active_layout_doc(context));
-        ensure_default_layouts(&mut self.layout);
+        self.layout = load_layout_for_context(cfg, context);
     }
 
     /// Resolve loop / pit geometry for Track Scan IPC (may load track JSON).
