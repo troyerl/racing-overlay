@@ -20,7 +20,7 @@ const PCT_VEL_MIN: f32 = -0.15;
 const PCT_VEL_MAX: f32 = 0.25;
 /// Faster telem-vel catch-up (higher = less lag after accel).
 const PCT_VEL_EMA: f32 = 0.65;
-/// Route/pit only — racing line uses predicted % XY as-is.
+/// Entry/exit route only — racing line and OnPitRoad use XY as-is.
 const SCREEN_EASE_TAU: f32 = 0.05;
 const SCREEN_EASE_SNAP: f32 = 120.0;
 
@@ -956,6 +956,17 @@ fn advance_car_pcts(
             },
         );
 
+        // OnPitRoad: raw telem only — racing EMA overshoots slow pit mapping.
+        if car.on_pit {
+            st.pct = telem;
+            st.vel = 0.0;
+            st.last_telem = telem;
+            st.last_telem_secs = wall_secs;
+            ctx.map.car_anim.insert(car.car_idx, st);
+            out.insert(car.car_idx, telem);
+            continue;
+        }
+
         // Fresh telem sample → EMA velocity from delta / dt.
         let telem_changed = wrap_lap_delta(telem, st.last_telem).abs() > 1e-6;
         if telem_changed {
@@ -998,6 +1009,10 @@ fn is_route_key(key: u8) -> bool {
     key & 1 != 0
 }
 
+fn is_on_pit_key(key: u8) -> bool {
+    key & 4 != 0
+}
+
 /// Python `_smooth_marker_point`.
 fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) {
     let dx = tgt.x - cur.x;
@@ -1011,7 +1026,7 @@ fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) 
     (Pos2::new(nx, ny), moving)
 }
 
-/// Route/pit: light screen ease. Racing line: predicted-% XY as-is.
+/// Entry/exit route: light screen ease. Racing line + OnPitRoad: XY as-is.
 fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
     targets: &HashMap<i32, (Pos2, u8)>,
@@ -1022,7 +1037,8 @@ fn smooth_car_screen_pts(
     for (&idx, &(target, key)) in targets {
         seen.insert(idx);
         let prev = ctx.map.car_screen.get(&idx).copied();
-        let pt = if !is_route_key(key) {
+        // Snap racing line and OnPitRoad; ease only latched entry/exit blends.
+        let pt = if !is_route_key(key) || is_on_pit_key(key) {
             target
         } else {
             let start = match prev {
@@ -1725,10 +1741,15 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
         }
-        let pct = eased
-            .get(&car.car_idx)
-            .copied()
-            .unwrap_or(car.lap_dist_pct);
+        // OnPitRoad: raw telem (prediction overshoots slow pit_path mapping).
+        let pct = if car.on_pit {
+            car.lap_dist_pct.rem_euclid(1.0)
+        } else {
+            eased
+                .get(&car.car_idx)
+                .copied()
+                .unwrap_or(car.lap_dist_pct)
+        };
         if pct < 0.0 {
             continue;
         }
