@@ -340,7 +340,7 @@ impl OverlayApp {
     }
 
     fn tick_telemetry(&mut self) {
-        if self.last_tick.elapsed().as_millis() < 8 {
+        if self.last_tick.elapsed().as_millis() < 4 {
             return;
         }
         self.last_tick = Instant::now();
@@ -516,13 +516,7 @@ impl eframe::App for OverlayApp {
             )
         };
 
-        // More open panels → heavier Windows layered present; ease off 125 Hz.
-        let period_ms = match keys_layout.len() {
-            0..=3 => 8u64,
-            4..=7 => 12,
-            _ => 16,
-        };
-        ctx.request_repaint_after(std::time::Duration::from_millis(period_ms));
+        ctx.request_repaint_after(std::time::Duration::from_millis(4));
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
