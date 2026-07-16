@@ -47,9 +47,9 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("flag", 0xF024),
     ("speaking", 0xF028),
     // map traffic markers
-    ("leader", 0xF521),      // crown
-    ("car_ahead", 0xF062),   // arrow-up
-    ("car_behind", 0xF063),  // arrow-down
+    ("leader", 0xF521),     // crown
+    ("car_ahead", 0xF062),  // arrow-up
+    ("car_behind", 0xF063), // arrow-down
     // table header / footer
     ("sof", 0xF0C0),
     ("class_sof", 0xF0C0),
@@ -73,10 +73,9 @@ const CODEPOINTS: &[(&str, u32)] = &[
 
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
-    fonts.font_data.insert(
-        FAMILY.to_owned(),
-        Arc::new(FontData::from_static(FA_TTF)),
-    );
+    fonts
+        .font_data
+        .insert(FAMILY.to_owned(), Arc::new(FontData::from_static(FA_TTF)));
     fonts.font_data.insert(
         "NotoSans-Regular".to_owned(),
         Arc::new(FontData::from_static(NOTO_REGULAR)),
@@ -116,7 +115,10 @@ mod tests {
 
     #[test]
     fn incidents_glyph() {
-        assert_eq!(glyph("incidents").unwrap().chars().next().unwrap() as u32, 0xF071);
+        assert_eq!(
+            glyph("incidents").unwrap().chars().next().unwrap() as u32,
+            0xF071
+        );
     }
 
     #[test]

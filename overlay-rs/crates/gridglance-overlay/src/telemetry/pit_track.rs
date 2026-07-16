@@ -57,12 +57,7 @@ impl PitStopTracker {
     }
 }
 
-fn fill_rows(
-    rows: &mut [TableRow],
-    cars: &HashMap<i32, PitCarState>,
-    sess_time: f64,
-    mode: &str,
-) {
+fn fill_rows(rows: &mut [TableRow], cars: &HashMap<i32, PitCarState>, sess_time: f64, mode: &str) {
     for row in rows.iter_mut() {
         if row.empty {
             continue;

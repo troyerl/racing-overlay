@@ -41,7 +41,10 @@ fn normalize_digits(text: &str) -> String {
 #[allow(dead_code)]
 pub fn scoreboard_text_width(text: &str, digit_h: f32, min_digits: usize) -> f32 {
     let digits = normalize_digits(text);
-    let n = digits.len().max(min_digits).max(if digits.is_empty() { 0 } else { 1 });
+    let n = digits
+        .len()
+        .max(min_digits)
+        .max(if digits.is_empty() { 0 } else { 1 });
     if n == 0 {
         return 0.0;
     }
@@ -142,7 +145,13 @@ fn draw_scoreboard_digit(ui: &mut Ui, x: f32, y: f32, w: f32, h: f32, ch: char, 
 }
 
 /// Draw digits right-aligned inside `rect` (IMS pylon car-number style).
-pub fn draw_scoreboard_text(ui: &mut Ui, rect: Rect, text: &str, color: Color32, min_digits: usize) {
+pub fn draw_scoreboard_text(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &str,
+    color: Color32,
+    min_digits: usize,
+) {
     let digits = normalize_digits(text);
     if digits.is_empty() && min_digits == 0 {
         return;

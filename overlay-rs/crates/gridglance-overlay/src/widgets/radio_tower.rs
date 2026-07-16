@@ -1,9 +1,7 @@
 //! Radio tower — current team-radio speaker (Python parity).
 
 use super::WidgetCtx;
-use crate::chrome::{
-    color_with_alpha, draw_card, draw_section_header, full_rect, panel_pad,
-};
+use crate::chrome::{color_with_alpha, draw_card, draw_section_header, full_rect, panel_pad};
 use crate::config::parse_color_str;
 use crate::icons;
 use crate::telemetry::RadioSpeaker;
@@ -27,7 +25,10 @@ fn preview_row() -> RadioSpeaker {
 fn driver_part(row: &RadioSpeaker, show_name: bool, show_car_number: bool) -> String {
     let name = row.name.trim();
     let num = row.car_number.trim();
-    match (show_name && !name.is_empty(), show_car_number && !num.is_empty()) {
+    match (
+        show_name && !name.is_empty(),
+        show_car_number && !num.is_empty(),
+    ) {
         (true, true) => format!("{name} #{num}"),
         (true, false) => name.to_string(),
         (false, true) => {
@@ -84,12 +85,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let body_h = (card.bottom() - pad - y).max(22.0);
     let fixed_rh = ctx.cfg.f64_key(SECTION, "row_height_px", 0.0) as f32;
-    let row_h = if fixed_rh > 0.0 {
-        fixed_rh
-    } else {
-        body_h
-    }
-    .max(22.0);
+    let row_h = if fixed_rh > 0.0 { fixed_rh } else { body_h }.max(22.0);
 
     let content_w = card.width() - 2.0 * pad;
     let text_size = row_h * 0.46 * ctx.cfg.text_scale(SECTION);
@@ -143,10 +139,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         Pos2::new(text_x, text_rect.center().y),
         Align2::LEFT_CENTER,
         &text,
-        egui::FontId::new(
-            text_size,
-            egui::FontFamily::Proportional,
-        ),
+        egui::FontId::new(text_size, egui::FontFamily::Proportional),
         text_col,
     );
 }
@@ -163,20 +156,14 @@ fn draw_speaking_accent(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
         CornerRadius::same(2),
         accent,
     );
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::ZERO,
-        color_with_alpha(accent, 38),
-    );
+    ui.painter()
+        .rect_filled(rect, CornerRadius::ZERO, color_with_alpha(accent, 38));
 }
 
 fn badge_glyph(ctx: &WidgetCtx<'_>, row: &RadioSpeaker) -> Option<(String, Color32)> {
     if row.is_pro {
         if let Some(g) = icons::glyph("pro_driver") {
-            return Some((
-                g,
-                ctx.cfg.color(SECTION, "pro_badge", "#f5c542"),
-            ));
+            return Some((g, ctx.cfg.color(SECTION, "pro_badge", "#f5c542")));
         }
     }
     if !row.group_icon.is_empty() {

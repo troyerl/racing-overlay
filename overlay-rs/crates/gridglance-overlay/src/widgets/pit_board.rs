@@ -2,9 +2,7 @@
 //! Ports `overlay/widgets/pit_board.py`.
 
 use super::WidgetCtx;
-use crate::chrome::{
-    draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad,
-};
+use crate::chrome::{draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad};
 use crate::telemetry::PitService;
 use egui::{Align2, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
@@ -102,7 +100,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(card.left() + pad, y),
             Vec2::new(card.width() - 2.0 * pad, banner_h),
         );
-        let text = ctx.cfg.str_key(SECTION, "pit_banner_text", "PIT STOP ACTIVE");
+        let text = ctx
+            .cfg
+            .str_key(SECTION, "pit_banner_text", "PIT STOP ACTIVE");
         draw_status_chip(ui, ctx, banner, &text, true);
         y += banner_h + pad * 0.4;
     }
@@ -163,7 +163,13 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         );
         y += row_h;
         if ctx.cfg.bool_key(SECTION, "row_dividers", true) && i + 1 < services.len() {
-            draw_row_divider(ui, ctx, card.left() + pad, y - 2.0, card.width() - 2.0 * pad);
+            draw_row_divider(
+                ui,
+                ctx,
+                card.left() + pad,
+                y - 2.0,
+                card.width() - 2.0 * pad,
+            );
         }
     }
 

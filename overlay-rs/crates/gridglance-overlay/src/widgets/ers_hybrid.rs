@@ -2,9 +2,7 @@
 //! Ports `overlay/widgets/ers_hybrid.py`.
 
 use super::WidgetCtx;
-use crate::chrome::{
-    draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad,
-};
+use crate::chrome::{draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad};
 use egui::{Align2, CornerRadius, Pos2, Rect, Ui, Vec2};
 
 const SECTION: &str = "ers_hybrid";

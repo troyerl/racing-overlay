@@ -42,6 +42,15 @@ pub struct TableRow {
     /// Pit column history text from `pit_mode` (empty → paint as "—"; in-pit still "PIT").
     #[serde(default)]
     pub pit_text: String,
+    /// Cloud professional-driver list match.
+    #[serde(default)]
+    pub is_pro: bool,
+    /// Personal driver-group icon key (empty = none).
+    #[serde(default)]
+    pub group_icon: String,
+    /// Personal driver-group accent color hex.
+    #[serde(default)]
+    pub group_color: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -130,6 +139,10 @@ fn parse_license(s: &str) -> (String, String) {
 impl TableRow {
     pub fn from_car(c: &CarRow, gap_secs: Option<f32>, gap_text: String, inactive: bool) -> Self {
         let (lic_class, sr) = parse_license(&c.license);
+        let app = crate::cloud::load_app_settings_cache().unwrap_or(serde_json::json!({}));
+        let is_pro = crate::cloud::is_pro_driver(&c.name, &app);
+        // Driver groups come from live config; filled in finalize via cfg below —
+        // here we only have CarRow. Callers that have cfg should use from_car_cfg.
         Self {
             key: c.car_idx.to_string(),
             empty: false,
@@ -160,16 +173,30 @@ impl TableRow {
             nickname: String::new(),
             laps: c.lap,
             pit_text: String::new(),
+            is_pro,
+            group_icon: String::new(),
+            group_color: String::new(),
+        }
+    }
+
+    pub fn apply_driver_group(&mut self, cfg: &OverlayConfig) {
+        if self.is_pro || self.name.is_empty() {
+            return;
+        }
+        let groups = cfg
+            .cfg
+            .get("driver_groups")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
+        if let Some(g) = crate::driver_groups::driver_group_for_name(&self.name, &groups) {
+            self.group_icon = g.icon;
+            self.group_color = g.color;
         }
     }
 }
 
 /// Build relative rows centered on the player (Python `_update_relative`).
-pub fn build_relative(
-    cars: &[CarRow],
-    cfg: &OverlayConfig,
-    lap_est_hint: f32,
-) -> Vec<TableRow> {
+pub fn build_relative(cars: &[CarRow], cfg: &OverlayConfig, lap_est_hint: f32) -> Vec<TableRow> {
     let n_ahead = cfg.f64_key("relative", "rows_ahead", 3.0) as usize;
     let n_behind = cfg.f64_key("relative", "rows_behind", 3.0) as usize;
     let center = cfg.bool_key("relative", "center_on_player", true);
@@ -201,7 +228,11 @@ pub fn build_relative(
     ahead.truncate(n_ahead);
 
     let mut behind: Vec<_> = rels.iter().copied().filter(|(d, _)| *d <= 0.0).collect();
-    behind.sort_by(|a, b| (-a.0).partial_cmp(&-b.0).unwrap_or(std::cmp::Ordering::Equal));
+    behind.sort_by(|a, b| {
+        (-a.0)
+            .partial_cmp(&-b.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     behind.truncate(n_behind);
 
     let mut rows = Vec::new();
@@ -211,11 +242,21 @@ pub fn build_relative(
         }
     }
     for (delta, c) in ahead.iter().rev() {
-        rows.push(TableRow::from_car(c, Some(*delta), format!("{:.1}", delta.abs()), false));
+        rows.push(TableRow::from_car(
+            c,
+            Some(*delta),
+            format!("{:.1}", delta.abs()),
+            false,
+        ));
     }
     rows.push(TableRow::from_car(player, Some(0.0), "0.0".into(), false));
     for (delta, c) in &behind {
-        rows.push(TableRow::from_car(c, Some(*delta), format!("{:.1}", delta.abs()), false));
+        rows.push(TableRow::from_car(
+            c,
+            Some(*delta),
+            format!("{:.1}", delta.abs()),
+            false,
+        ));
     }
     if center {
         for k in 0..(n_behind.saturating_sub(behind.len())) {
@@ -223,6 +264,9 @@ pub fn build_relative(
         }
     }
 
+    for row in &mut rows {
+        row.apply_driver_group(cfg);
+    }
     rows
 }
 
@@ -279,14 +323,15 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
         } else {
             c.gap.clone()
         };
-        let inactive = c.inactive || (!c.on_track && !c.in_pit && !c.on_pit && c.lap_dist_pct < 0.0);
+        let inactive =
+            c.inactive || (!c.on_track && !c.in_pit && !c.on_pit && c.lap_dist_pct < 0.0);
         TableRow::from_car(c, None, gap_text, inactive)
     };
 
     let idxs: Vec<usize> = (0..ranked.len()).collect();
     let player_pos = ranked.iter().position(|c| c.is_player);
 
-    let out: Vec<TableRow> = if !center || player_pos.is_none() {
+    let mut out: Vec<TableRow> = if !center || player_pos.is_none() {
         ranked.iter().take(rows_n).map(|c| build(c)).collect()
     } else {
         let pidx = player_pos.unwrap();
@@ -304,14 +349,14 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
                     podium.push(empty_row(&format!("podium{slot}")));
                 }
             }
-            let podium_set: std::collections::HashSet<usize> =
-                (0..ranked.len().min(3)).collect();
+            let podium_set: std::collections::HashSet<usize> = (0..ranked.len().min(3)).collect();
             let on_podium = podium_set.contains(&player);
             let mut slots = window.saturating_sub(3);
             if !on_podium {
                 slots = slots.max(1);
             }
-            let picked = pick_context_indices(&idxs, pidx, player, &podium_set, slots, above, below);
+            let picked =
+                pick_context_indices(&idxs, pidx, player, &podium_set, slots, above, below);
             let mut context: Vec<TableRow> = picked.iter().map(|&i| build(ranked[i])).collect();
             for i in context.len()..slots {
                 context.push(empty_row(&format!("ctx{i}")));
@@ -333,6 +378,9 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
         }
     };
 
+    for row in &mut out {
+        row.apply_driver_group(cfg);
+    }
     out
 }
 
@@ -425,6 +473,21 @@ fn pick_context_indices(
 
 /// Fill relative_cars / standings_cars and enrich radar from cars + cfg.
 pub fn finalize_frame(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
+    if let Some(radio) = frame.radio.as_mut() {
+        let app = crate::cloud::load_app_settings_cache().unwrap_or(serde_json::json!({}));
+        radio.is_pro = crate::cloud::is_pro_driver(&radio.name, &app);
+        if !radio.is_pro {
+            let groups = cfg
+                .cfg
+                .get("driver_groups")
+                .cloned()
+                .unwrap_or(serde_json::json!([]));
+            if let Some(g) = crate::driver_groups::driver_group_for_name(&radio.name, &groups) {
+                radio.group_icon = g.icon;
+                radio.group_color = g.color;
+            }
+        }
+    }
     apply_irating_projection(frame, cfg);
     resolve_delta_mode(frame, cfg);
     apply_flag_config(frame, cfg);
@@ -556,7 +619,9 @@ fn parse_lap_clock(s: &str) -> Option<f64> {
 
 /// Honor flags widget toggles after IRSDK/demo fill the frame.
 fn apply_flag_config(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
-    let thresh = cfg.f64_key("flags", "incident_warn_pct", 0.75).clamp(0.0, 1.0);
+    let thresh = cfg
+        .f64_key("flags", "incident_warn_pct", 0.75)
+        .clamp(0.0, 1.0);
     if cfg.bool_key("flags", "show_incident_warning", true) && frame.incidents_limit > 0 {
         let pct = frame.incidents as f64 / frame.incidents_limit as f64;
         if pct >= thresh && frame.flag.is_none() {
@@ -641,7 +706,8 @@ fn needs_irating_projection(cfg: &OverlayConfig) -> bool {
         return true;
     }
     for section in ["relative", "standings"] {
-        if cfg.bool_key(section, "show_irating_projection", false) && cfg.has_column(section, "irating")
+        if cfg.bool_key(section, "show_irating_projection", false)
+            && cfg.has_column(section, "irating")
         {
             return true;
         }
@@ -785,7 +851,11 @@ fn format_slot_value(
     rows: &[TableRow],
 ) -> String {
     let player = frame.cars.iter().find(|c| c.is_player);
-    let total = frame.cars.iter().filter(|c| c.position > 0 && !c.is_pace_car).count();
+    let total = frame
+        .cars
+        .iter()
+        .filter(|c| c.position > 0 && !c.is_pace_car)
+        .count();
     match key {
         "sof" => {
             let irs: Vec<i32> = frame
@@ -870,10 +940,7 @@ fn format_slot_value(
             }
         }
         "incidents" => format!("{}x", frame.incidents),
-        "track_name" => frame
-            .track_name
-            .clone()
-            .unwrap_or_else(|| "—".into()),
+        "track_name" => frame.track_name.clone().unwrap_or_else(|| "—".into()),
         "track_temp" => {
             if let Some(t) = frame.track_temp {
                 format!("{:.0}{}", cfg.conv_temp(t), cfg.temp_unit())
@@ -1004,7 +1071,11 @@ pub fn build_radar(
             alongside.push((d, c));
         }
     }
-    alongside.sort_by(|a, b| a.0.abs().partial_cmp(&b.0.abs()).unwrap_or(std::cmp::Ordering::Equal));
+    alongside.sort_by(|a, b| {
+        a.0.abs()
+            .partial_cmp(&b.0.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     if left {
         if let Some((d, c)) = alongside.first() {
@@ -1035,9 +1106,7 @@ pub fn build_radar(
             _ => 0.0,
         }
     };
-    let closeness = |delta: Option<f32>| {
-        delta.map(|d| (1.0 - d.abs() / range).clamp(0.0, 1.0))
-    };
+    let closeness = |delta: Option<f32>| delta.map(|d| (1.0 - d.abs() / range).clamp(0.0, 1.0));
 
     RadarState {
         left,

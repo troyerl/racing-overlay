@@ -85,10 +85,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     // Header
     let hh = h * 0.12;
-    let band = Rect::from_min_size(
-        Pos2::new(card.left(), y),
-        egui::vec2(card.width(), hh),
-    );
+    let band = Rect::from_min_size(Pos2::new(card.left(), y), egui::vec2(card.width(), hh));
     ui.painter().rect_filled(
         band,
         egui::CornerRadius {
@@ -132,10 +129,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     // Sparkline
     if ctx.cfg.bool_key(SECTION, "show_graph", true) && !view.spark.is_empty() {
         let gh = h * 0.16;
-        let graph = Rect::from_min_size(
-            Pos2::new(card.left() + pad, y),
-            egui::vec2(iw, gh),
-        );
+        let graph = Rect::from_min_size(Pos2::new(card.left() + pad, y), egui::vec2(iw, gh));
         draw_spark(ui, ctx, graph, &view.spark, &view.markers);
         y += gh + pad * 0.4;
     }
@@ -163,10 +157,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
     let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
     for (i, (name, loss)) in shown.iter().enumerate() {
-        let row = Rect::from_min_size(
-            Pos2::new(card.left() + pad, row_y),
-            egui::vec2(iw, rh),
-        );
+        let row = Rect::from_min_size(Pos2::new(card.left() + pad, row_y), egui::vec2(iw, rh));
         if ctx.cfg.bool_key(SECTION, "alt_row_shading", true) && i % 2 == 1 {
             ui.painter().rect_filled(
                 row,

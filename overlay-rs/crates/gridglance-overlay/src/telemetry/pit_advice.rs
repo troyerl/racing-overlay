@@ -15,7 +15,9 @@ pub struct PitAdvice {
     pub actionable: bool,
 }
 
-fn nearest_gaps(frame: &TelemetryFrame) -> (Option<f32>, Option<f32>, Option<String>, Option<String>) {
+fn nearest_gaps(
+    frame: &TelemetryFrame,
+) -> (Option<f32>, Option<f32>, Option<String>, Option<String>) {
     let mut ahead: Option<(f32, String)> = None;
     let mut behind: Option<(f32, String)> = None;
     for row in &frame.relative_cars {
@@ -79,7 +81,10 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
     let laps_empty = frame.fuel.laps_empty;
 
     let (gap_ahead, gap_behind, car_ahead, car_behind) = nearest_gaps(frame);
-    let win_txt = frame.fuel.window.map(|(a, b)| format!("Best stop: laps {a}–{b}"));
+    let win_txt = frame
+        .fuel
+        .window
+        .map(|(a, b)| format!("Best stop: laps {a}–{b}"));
 
     // HOLD — pits closed under caution (Python PRIORITY).
     if pits_closed_under_caution(frame) && !fuel_crit {

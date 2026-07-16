@@ -3,9 +3,9 @@ use crate::chrome::{color_with_alpha, draw_card, draw_dark_cell, ease, full_rect
 use crate::config::OverlayConfig;
 use crate::icons;
 use crate::map_markers::{self, TrafficMarker};
+use crate::state::MapAuthoring;
 use crate::telemetry::CarRow;
 use crate::track_path;
-use crate::state::MapAuthoring;
 use egui::{
     epaint::{PathShape, PathStroke},
     Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, PointerButton, Pos2, Rect,
@@ -21,7 +21,7 @@ const PCT_VEL_MAX: f32 = 0.25;
 /// Faster telem-vel catch-up (higher = less lag after accel).
 const PCT_VEL_EMA: f32 = 0.65;
 /// Entry/exit route only — racing line and OnPitRoad use XY as-is.
-const SCREEN_EASE_TAU: f32 = 0.05;
+const SCREEN_EASE_TAU: f32 = 0.08;
 const SCREEN_EASE_SNAP: f32 = 120.0;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
@@ -103,6 +103,12 @@ fn model_point(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
 
 fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     let tid = ctx.frame.track_id;
+    // Background cloud fetch finished — force reload from disk.
+    if let Some(id) = tid {
+        if crate::cloud::take_fetch_ready(id as i64) {
+            ctx.map.invalidate_track_cache();
+        }
+    }
     if tid == ctx.map.cached_track_id && !ctx.map.cached_path.is_empty() {
         return;
     }
@@ -137,6 +143,8 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
             }
             return;
         }
+        // First time this TrackID is needed — pull from cloud library.
+        crate::cloud::fetch_track_async(id as i64);
     }
     ctx.map.cached_path = track_path::oval_path(64);
     ctx.map.cached_start_finish = 0.0;
@@ -237,8 +245,7 @@ fn draw_loop_tick(
         }
         let _ = len;
     } else {
-        ui.painter()
-            .line_segment([a, b], Stroke::new(width, color));
+        ui.painter().line_segment([a, b], Stroke::new(width, color));
     }
 }
 
@@ -310,11 +317,7 @@ fn stroke_open(ui: &mut Ui, screen: &[Pos2], width: f32, color: Color32) {
     }
 }
 
-fn model_poly(
-    pts: &[(f32, f32)],
-    mirror: bool,
-    rot: i32,
-) -> Vec<(f32, f32)> {
+fn model_poly(pts: &[(f32, f32)], mirror: bool, rot: i32) -> Vec<(f32, f32)> {
     pts.iter()
         .map(|&(x, y)| model_point(x, y, mirror, rot))
         .collect()
@@ -339,7 +342,10 @@ fn draw_pit_lane(
     if !lane.has_drawable() {
         return;
     }
-    let opacity = ctx.cfg.f64_key(SECTION, "pit_lane_opacity", 1.0).clamp(0.05, 1.0) as f32;
+    let opacity = ctx
+        .cfg
+        .f64_key(SECTION, "pit_lane_opacity", 1.0)
+        .clamp(0.05, 1.0) as f32;
     let a = (opacity * 255.0) as u8;
     let a_asphalt = (opacity * 0.85 * 255.0) as u8;
     let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
@@ -368,16 +374,10 @@ fn draw_pit_lane(
 
         if show_speed {
             if let Some(ms) = lane.speed_ms.filter(|v| *v > 0.0) {
-                let (val, unit) = (
-                    ctx.cfg.conv_speed(ms),
-                    ctx.cfg.speed_unit(),
-                );
+                let (val, unit) = (ctx.cfg.conv_speed(ms), ctx.cfg.speed_unit());
                 let anchor = s[s.len() / 2];
                 let txt = format!("PIT {val:.0} {unit}");
-                let bg = color_with_alpha(
-                    ctx.cfg.color(SECTION, "pit", "#ff4d4d"),
-                    235,
-                );
+                let bg = color_with_alpha(ctx.cfg.color(SECTION, "pit", "#ff4d4d"), 235);
                 let fg = ctx.cfg.color(SECTION, "pit_text", "#ffffff");
                 let font = FontId::new(11.0, FontFamily::Proportional);
                 let galley = ui.fonts(|f| f.layout_no_wrap(txt, font, fg));
@@ -389,11 +389,8 @@ fn draw_pit_lane(
                     ),
                     egui::vec2(galley.size().x + pad * 2.0, galley.size().y + pad),
                 );
-                ui.painter().rect_filled(
-                    rect,
-                    egui::CornerRadius::same(4),
-                    bg,
-                );
+                ui.painter()
+                    .rect_filled(rect, egui::CornerRadius::same(4), bg);
                 ui.painter().galley(
                     Pos2::new(rect.left() + pad, rect.top() + pad * 0.5),
                     galley,
@@ -558,10 +555,7 @@ fn pit_path_needs_reverse(lane: &track_path::PitLane) -> bool {
 
 /// Project pit_path endpoints onto the racing loop; prefer authored span when
 /// it lies inside that projection (Python `_pit_lane_bounds`).
-fn pit_lane_bounds(
-    racing: &[(f32, f32)],
-    lane: &track_path::PitLane,
-) -> Option<(f32, f32)> {
+fn pit_lane_bounds(racing: &[(f32, f32)], lane: &track_path::PitLane) -> Option<(f32, f32)> {
     if lane.path.len() < 2 || racing.len() < 2 {
         return lane.span;
     }
@@ -842,9 +836,7 @@ fn car_model_xy(
     let in_entry = !on_pit && pct_in_interval(pct, in_pct, lane_lo);
     let in_exit = !on_pit && pct_in_interval(pct, lane_hi, out_pct);
 
-    let weight = pit_blend_weight(
-        pct, on_route, on_pit, in_entry, in_exit, in_pct, out_pct,
-    );
+    let weight = pit_blend_weight(pct, on_route, on_pit, in_entry, in_exit, in_pct, out_pct);
     if weight <= 0.0 {
         return track;
     }
@@ -910,8 +902,7 @@ fn draw_player_dot(ui: &mut Ui, c: Pos2, r: f32, fill: Color32) {
 fn draw_other_dot(ui: &mut Ui, c: Pos2, r: f32, fill: Color32) {
     ui.painter().circle_filled(c, r, fill);
     let ring = color_with_alpha(Color32::BLACK, fill.a());
-    ui.painter()
-        .circle_stroke(c, r, Stroke::new(1.0_f32, ring));
+    ui.painter().circle_stroke(c, r, Stroke::new(1.0_f32, ring));
 }
 
 fn car_label_text(car: &CarRow, mode: &str) -> String {
@@ -996,11 +987,7 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
 }
 
 /// Extrapolate telem to now and follow predicted % directly.
-fn advance_car_pcts(
-    ctx: &mut WidgetCtx<'_>,
-    _dt: f32,
-    wall_secs: f64,
-) -> HashMap<i32, f32> {
+fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, _dt: f32, wall_secs: f64) -> HashMap<i32, f32> {
     let mut seen = HashMap::new();
     let mut out = HashMap::new();
 
@@ -1013,14 +1000,17 @@ fn advance_car_pcts(
         }
         seen.insert(car.car_idx, ());
         let telem = car.lap_dist_pct.rem_euclid(1.0);
-        let mut st = ctx.map.car_anim.get(&car.car_idx).copied().unwrap_or(
-            crate::state::CarPctAnim {
-                pct: telem,
-                vel: 0.0,
-                last_telem: telem,
-                last_telem_secs: wall_secs,
-            },
-        );
+        let mut st =
+            ctx.map
+                .car_anim
+                .get(&car.car_idx)
+                .copied()
+                .unwrap_or(crate::state::CarPctAnim {
+                    pct: telem,
+                    vel: 0.0,
+                    last_telem: telem,
+                    last_telem_secs: wall_secs,
+                });
 
         // OnPitRoad: raw telem only — racing EMA overshoots slow pit mapping.
         if car.on_pit {
@@ -1216,13 +1206,8 @@ fn draw_traffic_markers(
         let icon_rect = Rect::from_center_size(icon_pt, egui::vec2(side, side));
         draw_dark_cell(ui, cfg, SECTION, icon_rect, 5.0);
         if let Some(g) = icons::glyph(marker_glyph_name(slot)) {
-            ui.painter().text(
-                icon_pt,
-                Align2::CENTER_CENTER,
-                g,
-                icons::font_id(sz),
-                col,
-            );
+            ui.painter()
+                .text(icon_pt, Align2::CENTER_CENTER, g, icons::font_id(sz), col);
         }
         if !m.label.is_empty() {
             let font = FontId::new((sz - 2.0).max(7.0), FontFamily::Proportional);
@@ -1266,13 +1251,8 @@ fn draw_speaking(ui: &mut Ui, cfg: &OverlayConfig, c: Pos2, r: f32) {
     ui.painter()
         .circle_stroke(badge_c, side * 0.5, Stroke::new(1.2_f32, fg));
     if let Some(g) = icons::glyph("speaking") {
-        ui.painter().text(
-            badge_c,
-            Align2::CENTER_CENTER,
-            g,
-            icons::font_id(sz),
-            fg,
-        );
+        ui.painter()
+            .text(badge_c, Align2::CENTER_CENTER, g, icons::font_id(sz), fg);
     }
 }
 
@@ -1433,11 +1413,8 @@ fn draw_wind(
     let (center, r) = wind_center(screen, rect);
     let col = cfg.color(SECTION, "wind", "#9fd0ff");
     let text_col = cfg.color(SECTION, "wind_text", "#eaf3ff");
-    ui.painter().circle_filled(
-        center,
-        r,
-        Color32::from_rgba_unmultiplied(10, 13, 17, 190),
-    );
+    ui.painter()
+        .circle_filled(center, r, Color32::from_rgba_unmultiplied(10, 13, 17, 190));
     ui.painter().circle_stroke(
         center,
         r,
@@ -1458,10 +1435,8 @@ fn draw_wind(
     let py = ux;
     let tip = Pos2::new(center.x + ux * r * 0.78, center.y + uy * r * 0.78);
     let tail = Pos2::new(center.x - ux * r * 0.70, center.y - uy * r * 0.70);
-    ui.painter().line_segment(
-        [tail, tip],
-        Stroke::new((r * 0.14).max(1.5), col),
-    );
+    ui.painter()
+        .line_segment([tail, tip], Stroke::new((r * 0.14).max(1.5), col));
     let hl = r * 0.42;
     let hw = r * 0.26;
     let base = Pos2::new(tip.x - ux * hl, tip.y - uy * hl);
@@ -1470,13 +1445,16 @@ fn draw_wind(
         Pos2::new(base.x + px * hw, base.y + py * hw),
         Pos2::new(base.x - px * hw, base.y - py * hw),
     ];
-    ui.painter().add(Shape::convex_polygon(head, col, Stroke::NONE));
+    ui.painter()
+        .add(Shape::convex_polygon(head, col, Stroke::NONE));
 
     let spd = cfg.conv_speed(wind_vel).round();
     let spd_text = format!("{spd:.0} {}", cfg.speed_unit());
     let ssz = (6.0 * text_scale).max(5.0);
     let font = FontId::new(ssz, FontFamily::Proportional);
-    let galley = ui.painter().layout_no_wrap(spd_text, font.clone(), text_col);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(spd_text, font.clone(), text_col);
     let tw = galley.size().x + 6.0;
     let th = galley.size().y + 2.0;
     let lr = Rect::from_min_size(
@@ -1512,7 +1490,10 @@ fn draw_wind(
             let font2 = FontId::new(ssz2, FontFamily::Proportional);
             let galleys: Vec<_> = lines
                 .iter()
-                .map(|s| ui.painter().layout_no_wrap(s.clone(), font2.clone(), text_col))
+                .map(|s| {
+                    ui.painter()
+                        .layout_no_wrap(s.clone(), font2.clone(), text_col)
+                })
                 .collect();
             let tw2 = galleys.iter().map(|g| g.size().x).fold(0.0_f32, f32::max) + 6.0;
             let line_h = galleys.first().map(|g| g.size().y).unwrap_or(ssz2);
@@ -1528,11 +1509,8 @@ fn draw_wind(
             );
             let mut y = lr2.top() + 2.0;
             for g in galleys {
-                ui.painter().galley(
-                    Pos2::new(lr2.center().x - g.size().x / 2.0, y),
-                    g,
-                    text_col,
-                );
+                ui.painter()
+                    .galley(Pos2::new(lr2.center().x - g.size().x / 2.0, y), g, text_col);
                 y += line_h;
             }
         }
@@ -1670,14 +1648,12 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let zone_w = (asphalt_w * 1.35).max(4.0);
     let sf = ctx.map.cached_start_finish;
-    if ctx.cfg.bool_key(SECTION, "show_drs_zones", false) && !ctx.map.cached_drs_zones.is_empty()
-    {
+    if ctx.cfg.bool_key(SECTION, "show_drs_zones", false) && !ctx.map.cached_drs_zones.is_empty() {
         let col = ctx.cfg.color(SECTION, "drs_zone", "#46df7a88");
         let zones = ctx.map.cached_drs_zones.clone();
         draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf);
     }
-    if ctx.cfg.bool_key(SECTION, "show_p2p_zones", false) && !ctx.map.cached_p2p_zones.is_empty()
-    {
+    if ctx.cfg.bool_key(SECTION, "show_p2p_zones", false) && !ctx.map.cached_p2p_zones.is_empty() {
         let col = ctx.cfg.color(SECTION, "p2p_zone", "#3aa0ff88");
         let zones = ctx.map.cached_p2p_zones.clone();
         draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf);
@@ -1815,17 +1791,13 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let pct = if car.on_pit {
             car.lap_dist_pct.rem_euclid(1.0)
         } else {
-            eased
-                .get(&car.car_idx)
-                .copied()
-                .unwrap_or(car.lap_dist_pct)
+            eased.get(&car.car_idx).copied().unwrap_or(car.lap_dist_pct)
         };
         if pct < 0.0 {
             continue;
         }
         let on_route = car_on_route(ctx, car);
-        let (nx, ny) =
-            car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
+        let (nx, ny) = car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
         let key = car_motion_key(on_route, car.on_pit);
@@ -2085,8 +2057,7 @@ fn draw_sector_boundaries(
         let bw = galley.size().x.max(sz + 2.0) + 8.0;
         let bh = galley.size().y + 2.0;
         let rect = Rect::from_center_size(outward, Vec2::new(bw, bh));
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(3), line);
+        ui.painter().rect_filled(rect, CornerRadius::same(3), line);
         label(
             ui,
             rect.center(),
@@ -2227,14 +2198,12 @@ fn draw_pit_edit_drafts(
         for (_name, phase_code, pts, col) in phases {
             for (idx, &(nx, ny)) in pts.iter().enumerate() {
                 if has_entry_joint
-                    && ((phase_code == 0 && idx + 1 == pts.len())
-                        || (phase_code == 1 && idx == 0))
+                    && ((phase_code == 0 && idx + 1 == pts.len()) || (phase_code == 1 && idx == 0))
                 {
                     continue;
                 }
                 if has_joint
-                    && ((phase_code == 1 && idx + 1 == pts.len())
-                        || (phase_code == 2 && idx == 0))
+                    && ((phase_code == 1 && idx + 1 == pts.len()) || (phase_code == 2 && idx == 0))
                 {
                     continue;
                 }
@@ -2334,9 +2303,12 @@ fn handle_pit_edit(
     // Scroll zoom toward pointer (Python wheelEvent).
     let scroll = ui.input(|i| i.smooth_scroll_delta);
     if scroll.y.abs() > 0.0 {
-        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()).filter(|p| plot.contains(*p)) {
+        if let Some(pos) = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| plot.contains(*p))
+        {
             let (wx, wy) = xform.unmap(pos);
-            let factor = if scroll.y > 0.0 { 1.12_f32 } else { 1.0 / 1.12 };
+            let factor = (1.0015_f32).powf(scroll.y);
             let new_zoom = MapAuthoring::clamp_pit_zoom(ctx.map.pit_edit_zoom * factor);
             let new_scale = base_xform.scale * new_zoom;
             ctx.map.pit_edit_pan = (
@@ -2377,8 +2349,7 @@ fn handle_pit_edit(
     }
 
     // Pan: middle-drag or Shift+primary (not on handle).
-    let panning = middle_down
-        || (primary_down && shift && ctx.map.pit_drag.is_none());
+    let panning = middle_down || (primary_down && shift && ctx.map.pit_drag.is_none());
     if panning {
         let delta = ui.input(|i| i.pointer.delta());
         if delta != Vec2::ZERO {
@@ -2390,7 +2361,10 @@ fn handle_pit_edit(
             ui.ctx().set_cursor_icon(CursorIcon::Grab);
         }
     } else if ctx.map.pit_drag.is_none() {
-        if let Some(pos) = ui.input(|i| i.pointer.hover_pos()).filter(|p| plot.contains(*p)) {
+        if let Some(pos) = ui
+            .input(|i| i.pointer.hover_pos())
+            .filter(|p| plot.contains(*p))
+        {
             if pit_handle_at(hits, pos, handle_r).is_some() || shift {
                 ui.ctx().set_cursor_icon(CursorIcon::Grab);
             } else {
@@ -2485,9 +2459,9 @@ fn handle_corner_edit(
 fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
     // Undo rotation first (inverse of rot), then undo mirror.
     let (mut x, y) = match ((rot % 360) + 360) % 360 {
-        90 => (-y, x),   // inverse of (y, -x)
+        90 => (-y, x), // inverse of (y, -x)
         180 => (-x, -y),
-        270 => (y, -x),  // inverse of (-y, x)
+        270 => (y, -x), // inverse of (-y, x)
         _ => (x, y),
     };
     if mirror {

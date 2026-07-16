@@ -191,20 +191,13 @@ impl SectorTimer {
         best_lap: Option<f64>,
         show_delta: bool,
     ) -> SectorSnapshot {
-        let n = self
-            .starts
-            .as_ref()
-            .map(|s| s.len())
-            .unwrap_or(3)
-            .max(1);
+        let n = self.starts.as_ref().map(|s| s.len()).unwrap_or(3).max(1);
         let mut sectors = Vec::with_capacity(n);
         for i in 0..n {
             if i < self.cur.len() {
                 let t = self.cur[i];
                 let best = self.best.get(i).copied().flatten();
-                let status = if t.is_some()
-                    && best.is_some()
-                    && t.unwrap() <= best.unwrap() + 1e-6
+                let status = if t.is_some() && best.is_some() && t.unwrap() <= best.unwrap() + 1e-6
                 {
                     "best"
                 } else {

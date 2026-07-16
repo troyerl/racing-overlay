@@ -41,10 +41,8 @@ pub fn marker_car_valid(car: &CarRow) -> bool {
 /// Raw CarIdx targets for ahead / behind / leader (no hold debounce).
 /// Ahead/behind are race-position neighbors; no fallthrough if invalid.
 pub fn select_marker_candidates(cars: &[CarRow]) -> HashMap<&'static str, Option<i32>> {
-    let mut out: HashMap<&'static str, Option<i32>> = MARKER_SLOTS
-        .iter()
-        .map(|s| (*s, None))
-        .collect();
+    let mut out: HashMap<&'static str, Option<i32>> =
+        MARKER_SLOTS.iter().map(|s| (*s, None)).collect();
 
     let Some(player) = cars.iter().find(|c| c.is_player) else {
         return out;
@@ -140,10 +138,8 @@ pub fn resolve_traffic_markers(
     hold_sec: f64,
 ) -> HashMap<&'static str, Option<TrafficMarker>> {
     let candidates = select_marker_candidates(cars);
-    let mut out: HashMap<&'static str, Option<TrafficMarker>> = MARKER_SLOTS
-        .iter()
-        .map(|s| (*s, None))
-        .collect();
+    let mut out: HashMap<&'static str, Option<TrafficMarker>> =
+        MARKER_SLOTS.iter().map(|s| (*s, None)).collect();
 
     for &slot in MARKER_SLOTS {
         let state = hold_states.entry(slot.to_string()).or_default();
@@ -216,11 +212,7 @@ mod tests {
 
     #[test]
     fn no_fallthrough_when_ahead_in_pit() {
-        let mut cars = vec![
-            car(0, 1, false),
-            car(1, 2, false),
-            car(2, 3, true),
-        ];
+        let mut cars = vec![car(0, 1, false), car(1, 2, false), car(2, 3, true)];
         cars[1].on_pit = true;
         cars[1].on_track = false;
         let c = select_marker_candidates(&cars);

@@ -87,7 +87,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                     radius,
                 );
             }
-            "top" => draw_top(ui, ctx, d, x, cy, inner, bh, show_pill, show_add, show_gauge),
+            "top" => draw_top(
+                ui, ctx, d, x, cy, inner, bh, show_pill, show_add, show_gauge,
+            ),
             "stats" => draw_stats(ui, ctx, d, x, cy, inner, bh),
             "strip" => draw_strip(ui, ctx, d, x, cy, inner, bh),
             "time" => draw_box(
@@ -161,8 +163,7 @@ fn draw_pill(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32
     } else {
         ctx.cfg.color(SECTION, "pill_closed", "#6e747d")
     };
-    ui.painter()
-        .rect_filled(pill, CornerRadius::same(8), bg);
+    ui.painter().rect_filled(pill, CornerRadius::same(8), bg);
     let fg = ctx.cfg.color(SECTION, "pill_text", "#06210f");
     label(
         ui,
@@ -210,10 +211,7 @@ fn draw_add(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32,
 }
 
 fn draw_gauge(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32, w: f32, h: f32) {
-    let bar = Rect::from_min_size(
-        Pos2::new(x, y + h * 0.18),
-        Vec2::new(w, h * 0.36),
-    );
+    let bar = Rect::from_min_size(Pos2::new(x, y + h * 0.18), Vec2::new(w, h * 0.36));
     ui.painter().rect_filled(
         bar,
         CornerRadius::same(4),
@@ -413,10 +411,7 @@ fn draw_stats(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f3
         if ctx.cfg.bool_key(SECTION, "row_dividers", true) && r + 1 < STAT_ROWS.len() {
             let line = ctx.cfg.color(SECTION, "border", "#ffffff28");
             ui.painter().line_segment(
-                [
-                    Pos2::new(x, ry + row_h),
-                    Pos2::new(x + w, ry + row_h),
-                ],
+                [Pos2::new(x, ry + row_h), Pos2::new(x + w, ry + row_h)],
                 Stroke::new(1.0_f32, line),
             );
         }

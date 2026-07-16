@@ -3,7 +3,7 @@
 #[cfg(windows)]
 mod win {
     use crate::telemetry::{
-        decode_pit_flags, any_requested, CarRow, RadarState, RadioSpeaker, TelemetryFrame,
+        any_requested, decode_pit_flags, CarRow, RadarState, RadioSpeaker, TelemetryFrame,
         TireCorner,
     };
     use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
@@ -45,6 +45,7 @@ mod win {
         car_idx: i32,
         name: String,
         car_number: String,
+        car_path: String,
         irating: i32,
         license: String,
         class_color: String,
@@ -67,6 +68,8 @@ mod win {
         irating: i32,
         track_id: Option<i32>,
         track_name: Option<String>,
+        league_id: Option<i32>,
+        car_path: Option<String>,
         redline: f32,
         laps_total: i32,
         incidents_limit: i32,
@@ -163,26 +166,15 @@ mod win {
         let lr = read_f32(session, "LRwearM");
         let rr = read_f32(session, "RRwearM");
         let air_temp = read_f32_opt(session, "AirTemp");
-        let track_temp = read_f32_opt(session, "TrackTempCrew")
-            .or_else(|| read_f32_opt(session, "TrackTemp"));
+        let track_temp =
+            read_f32_opt(session, "TrackTempCrew").or_else(|| read_f32_opt(session, "TrackTemp"));
         let wind_dir = read_f32_opt(session, "WindDir");
         let wind_vel = read_f32_opt(session, "WindVel");
-        let track_wetness = read_f32_opt(session, "TrackWetness").map(|v| {
-            if v <= 1.0 {
-                v * 100.0
-            } else {
-                v
-            }
-        });
+        let track_wetness =
+            read_f32_opt(session, "TrackWetness").map(|v| if v <= 1.0 { v * 100.0 } else { v });
         let rain_intensity = read_f32_opt(session, "Precipitation")
             .or_else(|| read_f32_opt(session, "RainIntensity"))
-            .map(|v| {
-                if v <= 1.0 {
-                    v * 100.0
-                } else {
-                    v
-                }
-            });
+            .map(|v| if v <= 1.0 { v * 100.0 } else { v });
         let lap_est = {
             let v = read_f32(session, "LapEstTime");
             if v > 10.0 {
@@ -205,13 +197,8 @@ mod win {
         let delta = delta_session_best;
 
         let skies = weather_skies(session);
-        let humidity = read_f32_opt(session, "RelativeHumidity").map(|h| {
-            if h <= 1.0 {
-                h * 100.0
-            } else {
-                h
-            }
-        });
+        let humidity =
+            read_f32_opt(session, "RelativeHumidity").map(|h| if h <= 1.0 { h * 100.0 } else { h });
         let fog = read_f32_opt(session, "FogLevel");
 
         let tire_corners = read_tire_corners(session);
@@ -232,18 +219,25 @@ mod win {
         let pit_active = any_requested(pit_flags) || read_bool(session, "PlayerCarInPitStall");
         let pit_fuel_add_l = {
             let v = read_f32(session, "PitSvFuel");
-            if v > 0.05 { Some(v) } else { None }
+            if v > 0.05 {
+                Some(v)
+            } else {
+                None
+            }
         };
         let pit_compound = read_i32_opt(session, "PitSvTireCompound");
         let pit_repairs = read_i32_opt(session, "FastRepairAvailable");
 
-        let ers_battery_pct = read_f32_opt(session, "EnergyERSBatteryPct").map(|v| {
-            if v <= 1.0 {
-                v * 100.0
-            } else {
-                v
-            }
-        });
+        let ers_battery_pct =
+            read_f32_opt(session, "EnergyERSBatteryPct").map(
+                |v| {
+                    if v <= 1.0 {
+                        v * 100.0
+                    } else {
+                        v
+                    }
+                },
+            );
         let have_hybrid =
             ers_battery_pct.is_some() || read_f32_opt(session, "PowerMGU_K").is_some();
         let ers_boost_active = read_f32(session, "PowerMGU_K") > 50.0;
@@ -412,6 +406,8 @@ mod win {
             lap_est_time: lap_est,
             track_id: cache.track_id,
             track_name: cache.track_name.clone(),
+            league_id: cache.league_id,
+            car_path: cache.car_path.clone(),
             radar: radar.clone(),
             radar_left: left,
             radar_right: right,
@@ -513,13 +509,7 @@ mod win {
         if sf & (FLAG_FURLED) != 0 {
             return Some("furled".into());
         }
-        if sf
-            & (FLAG_YELLOW
-                | FLAG_YELLOW_WAVING
-                | FLAG_CAUTION
-                | FLAG_CAUTION_WAVING)
-            != 0
-        {
+        if sf & (FLAG_YELLOW | FLAG_YELLOW_WAVING | FLAG_CAUTION | FLAG_CAUTION_WAVING) != 0 {
             return Some("yellow".into());
         }
         if sf & FLAG_BLUE != 0 {
@@ -658,8 +648,12 @@ mod win {
         };
         let session_best = named("LapDeltaToSessionBestLap", "LapDeltaToSessionBestLap_OK");
         let best = named("LapDeltaToBestLap", "LapDeltaToBestLap_OK");
-        let optimal = named("LapDeltaToOptimalLap", "LapDeltaToOptimalLap_OK")
-            .or_else(|| named("LapDeltaToSessionOptimalLap", "LapDeltaToSessionOptimalLap_OK"));
+        let optimal = named("LapDeltaToOptimalLap", "LapDeltaToOptimalLap_OK").or_else(|| {
+            named(
+                "LapDeltaToSessionOptimalLap",
+                "LapDeltaToSessionOptimalLap_OK",
+            )
+        });
         (session_best, best, optimal)
     }
 
@@ -679,7 +673,11 @@ mod win {
 
     unsafe fn read_tire_corners(session: &Session) -> [TireCorner; 4] {
         let wear = |a: &str, b: &str, c: &str| -> Option<f32> {
-            let vals = [read_f32(session, a), read_f32(session, b), read_f32(session, c)];
+            let vals = [
+                read_f32(session, a),
+                read_f32(session, b),
+                read_f32(session, c),
+            ];
             let good: Vec<f32> = vals.into_iter().filter(|v| *v > 0.0 && *v <= 1.0).collect();
             if good.is_empty() {
                 None
@@ -688,8 +686,15 @@ mod win {
             }
         };
         let temp = |a: &str, b: &str, c: &str| -> Option<f32> {
-            let vals = [read_f32(session, a), read_f32(session, b), read_f32(session, c)];
-            let good: Vec<f32> = vals.into_iter().filter(|v| *v > 10.0 && *v < 200.0).collect();
+            let vals = [
+                read_f32(session, a),
+                read_f32(session, b),
+                read_f32(session, c),
+            ];
+            let good: Vec<f32> = vals
+                .into_iter()
+                .filter(|v| *v > 10.0 && *v < 200.0)
+                .collect();
             if good.is_empty() {
                 None
             } else {
@@ -861,18 +866,9 @@ mod win {
             let on_track = surf == TRK_ON_TRACK;
             let in_pit = surf == TRK_IN_PIT_STALL || surf == TRK_APPROACHING_PITS;
             let approaching_pits = surf == TRK_APPROACHING_PITS;
-            let est_t = est
-                .as_ref()
-                .and_then(|a| a.get(i).copied())
-                .unwrap_or(0.0);
-            let f2_t = f2
-                .as_ref()
-                .and_then(|a| a.get(i).copied())
-                .unwrap_or(0.0);
-            let car_lap = laps
-                .as_ref()
-                .and_then(|a| a.get(i).copied())
-                .unwrap_or(0);
+            let est_t = est.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0.0);
+            let f2_t = f2.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0.0);
+            let car_lap = laps.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0);
             let speed_mps = speeds
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
@@ -983,8 +979,11 @@ mod win {
         if let Some(v) = yaml_i32(yaml, "TrackID") {
             cache.track_id = Some(v);
         }
-        if let Some(n) = yaml_str(yaml, "TrackDisplayShortName")
-            .or_else(|| yaml_str(yaml, "TrackDisplayName"))
+        if let Some(v) = yaml_i32(yaml, "LeagueID") {
+            cache.league_id = if v > 0 { Some(v) } else { None };
+        }
+        if let Some(n) =
+            yaml_str(yaml, "TrackDisplayShortName").or_else(|| yaml_str(yaml, "TrackDisplayName"))
         {
             cache.track_name = Some(n.trim_matches('"').to_string());
         }
@@ -1011,6 +1010,9 @@ mod win {
             }
             if d.irating > 0 {
                 cache.irating = d.irating;
+            }
+            if !d.car_path.is_empty() {
+                cache.car_path = Some(d.car_path.clone());
             }
         }
     }
@@ -1061,10 +1063,7 @@ mod win {
             // End of indented results list.
             if in_results {
                 let indent = line.len() - line.trim_start().len();
-                if !trimmed.is_empty()
-                    && indent == 0
-                    && !trimmed.starts_with('-')
-                {
+                if !trimmed.is_empty() && indent == 0 && !trimmed.starts_with('-') {
                     flush_cur(&mut current, &mut cur_idx, &mut cur);
                     if !current.is_empty() {
                         if block_is_race || best.is_empty() {
@@ -1200,6 +1199,8 @@ mod win {
                 }
             } else if let Some(v) = kv(t, "CarNumber") {
                 d.car_number = unquote(v);
+            } else if let Some(v) = kv(t, "CarPath") {
+                d.car_path = unquote(v);
             } else if let Some(v) = kv(t, "IRating") {
                 d.irating = v.parse().unwrap_or(0);
             } else if let Some(v) = kv(t, "CarClassID") {

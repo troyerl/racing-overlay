@@ -2,7 +2,7 @@
 name = "gridglance-overlay"
 version.workspace = true
 edition.workspace = true
-description = "GridGlance race overlay (egui) — widgets in Rust, settings stay in Python"
+description = "GridGlance — race overlay, Settings, Track Scan (egui)"
 
 [[bin]]
 name = "gridglance-overlay"
@@ -20,8 +20,21 @@ egui_extras = { version = "0.31", features = ["svg"] }
 parking_lot = "0.12"
 directories = "6"
 clap = { version = "4", features = ["derive"] }
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
+tray-icon = "0.19"
+muda = "0.15"
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+regex = "1"
+ureq = { version = "2", default-features = false, features = ["tls", "json"] }
+mongodb = { version = "2.8", default-features = false, features = ["tokio-runtime"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+base64 = "0.22"
+once_cell = "1"
+scraper = "0.22"
+svgtypes = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

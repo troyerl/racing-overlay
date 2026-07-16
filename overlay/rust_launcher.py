@@ -48,6 +48,7 @@ def start_rust_overlay(
     click_through: bool = True,
     ipc_port: int = 19847,
     stopped: bool = False,
+    settings: bool = False,
 ) -> subprocess.Popen:
     binary = find_overlay_binary()
     if binary is None:
@@ -62,6 +63,8 @@ def start_rust_overlay(
         cmd.append("--no-clickthrough")
     if stopped:
         cmd.append("--stopped")
+    if settings:
+        cmd.append("--settings")
     return subprocess.Popen(
         cmd,
         stdout=subprocess.DEVNULL,

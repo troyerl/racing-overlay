@@ -9,10 +9,10 @@ use crate::telemetry::{slot_label, TableRow, TableSlotItem, TableSlots};
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use std::collections::HashMap;
 
-const ROW_SNAP_SLOTS: f32 = 1.25;
+const ROW_SNAP_SLOTS: f32 = 3.5;
 const DENSE_ROW_COUNT: usize = 20;
-const DENSE_ROW_SNAP_SLOTS: f32 = 0.5;
-const DENSE_ROW_EASE_TAU: f32 = 0.06;
+const DENSE_ROW_SNAP_SLOTS: f32 = 2.0;
+const DENSE_ROW_EASE_TAU: f32 = 0.10;
 
 #[derive(Clone, Default)]
 struct RowAnimState {
@@ -94,7 +94,9 @@ pub fn paint_table(
     let id = egui::Id::new(("table_anim", section));
     let animating = {
         let now = ui.input(|i| i.time);
-        let mut anim = ui.ctx().data_mut(|d| d.get_temp::<TableAnim>(id).unwrap_or_default());
+        let mut anim = ui
+            .ctx()
+            .data_mut(|d| d.get_temp::<TableAnim>(id).unwrap_or_default());
         let dt = if anim.last_ms > 0.0 {
             ((now - anim.last_ms) as f32).clamp(0.0, 0.1)
         } else {
@@ -114,8 +116,11 @@ pub fn paint_table(
             tau = tau.min(DENSE_ROW_EASE_TAU);
         }
 
-        let active: std::collections::HashSet<String> =
-            rows.iter().filter(|r| !r.empty).map(|r| r.key.clone()).collect();
+        let active: std::collections::HashSet<String> = rows
+            .iter()
+            .filter(|r| !r.empty)
+            .map(|r| r.key.clone())
+            .collect();
         anim.slots.retain(|k, _| active.contains(k));
 
         // Pass A: ensure slots + count mid-reshuffle movers (multi-car swaps).
@@ -272,10 +277,8 @@ pub fn paint_table(
             Pos2::new(card.left(), band_top),
             Pos2::new(card.right(), card.bottom()),
         );
-        let ftr_content = Rect::from_min_size(
-            Pos2::new(left, band_top),
-            Vec2::new(inner_w, footer_h),
-        );
+        let ftr_content =
+            Rect::from_min_size(Pos2::new(left, band_top), Vec2::new(inner_w, footer_h));
         draw_edge_band(
             ui,
             cfg,
@@ -434,11 +437,7 @@ fn paint_row_cols(
                 );
             }
             "name" => {
-                let colc = if dim {
-                    dim_text
-                } else {
-                    text
-                };
+                let colc = if dim { dim_text } else { text };
                 let bold = cfg.bool_key(section, "name_font_bold", true);
                 label(
                     ui,
@@ -483,8 +482,7 @@ fn paint_row_cols(
                 );
                 let edge_a = ((bg.a() as f32 * 0.55) as u16 + 60).min(255) as u8;
                 let edge = color_with_alpha(bg, edge_a);
-                ui.painter()
-                    .rect_filled(pill, CornerRadius::same(4), bg);
+                ui.painter().rect_filled(pill, CornerRadius::same(4), bg);
                 ui.painter().rect_stroke(
                     pill,
                     CornerRadius::same(4),
@@ -688,10 +686,7 @@ fn paint_irating_cell(
     dim: bool,
     dim_text: Color32,
 ) {
-    let cell = Rect::from_min_size(
-        Pos2::new(cx, cy - rh * 0.3),
-        Vec2::new(cw, rh * 0.6),
-    );
+    let cell = Rect::from_min_size(Pos2::new(cx, cy - rh * 0.3), Vec2::new(cw, rh * 0.6));
     let show_icon = cfg.bool_key(section, "irating_show_icon", true);
     let muted = if dim {
         dim_text
@@ -733,10 +728,7 @@ fn paint_irating_cell(
     ui.painter().rect_stroke(
         pill,
         CornerRadius::same(4),
-        Stroke::new(
-            1.0_f32,
-            cfg.color(section, "irating_border", "#ffffff20"),
-        ),
+        Stroke::new(1.0_f32, cfg.color(section, "irating_border", "#ffffff20")),
         StrokeKind::Inside,
     );
 
@@ -910,6 +902,44 @@ fn paint_badge(
         paint_speaker_badge(ui, cfg, section, box_r);
         return;
     }
+    if row.is_pro {
+        ui.painter().circle_filled(
+            Pos2::new(cx, cy),
+            size * 0.5,
+            cfg.color(section, "badge_pro", "#ffd23a"),
+        );
+        label(
+            ui,
+            Pos2::new(cx, cy),
+            Align2::CENTER_CENTER,
+            "★",
+            size * 0.55,
+            cfg.color(section, "badge_pro_text", "#141414"),
+            true,
+        );
+        return;
+    }
+    if !row.group_icon.is_empty() {
+        let bg = crate::config::parse_color_str(if row.group_color.is_empty() {
+            "#5bb8ff"
+        } else {
+            &row.group_color
+        });
+        ui.painter()
+            .circle_filled(Pos2::new(cx, cy), size * 0.5, bg);
+        if let Some(g) = crate::icons::glyph(&row.group_icon) {
+            label(
+                ui,
+                Pos2::new(cx, cy),
+                Align2::CENTER_CENTER,
+                &g,
+                size * 0.45,
+                Color32::WHITE,
+                true,
+            );
+        }
+        return;
+    }
     if row.is_player {
         ui.painter().circle_filled(
             Pos2::new(cx, cy),
@@ -953,8 +983,7 @@ fn paint_badge(
             "cover" => (cfg.color(section, "badge_cover", "#ff9416"), "C"),
             _ => (cfg.color(section, "badge_empty_fill", "#00000078"), "?"),
         };
-        ui.painter()
-            .rect_filled(box_r, CornerRadius::same(3), bg);
+        ui.painter().rect_filled(box_r, CornerRadius::same(3), bg);
         label(
             ui,
             box_r.center(),
@@ -991,7 +1020,8 @@ fn paint_speaker_badge(ui: &mut Ui, cfg: &OverlayConfig, section: &str, box_r: R
     let border = cfg.color(section, "badge_speaking_border", "#ffffffcc");
     let bg = cfg.color(section, "badge_speaking_bg", "#22c55e");
     let fg = cfg.color(section, "badge_speaking_text", "#ffffff");
-    ui.painter().circle_filled(pill.center(), pill.width() * 0.5, bg);
+    ui.painter()
+        .circle_filled(pill.center(), pill.width() * 0.5, bg);
     ui.painter().circle_stroke(
         pill.center(),
         pill.width() * 0.5,
@@ -1010,8 +1040,11 @@ fn paint_clock(ui: &mut Ui, box_r: Rect) {
     let stroke_w = (box_r.width() * 0.08).max(1.0);
     let white = Color32::from_rgb(255, 255, 255);
     let inner = box_r.shrink2(Vec2::new(box_r.width() * 0.22, box_r.height() * 0.22));
-    ui.painter()
-        .circle_stroke(inner.center(), inner.width() * 0.5, Stroke::new(stroke_w, white));
+    ui.painter().circle_stroke(
+        inner.center(),
+        inner.width() * 0.5,
+        Stroke::new(stroke_w, white),
+    );
     let c = inner.center();
     ui.painter().line_segment(
         [c, Pos2::new(c.x, c.y - inner.height() * 0.32)],
@@ -1108,7 +1141,11 @@ fn draw_edge_band(
 }
 
 fn text_width(ui: &Ui, font: &FontId, s: &str) -> f32 {
-    ui.fonts(|f| f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE).size().x)
+    ui.fonts(|f| {
+        f.layout_no_wrap(s.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    })
 }
 
 fn paint_band_slot(
@@ -1154,7 +1191,15 @@ fn paint_band_slot(
             Stroke::new(1.0_f32, muted),
             egui::StrokeKind::Inside,
         );
-        label(ui, pill.center(), Align2::CENTER_CENTER, "ORDER", fs * 0.72, muted, true);
+        label(
+            ui,
+            pill.center(),
+            Align2::CENTER_CENTER,
+            "ORDER",
+            fs * 0.72,
+            muted,
+            true,
+        );
         return;
     }
     if item.key == "count" || item.key == "track_name" {
@@ -1217,7 +1262,11 @@ fn paint_band_slot(
 }
 
 fn column_order(cfg: &OverlayConfig, section: &str) -> Vec<String> {
-    if let Some(arr) = cfg.section(section).get("column_order").and_then(|v| v.as_array()) {
+    if let Some(arr) = cfg
+        .section(section)
+        .get("column_order")
+        .and_then(|v| v.as_array())
+    {
         let cols: Vec<String> = arr
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -1299,4 +1348,3 @@ fn fmt_ir(ir: i32, abbrev: bool) -> String {
         ir.to_string()
     }
 }
-

@@ -87,7 +87,11 @@ fn preview_rows() -> Vec<StripRow> {
 }
 
 fn measure_text(ui: &Ui, text: &str, font: FontId) -> f32 {
-    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, Color32::WHITE).size().x)
+    ui.fonts(|f| {
+        f.layout_no_wrap(text.to_owned(), font, Color32::WHITE)
+            .size()
+            .x
+    })
 }
 
 fn position_column_width(ui: &Ui, rows: &[StripRow], pos_size: f32) -> f32 {
@@ -198,10 +202,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let pw = position_column_width(ui, &rows, pos_size);
         (pw, (core_w - pw - sep_w).max(0.0))
     } else if show_pos {
-        (
-            position_column_width(ui, &rows, pos_size).min(core_w),
-            0.0,
-        )
+        (position_column_width(ui, &rows, pos_size).min(core_w), 0.0)
     } else if show_num {
         (0.0, (core_w - sep_w).max(0.0))
     } else {
@@ -275,10 +276,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
 
         if show_lap {
-            let lap_txt = row
-                .lap
-                .map(|l| l.to_string())
-                .unwrap_or_default();
+            let lap_txt = row.lap.map(|l| l.to_string()).unwrap_or_default();
             if !lap_txt.is_empty() {
                 label(
                     ui,
@@ -316,13 +314,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if show_num {
             let num = row.car_number.trim();
             if !num.is_empty() {
-                let num_rect = Rect::from_min_size(
-                    Pos2::new(x_num, row_top),
-                    Vec2::new(num_w, row_h - 2.0),
-                );
-                super::scoreboard_digits::draw_scoreboard_text(
-                    ui, num_rect, num, num_fill, 2,
-                );
+                let num_rect =
+                    Rect::from_min_size(Pos2::new(x_num, row_top), Vec2::new(num_w, row_h - 2.0));
+                super::scoreboard_digits::draw_scoreboard_text(ui, num_rect, num, num_fill, 2);
             }
         }
 
@@ -372,10 +366,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 let gcol = if gap.starts_with('+') { slower } else { muted };
                 label(
                     ui,
-                    Pos2::new(
-                        rect.left() + pad_x + inner_w,
-                        meta_y + meta_h * 0.5,
-                    ),
+                    Pos2::new(rect.left() + pad_x + inner_w, meta_y + meta_h * 0.5),
                     Align2::RIGHT_CENTER,
                     gap,
                     data_size,

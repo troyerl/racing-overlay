@@ -9,7 +9,12 @@ const SECTION: &str = "flags";
 const SPEC: &[(&str, &str, &str, &str)] = &[
     ("yellow", "CAUTION", "flag_yellow", "flag_yellow_text"),
     ("black", "BLACK FLAG", "flag_black", "flag_black_text"),
-    ("meatball", "MEATBALL", "flag_meatball", "flag_meatball_text"),
+    (
+        "meatball",
+        "MEATBALL",
+        "flag_meatball",
+        "flag_meatball_text",
+    ),
     ("furled", "WARNING", "flag_furled", "flag_furled_text"),
     ("dq", "DISQUALIFIED", "flag_dq", "flag_dq_text"),
     ("green", "GREEN", "flag_green", "flag_green_text"),
@@ -18,7 +23,12 @@ const SPEC: &[(&str, &str, &str, &str)] = &[
     ("blue", "LET BY", "flag_blue", "flag_blue_text"),
     ("debris", "DEBRIS", "flag_debris", "flag_debris_text"),
     ("crossed", "HALFWAY", "flag_crossed", "flag_crossed_text"),
-    ("checkered", "FINISH", "flag_checker_bg", "flag_checker_text"),
+    (
+        "checkered",
+        "FINISH",
+        "flag_checker_bg",
+        "flag_checker_text",
+    ),
 ];
 
 fn text_width(ui: &Ui, text: &str, size: f32, bold: bool) -> f32 {
@@ -146,8 +156,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             let mut title_sz = inner.height() * 0.22;
             let mut sub_sz = inner.height() * 0.15;
             let avail = inner.width() * 0.82;
-            let mut tw = text_width(ui, title, title_sz, true)
-                .max(text_width(ui, context, sub_sz, false));
+            let mut tw =
+                text_width(ui, title, title_sz, true).max(text_width(ui, context, sub_sz, false));
             if tw > avail && tw > 0.0 {
                 let scale = avail / tw;
                 title_sz *= scale;
@@ -157,10 +167,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             }
             let plate_pad = inner.height() * 0.24;
             let plate_h = (inner.height() * 0.72).min(title_sz * 2.6 + sub_sz * 1.2);
-            let plate = Rect::from_center_size(
-                inner.center(),
-                Vec2::new(tw + plate_pad * 2.0, plate_h),
-            );
+            let plate =
+                Rect::from_center_size(inner.center(), Vec2::new(tw + plate_pad * 2.0, plate_h));
             ui.painter().rect_filled(
                 plate,
                 CornerRadius::same((plate_h * 0.5).round().clamp(0.0, 255.0) as u8),
@@ -194,10 +202,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             }
             let plate_pad = inner.height() * 0.28;
             let plate_h = (inner.height() * 0.62).min(font_sz * 1.9);
-            let plate = Rect::from_center_size(
-                inner.center(),
-                Vec2::new(tw + plate_pad * 2.0, plate_h),
-            );
+            let plate =
+                Rect::from_center_size(inner.center(), Vec2::new(tw + plate_pad * 2.0, plate_h));
             ui.painter().rect_filled(
                 plate,
                 CornerRadius::same((plate_h * 0.5).round().clamp(0.0, 255.0) as u8),

@@ -1,80 +1,44 @@
 # GridGlance Rust overlay
 
-Hybrid architecture: **race widgets run here**; **settings / Track Scan stay in Python**.
+**`gridglance-overlay` is the full app** — race widgets, Settings, Track Scan, Mongo sync, system tray. No Python runtime required.
 
 ## Build
-
-```bash
-export RUSTUP_HOME="$PWD/../.rustup"   # if using workspace-local toolchain
-export CARGO_HOME="$PWD/../.cargo"
-export PATH="$CARGO_HOME/bin:$PATH"
-cargo build --release
-```
-
-Binary: `target/release/gridglance-overlay`
-
-## Run (demo)
-
-```bash
-cargo run -p gridglance-overlay -- --demo --no-clickthrough
-```
-
-IPC listens on `127.0.0.1:19847` (newline-delimited JSON-RPC).
-
-## Run with live iRacing (Windows)
-
-1. Build a release binary on Windows:
 
 ```bash
 cd overlay-rs
 cargo build --release -p gridglance-overlay
 ```
 
-2. Start iRacing (enable memory telemetry: `irsdkEnableMem=1` in `app.ini` if needed).
+Binary: `target/release/gridglance-overlay`
 
-3. From the repo root, launch the hybrid stack **without** `--demo`:
-
-```bash
-python run.py --rust --start
-```
-
-Python settings + Rust widgets; live IRSDK fills the dash. Widget `show` flags come from your preset (full `CFG` is pushed over IPC on launch).
-
-Each widget is its own always-on-top window (the root stays tiny/hidden so a failed GL alpha path cannot black out the desktop). On Windows, after each paint the panel framebuffer is read and shown with `UpdateLayeredWindow` (per-pixel alpha) so empty areas and semi-transparent panels match Python. Dash has no outer card (section panels only); radar/map honor `show_panel` (off by default). Rebuild after pulling:
+## Run
 
 ```bash
-cargo build --release -p gridglance-overlay
+# Demo telemetry + Settings
+cargo run -p gridglance-overlay -- --demo --settings
+
+# Import members HTML/SVG → track JSON (headless; replaces tools/svg_layers_to_track_v2.py)
+cargo run -p gridglance-overlay -- \
+  --import-track path/to/page.html --track-id 123 --name "Spa" --force
+
+# Track Scan (requires GRIDGLANCE_MONGODB_URI write credential)
+cargo run -p gridglance-overlay -- --demo --track-scan
+
+# Live iRacing (Windows)
+cargo run -p gridglance-overlay --release -- --settings
 ```
 
-Demo feed (no sim):
+Tray menu: Settings / Track Scan / Start–Stop / Edit layout / Check updates / Quit.
+Second launch activates the existing instance.
+
+Author env (optional `.env` in repo root or next to the binary):
 
 ```bash
-python run.py --rust --demo
+GRIDGLANCE_MONGODB_URI="mongodb+srv://…"   # unlocks Track Scan + cloud upload
 ```
 
-## Launch from Python
+IPC still listens on `127.0.0.1:19847` for external tools.
 
-```bash
-# Uses Rust overlay when the binary is present (Phase 3 default)
-python3 run.py --demo
+## Packaging
 
-# Force Python PyQt overlay
-python3 run.py --python --demo
-
-# Force Rust
-python3 run.py --rust --demo
-# or: GRIDGLANCE_BACKEND=rust python3 run.py --demo
-```
-
-Settings-only against an already-running overlay:
-
-```bash
-python3 -m overlay.config_editor --rust-overlay
-```
-
-## Crates
-
-| Crate | Role |
-|-------|------|
-| `gridglance-ipc` | Shared request/response method names |
-| `gridglance-overlay` | egui multi-viewport host + widgets + IPC server |
+Windows installer (`installer/gridglance.iss`) ships the release `gridglance-overlay.exe` as `GridGlance.exe`. Legacy `run.py` only locates and spawns that binary.

@@ -206,6 +206,18 @@ class OverlayIpcClient:
     def track_authoring_state(self) -> dict:
         return self.call("track.authoring_state") or {}
 
+    def settings_open(self) -> Any:
+        return self.call("settings.open")
+
+    def settings_close(self) -> Any:
+        return self.call("settings.close")
+
+    def settings_toggle(self) -> Any:
+        return self.call("settings.toggle")
+
+    def config_save(self) -> Any:
+        return self.call("config.save")
+
 
 class RemoteOverlay:
     """Duck-typed stand-in for ``AdvancedSimHUD`` settings / Track Scan hooks."""
@@ -304,6 +316,10 @@ class RemoteOverlay:
         # Apply live CFG only — do not config.reload() afterward (that reloads
         # from disk and undoes unsaved show flags / live edits).
         self.ipc.config_apply(cfg)
+
+    def open_rust_settings(self) -> None:
+        """Open the in-overlay egui Settings window."""
+        self.ipc.settings_open()
 
     def apply_active_preset(self) -> None:
         """Push the active preset's full CFG + window layout to the Rust overlay."""

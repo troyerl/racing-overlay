@@ -218,8 +218,8 @@ impl LapCompareState {
 
     /// Build the widget view; fills synthetic turn losses when none derived.
     pub fn view(&self, session_time: f64, ref_mode: &str) -> LapCompareView {
-        let use_last = ref_mode.eq_ignore_ascii_case("last_lap")
-            || ref_mode.eq_ignore_ascii_case("last");
+        let use_last =
+            ref_mode.eq_ignore_ascii_case("last_lap") || ref_mode.eq_ignore_ascii_case("last");
         let ref_label = if use_last {
             "VS LAST".into()
         } else {
@@ -296,22 +296,18 @@ fn turns_from_spark(spark: &[f32]) -> Vec<(String, f32)> {
         return demo_turns(0.0);
     }
     let n = spark.len();
-    let slices = [
-        (0.12, "T1"),
-        (0.35, "T3"),
-        (0.58, "T7"),
-        (0.82, "T12"),
-    ];
+    let slices = [(0.12, "T1"), (0.35, "T3"), (0.58, "T7"), (0.82, "T12")];
     slices
         .iter()
         .map(|(frac, label)| {
             let i = ((*frac) * (n - 1) as f32).round() as usize;
             let lo = i.saturating_sub(2);
             let hi = (i + 2).min(n - 1);
-            let loss = spark[lo..=hi]
-                .iter()
-                .copied()
-                .fold(0.0_f32, |a, b| if b.abs() > a.abs() { b } else { a });
+            let loss =
+                spark[lo..=hi]
+                    .iter()
+                    .copied()
+                    .fold(0.0_f32, |a, b| if b.abs() > a.abs() { b } else { a });
             ((*label).into(), loss)
         })
         .collect()

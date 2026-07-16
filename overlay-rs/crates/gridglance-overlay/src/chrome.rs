@@ -8,7 +8,9 @@ pub fn panel_pad(h: f32) -> f32 {
 }
 
 fn lerp_u8(a: u8, b: u8, t: f32) -> u8 {
-    (a as f32 + (b as f32 - a as f32) * t).round().clamp(0.0, 255.0) as u8
+    (a as f32 + (b as f32 - a as f32) * t)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -80,8 +82,7 @@ fn fill_vertical_gradient(ui: &mut Ui, rect: Rect, radius: f32, top: Color32, bo
     let ru = r.round().clamp(0.0, 255.0) as u8;
     let h = rect.height().max(1.0);
 
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(ru), top);
+    ui.painter().rect_filled(rect, CornerRadius::same(ru), top);
 
     for i in 0..BANDS {
         let t0 = i as f32 / BANDS as f32;

@@ -5757,6 +5757,12 @@ def _main_rust() -> int:
         or bool(config.CFG.get("start_overlay_on_launch", False))
     )
     open_settings = "--no-settings" not in sys.argv
+    # Default: Rust in-overlay Settings. Legacy PyQt editor: --python-settings.
+    # Track Scan only: --track-scan (opens slim Python editor on Scan tab).
+    use_python_settings = "--python-settings" in sys.argv
+    track_scan_only = "--track-scan" in sys.argv
+    if track_scan_only:
+        use_python_settings = True
 
     if sys.platform == "win32":
         try:
@@ -5816,6 +5822,7 @@ def _main_rust() -> int:
                 demo=demo,
                 click_through=click_through,
                 stopped=not start_now,
+                settings=open_settings and not use_python_settings,
             )
         except FileNotFoundError as exc:
             QMessageBox.critical(None, "GridGlance", str(exc))
@@ -5902,12 +5909,23 @@ def _main_rust() -> int:
             remote._updater.start()
 
         def _open_settings() -> None:
+            if not use_python_settings:
+                try:
+                    remote.open_rust_settings()
+                except OverlayIpcError as exc:
+                    QMessageBox.warning(
+                        None, "GridGlance",
+                        f"Could not open Rust Settings: {exc}")
+                return
             existing = getattr(app, "_settings_window", None)
             if existing is not None and existing.isVisible():
                 existing.raise_()
                 existing.activateWindow()
                 return
-            editor = ConfigEditor(overlay=remote)
+            editor = ConfigEditor(
+                overlay=remote,
+                track_scan_only=track_scan_only,
+            )
             app._settings_window = editor
             remote._settings_window = editor
 
@@ -5916,6 +5934,19 @@ def _main_rust() -> int:
                 pass
 
             editor.destroyed.connect(_on_close)
+            editor.show()
+
+        def _open_track_scan() -> None:
+            existing = getattr(app, "_settings_window", None)
+            if existing is not None and existing.isVisible():
+                if hasattr(existing, "open_track_scan"):
+                    existing.open_track_scan()
+                existing.raise_()
+                existing.activateWindow()
+                return
+            editor = ConfigEditor(overlay=remote, track_scan_only=True)
+            app._settings_window = editor
+            remote._settings_window = editor
             editor.show()
 
         def _quit_all() -> None:
@@ -5934,17 +5965,26 @@ def _main_rust() -> int:
             menu = QMenu()
             act_settings = QAction("Settings", menu)
             act_settings.triggered.connect(_open_settings)
+            act_scan = QAction("Track Scan", menu)
+            act_scan.triggered.connect(_open_track_scan)
             act_quit = QAction("Quit", menu)
             act_quit.triggered.connect(_quit_all)
             menu.addAction(act_settings)
+            menu.addAction(act_scan)
             menu.addAction(act_quit)
             tray.setContextMenu(menu)
             tray.setToolTip("GridGlance")
             tray.show()
 
         app.setQuitOnLastWindowClosed(tray is None)
-        if open_settings or not start_now:
+        if use_python_settings and (open_settings or not start_now or track_scan_only):
             _open_settings()
+        elif open_settings and not use_python_settings:
+            # Rust --settings already opened the window; ensure via IPC too.
+            try:
+                remote.open_rust_settings()
+            except OverlayIpcError:
+                pass
 
         return app.exec()
     finally:

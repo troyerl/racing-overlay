@@ -1,10 +1,10 @@
-; Inno Setup script for GridGlance.
+; Inno Setup script for GridGlance (Rust-only).
 ; Compiled by the CI release workflow:
 ;   ISCC /DMyAppVersion=1.0.123 installer\gridglance.iss
 ; Paths are relative to the repo root (SourceDir below).
 
 #define MyAppName "GridGlance"
-#define MyAppExeName "GridGlance.exe"
+#define MyAppExeName "gridglance-overlay.exe"
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
 #endif
@@ -17,24 +17,17 @@ AppPublisher=GridGlance
 DefaultDirName={autopf}\GridGlance
 DefaultGroupName=GridGlance
 DisableProgramGroupPage=yes
-; Per-user install (no admin prompt); keeps the app folder writable and makes
-; in-app updates painless.
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
-; Relative to this .iss file's folder (installer/), so ".." is the repo root.
 SourceDir=..
 OutputDir=installer_output
 OutputBaseFilename=GridGlance-Setup-{#MyAppVersion}
 SetupIconFile=assets\app.ico
-; Icon shown in "Apps & features" / "Add or remove programs".
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 ArchitecturesInstallIn64BitMode=x64compatible
-; In-app updates run this installer with /VERYSILENT. Close the running app so
-; its files can be replaced, but don't let the restart manager relaunch it --
-; the [Run] entry below handles relaunching exactly once.
 CloseApplications=yes
 RestartApplications=no
 
@@ -45,15 +38,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-; The whole PyInstaller onedir output.
-Source: "dist\GridGlance\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; Build: cargo build -p gridglance-overlay --release
+Source: "overlay-rs\target\release\gridglance-overlay.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "overlay-rs\target\release\gridglance-overlay.exe"; DestDir: "{app}"; DestName: "GridGlance.exe"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\GridGlance"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\GridGlance"; Filename: "{app}\GridGlance.exe"; Parameters: "--settings"
 Name: "{group}\Uninstall GridGlance"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\GridGlance"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userdesktop}\GridGlance"; Filename: "{app}\GridGlance.exe"; Parameters: "--settings"; Tasks: desktopicon
 
 [Run]
-; No "skipifsilent" so a /VERYSILENT in-app update still relaunches the app when
-; it finishes. In an interactive install this shows as the usual "Launch" tick.
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch GridGlance"; Flags: nowait postinstall
+Filename: "{app}\GridGlance.exe"; Parameters: "--settings"; Description: "Launch GridGlance"; Flags: nowait postinstall

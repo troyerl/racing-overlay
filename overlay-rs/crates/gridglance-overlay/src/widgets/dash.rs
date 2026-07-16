@@ -161,18 +161,17 @@ fn slot(cfg: &OverlayConfig, key: &str, default: &str) -> String {
 }
 
 fn text_w(ui: &Ui, font: &FontId, text: &str) -> f32 {
-    ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE).size().x)
+    ui.fonts(|f| {
+        f.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE)
+            .size()
+            .x
+    })
 }
 
 fn icon_paint(ui: &mut Ui, pos: Pos2, size: f32, name: &str, color: Color32) {
     if let Some(g) = icons::glyph(name) {
-        ui.painter().text(
-            pos,
-            Align2::LEFT_CENTER,
-            g,
-            icons::font_id(size),
-            color,
-        );
+        ui.painter()
+            .text(pos, Align2::LEFT_CENTER, g, icons::font_id(size), color);
     }
 }
 
@@ -199,11 +198,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let mut flag_rect: Option<Rect> = None;
     if cfg.bool_key(SECTION, "show_flags", true) {
         let has_ctx = f.flag.is_some() && f.flag_context.as_ref().is_some_and(|s| !s.is_empty());
-        let flag_bar_h = (if has_ctx { h * 0.165 } else { h * 0.105 }).max(if has_ctx {
-            8.0
-        } else {
-            6.0
-        });
+        let flag_bar_h =
+            (if has_ctx { h * 0.165 } else { h * 0.105 }).max(if has_ctx { 8.0 } else { 6.0 });
         flag_rect = Some(Rect::from_min_size(
             Pos2::new(left_left, panels_top),
             Vec2::new(bar_w, flag_bar_h),
@@ -344,12 +340,18 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 }
 
-fn draw_position(ui: &mut Ui, cfg: &OverlayConfig, box_r: Rect, f: &TelemetryFrame, text_scale: f32) {
+fn draw_position(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    box_r: Rect,
+    f: &TelemetryFrame,
+    text_scale: f32,
+) {
     draw_panel_rect(ui, cfg, SECTION, box_r);
     let orange = cfg.color(SECTION, "orange", "#ff9416");
-    let radius =
-        (box_r.width().min(box_r.height()) * cfg.f64_key(SECTION, "corner_radius_frac", 0.08) as f32)
-            .max(4.0);
+    let radius = (box_r.width().min(box_r.height())
+        * cfg.f64_key(SECTION, "corner_radius_frac", 0.08) as f32)
+        .max(4.0);
     ui.painter().rect_stroke(
         box_r,
         egui::CornerRadius::same(radius as u8),
@@ -368,7 +370,15 @@ fn draw_position(ui: &mut Ui, cfg: &OverlayConfig, box_r: Rect, f: &TelemetryFra
     if tw > max_w && tw > 0.0 {
         fs *= max_w / tw;
     }
-    label(ui, box_r.center(), Align2::CENTER_CENTER, &text, fs, orange, true);
+    label(
+        ui,
+        box_r.center(),
+        Align2::CENTER_CENTER,
+        &text,
+        fs,
+        orange,
+        true,
+    );
 }
 
 #[derive(Clone, Default)]
@@ -795,8 +805,11 @@ fn irating_pair_width(
 ) -> f32 {
     let base = metric_str(cfg, f, "irating");
     let mut w = text_w(ui, &FontId::proportional(val_px), &base);
-    w += text_w(ui, &icons::font_id(sh * 0.42), &icons::glyph("irating").unwrap_or_default())
-        + sh * 0.18;
+    w += text_w(
+        ui,
+        &icons::font_id(sh * 0.42),
+        &icons::glyph("irating").unwrap_or_default(),
+    ) + sh * 0.18;
     if cfg.bool_key(SECTION, "show_irating_projection", false) {
         if let Some(d) = f.irating_delta {
             if d != 0 {
@@ -829,7 +842,11 @@ fn draw_irating_pair(
             "irating",
             cfg.color(SECTION, "label", "#8b93a1"),
         );
-        x += text_w(ui, &icons::font_id(ic_px), &icons::glyph("irating").unwrap()) + sh * 0.18;
+        x += text_w(
+            ui,
+            &icons::font_id(ic_px),
+            &icons::glyph("irating").unwrap(),
+        ) + sh * 0.18;
     }
     let base = metric_str(cfg, f, "irating");
     label(
@@ -1180,15 +1197,21 @@ fn draw_flag(
     if !context.is_empty() {
         let title_px = rect.height() * 0.36 * text_scale;
         let sub_px = rect.height() * 0.24 * text_scale;
-        let tw = text_w(ui, &FontId::proportional(title_px), title)
-            .max(text_w(ui, &FontId::proportional(sub_px), context));
+        let tw = text_w(ui, &FontId::proportional(title_px), title).max(text_w(
+            ui,
+            &FontId::proportional(sub_px),
+            context,
+        ));
         let pad = rect.height() * 0.55;
         let gap = Rect::from_center_size(
             Pos2::new(center_x, rect.center().y),
             Vec2::new(tw + pad * 2.0, rect.height()),
         );
-        ui.painter()
-            .rect_filled(gap, egui::CornerRadius::same((gap.height() * 0.5) as u8), bg);
+        ui.painter().rect_filled(
+            gap,
+            egui::CornerRadius::same((gap.height() * 0.5) as u8),
+            bg,
+        );
         label(
             ui,
             Pos2::new(center_x, rect.center().y - rect.height() * 0.26),
@@ -1216,8 +1239,11 @@ fn draw_flag(
             Pos2::new(center_x, rect.center().y),
             Vec2::new(tw + pad * 2.0, rect.height()),
         );
-        ui.painter()
-            .rect_filled(gap, egui::CornerRadius::same((gap.height() * 0.5) as u8), bg);
+        ui.painter().rect_filled(
+            gap,
+            egui::CornerRadius::same((gap.height() * 0.5) as u8),
+            bg,
+        );
         label(
             ui,
             rect.center(),
@@ -1245,9 +1271,15 @@ fn draw_delta_bar(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFra
         let fill_w = rect.width() * 0.5 * t.abs();
         // Python: faster (neg) fills to the right of center; slower to the left
         let fill = if t < 0.0 {
-            Rect::from_min_max(Pos2::new(cx, rect.top()), Pos2::new(cx + fill_w, rect.bottom()))
+            Rect::from_min_max(
+                Pos2::new(cx, rect.top()),
+                Pos2::new(cx + fill_w, rect.bottom()),
+            )
         } else {
-            Rect::from_min_max(Pos2::new(cx - fill_w, rect.top()), Pos2::new(cx, rect.bottom()))
+            Rect::from_min_max(
+                Pos2::new(cx - fill_w, rect.top()),
+                Pos2::new(cx, rect.bottom()),
+            )
         };
         let col = if t < 0.0 {
             cfg.color(SECTION, "faster", "#46df7a")

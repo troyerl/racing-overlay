@@ -23,7 +23,7 @@ pub use pit_advice::PitAdvice;
 pub use pit_service::{any_requested, decode_flags as decode_pit_flags, PitService};
 pub use pit_track::PitStopTracker;
 pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
-pub use tables::{finalize_frame, RadarState, TableRow, TableSlotItem, TableSlots, slot_label};
+pub use tables::{finalize_frame, slot_label, RadarState, TableRow, TableSlotItem, TableSlots};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CarRow {
@@ -152,6 +152,12 @@ pub struct TelemetryFrame {
     /// Estimated lap duration for EstTime wrap (LapEstTime).
     pub lap_est_time: f32,
     pub track_id: Option<i32>,
+    /// iRacing LeagueID when in a league session.
+    #[serde(default)]
+    pub league_id: Option<i32>,
+    /// Player car path for preset auto-switch.
+    #[serde(default)]
+    pub car_path: Option<String>,
     pub track_name: Option<String>,
     pub radar: RadarState,
     /// Legacy mirrors of `radar.left` / `radar.right`.
@@ -285,37 +291,89 @@ pub mod demo {
         // (flag, context, incident_warn). Dense cycle ~48s matching Python demo.
         let cyc = t % 48.0;
         if cyc < 3.0 {
-            (Some("yellow".into()), Some("Caution — pace car out".into()), false)
+            (
+                Some("yellow".into()),
+                Some("Caution — pace car out".into()),
+                false,
+            )
         } else if cyc < 5.0 {
             (Some("yellow".into()), Some("1 lap to green".into()), false)
         } else if cyc < 8.0 {
-            (Some("green".into()), Some("Track clear — race on".into()), false)
+            (
+                Some("green".into()),
+                Some("Track clear — race on".into()),
+                false,
+            )
         } else if cyc < 11.0 {
-            (Some("red".into()), Some("Session stopped — stand by".into()), false)
+            (
+                Some("red".into()),
+                Some("Session stopped — stand by".into()),
+                false,
+            )
         } else if cyc < 14.0 {
             (Some("blue".into()), Some("Car #19 +1.2s".into()), false)
         } else if cyc < 17.0 {
-            (Some("debris".into()), Some("Debris on track — reduce speed".into()), false)
+            (
+                Some("debris".into()),
+                Some("Debris on track — reduce speed".into()),
+                false,
+            )
         } else if cyc < 20.0 {
-            (Some("white".into()), Some("Lap 49 of 50 — finish this lap".into()), false)
+            (
+                Some("white".into()),
+                Some("Lap 49 of 50 — finish this lap".into()),
+                false,
+            )
         } else if cyc < 23.0 {
-            (Some("black".into()), Some("Report to the pits — penalty".into()), false)
+            (
+                Some("black".into()),
+                Some("Report to the pits — penalty".into()),
+                false,
+            )
         } else if cyc < 26.0 {
-            (Some("meatball".into()), Some("Mandatory pit — repairs required".into()), false)
+            (
+                Some("meatball".into()),
+                Some("Mandatory pit — repairs required".into()),
+                false,
+            )
         } else if cyc < 29.0 {
-            (Some("furled".into()), Some("Warning — next infraction is a penalty".into()), false)
+            (
+                Some("furled".into()),
+                Some("Warning — next infraction is a penalty".into()),
+                false,
+            )
         } else if cyc < 32.0 {
-            (Some("dq".into()), Some("Disqualified — exit the track".into()), false)
+            (
+                Some("dq".into()),
+                Some("Disqualified — exit the track".into()),
+                false,
+            )
         } else if cyc < 35.0 {
-            (Some("crossed".into()), Some("Halfway — 25 laps to go".into()), false)
+            (
+                Some("crossed".into()),
+                Some("Halfway — 25 laps to go".into()),
+                false,
+            )
         } else if cyc < 38.0 {
-            (Some("checkered".into()), Some("Session complete — P4".into()), false)
+            (
+                Some("checkered".into()),
+                Some("Session complete — P4".into()),
+                false,
+            )
         } else if cyc < 41.0 {
-            (Some("yellow".into()), Some("Caution — pace car out".into()), false)
+            (
+                Some("yellow".into()),
+                Some("Caution — pace car out".into()),
+                false,
+            )
         } else if cyc < 44.0 {
             (None, None, true)
         } else {
-            (Some("green".into()), Some("Track clear — race on".into()), false)
+            (
+                Some("green".into()),
+                Some("Track clear — race on".into()),
+                false,
+            )
         }
     }
 
@@ -344,8 +402,7 @@ pub mod demo {
                 // Car 8 visits the demo pit once per lap: OnPitRoad only on the
                 // lane span (not entry/exit blends), matching Python demo.
                 let visit_pit = i == 8 && ((t * 0.03 + i as f64 * 0.08) as i32 / 1) % 3 == 0;
-                let on_pit_lane = visit_pit
-                    && crate::track_path::pct_in_demo_pit_lane(pct);
+                let on_pit_lane = visit_pit && crate::track_path::pct_in_demo_pit_lane(pct);
                 cars.push(CarRow {
                     car_idx: i,
                     position: i + 1,
@@ -471,16 +528,19 @@ pub mod demo {
             let d_opt = Some((t * 0.5 + 0.5).sin() * 0.28);
 
             let radio_idx = ((t / 3.0) as i32).rem_euclid(12);
-            let radio = cars.iter().find(|c| c.car_idx == radio_idx).map(|c| RadioSpeaker {
-                position: c.position,
-                car_number: c.car_number.clone(),
-                name: c.name.clone(),
-                active: true,
-                is_player: c.is_player,
-                is_pro: c.irating >= 4000,
-                group_icon: "radio".into(),
-                group_color: "#46df7a".into(),
-            });
+            let radio = cars
+                .iter()
+                .find(|c| c.car_idx == radio_idx)
+                .map(|c| RadioSpeaker {
+                    position: c.position,
+                    car_number: c.car_number.clone(),
+                    name: c.name.clone(),
+                    active: true,
+                    is_player: c.is_player,
+                    is_pro: c.irating >= 4000,
+                    group_icon: "radio".into(),
+                    group_color: "#46df7a".into(),
+                });
 
             let lead_lap = cars
                 .iter()

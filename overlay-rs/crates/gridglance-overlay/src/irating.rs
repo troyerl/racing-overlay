@@ -34,7 +34,10 @@ pub fn calculate_deltas(entries: &[(i32, bool)]) -> Vec<i32> {
         .iter()
         .map(|a| ratings.iter().map(|b| chance(*a, *b)).collect())
         .collect();
-    let expected: Vec<f64> = chances.iter().map(|row| row.iter().sum::<f64>() - 0.5).collect();
+    let expected: Vec<f64> = chances
+        .iter()
+        .map(|row| row.iter().sum::<f64>() - 0.5)
+        .collect();
 
     let num_reg = n as f64;
     let num_starters = entries.iter().filter(|(_, s)| *s).count() as f64;
@@ -66,9 +69,7 @@ pub fn calculate_deltas(entries: &[(i32, bool)]) -> Vec<i32> {
         if !started {
             changes_starters.push(None);
         } else {
-            changes_starters.push(Some(
-                (num_reg - rank - exp - fud) * 200.0 / num_starters,
-            ));
+            changes_starters.push(Some((num_reg - rank - exp - fud) * 200.0 / num_starters));
         }
     }
 

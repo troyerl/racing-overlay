@@ -193,28 +193,15 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
     }
 
-    let sub_top = card.top()
-        + pad
-        + if show_pred {
-            h * 0.34
-        } else {
-            h * 0.30
-        };
+    let sub_top = card.top() + pad + if show_pred { h * 0.34 } else { h * 0.30 };
     let fixed_rh = ctx.cfg.f64_key(SECTION, "row_height_px", 0.0) as f32;
-    let mut sub_h = if fixed_rh > 0.0 {
-        fixed_rh
-    } else {
-        h * 0.18
-    };
+    let mut sub_h = if fixed_rh > 0.0 { fixed_rh } else { h * 0.18 };
     let max_frac = ctx.cfg.f64_key(SECTION, "max_row_height_frac", 0.0) as f32;
     if max_frac > 0.0 {
         sub_h = sub_h.min(h * max_frac);
     }
     sub_h = sub_h.max(18.0);
-    let sub = Rect::from_min_size(
-        Pos2::new(card.left() + pad, sub_top),
-        egui::vec2(iw, sub_h),
-    );
+    let sub = Rect::from_min_size(Pos2::new(card.left() + pad, sub_top), egui::vec2(iw, sub_h));
     draw_edge_band(ui, ctx.cfg, sub);
     let half = sub.width() * 0.5;
     draw_metric_pair(

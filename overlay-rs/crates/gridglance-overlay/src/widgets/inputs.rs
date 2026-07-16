@@ -159,10 +159,7 @@ fn brake_color(ctx: &WidgetCtx<'_>, value: f32, abs_on: bool, thr: f32) -> Color
 
 fn draw_label(ui: &mut Ui, ctx: &WidgetCtx<'_>, x: f32, pad: f32, h: f32) -> f32 {
     let bar_w = (h * 0.035).max(3.0);
-    let bar = Rect::from_min_size(
-        Pos2::new(x, pad),
-        Vec2::new(bar_w, h - 2.0 * pad),
-    );
+    let bar = Rect::from_min_size(Pos2::new(x, pad), Vec2::new(bar_w, h - 2.0 * pad));
     ui.painter().rect_filled(
         bar,
         CornerRadius::same(2),
@@ -272,8 +269,7 @@ fn draw_graph(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
             let cur = to_pt(s.0, s.2);
             if let Some(p0) = prev {
                 let col = brake_color(ctx, s.2, s.5 > 0.5, thr);
-                ui.painter()
-                    .line_segment([p0, cur], Stroke::new(lw, col));
+                ui.painter().line_segment([p0, cur], Stroke::new(lw, col));
             }
             prev = Some(cur);
         }
@@ -308,7 +304,11 @@ fn draw_bars(
     chans: &[(usize, &str)],
 ) {
     let h = hist().lock().unwrap_or_else(|e| e.into_inner());
-    let latest = h.samples.back().copied().unwrap_or((0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0));
+    let latest = h
+        .samples
+        .back()
+        .copied()
+        .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0));
     let abs_on = latest.5 > 0.5;
     let thr = brake_threshold(ctx);
     let label_h = (rect.height() * 0.16).max(10.0);
@@ -338,10 +338,7 @@ fn draw_bars(
         let fh = val * track_h;
         if fh > 0.5 {
             ui.painter().rect_filled(
-                Rect::from_min_size(
-                    Pos2::new(x, track_top + track_h - fh),
-                    Vec2::new(bw, fh),
-                ),
+                Rect::from_min_size(Pos2::new(x, track_top + track_h - fh), Vec2::new(bw, fh)),
                 CornerRadius::same(r),
                 fill,
             );

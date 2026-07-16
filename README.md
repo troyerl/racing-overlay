@@ -1,41 +1,33 @@
 # GridGlance
 
-A native (non-browser) multi-widget iRacing HUD. **Race widgets** are painted by
-a Rust/egui overlay (`overlay-rs/`); **settings and Track Scan** stay in Python
-(PyQt6). The two processes share `overlay_config.json` and talk over local
-JSON-RPC. A legacy all-Python PyQt overlay remains available via `--python`.
+A native (non-browser) multi-widget iRacing HUD. **Runtime is Rust-only**
+(`overlay-rs/` / `gridglance-overlay`): race widgets, Settings, Track Scan,
+Mongo sync, and the system tray. The `overlay/` Python package is legacy
+archive code; `run.py` only locates and spawns the Rust binary.
 
 ## Requirements
 
 - **Windows** (iRacing telemetry shared memory is Windows-only)
-- Python 3.10+
-- Rust toolchain (to build the overlay binary; CI builds it into the installer)
+- Rust toolchain (to build the overlay; CI builds it into the installer)
 - iRacing running (the overlay shows disconnected otherwise)
 
 ## Setup
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
 cd overlay-rs
-cargo build --release
-cd ..
+cargo build --release -p gridglance-overlay
 ```
+
+Optional: Python only if you still use legacy helpers under `overlay/` or `tools/`.
 
 ## Project layout
 
 ```
-run.py                 # entry point (picks Rust overlay when binary is present)
-overlay/               # Python package: settings, IPC client, legacy PyQt HUD
-  app.py               # launcher + legacy HUD / rust hybrid entry
-  ipc_client.py        # JSON-RPC client for the Rust overlay
-  rust_launcher.py     # find/spawn gridglance-overlay
-  config_editor.py     # visual settings editor (stays Python)
-  widgets/             # legacy PyQt widgets (+ Track Scan panel)
-overlay-rs/            # Rust workspace
-  crates/gridglance-overlay   # egui widgets + IPC server
-  crates/gridglance-ipc       # shared RPC method names
+run.py                 # legacy entry: finds/spawns the Rust binary
+overlay/               # archived Python package (not required at runtime)
+overlay-rs/            # Rust workspace — the full app
+  crates/gridglance-overlay   # egui HUD + Settings + tray + Track Scan
+  crates/gridglance-ipc       # shared RPC types (optional external control)
 tools/                 # standalone helper scripts
 assets/fonts/          # bundled Font Awesome TTF
 tracks/                # track shape files keyed by iRacing TrackID
@@ -44,21 +36,17 @@ tracks/                # track shape files keyed by iRacing TrackID
 ## Run
 
 ```powershell
-# Default: Rust widgets + Python settings (if binary built)
-python run.py --demo
+# Demo telemetry + Settings
+cd overlay-rs
+cargo run -p gridglance-overlay -- --demo --settings
 
-# Live iRacing (Windows): rebuild Rust overlay, then start without --demo
-#   cargo build --release -p gridglance-overlay
-#   python run.py --rust --start
-# See overlay-rs/README.md for details (IRSDK memmap; preset show flags).
+# Or via legacy launcher (forwards to the binary)
+python run.py --demo --settings
 
-# Legacy PyQt overlay
-python run.py --python --demo
-
-# Settings only, attached to a running Rust overlay
-python -m overlay.config_editor --rust-overlay
+# Live iRacing (Windows)
+cargo run -p gridglance-overlay --release -- --settings
+# See overlay-rs/README.md for IRSDK / packaging details.
 ```
-
 ## Install as a desktop app (no terminal)
 
 Build a self-contained app with a Desktop icon so you never touch a terminal to

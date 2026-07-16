@@ -2,9 +2,7 @@
 //! Ports `overlay/widgets/tire_panel.py`.
 
 use super::WidgetCtx;
-use crate::chrome::{
-    draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad,
-};
+use crate::chrome::{draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad};
 use crate::telemetry::TireCorner;
 use egui::{Align2, CornerRadius, Pos2, Rect, Ui, Vec2};
 
@@ -17,9 +15,9 @@ fn cell_radius(row_h: f32) -> f32 {
 }
 
 fn has_corner_data(corners: &[TireCorner; 4]) -> bool {
-    corners.iter().any(|c| {
-        c.wear.is_some() || c.temp.is_some() || c.pressure.is_some()
-    })
+    corners
+        .iter()
+        .any(|c| c.wear.is_some() || c.temp.is_some() || c.pressure.is_some())
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
@@ -91,8 +89,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 Pos2::new(x + 8.0, cy + ch - ch * 0.22),
                 Vec2::new(cw - 16.0, ch * 0.14),
             );
-            ui.painter()
-                .rect_filled(bar, CornerRadius::same(3), bar_bg);
+            ui.painter().rect_filled(bar, CornerRadius::same(3), bar_bg);
             let val = if let Some(wear) = cdata.wear {
                 let pct = (wear * 100.0).clamp(0.0, 100.0);
                 let fill_w = bar.width() * pct / 100.0;

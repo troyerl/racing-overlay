@@ -1,4 +1,8 @@
-//! Shared JSON-RPC protocol for GridGlance overlay (Rust) ↔ settings (Python).
+//! Shared JSON-RPC protocol for GridGlance overlay IPC.
+//!
+//! Settings, Track Scan, and the race HUD all live in the Rust binary.
+//! External tools (and legacy Python helpers) can still drive the overlay
+//! over this socket.
 //!
 //! Wire format: newline-delimited JSON objects over a local TCP socket
 //! (`127.0.0.1:19847` by default). Each request has `id`, `method`, `params`;
@@ -60,7 +64,7 @@ pub struct PingResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConfigApplyParams {
-    /// Sparse or full CFG dict matching Python `config.CFG` shape.
+    /// Sparse or full CFG dict matching the overlay config shape.
     #[serde(default)]
     pub cfg: Value,
     /// Optional generation from the writer (monotonic).
@@ -184,6 +188,10 @@ pub mod methods {
     pub const PING: &str = "ping";
     pub const CONFIG_RELOAD: &str = "config.reload";
     pub const CONFIG_APPLY: &str = "config.apply";
+    pub const CONFIG_SAVE: &str = "config.save";
+    pub const SETTINGS_OPEN: &str = "settings.open";
+    pub const SETTINGS_CLOSE: &str = "settings.close";
+    pub const SETTINGS_TOGGLE: &str = "settings.toggle";
     pub const OVERLAY_START: &str = "overlay.start";
     pub const OVERLAY_STOP: &str = "overlay.stop";
     pub const OVERLAY_SET_EDIT_MODE: &str = "overlay.set_edit_mode";

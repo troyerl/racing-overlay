@@ -1,4 +1,4 @@
-//! Local TCP JSON-RPC server for Python settings.
+//! Local TCP JSON-RPC server for Settings (Python Track Scan + Rust egui).
 
 use crate::config::OverlayConfig;
 use crate::state::StateHandle;
@@ -110,6 +110,34 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                 None => Response::err(id, "busy"),
             }
         }
+        methods::CONFIG_SAVE => match state.try_write_for(LOCK_WAIT) {
+            Some(mut st) => match Arc::make_mut(&mut st.config).save() {
+                Ok(()) => Response::ok(id, json!({"ok": true, "generation": st.config.generation})),
+                Err(e) => Response::err(id, e.to_string()),
+            },
+            None => Response::err(id, "busy"),
+        },
+        methods::SETTINGS_OPEN => match state.try_write_for(LOCK_WAIT) {
+            Some(mut st) => {
+                st.settings_open = true;
+                Response::ok(id, json!({"open": true}))
+            }
+            None => Response::err(id, "busy"),
+        },
+        methods::SETTINGS_CLOSE => match state.try_write_for(LOCK_WAIT) {
+            Some(mut st) => {
+                st.settings_open = false;
+                Response::ok(id, json!({"open": false}))
+            }
+            None => Response::err(id, "busy"),
+        },
+        methods::SETTINGS_TOGGLE => match state.try_write_for(LOCK_WAIT) {
+            Some(mut st) => {
+                st.settings_open = !st.settings_open;
+                Response::ok(id, json!({"open": st.settings_open}))
+            }
+            None => Response::err(id, "busy"),
+        },
         methods::OVERLAY_START => match state.try_write_for(LOCK_WAIT) {
             Some(mut st) => {
                 st.running = true;
@@ -125,8 +153,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             None => Response::err(id, "busy"),
         },
         methods::OVERLAY_SET_EDIT_MODE => {
-            let params: OverlayModeParams =
-                serde_json::from_value(req.params).unwrap_or_default();
+            let params: OverlayModeParams = serde_json::from_value(req.params).unwrap_or_default();
             let mut st = state.write();
             if let Some(e) = params.edit_mode {
                 st.edit_mode = e;
@@ -175,8 +202,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             Response::ok(id, json!({"saved": true}))
         }
         methods::MAP_SET_PIT_EDIT => {
-            let params: MapPitEditParams =
-                serde_json::from_value(req.params).unwrap_or_default();
+            let params: MapPitEditParams = serde_json::from_value(req.params).unwrap_or_default();
             let mut st = state.write();
             let was = st.map.pit_edit;
             st.map.pit_edit = params.enabled;
@@ -206,13 +232,15 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             Response::ok(id, json!({"points": n}))
         }
         methods::MAP_CLEAR_PIT => {
-            let params: MapClearPitParams =
-                serde_json::from_value(req.params).unwrap_or_default();
+            let params: MapClearPitParams = serde_json::from_value(req.params).unwrap_or_default();
             let mut st = state.write();
             let phase = params
                 .phase
                 .unwrap_or_else(|| st.map.phase_key().to_string());
-            let lane2 = params.lane.as_deref().map(|l| matches!(l, "2" | "secondary"));
+            let lane2 = params
+                .lane
+                .as_deref()
+                .map(|l| matches!(l, "2" | "secondary"));
             st.map.clear_phase(&phase, lane2);
             Response::ok(id, st.map_state_json())
         }
@@ -222,26 +250,92 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             Response::ok(id, json!({"reset": true}))
         }
         methods::MAP_SAVE_PIT => {
-            let st = state.read();
-            let n = st.map.entry_pts.len()
-                + st.map.road_pts.len()
-                + st.map.merge_pts.len()
-                + st.map.entry_pts_2.len()
-                + st.map.road_pts_2.len()
-                + st.map.merge_pts_2.len();
-            Response::ok(
-                id,
-                json!({"ok": true, "points": n, "msg": "pit draft held in overlay"}),
-            )
+            let msg = {
+                let st = state.read();
+                let tid = st
+                    .map
+                    .cached_track_id
+                    .or(st.frame.track_id)
+                    .map(|t| json!(t));
+                crate::tracks::save_pit_patch(
+                    &crate::paths::tracks_dir(),
+                    tid.as_ref(),
+                    &st.map.cached_path,
+                    &st.map.entry_pts,
+                    &st.map.road_pts,
+                    &st.map.merge_pts,
+                    &st.map.entry_pts_2,
+                    &st.map.road_pts_2,
+                    &st.map.merge_pts_2,
+                    st.map.pit_speed_ms as f32,
+                    st.map.pit_lane_speed_pct as f32,
+                    st.map.cached_pit2.lane_speed_pct as f32,
+                    true,
+                )
+            };
+            if msg.ok {
+                state.write().map.invalidate_track_cache();
+            }
+            Response::ok(id, json!({"ok": msg.ok, "msg": msg.msg}))
         }
-        methods::MAP_SAVE_LOOP => Response::ok(id, json!({"ok": true})),
+        methods::MAP_SAVE_LOOP => {
+            let msg = {
+                let st = state.read();
+                let tid = st
+                    .map
+                    .cached_track_id
+                    .or(st.frame.track_id)
+                    .map(|t| json!(t));
+                let rot = st
+                    .config
+                    .cfg
+                    .get("map")
+                    .and_then(|m| m.get("rotation"))
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                let rot = ((rot / 90.0).round() as i32 * 90).rem_euclid(360);
+                let mirror = st
+                    .config
+                    .cfg
+                    .get("map")
+                    .and_then(|m| m.get("mirror"))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let corners: Vec<serde_json::Value> = st
+                    .map
+                    .cached_corners
+                    .iter()
+                    .map(|c| json!({ "pct": c.pct, "label": c.label }))
+                    .collect();
+                crate::tracks::save_loop_only(
+                    &crate::paths::tracks_dir(),
+                    tid.as_ref(),
+                    &st.map.cached_path,
+                    Some(&st.map.cached_track_name),
+                    st.map.cached_start_finish,
+                    &corners,
+                    if st.map.num_turns > 0 {
+                        Some(st.map.num_turns as i64)
+                    } else {
+                        None
+                    },
+                    &st.map.alias_ids,
+                    rot,
+                    mirror,
+                    true,
+                )
+            };
+            if msg.ok {
+                state.write().map.invalidate_track_cache();
+            }
+            Response::ok(id, json!({"ok": msg.ok, "msg": msg.msg}))
+        }
         methods::MAP_INVALIDATE_TRACK => {
             state.write().map.invalidate_track_cache();
             Response::ok(id, json!({"ok": true}))
         }
         methods::MAP_LOAD_PIT => {
-            let params: MapLoadPitParams =
-                serde_json::from_value(req.params).unwrap_or_default();
+            let params: MapLoadPitParams = serde_json::from_value(req.params).unwrap_or_default();
             let mut st = state.write();
             // Ensure cache is warm from disk when possible.
             if st.map.cached_path.is_empty() {
@@ -258,8 +352,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                         st.map.cached_p2p_zones = tp.p2p_zones;
                         st.map.cached_corners = tp.corners;
                         if st.map.cached_pit.lane_speed_pct > 0.0 {
-                            st.map.pit_lane_speed_pct =
-                                st.map.cached_pit.lane_speed_pct as f64;
+                            st.map.pit_lane_speed_pct = st.map.cached_pit.lane_speed_pct as f64;
                         }
                     }
                 }
@@ -380,8 +473,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
             Response::ok(id, json!({"n": params.n}))
         }
         methods::MAP_SET_ALIAS_IDS => {
-            let params: MapAliasIdsParams =
-                serde_json::from_value(req.params).unwrap_or_default();
+            let params: MapAliasIdsParams = serde_json::from_value(req.params).unwrap_or_default();
             state.write().map.alias_ids = params.ids.clone();
             Response::ok(id, json!({"ids": params.ids}))
         }

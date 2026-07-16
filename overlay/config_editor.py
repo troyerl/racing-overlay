@@ -465,7 +465,7 @@ SETTINGS_SECTION_KEYS = {"__general__", "__app__", "__scan__"}
 _DATA_FONT_BOLD = frozenset({"data_font_bold"})
 _ROW_DIVIDERS_SKIP = frozenset({"row_dividers"})
 _TABLE_RUST_ORPHANS = frozenset({
-    "pit_mode", "irating_show_icon", "max_row_height_frac", "data_font_bold",
+    "irating_show_icon", "max_row_height_frac", "data_font_bold",
 })
 
 MAP_SETTINGS_SKIP = frozenset({
@@ -1636,7 +1636,7 @@ class ConfigEditor(QWidget):
     _demo_track_saved = pyqtSignal(bool, int, str)
     _pro_drivers_saved = pyqtSignal(bool, object)
 
-    def __init__(self, parent=None, overlay=None):
+    def __init__(self, parent=None, overlay=None, track_scan_only: bool = False):
         super().__init__(parent)
         self._demo_track_missing.connect(
             lambda tid: self._flash(
@@ -1646,8 +1646,11 @@ class ConfigEditor(QWidget):
         # Optional overlay controller (the running HUD) so the settings window
         # can start/stop the widgets. None when launched standalone.
         self._overlay = overlay
+        self._track_scan_only = bool(track_scan_only)
         self.setObjectName("root")
-        self.setWindowTitle("GridGlance Settings")
+        self.setWindowTitle(
+            "GridGlance Track Scan" if self._track_scan_only
+            else "GridGlance Settings")
         self.resize(880, 820)
         self.setMinimumSize(720, 560)
         self.setStyleSheet(STYLE)
@@ -1823,6 +1826,17 @@ class ConfigEditor(QWidget):
         # Keep the preset combo + working copy in sync when the overlay
         # auto-switches presets (car / league / default fallback).
         config.on_preset_change(self._on_external_preset_change)
+        if self._track_scan_only:
+            self.open_track_scan()
+
+    def open_track_scan(self) -> None:
+        """Jump to the Track Scan page (Python-only authoring)."""
+        self._set_top_tab("settings")
+        for i, (key, _t, _g) in enumerate(self._sections):
+            if key == "__scan__":
+                self._select(i)
+                return
+        self._flash("Track Scan requires write access to the track library")
 
     def _on_external_preset_change(self, name: str) -> None:
         """Refresh UI when something other than this editor changes the preset."""
@@ -4183,7 +4197,10 @@ class ConfigEditor(QWidget):
 
 
 def main() -> int:
-    """Standalone settings. Pass ``--rust-overlay`` to attach to a running Rust overlay."""
+    """Standalone settings. Pass ``--rust-overlay`` to attach to a running Rust overlay.
+
+    ``--track-scan`` opens focused on Track Scan (race config lives in Rust Settings).
+    """
     app = QApplication(sys.argv)
     overlay = None
     if "--rust-overlay" in sys.argv:
@@ -4197,7 +4214,8 @@ def main() -> int:
                   file=sys.stderr)
             return 1
         overlay = RemoteOverlay(client)
-    editor = ConfigEditor(overlay=overlay)
+    track_scan_only = "--track-scan" in sys.argv
+    editor = ConfigEditor(overlay=overlay, track_scan_only=track_scan_only)
     editor.show()
     return app.exec()
 

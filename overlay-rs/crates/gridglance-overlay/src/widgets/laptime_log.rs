@@ -109,10 +109,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let order = column_order(ctx);
     let cols = col_layout(&order);
     let show_header = ctx.cfg.bool_key(SECTION, "show_header", true);
-    let hscale = ctx
-        .cfg
-        .f64_key(SECTION, "header_font_scale", 1.0)
-        .max(0.3) as f32;
+    let hscale = ctx.cfg.f64_key(SECTION, "header_font_scale", 1.0).max(0.3) as f32;
     let n = ctx.cfg.f64_key(SECTION, "rows", 8.0).max(1.0) as usize;
     let fixed_rh = ctx.cfg.f64_key(SECTION, "row_height_px", 0.0) as f32;
     let max_frac = ctx.cfg.f64_key(SECTION, "max_row_height_frac", 0.14) as f32;
@@ -134,10 +131,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         };
         let body_top_est = card.top() + pad + hh;
         let est_body = (card.bottom() - pad - body_top_est).max(1.0);
-        (
-            hh,
-            resolve_row_height(est_body, n, card.height(), max_frac),
-        )
+        (hh, resolve_row_height(est_body, n, card.height(), max_frac))
     };
 
     let body_top = card.top() + pad + header_h;
@@ -209,18 +203,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             ui.painter().rect_filled(row_rect, 0.0, row_alt);
         }
         draw_row(
-            ui,
-            ctx,
-            row,
-            &cells,
-            y,
-            row_h,
-            data_size,
-            temp_icon,
-            text,
-            muted,
-            faster,
-            slower,
+            ui, ctx, row, &cells, y, row_h, data_size, temp_icon, text, muted, faster, slower,
         );
         if dividers && i + 1 < shown.len() {
             ui.painter().line_segment(
@@ -285,11 +268,7 @@ fn draw_row(
                 let val = cell_value(row, "temp");
                 let icon_w = row_h * 0.35;
                 let font = FontId::new(data_size, FontFamily::Monospace);
-                let tw = ui.fonts(|f| {
-                    f.layout_no_wrap(val.clone(), font.clone(), text)
-                        .size()
-                        .x
-                });
+                let tw = ui.fonts(|f| f.layout_no_wrap(val.clone(), font.clone(), text).size().x);
                 let total = icon_w + tw + 4.0;
                 let ox = *x + (*cw - total) * 0.5;
                 if let Some(glyph) = icons::glyph("track_temp") {

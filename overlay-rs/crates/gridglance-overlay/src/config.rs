@@ -7,6 +7,24 @@ use std::path::Path;
 
 use crate::paths;
 
+pub const GARAGE_KEY: &str = "garage";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ConfigContext {
+    #[default]
+    Race,
+    Garage,
+}
+
+impl ConfigContext {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Race => "On track",
+            Self::Garage => "In garage",
+        }
+    }
+}
+
 /// Widget section keys owned by the Rust overlay.
 pub const WIDGET_KEYS: &[&str] = &[
     "standings",
@@ -74,9 +92,19 @@ impl Default for OverlayConfig {
             cfg: default_cfg(),
             doc: json!({
                 "schema": 2,
+                "auto_switch_by_league": false,
+                "auto_switch_by_car": false,
+                "auto_switch_to_default": false,
                 "active_preset": "Default",
                 "presets": {
-                    "Default": { "config": {}, "layout": {}, "layout_garage": {} }
+                    "Default": {
+                        "config": {},
+                        "layout": {},
+                        "layout_garage": {},
+                        "cars": [],
+                        "leagues": [],
+                        "default": true
+                    }
                 }
             }),
             generation: 0,
@@ -95,31 +123,65 @@ impl OverlayConfig {
     }
 
     pub fn load_from(path: &Path) -> Result<Self> {
-        let text = fs::read_to_string(path)
-            .with_context(|| format!("read {}", path.display()))?;
-        let doc: Value = serde_json::from_str(&text).context("parse overlay_config.json")?;
-        let mut cfg = default_cfg();
+        let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let mut doc: Value = serde_json::from_str(&text).context("parse overlay_config.json")?;
         let active = doc
             .get("active_preset")
             .and_then(|v| v.as_str())
             .unwrap_or("Default")
             .to_string();
-        if let Some(presets) = doc.get("presets").and_then(|p| p.as_object()) {
-            if let Some(preset) = presets.get(&active) {
-                if let Some(overrides) = preset.get("config") {
-                    deep_merge(&mut cfg, overrides);
-                }
-            }
-        } else if doc.get("schema").and_then(|s| s.as_u64()) != Some(2) {
+        let cfg = if doc.get("schema").and_then(|s| s.as_u64()) == Some(2) {
+            Self::cfg_from_doc(&doc, &active, ConfigContext::Race)
+        } else {
             // Legacy flat config
+            let mut cfg = default_cfg();
             deep_merge(&mut cfg, &doc);
-        }
+            doc = json!({
+                "schema": 2,
+                "active_preset": "Default",
+                "auto_switch_by_league": false,
+                "auto_switch_by_car": false,
+                "auto_switch_to_default": false,
+                "presets": {
+                    "Default": {
+                        "config": sparse_diff(&default_cfg(), &cfg),
+                        "layout": {},
+                        "layout_garage": {},
+                        "cars": [],
+                        "leagues": [],
+                        "default": true
+                    }
+                }
+            });
+            cfg
+        };
         Ok(Self {
             cfg,
             doc,
             generation: 0,
             active_preset: active,
         })
+    }
+
+    fn cfg_from_doc(doc: &Value, preset_name: &str, context: ConfigContext) -> Value {
+        let mut cfg = default_cfg();
+        if let Some(preset) = doc
+            .get("presets")
+            .and_then(|p| p.as_object())
+            .and_then(|presets| presets.get(preset_name))
+        {
+            if let Some(overrides) = preset.get("config") {
+                let mut base = overrides.clone();
+                let garage = base.as_object_mut().and_then(|obj| obj.remove(GARAGE_KEY));
+                deep_merge(&mut cfg, &base);
+                if context == ConfigContext::Garage {
+                    if let Some(garage) = garage {
+                        deep_merge(&mut cfg, &garage);
+                    }
+                }
+            }
+        }
+        cfg
     }
 
     pub fn section(&self, key: &str) -> &Value {
@@ -138,6 +200,575 @@ impl OverlayConfig {
         self.generation = self.generation.saturating_add(1);
     }
 
+    pub fn context_cfg(&self, context: ConfigContext) -> Value {
+        Self::cfg_from_doc(&self.doc, &self.active_preset, context)
+    }
+
+    pub fn apply_context(&mut self, context: ConfigContext) {
+        self.cfg = self.context_cfg(context);
+        self.generation = self.generation.saturating_add(1);
+    }
+
+    pub fn auto_switch_flag(&self, key: &str) -> bool {
+        self.doc.get(key).and_then(|v| v.as_bool()).unwrap_or(false)
+    }
+
+    pub fn set_auto_switch_flag(&mut self, key: &str, on: bool) {
+        if matches!(
+            key,
+            "auto_switch_by_league" | "auto_switch_by_car" | "auto_switch_to_default"
+        ) {
+            if let Some(doc) = self.doc.as_object_mut() {
+                doc.insert(key.into(), json!(on));
+            }
+        }
+    }
+
+    /// Resolve which preset a session should use (Python `preset_for_session`).
+    pub fn preset_for_session(&self, league_id: Option<i32>, car_path: &str) -> Option<String> {
+        let by_league = self.auto_switch_flag("auto_switch_by_league");
+        let by_car = self.auto_switch_flag("auto_switch_by_car");
+        let to_default = self.auto_switch_flag("auto_switch_to_default");
+        if !by_league && !by_car && !to_default {
+            return None;
+        }
+        let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) else {
+            return None;
+        };
+        if by_league {
+            if let Some(lid) = league_id {
+                if lid > 0 {
+                    for (name, entry) in presets {
+                        if let Some(arr) = entry.get("leagues").and_then(|a| a.as_array()) {
+                            if arr.iter().any(|v| {
+                                v.as_i64() == Some(lid as i64)
+                                    || v.as_u64() == Some(lid as u64)
+                                    || v.as_str().and_then(|s| s.parse().ok()) == Some(lid)
+                            }) {
+                                return Some(name.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if by_car && !car_path.is_empty() {
+            for (name, entry) in presets {
+                if let Some(arr) = entry.get("cars").and_then(|a| a.as_array()) {
+                    if arr.iter().any(|v| v.as_str() == Some(car_path)) {
+                        return Some(name.clone());
+                    }
+                }
+            }
+        }
+        if to_default {
+            for (name, entry) in presets {
+                if entry.get("default").and_then(|d| d.as_bool()) == Some(true) {
+                    return Some(name.clone());
+                }
+            }
+        }
+        None
+    }
+
+    pub fn active_preset_cars(&self) -> Vec<String> {
+        self.doc
+            .get("presets")
+            .and_then(|p| p.get(&self.active_preset))
+            .and_then(|e| e.get("cars"))
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn active_preset_leagues(&self) -> Vec<i32> {
+        self.doc
+            .get("presets")
+            .and_then(|p| p.get(&self.active_preset))
+            .and_then(|e| e.get("leagues"))
+            .and_then(|a| a.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| {
+                        v.as_i64()
+                            .map(|i| i as i32)
+                            .or_else(|| v.as_u64().map(|u| u as i32))
+                            .or_else(|| v.as_str()?.parse().ok())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub fn set_active_preset_cars(&mut self, cars: Vec<String>) {
+        let active = self.active_preset.clone();
+        if let Some(entry) = self
+            .doc
+            .get_mut("presets")
+            .and_then(|p| p.as_object_mut())
+            .and_then(|p| p.get_mut(&active))
+            .and_then(|e| e.as_object_mut())
+        {
+            entry.insert("cars".into(), json!(cars));
+            self.generation = self.generation.saturating_add(1);
+        }
+    }
+
+    pub fn set_active_preset_leagues(&mut self, leagues: Vec<i32>) {
+        let active = self.active_preset.clone();
+        if let Some(entry) = self
+            .doc
+            .get_mut("presets")
+            .and_then(|p| p.as_object_mut())
+            .and_then(|p| p.get_mut(&active))
+            .and_then(|e| e.as_object_mut())
+        {
+            entry.insert("leagues".into(), json!(leagues));
+            self.generation = self.generation.saturating_add(1);
+        }
+    }
+
+    /// Preset names from the schema-2 document.
+    pub fn preset_names(&self) -> Vec<String> {
+        self.doc
+            .get("presets")
+            .and_then(|p| p.as_object())
+            .map(|m| {
+                let mut names: Vec<_> = m.keys().cloned().collect();
+                names.sort();
+                names
+            })
+            .unwrap_or_else(|| vec!["Default".into()])
+    }
+
+    /// Switch active preset and rebuild live CFG from its on-track config overrides.
+    pub fn set_active_preset(&mut self, name: &str) -> Result<()> {
+        if !self
+            .doc
+            .get("presets")
+            .and_then(|p| p.as_object())
+            .map(|p| p.contains_key(name))
+            .unwrap_or(false)
+        {
+            anyhow::bail!("unknown preset: {name}");
+        }
+        self.active_preset = name.to_string();
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("active_preset".into(), Value::String(name.into()));
+        }
+        self.cfg = self.context_cfg(ConfigContext::Race);
+        self.generation = self.generation.saturating_add(1);
+        Ok(())
+    }
+
+    fn ensure_presets_object(&mut self) -> &mut Map<String, Value> {
+        if !self.doc.is_object() {
+            self.doc = json!({ "schema": 2, "presets": {} });
+        }
+        let doc = self.doc.as_object_mut().unwrap();
+        if !doc.contains_key("presets") {
+            doc.insert(
+                "presets".into(),
+                json!({
+                    "Default": {
+                        "config": {},
+                        "layout": {},
+                        "layout_garage": {},
+                        "cars": [],
+                        "leagues": [],
+                        "default": true
+                    }
+                }),
+            );
+        }
+        doc.get_mut("presets")
+            .and_then(|v| v.as_object_mut())
+            .expect("presets object")
+    }
+
+    fn blank_preset_entry() -> Value {
+        json!({
+            "config": {},
+            "layout": {},
+            "layout_garage": {},
+            "cars": [],
+            "leagues": [],
+            "default": false
+        })
+    }
+
+    /// Create a new empty preset and switch to it.
+    pub fn create_preset(&mut self, name: &str) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            anyhow::bail!("preset name required");
+        }
+        {
+            let presets = self.ensure_presets_object();
+            if presets.contains_key(name) {
+                anyhow::bail!("preset already exists: {name}");
+            }
+            presets.insert(name.to_string(), Self::blank_preset_entry());
+        }
+        self.set_active_preset(name)?;
+        Ok(())
+    }
+
+    /// Duplicate an existing preset under a new name.
+    pub fn duplicate_preset(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = to.trim();
+        if to.is_empty() {
+            anyhow::bail!("preset name required");
+        }
+        let src = self
+            .doc
+            .get("presets")
+            .and_then(|p| p.get(from))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown preset: {from}"))?;
+        {
+            let presets = self.ensure_presets_object();
+            if presets.contains_key(to) {
+                anyhow::bail!("preset already exists: {to}");
+            }
+            presets.insert(to.to_string(), src);
+        }
+        self.set_active_preset(to)?;
+        Ok(())
+    }
+
+    /// Rename a preset (updates active_preset if needed).
+    pub fn rename_preset(&mut self, from: &str, to: &str) -> Result<()> {
+        let to = to.trim();
+        if to.is_empty() {
+            anyhow::bail!("preset name required");
+        }
+        if from == to {
+            return Ok(());
+        }
+        let became_active = self.active_preset == from;
+        {
+            let presets = self.ensure_presets_object();
+            if !presets.contains_key(from) {
+                anyhow::bail!("unknown preset: {from}");
+            }
+            if presets.contains_key(to) {
+                anyhow::bail!("preset already exists: {to}");
+            }
+            let entry = presets.remove(from).unwrap();
+            presets.insert(to.to_string(), entry);
+        }
+        if became_active {
+            self.active_preset = to.to_string();
+            if let Some(doc) = self.doc.as_object_mut() {
+                doc.insert("active_preset".into(), Value::String(to.into()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a preset (refuses if it is the only one).
+    pub fn delete_preset(&mut self, name: &str) -> Result<()> {
+        let was_active = self.active_preset == name;
+        let fallback = {
+            let presets = self.ensure_presets_object();
+            if presets.len() <= 1 {
+                anyhow::bail!("cannot delete the only preset");
+            }
+            if !presets.contains_key(name) {
+                anyhow::bail!("unknown preset: {name}");
+            }
+            presets.remove(name);
+            if was_active {
+                presets.keys().next().cloned()
+            } else {
+                None
+            }
+        };
+        if let Some(fallback) = fallback {
+            self.set_active_preset(&fallback)?;
+        }
+        Ok(())
+    }
+
+    /// Write live CFG as sparse overrides into the active preset and save to disk.
+    pub fn save(&mut self) -> Result<()> {
+        self.sync_active_preset_config();
+        self.save_doc()
+    }
+
+    pub fn save_for_context(&mut self, context: ConfigContext) -> Result<()> {
+        self.sync_active_preset_for_context(context);
+        self.save_doc()
+    }
+
+    /// Atomic write of the schema-2 document.
+    pub fn save_doc(&self) -> Result<()> {
+        let path = paths::config_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
+        }
+        let text = serde_json::to_string_pretty(&self.doc).context("serialize config")?;
+        let tmp = path.with_extension("json.tmp");
+        fs::write(&tmp, &text).with_context(|| format!("write {}", tmp.display()))?;
+        fs::rename(&tmp, &path).with_context(|| format!("rename to {}", path.display()))?;
+        Ok(())
+    }
+
+    /// Diff live CFG against defaults and store under the active preset.
+    pub fn sync_active_preset_config(&mut self) {
+        let defaults = default_cfg();
+        let mut sparse = sparse_diff(&defaults, &self.cfg);
+        // Preserve garage overrides already on the preset if present.
+        if let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) {
+            if let Some(preset) = presets.get(&self.active_preset) {
+                if let Some(garage) = preset.get("config").and_then(|c| c.get("garage")).cloned() {
+                    if let Some(obj) = sparse.as_object_mut() {
+                        obj.insert("garage".into(), garage);
+                    }
+                }
+            }
+        }
+        if let Some(presets) = self.doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
+            let entry = presets
+                .entry(self.active_preset.clone())
+                .or_insert_with(|| json!({ "config": {}, "layout": {}, "layout_garage": {} }));
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("config".into(), sparse);
+            }
+        }
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("schema".into(), json!(2));
+            doc.entry("auto_switch_by_league").or_insert(json!(false));
+            doc.entry("auto_switch_by_car").or_insert(json!(false));
+            doc.entry("auto_switch_to_default").or_insert(json!(false));
+            doc.insert(
+                "active_preset".into(),
+                Value::String(self.active_preset.clone()),
+            );
+        }
+        self.ensure_one_default();
+    }
+
+    pub fn sync_active_preset_for_context(&mut self, context: ConfigContext) {
+        match context {
+            ConfigContext::Race => self.sync_active_preset_config(),
+            ConfigContext::Garage => {
+                let race = self.context_cfg(ConfigContext::Race);
+                let garage = sparse_diff(&race, &self.cfg);
+                if let Some(presets) = self.doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
+                    let entry = presets
+                        .entry(self.active_preset.clone())
+                        .or_insert_with(Self::blank_preset_entry);
+                    let obj = entry.as_object_mut().expect("preset object");
+                    let cfg = obj.entry("config").or_insert_with(|| json!({}));
+                    if !cfg.is_object() {
+                        *cfg = json!({});
+                    }
+                    if let Some(cfg_obj) = cfg.as_object_mut() {
+                        if garage == Value::Null
+                            || garage.as_object().map(|o| o.is_empty()).unwrap_or(false)
+                        {
+                            cfg_obj.remove(GARAGE_KEY);
+                        } else {
+                            cfg_obj.insert(GARAGE_KEY.into(), garage);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn reset_context(&mut self, context: ConfigContext) {
+        match context {
+            ConfigContext::Race => {
+                self.cfg = default_cfg();
+                self.sync_active_preset_config();
+            }
+            ConfigContext::Garage => {
+                if let Some(cfg) = self.active_preset_config_mut() {
+                    if let Some(obj) = cfg.as_object_mut() {
+                        obj.remove(GARAGE_KEY);
+                    }
+                }
+                self.cfg = self.context_cfg(ConfigContext::Garage);
+            }
+        }
+        self.generation = self.generation.saturating_add(1);
+    }
+
+    pub fn reset_section(&mut self, context: ConfigContext, section: &str) {
+        let default = default_cfg().get(section).cloned().unwrap_or(Value::Null);
+        if default != Value::Null {
+            if let Some(obj) = self.cfg.as_object_mut() {
+                obj.insert(section.into(), default);
+            }
+            self.sync_active_preset_for_context(context);
+            self.generation = self.generation.saturating_add(1);
+        }
+    }
+
+    pub fn default_preset(&self) -> Option<String> {
+        self.doc
+            .get("presets")
+            .and_then(|p| p.as_object())
+            .and_then(|presets| {
+                presets.iter().find_map(|(name, entry)| {
+                    entry
+                        .get("default")
+                        .and_then(|v| v.as_bool())
+                        .filter(|v| *v)
+                        .map(|_| name.clone())
+                })
+            })
+    }
+
+    pub fn set_default_preset(&mut self, name: &str) -> Result<()> {
+        let presets = self.ensure_presets_object();
+        if !presets.contains_key(name) {
+            anyhow::bail!("unknown preset: {name}");
+        }
+        for (preset_name, entry) in presets.iter_mut() {
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert("default".into(), json!(preset_name == name));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_one_default(&mut self) {
+        let names = self.preset_names();
+        if names.is_empty() || self.default_preset().is_some() {
+            return;
+        }
+        let fallback = if names.iter().any(|n| n == "Default") {
+            "Default".to_string()
+        } else {
+            names[0].clone()
+        };
+        let _ = self.set_default_preset(&fallback);
+    }
+
+    fn active_preset_config_mut(&mut self) -> Option<&mut Value> {
+        let active = self.active_preset.clone();
+        let presets = self.ensure_presets_object();
+        let entry = presets
+            .entry(active)
+            .or_insert_with(Self::blank_preset_entry);
+        let obj = entry.as_object_mut()?;
+        Some(obj.entry("config").or_insert_with(|| json!({})))
+    }
+
+    pub fn active_layout_doc(&self, context: ConfigContext) -> Value {
+        let preset = self
+            .doc
+            .get("presets")
+            .and_then(|p| p.get(&self.active_preset));
+        let race = preset
+            .and_then(|p| p.get("layout"))
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if context == ConfigContext::Race {
+            return race;
+        }
+        let mut garage = race;
+        if let Some(delta) = preset.and_then(|p| p.get("layout_garage")) {
+            deep_merge(&mut garage, delta);
+        }
+        garage
+    }
+
+    pub fn store_active_layout_doc(&mut self, context: ConfigContext, layout: Value) {
+        let active = self.active_preset.clone();
+        let presets = self.ensure_presets_object();
+        let entry = presets
+            .entry(active)
+            .or_insert_with(Self::blank_preset_entry);
+        let obj = entry.as_object_mut().expect("preset object");
+        match context {
+            ConfigContext::Race => {
+                obj.insert("layout".into(), layout);
+            }
+            ConfigContext::Garage => {
+                let race = obj.get("layout").cloned().unwrap_or_else(|| json!({}));
+                obj.insert("layout_garage".into(), sparse_diff(&race, &layout));
+            }
+        }
+    }
+
+    pub fn export_preset_value(&self, name: &str) -> Result<Value> {
+        let mut preset = self
+            .doc
+            .get("presets")
+            .and_then(|p| p.get(name))
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("unknown preset: {name}"))?;
+        if let Some(obj) = preset.as_object_mut() {
+            obj.remove("default");
+        }
+        Ok(json!({
+            "kind": "gridglance.preset",
+            "version": 1,
+            "name": name,
+            "preset": preset
+        }))
+    }
+
+    pub fn import_preset_value(
+        &mut self,
+        name: &str,
+        payload: &Value,
+        overwrite: bool,
+    ) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            anyhow::bail!("preset name required");
+        }
+        let mut preset =
+            if payload.get("kind").and_then(|v| v.as_str()) == Some("gridglance.preset") {
+                payload
+                    .get("preset")
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("preset payload missing preset field"))?
+            } else if payload.get("config").is_some() || payload.get("layout").is_some() {
+                payload.clone()
+            } else if let Some(presets) = payload.get("presets").and_then(|p| p.as_object()) {
+                presets
+                    .values()
+                    .next()
+                    .cloned()
+                    .ok_or_else(|| anyhow::anyhow!("no presets in import payload"))?
+            } else {
+                json!({ "config": payload })
+            };
+        if !preset.is_object() {
+            preset = json!({ "config": preset });
+        }
+        let preset_obj = preset.as_object_mut().unwrap();
+        preset_obj.entry("config").or_insert_with(|| json!({}));
+        preset_obj.entry("layout").or_insert_with(|| json!({}));
+        preset_obj
+            .entry("layout_garage")
+            .or_insert_with(|| json!({}));
+        preset_obj.entry("cars").or_insert_with(|| json!([]));
+        preset_obj.entry("leagues").or_insert_with(|| json!([]));
+        preset_obj.insert("default".into(), json!(false));
+
+        {
+            let presets = self.ensure_presets_object();
+            if presets.contains_key(name) && !overwrite {
+                anyhow::bail!("preset already exists: {name}");
+            }
+            presets.insert(name.into(), preset);
+        }
+        self.set_active_preset(name)?;
+        Ok(())
+    }
+
     pub fn color(&self, section: &str, key: &str, fallback: &str) -> egui::Color32 {
         let raw = self
             .section(section)
@@ -153,7 +784,9 @@ impl OverlayConfig {
                 if alias.is_empty() {
                     None
                 } else {
-                    self.section(section).get("colors").and_then(|c| c.get(alias))
+                    self.section(section)
+                        .get("colors")
+                        .and_then(|c| c.get(alias))
                 }
             });
         parse_color(raw, fallback)
@@ -253,7 +886,9 @@ impl OverlayConfig {
 
     pub fn imperial_units(&self) -> bool {
         matches!(
-            self.global_str("units", "metric").to_ascii_lowercase().as_str(),
+            self.global_str("units", "metric")
+                .to_ascii_lowercase()
+                .as_str(),
             "imperial" | "us" | "mph"
         )
     }
@@ -372,6 +1007,33 @@ fn deep_merge(dst: &mut Value, src: &Value) {
             }
         }
         (d, s) => *d = s.clone(),
+    }
+}
+
+/// Keep only keys/values in `current` that differ from `defaults` (Python `diff_from_defaults`).
+fn sparse_diff(defaults: &Value, current: &Value) -> Value {
+    match (defaults, current) {
+        (Value::Object(d), Value::Object(c)) => {
+            let mut out = Map::new();
+            for (k, cv) in c {
+                match d.get(k) {
+                    Some(dv) => {
+                        let child = sparse_diff(dv, cv);
+                        if child != Value::Null
+                            && !(child.is_object() && child.as_object().unwrap().is_empty())
+                        {
+                            out.insert(k.clone(), child);
+                        }
+                    }
+                    None => {
+                        out.insert(k.clone(), cv.clone());
+                    }
+                }
+            }
+            Value::Object(out)
+        }
+        (d, c) if d == c => Value::Null,
+        (_, c) => c.clone(),
     }
 }
 
@@ -550,8 +1212,14 @@ fn default_cfg() -> Value {
         section.insert("irating_show_icon".into(), Value::Bool(true));
         // Table / radar defaults (Python parity) so demo works without a full CFG dump.
         if *key == "relative" || *key == "standings" {
-            section.insert("rows_ahead".into(), json!(if *key == "relative" { 3 } else { 4 }));
-            section.insert("rows_behind".into(), json!(if *key == "relative" { 3 } else { 5 }));
+            section.insert(
+                "rows_ahead".into(),
+                json!(if *key == "relative" { 3 } else { 4 }),
+            );
+            section.insert(
+                "rows_behind".into(),
+                json!(if *key == "relative" { 3 } else { 5 }),
+            );
             section.insert("center_on_player".into(), Value::Bool(true));
             section.insert("show_footer".into(), Value::Bool(true));
             section.insert("row_ease_tau".into(), json!(0.16));
@@ -668,7 +1336,10 @@ fn default_cfg() -> Value {
                 colors.insert("speaking_ring".into(), Value::String("#46df7a".into()));
                 colors.insert("speaking_glow".into(), Value::String("#46df7a55".into()));
                 colors.insert("speaking_badge_bg".into(), Value::String("#22c55e".into()));
-                colors.insert("speaking_badge_text".into(), Value::String("#ffffff".into()));
+                colors.insert(
+                    "speaking_badge_text".into(),
+                    Value::String("#ffffff".into()),
+                );
                 colors.insert("status_pit".into(), Value::String("#ffd23a".into()));
                 colors.insert("status_off".into(), Value::String("#ff5050".into()));
                 colors.insert("status_garage".into(), Value::String("#8b93a1".into()));
@@ -696,8 +1367,8 @@ fn default_cfg() -> Value {
             section.insert("range_pct".into(), json!(0.03));
             section.insert("alongside_zone_pct".into(), json!(0.004));
             section.insert("side_span_pct".into(), json!(0.0045));
-            section.insert("ease_side_tau".into(), json!(0.10));
-            section.insert("ease_glow_tau".into(), json!(0.13));
+            section.insert("ease_side_tau".into(), json!(0.12));
+            section.insert("ease_glow_tau".into(), json!(0.16));
             section.insert(
                 "sizes".into(),
                 json!({
@@ -783,7 +1454,10 @@ fn default_cfg() -> Value {
             section.insert("show_title".into(), Value::Bool(true));
             section.insert("title".into(), Value::String("PIT SERVICES".into()));
             section.insert("show_pit_banner".into(), Value::Bool(true));
-            section.insert("pit_banner_text".into(), Value::String("PIT STOP ACTIVE".into()));
+            section.insert(
+                "pit_banner_text".into(),
+                Value::String("PIT STOP ACTIVE".into()),
+            );
             section.insert("show_compound".into(), Value::Bool(true));
             section.insert("show_fast_repairs".into(), Value::Bool(true));
             section.insert("show_pressures".into(), Value::Bool(false));
@@ -877,6 +1551,9 @@ fn default_cfg() -> Value {
         m.insert((*key).into(), Value::Object(section));
     }
     m.insert("start_overlay_on_launch".into(), Value::Bool(false));
+    m.insert("check_updates_on_launch".into(), Value::Bool(true));
+    m.insert("start_at_login".into(), Value::Bool(false));
+    m.insert("driver_groups".into(), json!([]));
     m.insert("units".into(), Value::String("imperial".into()));
     m.insert("text_scale".into(), json!(1.20));
     Value::Object(m)
@@ -925,5 +1602,66 @@ mod tests {
         assert!(!oc.widget_shown("weather_panel"));
         assert!(!oc.widget_shown("pit_advisor"));
         assert!(oc.widget_shown("standings")); // Python default true, not patched
+    }
+
+    #[test]
+    fn sparse_diff_drops_equal_leaves() {
+        let defaults = json!({"a": 1, "b": {"c": true, "d": 2}});
+        let current = json!({"a": 1, "b": {"c": false, "d": 2}, "e": 9});
+        let diff = sparse_diff(&defaults, &current);
+        assert_eq!(diff, json!({"b": {"c": false}, "e": 9}));
+    }
+
+    #[test]
+    fn garage_context_merges_sparse_over_race() {
+        let mut oc = OverlayConfig::default();
+        oc.doc["presets"]["Default"]["config"] = json!({
+            "units": "metric",
+            "garage": { "units": "imperial", "dash": { "show": false } }
+        });
+        oc.set_active_preset("Default").unwrap();
+        assert_eq!(oc.context_cfg(ConfigContext::Race)["units"], "metric");
+        let garage = oc.context_cfg(ConfigContext::Garage);
+        assert_eq!(garage["units"], "imperial");
+        assert_eq!(garage["dash"]["show"], false);
+    }
+
+    #[test]
+    fn default_preset_is_unique() {
+        let mut oc = OverlayConfig::default();
+        oc.create_preset("Alt").unwrap();
+        oc.set_default_preset("Alt").unwrap();
+        assert_eq!(oc.default_preset().as_deref(), Some("Alt"));
+        assert_eq!(oc.doc["presets"]["Default"]["default"], false);
+        assert_eq!(oc.doc["presets"]["Alt"]["default"], true);
+    }
+
+    #[test]
+    fn import_export_round_trip_forces_import_non_default() {
+        let mut oc = OverlayConfig::default();
+        oc.doc["presets"]["Default"]["default"] = json!(true);
+        let payload = oc.export_preset_value("Default").unwrap();
+        let mut next = OverlayConfig::default();
+        next.import_preset_value("Imported", &payload, false)
+            .unwrap();
+        assert!(next.doc["presets"]["Imported"].get("config").is_some());
+        assert_eq!(next.doc["presets"]["Imported"]["default"], false);
+    }
+
+    #[test]
+    fn garage_layout_stores_sparse_delta() {
+        let mut oc = OverlayConfig::default();
+        let race = json!({"dash": [1, 2, 3, 4], "map": [5, 6, 7, 8]});
+        let garage = json!({"dash": [9, 2, 3, 4], "map": [5, 6, 7, 8]});
+        oc.store_active_layout_doc(ConfigContext::Race, race);
+        oc.store_active_layout_doc(ConfigContext::Garage, garage);
+        assert_eq!(
+            oc.doc["presets"]["Default"]["layout_garage"],
+            json!({"dash": [9, 2, 3, 4]})
+        );
+        assert_eq!(
+            oc.active_layout_doc(ConfigContext::Garage)["dash"],
+            json!([9, 2, 3, 4])
+        );
     }
 }
