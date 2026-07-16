@@ -511,6 +511,108 @@ pub fn styled_combo(
     picked
 }
 
+/// Driver-group icon picker: Font Awesome glyph + friendly label.
+pub fn icon_combo(ui: &mut Ui, id_source: &str, selected_key: &str, width: f32) -> Option<String> {
+    let options = crate::driver_groups::DRIVER_GROUP_ICONS;
+    let id = ui.make_persistent_id(id_source);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
+    let open = ui.memory(|mem| mem.is_popup_open(id));
+    let stroke = if open {
+        Stroke::new(1.0_f32, ACCENT)
+    } else if resp.hovered() {
+        Stroke::new(1.0_f32, ACCENT_DIM)
+    } else {
+        Stroke::new(1.0_f32, INPUT_BORDER)
+    };
+    ui.painter()
+        .rect_filled(rect, FIELD_RADIUS, theme::input_bg());
+    ui.painter()
+        .rect_stroke(rect, FIELD_RADIUS, stroke, StrokeKind::Inside);
+    paint_icon_label(
+        ui,
+        rect.left_center() + Vec2::new(11.0, 0.0),
+        selected_key,
+        theme::TEXT,
+    );
+    let cx = rect.right() - 15.0;
+    let cy = rect.center().y + 1.0;
+    ui.painter().line_segment(
+        [Pos2::new(cx - 4.0, cy - 2.0), Pos2::new(cx, cy + 2.0)],
+        Stroke::new(1.5_f32, NAV_IDLE),
+    );
+    ui.painter().line_segment(
+        [Pos2::new(cx, cy + 2.0), Pos2::new(cx + 4.0, cy - 2.0)],
+        Stroke::new(1.5_f32, NAV_IDLE),
+    );
+    if resp.clicked() {
+        ui.memory_mut(|mem| mem.toggle_popup(id));
+    }
+
+    let mut picked = None;
+    egui::popup::popup_below_widget(
+        ui,
+        id,
+        &resp,
+        egui::popup::PopupCloseBehavior::CloseOnClick,
+        |ui| {
+            ui.set_min_width(width);
+            egui::Frame::new()
+                .fill(POPUP_BG)
+                .stroke(Stroke::new(1.0_f32, INPUT_BORDER))
+                .corner_radius(FIELD_RADIUS)
+                .inner_margin(egui::Margin::symmetric(6, 6))
+                .show(ui, |ui| {
+                    for &key in options {
+                        let selected_row = key == selected_key;
+                        let row_resp = icon_nav_row(ui, key, selected_row);
+                        if row_resp.clicked() {
+                            picked = Some(key.to_string());
+                            ui.memory_mut(|mem| mem.close_popup());
+                        }
+                    }
+                });
+        },
+    );
+    picked
+}
+
+fn paint_icon_label(ui: &mut Ui, origin: Pos2, key: &str, color: Color32) {
+    let mut x = origin.x;
+    if let Some(g) = crate::icons::glyph(key) {
+        ui.painter().text(
+            Pos2::new(x, origin.y),
+            egui::Align2::LEFT_CENTER,
+            g,
+            crate::icons::font_id(14.0),
+            color,
+        );
+        x += 22.0;
+    }
+    ui.painter().text(
+        Pos2::new(x, origin.y),
+        egui::Align2::LEFT_CENTER,
+        crate::icons::label(key),
+        FontId::proportional(12.0),
+        color,
+    );
+}
+
+fn icon_nav_row(ui: &mut Ui, key: &str, selected: bool) -> Response {
+    let (rect, resp) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
+    if selected || resp.hovered() {
+        let fill = if selected {
+            Color32::from_rgba_unmultiplied(70, 223, 122, 41)
+        } else {
+            theme::button_hover_bg()
+        };
+        ui.painter().rect_filled(rect, 7.0, fill);
+    }
+    let color = if selected { TITLE } else { theme::TEXT };
+    paint_icon_label(ui, rect.left_center() + Vec2::new(10.0, 0.0), key, color);
+    resp
+}
+
 fn nav_like_row(ui: &mut Ui, label: &str, selected: bool) -> Response {
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
@@ -599,14 +701,18 @@ pub fn status_line(ui: &mut Ui, text: &str) {
 }
 
 /// Python-style accordion header with joined body frame.
+///
+/// `id_salt` must be unique per accordion instance (include section + role)
+/// so nested titles like "Colors" do not share CollapsingState.
 pub fn accordion<R>(
     ui: &mut Ui,
+    id_salt: impl std::hash::Hash,
     title: &str,
     accent: Color32,
     default_open: bool,
     body: impl FnOnce(&mut Ui) -> R,
 ) -> Option<R> {
-    let id = ui.make_persistent_id(("settings_accordion", title));
+    let id = ui.make_persistent_id(("settings_accordion", id_salt));
     let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
         ui.ctx(),
         id,
@@ -655,25 +761,35 @@ pub fn accordion<R>(
         2.0,
         Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (255.0 * t) as u8),
     );
-    let marker = if t > 0.5 { "▾" } else { "▸" };
     let title_col = if t > 0.5 { TITLE } else { ROW_LABEL };
+    let chevron_key = if t > 0.5 {
+        "chevron_down"
+    } else {
+        "chevron_right"
+    };
+    let chevron_x = rect.left() + 14.0;
+    if let Some(g) = crate::icons::glyph(chevron_key) {
+        ui.painter().text(
+            Pos2::new(chevron_x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            g,
+            crate::icons::font_id(12.0),
+            title_col,
+        );
+    }
     ui.painter().text(
-        rect.left_center() + Vec2::new(14.0, 0.0),
+        Pos2::new(chevron_x + 20.0, rect.center().y),
         egui::Align2::LEFT_CENTER,
-        format!("{marker}   {}", spaced_upper(title)),
+        spaced_upper(title),
         FontId::proportional(11.0),
         title_col,
     );
 
+    // Natural-height body when open — no clip/measure height animation
+    // (that thrashed layout inside ScrollArea).
     let out = if t <= 0.001 {
         None
     } else {
-        let body_h_id = id.with("body_h");
-        let last_h = ui
-            .ctx()
-            .data(|d| d.get_temp::<f32>(body_h_id))
-            .unwrap_or(120.0)
-            .max(1.0);
         let bottom_only = CornerRadius {
             nw: 0,
             ne: 0,
@@ -681,69 +797,49 @@ pub fn accordion<R>(
             se: theme::ACCORDION_RADIUS as u8,
         };
         let border = Color32::from_rgb(0x20, 0x24, 0x2c);
-        let fully_open = t >= 0.999;
-        let avail_w = ui.available_width();
-        let mut ret = None;
-        let paint = |ui: &mut Ui| {
-            let inner = egui::Frame::new()
-                .fill(Color32::from_rgba_unmultiplied(13, 16, 20, 140))
-                .stroke(Stroke::NONE)
-                .corner_radius(bottom_only)
-                .inner_margin(egui::Margin {
-                    left: 12,
-                    right: 12,
-                    top: 10,
-                    bottom: 12,
-                })
-                .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 7.0;
-                    body(ui)
-                });
-            let r = inner.response.rect;
-            if fully_open {
-                ui.ctx()
-                    .data_mut(|d| d.insert_temp(body_h_id, r.height().max(1.0)));
-            }
-            let p = ui.painter();
-            p.line_segment(
-                [
-                    Pos2::new(r.left(), r.top()),
-                    Pos2::new(r.left(), r.bottom()),
-                ],
-                Stroke::new(1.0_f32, border),
-            );
-            p.line_segment(
-                [
-                    Pos2::new(r.right(), r.top()),
-                    Pos2::new(r.right(), r.bottom()),
-                ],
-                Stroke::new(1.0_f32, border),
-            );
-            p.line_segment(
-                [
-                    Pos2::new(r.left(), r.bottom()),
-                    Pos2::new(r.right(), r.bottom()),
-                ],
-                Stroke::new(1.0_f32, border),
-            );
-            p.rect_filled(
-                Rect::from_min_max(r.min, Pos2::new(r.left() + 2.0, r.bottom())),
-                1.0,
-                Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 51),
-            );
-            ret = Some(inner.inner);
-        };
-        if fully_open {
-            paint(ui);
-        } else {
-            let visible_h = last_h * t;
-            ui.allocate_ui(Vec2::new(avail_w, visible_h), |ui| {
-                let clip = ui.max_rect();
-                ui.set_clip_rect(clip.intersect(ui.clip_rect()));
-                paint(ui);
+        let inner = egui::Frame::new()
+            .fill(Color32::from_rgba_unmultiplied(13, 16, 20, 140))
+            .stroke(Stroke::NONE)
+            .corner_radius(bottom_only)
+            .inner_margin(egui::Margin {
+                left: 12,
+                right: 12,
+                top: 10,
+                bottom: 12,
+            })
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 7.0;
+                body(ui)
             });
-        }
-        ret
+        let r = inner.response.rect;
+        let p = ui.painter();
+        p.line_segment(
+            [
+                Pos2::new(r.left(), r.top()),
+                Pos2::new(r.left(), r.bottom()),
+            ],
+            Stroke::new(1.0_f32, border),
+        );
+        p.line_segment(
+            [
+                Pos2::new(r.right(), r.top()),
+                Pos2::new(r.right(), r.bottom()),
+            ],
+            Stroke::new(1.0_f32, border),
+        );
+        p.line_segment(
+            [
+                Pos2::new(r.left(), r.bottom()),
+                Pos2::new(r.right(), r.bottom()),
+            ],
+            Stroke::new(1.0_f32, border),
+        );
+        p.rect_filled(
+            Rect::from_min_max(r.min, Pos2::new(r.left() + 2.0, r.bottom())),
+            1.0,
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 51),
+        );
+        Some(inner.inner)
     };
 
     ui.spacing_mut().item_spacing.y = prev_spacing;

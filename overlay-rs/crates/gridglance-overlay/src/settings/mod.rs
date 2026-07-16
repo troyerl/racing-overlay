@@ -298,7 +298,7 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
     });
 
     let active = state.read().config.active_preset.clone();
-    accordion(ui, "Advanced", theme::MUTED, false, |ui| {
+    accordion(ui, "preset_advanced", "Advanced", theme::MUTED, false, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Preset name").size(11.0).color(MUTED));
             text_field(
@@ -797,15 +797,16 @@ fn paint_driver_groups(
         setting_row(ui, "Group name", None, |ui| {
             let _ = text_field(ui, &mut ui_state.dg_name, "League mates", 180.0);
         });
-        let icon_opts: Vec<String> = crate::driver_groups::DRIVER_GROUP_ICONS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
         setting_row(ui, "Icon", None, |ui| {
-            if ui_state.dg_icon.is_empty() {
+            if ui_state.dg_icon.is_empty()
+                || !crate::driver_groups::DRIVER_GROUP_ICONS
+                    .contains(&ui_state.dg_icon.as_str())
+            {
                 ui_state.dg_icon = "league".into();
             }
-            if let Some(next) = styled_combo(ui, "dg_icon", &ui_state.dg_icon, &icon_opts, 140.0) {
+            if let Some(next) =
+                widgets::icon_combo(ui, "dg_icon", &ui_state.dg_icon, 180.0)
+            {
                 ui_state.dg_icon = next;
             }
         });
@@ -965,6 +966,7 @@ fn paint_widget_section(
             }
             accordion(
                 ui,
+                (section, "group", group_title),
                 group_title,
                 accent,
                 group_default_open(group_title),
@@ -978,7 +980,7 @@ fn paint_widget_section(
                 },
             );
         }
-        let leftovers: Vec<_> = values
+        let mut leftovers: Vec<_> = values
             .iter()
             .filter(|(k, _)| {
                 k.as_str() != "show"
@@ -987,22 +989,27 @@ fn paint_widget_section(
                     && matches_search(section, k, &ui_state.search)
             })
             .collect();
+        leftovers.sort_by(|a, b| a.0.cmp(b.0));
         if !leftovers.is_empty() {
-            accordion(ui, "Other", accent, false, |ui| {
+            accordion(ui, (section, "other"), "Other", accent, false, |ui| {
                 for (key, val) in leftovers {
                     paint_value(ui, state, section, key, val, dirty, accent, ui_state);
                 }
             });
         }
     } else {
-        for (key, value) in &values {
+        let mut keys: Vec<_> = values.keys().collect();
+        keys.sort();
+        for key in keys {
             if key == "show" || is_skipped(section, key) {
                 continue;
             }
             if !matches_search(section, key, &ui_state.search) {
                 continue;
             }
-            paint_value(ui, state, section, key, value, dirty, accent, ui_state);
+            if let Some(value) = values.get(key) {
+                paint_value(ui, state, section, key, value, dirty, accent, ui_state);
+            }
         }
     }
 }
@@ -1068,19 +1075,27 @@ fn paint_value(
             });
         }
         Value::Object(map) if key == "colors" || key == "license_colors" => {
-            accordion(ui, &pretty_key(key), accent, false, |ui| {
-                let mut entries: Vec<_> = map.iter().collect();
-                entries.sort_by(|a, b| a.0.cmp(b.0));
-                for (ck, cv) in entries {
-                    if let Some(hex) = cv.as_str() {
-                        paint_nested_color(ui, state, section, key, ck, hex, dirty);
+            accordion(
+                ui,
+                (section, "nested", key),
+                &pretty_key(key),
+                accent,
+                false,
+                |ui| {
+                    let mut entries: Vec<_> = map.iter().collect();
+                    entries.sort_by(|a, b| a.0.cmp(b.0));
+                    for (ck, cv) in entries {
+                        if let Some(hex) = cv.as_str() {
+                            paint_nested_color(ui, state, section, key, ck, hex, dirty);
+                        }
                     }
-                }
-            });
+                },
+            );
         }
         Value::Object(_) | Value::Array(_) => {
             accordion(
                 ui,
+                (section, "json", key),
                 &format!("{} (JSON)", pretty_key(key)),
                 accent,
                 false,
