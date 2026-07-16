@@ -71,6 +71,10 @@ struct Args {
     #[arg(long)]
     no_tray: bool,
 
+    /// Emit once-per-second frame/readback/present timing to stderr.
+    #[arg(long)]
+    perf: bool,
+
     /// Import members HTML/SVG to track JSON and exit (replaces tools/svg_layers_to_track_v2.py).
     #[arg(long, value_name = "FILE")]
     import_track: Option<std::path::PathBuf>,
@@ -255,6 +259,7 @@ fn main() -> Result<()> {
     };
 
     let demo = args.demo;
+    let perf = args.perf;
     eframe::run_native(
         WINDOW_TITLE,
         options,
@@ -269,6 +274,7 @@ fn main() -> Result<()> {
             Ok(Box::new(OverlayApp::new(
                 state,
                 demo,
+                perf,
                 cc.gl.clone(),
                 tray_rx,
                 activate_flag,

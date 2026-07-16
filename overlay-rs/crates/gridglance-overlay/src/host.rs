@@ -18,7 +18,7 @@ use eframe::egui::{
 use eframe::glow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 const MIN_PANEL_W: i32 = 90;
 const MIN_PANEL_H: i32 = 44;
@@ -44,6 +44,20 @@ struct PanelDrag {
     origin_x: f32,
     origin_y: f32,
     pointer_origin: Pos2,
+}
+
+#[derive(Default)]
+struct PerfAccum {
+    frames: u32,
+    frame_ms_sum: f64,
+    panel_slots: u32,
+    readbacks: u32,
+    presents: u32,
+    rb_map_ms: f64,
+    rb_other_ms: f64,
+    ulw_ms: f64,
+    map_dt_sum: f64,
+    map_dt_n: u32,
 }
 
 pub struct OverlayApp {
@@ -92,12 +106,18 @@ pub struct OverlayApp {
     /// Last car/league seen for preset auto-switch (avoid thrashing).
     last_switch_car: Option<String>,
     last_switch_league: Option<i32>,
+    /// `--perf`: once-per-second stderr frame/readback summary.
+    perf: bool,
+    perf_emit_at: Instant,
+    perf_acc: PerfAccum,
+    perf_last_map_paint_secs: f64,
 }
 
 impl OverlayApp {
     pub fn new(
         state: StateHandle,
         demo: bool,
+        perf: bool,
         gl: Option<Arc<glow::Context>>,
         tray_rx: Option<std::sync::mpsc::Receiver<crate::shell::TrayCommand>>,
         activate_peer: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -137,7 +157,55 @@ impl OverlayApp {
             activate_peer,
             last_switch_car: None,
             last_switch_league: None,
+            perf,
+            perf_emit_at: Instant::now(),
+            perf_acc: PerfAccum::default(),
+            perf_last_map_paint_secs: 0.0,
         }
+    }
+
+    fn perf_maybe_emit(&mut self) {
+        if !self.perf || self.perf_emit_at.elapsed() < Duration::from_secs(1) {
+            return;
+        }
+        let acc = &self.perf_acc;
+        if acc.frames == 0 {
+            self.perf_emit_at = Instant::now();
+            return;
+        }
+        let fps = acc.frames as f64;
+        let frame_ms = acc.frame_ms_sum / fps;
+        let map_dt = if acc.map_dt_n > 0 {
+            acc.map_dt_sum / acc.map_dt_n as f64
+        } else {
+            0.0
+        };
+        eprintln!(
+            "perf fps={fps:.0} frame={frame_ms:.1}ms readbacks={}/{} (map={:.1}ms other={:.1}ms) presents={} ulw={:.1}ms map_dt={map_dt:.3}",
+            acc.readbacks,
+            acc.panel_slots,
+            acc.rb_map_ms,
+            acc.rb_other_ms,
+            acc.presents,
+            acc.ulw_ms,
+        );
+        self.perf_acc = PerfAccum::default();
+        self.perf_emit_at = Instant::now();
+    }
+
+    fn perf_record_map_dt(&mut self) {
+        if !self.perf {
+            return;
+        }
+        let paint_secs = self.state.read().map.last_paint_secs;
+        if self.perf_last_map_paint_secs > 0.0 {
+            let dt = paint_secs - self.perf_last_map_paint_secs;
+            if dt > 0.0 {
+                self.perf_acc.map_dt_sum += dt;
+                self.perf_acc.map_dt_n += 1;
+            }
+        }
+        self.perf_last_map_paint_secs = paint_secs;
     }
 
     fn poll_shell_commands(&mut self) {
@@ -488,6 +556,11 @@ impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_shell_commands();
         self.tick_telemetry();
+        let frame_start = if self.perf {
+            Some(Instant::now())
+        } else {
+            None
+        };
         // Keep mono clock fresh between telem ticks for map prediction.
         let mono = self.clock_start.elapsed().as_secs_f64();
         if let Some(mut st) = self.state.try_write() {
@@ -529,6 +602,7 @@ impl eframe::App for OverlayApp {
 
         self.paint_settings_viewport(ctx);
         if self.state.read().quit_requested {
+            self.perf_maybe_emit();
             ctx.send_viewport_cmd(ViewportCommand::Close);
             return;
         }
@@ -541,9 +615,11 @@ impl eframe::App for OverlayApp {
             *self.dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *self.resizing.lock().unwrap_or_else(|e| e.into_inner()) = None;
             self.run_pending_hides(ctx);
+            self.perf_maybe_emit();
             return;
         }
 
+        let panel_count = keys_layout.len() as u32;
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
         let gl = self.gl.clone();
@@ -819,7 +895,17 @@ impl eframe::App for OverlayApp {
                             .readback
                             .entry(key.clone())
                             .or_insert_with(crate::layered::ReadbackScratch::default);
+                        let rb_start = Instant::now();
                         if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
+                            let rb_ms = rb_start.elapsed().as_secs_f64() * 1000.0;
+                            if self.perf {
+                                self.perf_acc.readbacks += 1;
+                                if map_panel {
+                                    self.perf_acc.rb_map_ms += rb_ms;
+                                } else {
+                                    self.perf_acc.rb_other_ms += rb_ms;
+                                }
+                            }
                             self.last_readback.insert(key.clone(), Instant::now());
                             let hash = layered::hash_bgra(bgra);
                             if self.last_present_hash.get(&hwnd) != Some(&hash) {
@@ -834,12 +920,21 @@ impl eframe::App for OverlayApp {
                 }
             }
 
+            if key == "map" {
+                self.perf_record_map_dt();
+            }
+
             self.open_viewports.insert(key);
         }
 
         for (hwnd, w, h, key, hash) in pending_presents {
             if let Some(scratch) = self.readback.get(&key) {
+                let ulw_start = Instant::now();
                 layered::present_bgra(hwnd, w, h, scratch.bgra());
+                if self.perf {
+                    self.perf_acc.presents += 1;
+                    self.perf_acc.ulw_ms += ulw_start.elapsed().as_secs_f64() * 1000.0;
+                }
                 self.last_present_hash.insert(hwnd, hash);
             }
         }
@@ -870,5 +965,12 @@ impl eframe::App for OverlayApp {
         }
         self.open_viewports = still_open;
         self.run_pending_hides(ctx);
+
+        if let Some(start) = frame_start {
+            self.perf_acc.frames += 1;
+            self.perf_acc.frame_ms_sum += start.elapsed().as_secs_f64() * 1000.0;
+            self.perf_acc.panel_slots += panel_count;
+            self.perf_maybe_emit();
+        }
     }
 }
