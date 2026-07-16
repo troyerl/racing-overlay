@@ -22,20 +22,61 @@ pub fn ensure_layered(hwnd: isize) {
 #[allow(dead_code)]
 pub fn ensure_layered(_hwnd: isize) {}
 
+/// Reusable readback buffers (avoids per-frame alloc of W×H×8 bytes).
+#[derive(Default)]
+pub struct ReadbackScratch {
+    #[allow(dead_code)] // filled on Windows readback path
+    rgba: Vec<u8>,
+    bgra: Vec<u8>,
+}
+
+impl ReadbackScratch {
+    pub fn bgra(&self) -> &[u8] {
+        &self.bgra
+    }
+}
+
+/// FNV-1a over BGRA — used to skip UpdateLayeredWindow when a panel is unchanged.
+pub fn hash_bgra(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    // Stride reduces cost on huge panels while still catching typical UI changes.
+    let step = if data.len() > 256 * 1024 { 16 } else { 4 };
+    let mut i = 0;
+    while i < data.len() {
+        h ^= data[i] as u64;
+        h = h.wrapping_mul(0x100000001b3);
+        i += step;
+    }
+    h ^= data.len() as u64;
+    h = h.wrapping_mul(0x100000001b3);
+    h
+}
+
 /// Read current GL default framebuffer → premultiplied BGRA (top-down).
 /// Call while the viewport's WGL context is still current (right after paint).
 #[cfg(windows)]
-pub fn read_gl_to_bgra(gl: &glow::Context, width: i32, height: i32) -> Option<Vec<u8>> {
+pub fn read_gl_to_bgra<'a>(
+    gl: &glow::Context,
+    width: i32,
+    height: i32,
+    scratch: &'a mut ReadbackScratch,
+) -> Option<&'a [u8]> {
     if width <= 0 || height <= 0 {
         return None;
     }
     let w = width as usize;
     let h = height as usize;
     // Cap absurd sizes (bad hwnd / transient resize) so we never OOM.
-    if w.saturating_mul(h).saturating_mul(4) > 64 * 1024 * 1024 {
+    let nbytes = w.saturating_mul(h).saturating_mul(4);
+    if nbytes == 0 || nbytes > 64 * 1024 * 1024 {
         return None;
     }
-    let mut rgba = vec![0u8; w * h * 4];
+    if scratch.rgba.len() != nbytes {
+        scratch.rgba.resize(nbytes, 0);
+    }
+    if scratch.bgra.len() != nbytes {
+        scratch.bgra.resize(nbytes, 0);
+    }
     unsafe {
         // Drain any stale GL error so a bad pack doesn’t stick across viewports.
         while gl.get_error() != glow::NO_ERROR {}
@@ -48,7 +89,7 @@ pub fn read_gl_to_bgra(gl: &glow::Context, width: i32, height: i32) -> Option<Ve
             height,
             glow::RGBA,
             glow::UNSIGNED_BYTE,
-            glow::PixelPackData::Slice(Some(&mut rgba)),
+            glow::PixelPackData::Slice(Some(&mut scratch.rgba)),
         );
         let err = gl.get_error();
         while gl.get_error() != glow::NO_ERROR {}
@@ -58,37 +99,44 @@ pub fn read_gl_to_bgra(gl: &glow::Context, width: i32, height: i32) -> Option<Ve
     }
 
     // Convert RGBA (bottom-up) → premultiplied BGRA (top-down) for GDI.
-    let mut bgra = vec![0u8; w * h * 4];
+    let row = w * 4;
+    let rgba = scratch.rgba.as_slice();
+    let bgra = scratch.bgra.as_mut_slice();
     for y in 0..h {
-        let src_row = (h - 1 - y) * w * 4;
-        let dst_row = y * w * 4;
-        for x in 0..w {
-            let si = src_row + x * 4;
-            let di = dst_row + x * 4;
-            let r = rgba[si];
-            let g = rgba[si + 1];
-            let b = rgba[si + 2];
-            let a = rgba[si + 3];
+        let src_row = (h - 1 - y) * row;
+        let dst_row = y * row;
+        let src = &rgba[src_row..src_row + row];
+        let dst = &mut bgra[dst_row..dst_row + row];
+        for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+            let r = s[0];
+            let g = s[1];
+            let b = s[2];
+            let a = s[3];
             // egui-glow writes premultiplied RGBA. Punch failed opaque-black clears.
             if r == 0 && g == 0 && b == 0 && a < 8 {
-                bgra[di] = 0;
-                bgra[di + 1] = 0;
-                bgra[di + 2] = 0;
-                bgra[di + 3] = 0;
+                d[0] = 0;
+                d[1] = 0;
+                d[2] = 0;
+                d[3] = 0;
             } else {
-                bgra[di] = b;
-                bgra[di + 1] = g;
-                bgra[di + 2] = r;
-                bgra[di + 3] = a;
+                d[0] = b;
+                d[1] = g;
+                d[2] = r;
+                d[3] = a;
             }
         }
     }
-    Some(bgra)
+    Some(scratch.bgra.as_slice())
 }
 
 #[cfg(not(windows))]
 #[allow(dead_code)]
-pub fn read_gl_to_bgra(_gl: &eframe::glow::Context, _w: i32, _h: i32) -> Option<Vec<u8>> {
+pub fn read_gl_to_bgra<'a>(
+    _gl: &eframe::glow::Context,
+    _w: i32,
+    _h: i32,
+    _scratch: &'a mut ReadbackScratch,
+) -> Option<&'a [u8]> {
     None
 }
 
@@ -198,8 +246,9 @@ pub fn present_bgra(_hwnd: isize, _width: i32, _height: i32, _bgra: &[u8]) {}
 #[cfg(windows)]
 #[allow(dead_code)]
 pub fn present_gl_framebuffer(gl: &glow::Context, hwnd: isize, width: i32, height: i32) {
-    if let Some(bgra) = read_gl_to_bgra(gl, width, height) {
-        present_bgra(hwnd, width, height, &bgra);
+    let mut scratch = ReadbackScratch::default();
+    if let Some(bgra) = read_gl_to_bgra(gl, width, height, &mut scratch) {
+        present_bgra(hwnd, width, height, bgra);
     }
 }
 

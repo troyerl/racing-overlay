@@ -65,6 +65,12 @@ pub struct OverlayApp {
     last_click_through: HashMap<String, bool>,
     /// Last applied viewport geometry (x, y, w, h) — avoid builder churn.
     last_geom: HashMap<String, (i32, i32, i32, i32)>,
+    /// Per-panel GL→BGRA scratch buffers (Windows layered present).
+    readback: HashMap<String, crate::layered::ReadbackScratch>,
+    /// Last presented buffer hash per HWND — skip unchanged UpdateLayeredWindow.
+    last_present_hash: HashMap<isize, u64>,
+    /// Shared monotonic clock (demo telem + map easing).
+    clock_start: Instant,
     gl: Option<Arc<glow::Context>>,
     sector_timer: SectorTimer,
     lap_compare: LapCompareState,
@@ -108,6 +114,9 @@ impl OverlayApp {
             missing_frames: HashMap::new(),
             last_click_through: HashMap::new(),
             last_geom: HashMap::new(),
+            readback: HashMap::new(),
+            last_present_hash: HashMap::new(),
+            clock_start: Instant::now(),
             dragging: Arc::new(Mutex::new(None)),
             resizing: Arc::new(Mutex::new(None)),
             gl,
@@ -335,9 +344,10 @@ impl OverlayApp {
             return;
         }
         self.last_tick = Instant::now();
+        let mono = self.clock_start.elapsed().as_secs_f64();
         let edit_mode = self.state.read().edit_mode;
         let mut frame = if self.demo_only {
-            self.demo.tick()
+            self.demo.tick_at(mono)
         } else {
             let live = self
                 .irsdk
@@ -350,7 +360,7 @@ impl OverlayApp {
             // Edit layout without iRacing: demo feed so widgets have content.
             // Running + disconnected + not editing stays empty (widgets hidden).
             if !live.connected && edit_mode {
-                self.demo.tick()
+                self.demo.tick_at(mono)
             } else {
                 live
             }
@@ -459,6 +469,7 @@ impl OverlayApp {
                     frame.track_name = Some(st.map.cached_track_name.clone());
                 }
             }
+            st.mono_secs = mono;
             st.frame = Arc::new(frame);
         }
     }
@@ -472,7 +483,11 @@ impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_shell_commands();
         self.tick_telemetry();
-        ctx.request_repaint_after(std::time::Duration::from_millis(8));
+        // Keep mono clock fresh between telem ticks for map prediction.
+        let mono = self.clock_start.elapsed().as_secs_f64();
+        if let Some(mut st) = self.state.try_write() {
+            st.mono_secs = mono;
+        }
 
         let (running, edit_mode, click_through, keys_layout) = {
             let st = self.state.read();
@@ -501,6 +516,14 @@ impl eframe::App for OverlayApp {
             )
         };
 
+        // More open panels → heavier Windows layered present; ease off 125 Hz.
+        let period_ms = match keys_layout.len() {
+            0..=3 => 8u64,
+            4..=7 => 12,
+            _ => 16,
+        };
+        ctx.request_repaint_after(std::time::Duration::from_millis(period_ms));
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
             .show(ctx, |_| {});
@@ -525,7 +548,8 @@ impl eframe::App for OverlayApp {
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
         let gl = self.gl.clone();
-        let mut pending_presents: Vec<(isize, i32, i32, Vec<u8>)> = Vec::new();
+        // (hwnd, w, h, panel_key, hash) — present from per-key scratch after all GL work.
+        let mut pending_presents: Vec<(isize, i32, i32, String, u64)> = Vec::new();
         let dragging_key = self
             .dragging
             .lock()
@@ -579,12 +603,13 @@ impl eframe::App for OverlayApp {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(vp_ctx, |ui| {
-                        let (cfg, frame, mut map) = {
+                        let (cfg, frame, mut map, mono_secs) = {
                             let st = state.read();
                             (
                                 Arc::clone(&st.config),
                                 Arc::clone(&st.frame),
                                 st.map.clone(),
+                                st.mono_secs,
                             )
                         };
                         {
@@ -593,6 +618,7 @@ impl eframe::App for OverlayApp {
                                 frame: frame.as_ref(),
                                 edit_mode,
                                 map: &mut map,
+                                mono_secs,
                             };
                             widgets::paint(ui, &key_clone, &mut wctx);
                         }
@@ -782,8 +808,15 @@ impl eframe::App for OverlayApp {
             // the next eframe make_current on Windows).
             if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
                 if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
-                    if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h) {
-                        pending_presents.push((hwnd, w, h, bgra));
+                    let scratch = self
+                        .readback
+                        .entry(key.clone())
+                        .or_insert_with(crate::layered::ReadbackScratch::default);
+                    if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
+                        let hash = layered::hash_bgra(bgra);
+                        if self.last_present_hash.get(&hwnd) != Some(&hash) {
+                            pending_presents.push((hwnd, w, h, key.clone(), hash));
+                        }
                     }
                 }
                 if self.last_click_through.get(&key) != Some(&passthrough) {
@@ -795,9 +828,15 @@ impl eframe::App for OverlayApp {
             self.open_viewports.insert(key);
         }
 
-        for (hwnd, w, h, bgra) in pending_presents {
-            layered::present_bgra(hwnd, w, h, &bgra);
+        for (hwnd, w, h, key, hash) in pending_presents {
+            if let Some(scratch) = self.readback.get(&key) {
+                layered::present_bgra(hwnd, w, h, scratch.bgra());
+                self.last_present_hash.insert(hwnd, hash);
+            }
         }
+
+        // Drop scratch/hashes for panels that closed.
+        self.readback.retain(|k, _| still_open.contains(k));
 
         // Re-enabled widgets leave the hide queue; disabled ones get farewell frames.
         for key in &still_open {

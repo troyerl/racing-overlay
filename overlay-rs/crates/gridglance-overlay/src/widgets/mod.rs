@@ -33,6 +33,8 @@ pub struct WidgetCtx<'a> {
     pub frame: &'a TelemetryFrame,
     pub edit_mode: bool,
     pub map: &'a mut MapAuthoring,
+    /// Shared host monotonic seconds (demo telem + map easing).
+    pub mono_secs: f64,
 }
 
 pub fn paint(ui: &mut Ui, key: &str, ctx: &mut WidgetCtx<'_>) {

@@ -1746,7 +1746,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 3.0);
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
 
-    let wall_secs = ui.input(|i| i.time);
+    let wall_secs = ctx.mono_secs;
     let dt = if ctx.map.last_paint_secs > 0.0 {
         ((wall_secs - ctx.map.last_paint_secs) as f32).clamp(0.0, 0.1)
     } else {

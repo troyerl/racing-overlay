@@ -76,7 +76,7 @@ pub struct MapAuthoring {
     pub car_anim: HashMap<i32, CarPctAnim>,
     /// Screen-space eased car dots (Python `_car_anim` screen pts).
     pub car_screen: HashMap<i32, CarScreenAnim>,
-    /// Wall/egui time of last map paint (for car easing dt; not SessionTime).
+    /// Wall time of last map paint on the shared host mono clock (for car easing dt).
     pub last_paint_secs: f64,
     /// Hold car on pit route after OnPitRoad clears until past pit_out.
     pub pit_route_latch: HashMap<i32, bool>,
@@ -597,6 +597,8 @@ pub struct SharedState {
     pub settings_auto_save: bool,
     pub quit_requested: bool,
     pub map: MapAuthoring,
+    /// Shared monotonic seconds from host clock (demo + map motion).
+    pub mono_secs: f64,
     /// In-overlay Settings window open.
     pub settings_open: bool,
     /// Active Settings nav section key.
@@ -628,6 +630,7 @@ impl SharedState {
                 pit_lane_speed_pct: 1.0,
                 ..Default::default()
             },
+            mono_secs: 0.0,
             settings_open: false,
             settings_section: "__general__".into(),
             pending_update: None,

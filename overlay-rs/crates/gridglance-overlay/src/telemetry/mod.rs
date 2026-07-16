@@ -288,7 +288,6 @@ impl LapLogRow {
 
 pub mod demo {
     use super::*;
-    use std::time::Instant;
 
     fn demo_flag(t: f64) -> (Option<String>, Option<String>, bool) {
         // (flag, context, incident_warn). Dense cycle ~48s matching Python demo.
@@ -380,19 +379,15 @@ pub mod demo {
         }
     }
 
-    pub struct DemoFeed {
-        start: Instant,
-    }
+    pub struct DemoFeed;
 
     impl DemoFeed {
         pub fn new() -> Self {
-            Self {
-                start: Instant::now(),
-            }
+            Self
         }
 
-        pub fn tick(&self) -> TelemetryFrame {
-            let t = self.start.elapsed().as_secs_f64();
+        /// Tick using the shared host monotonic clock (keeps map prediction aligned).
+        pub fn tick_at(&self, t: f64) -> TelemetryFrame {
             let lap_est = 90.0_f32;
             let player_i = 3i32;
             let mut cars = Vec::new();
