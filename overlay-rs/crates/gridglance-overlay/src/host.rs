@@ -25,6 +25,8 @@ const MIN_PANEL_H: i32 = 44;
 const RESIZE_GRIP: f32 = 28.0;
 /// Frames to keep applying Visible(false) so macOS/eframe actually drops the window.
 const HIDE_RETRY_FRAMES: u8 = 8;
+/// Non-map panels: throttle Windows glReadPixels + present (~15 Hz).
+const NON_MAP_READBACK_MS: u128 = 66;
 /// Require this many consecutive absent frames before farewell (avoids config flicker).
 const HIDE_DEBOUNCE_FRAMES: u8 = 3;
 
@@ -69,6 +71,8 @@ pub struct OverlayApp {
     readback: HashMap<String, crate::layered::ReadbackScratch>,
     /// Last presented buffer hash per HWND — skip unchanged UpdateLayeredWindow.
     last_present_hash: HashMap<isize, u64>,
+    /// Last successful readback per panel (throttle non-map Windows present).
+    last_readback: HashMap<String, Instant>,
     /// Shared monotonic clock (demo telem + map easing).
     clock_start: Instant,
     gl: Option<Arc<glow::Context>>,
@@ -116,6 +120,7 @@ impl OverlayApp {
             last_geom: HashMap::new(),
             readback: HashMap::new(),
             last_present_hash: HashMap::new(),
+            last_readback: HashMap::new(),
             clock_start: Instant::now(),
             dragging: Arc::new(Mutex::new(None)),
             resizing: Arc::new(Mutex::new(None)),
@@ -802,14 +807,24 @@ impl eframe::App for OverlayApp {
             // the next eframe make_current on Windows).
             if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
                 if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
-                    let scratch = self
-                        .readback
-                        .entry(key.clone())
-                        .or_insert_with(crate::layered::ReadbackScratch::default);
-                    if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
-                        let hash = layered::hash_bgra(bgra);
-                        if self.last_present_hash.get(&hwnd) != Some(&hash) {
-                            pending_presents.push((hwnd, w, h, key.clone(), hash));
+                    let map_panel = key == "map";
+                    let due = map_panel
+                        || self
+                            .last_readback
+                            .get(&key)
+                            .map(|t| t.elapsed().as_millis() >= NON_MAP_READBACK_MS)
+                            .unwrap_or(true);
+                    if due {
+                        let scratch = self
+                            .readback
+                            .entry(key.clone())
+                            .or_insert_with(crate::layered::ReadbackScratch::default);
+                        if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
+                            self.last_readback.insert(key.clone(), Instant::now());
+                            let hash = layered::hash_bgra(bgra);
+                            if self.last_present_hash.get(&hwnd) != Some(&hash) {
+                                pending_presents.push((hwnd, w, h, key.clone(), hash));
+                            }
                         }
                     }
                 }
@@ -831,6 +846,7 @@ impl eframe::App for OverlayApp {
 
         // Drop scratch/hashes for panels that closed.
         self.readback.retain(|k, _| still_open.contains(k));
+        self.last_readback.retain(|k, _| still_open.contains(k));
 
         // Re-enabled widgets leave the hide queue; disabled ones get farewell frames.
         for key in &still_open {
