@@ -541,8 +541,8 @@ pub mod demo {
                     active: true,
                     is_player: c.is_player,
                     is_pro: c.irating >= 4000,
-                    group_icon: "radio".into(),
-                    group_color: "#46df7a".into(),
+                    group_icon: String::new(),
+                    group_color: String::new(),
                 });
 
             let lead_lap = cars

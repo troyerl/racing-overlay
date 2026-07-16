@@ -220,8 +220,8 @@ fn number_slider(
     step: f32,
     accent: Color32,
 ) -> bool {
-    let width = 140.0;
-    let height = 24.0;
+    let width = 180.0;
+    let height = 22.0;
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, height), Sense::click_and_drag());
     let min = *range.start();
     let max = *range.end();
@@ -245,30 +245,20 @@ fn number_slider(
     }
 
     let t = ((*value - min) / span).clamp(0.0, 1.0);
-    let groove = Rect::from_center_size(rect.center(), Vec2::new(width, 5.0));
+    let groove = Rect::from_center_size(rect.center(), Vec2::new(width, 6.0));
     let p = ui.painter();
+    // Continuous solid track (no segmented / dashed fill).
     p.rect_filled(groove, 3.0, GROOVE);
     let filled_w = groove.width() * t;
     if filled_w > 0.5 {
-        // Short accent gradient along the filled groove (dim → accent).
-        let steps = ((filled_w / 4.0).ceil() as i32).clamp(1, 36);
-        for i in 0..steps {
-            let a = i as f32 / steps as f32;
-            let b = (i + 1) as f32 / steps as f32;
-            let x0 = groove.left() + filled_w * a;
-            let x1 = groove.left() + filled_w * b;
-            let u = (a + b) * 0.5;
-            let col = Color32::from_rgb(
-                (ACCENT_DIM.r() as f32 + (accent.r() as f32 - ACCENT_DIM.r() as f32) * u) as u8,
-                (ACCENT_DIM.g() as f32 + (accent.g() as f32 - ACCENT_DIM.g() as f32) * u) as u8,
-                (ACCENT_DIM.b() as f32 + (accent.b() as f32 - ACCENT_DIM.b() as f32) * u) as u8,
-            );
-            p.rect_filled(
-                Rect::from_min_max(Pos2::new(x0, groove.top()), Pos2::new(x1, groove.bottom())),
-                3.0,
-                col,
-            );
-        }
+        p.rect_filled(
+            Rect::from_min_max(
+                groove.left_top(),
+                Pos2::new(groove.left() + filled_w, groove.bottom()),
+            ),
+            3.0,
+            accent,
+        );
     }
     let knob = Pos2::new(groove.left() + groove.width() * t, groove.center().y);
     let handle = if resp.hovered() || resp.dragged() {
@@ -276,8 +266,8 @@ fn number_slider(
     } else {
         Color32::from_rgb(0xf6, 0xf8, 0xfb)
     };
-    p.circle_filled(knob, 8.0, handle);
-    p.circle_stroke(knob, 8.0, Stroke::new(2.0_f32, accent));
+    p.circle_filled(knob, 7.0, handle);
+    p.circle_stroke(knob, 7.0, Stroke::new(2.0_f32, accent));
     changed
 }
 

@@ -273,7 +273,8 @@ mod win {
             .max()
             .unwrap_or(lap)
             .max(0);
-        let radio = radio_speaker_from_cars(&cars, radio_idx, cache.player_idx);
+        // Direct from IRSDK + driver cache (not filtered cars) — Python parity.
+        let radio = radio_idx.and_then(|idx| build_radio_speaker(session, cache, idx));
         let radar = RadarState {
             left,
             right,
@@ -458,22 +459,42 @@ mod win {
         None
     }
 
-    fn radio_speaker_from_cars(
-        cars: &[CarRow],
-        radio_idx: Option<i32>,
-        player_idx: i32,
+    /// Build radio tower row from transmit index + session info (Python
+    /// `_update_radio_tower`). Does not require the car to be in `car_rows`.
+    unsafe fn build_radio_speaker(
+        session: &Session,
+        cache: &SessionCache,
+        radio_idx: i32,
     ) -> Option<RadioSpeaker> {
-        let idx = radio_idx?;
-        let c = cars.iter().find(|c| c.car_idx == idx)?;
-        if c.is_pace_car {
+        if radio_idx < 0 {
             return None;
         }
+        if cache
+            .drivers
+            .get(&radio_idx)
+            .map(|d| d.is_pace_car)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let (name, car_number) = if let Some(d) = cache.drivers.get(&radio_idx) {
+            (d.name.clone(), d.car_number.clone())
+        } else {
+            (
+                format!("Car {radio_idx}"),
+                format!("{radio_idx}"),
+            )
+        };
+        let position = int_arr(session, "CarIdxPosition")
+            .and_then(|a| a.get(radio_idx as usize).copied())
+            .filter(|&p| p > 0)
+            .unwrap_or(0);
         Some(RadioSpeaker {
-            position: c.position,
-            car_number: c.car_number.clone(),
-            name: c.name.clone(),
+            position,
+            car_number,
+            name,
             active: true,
-            is_player: c.car_idx == player_idx || c.is_player,
+            is_player: radio_idx == cache.player_idx,
             is_pro: false,
             group_icon: String::new(),
             group_color: String::new(),
@@ -961,6 +982,84 @@ mod win {
                 speed_mps,
                 status_kind,
             });
+        }
+        // Ensure transmitter appears for map/table speaking badges even when
+        // car_rows filters them out (garage / invalid LapDistPct, etc.).
+        if let Some(idx) = radio_idx {
+            if idx >= 0 && !out.iter().any(|c| c.car_idx == idx) {
+                let di = cache.drivers.get(&idx);
+                if !di.map(|d| d.is_pace_car).unwrap_or(false) {
+                    let (name, number, ir, lic, class_color, class_id) = if let Some(d) = di {
+                        (
+                            d.name.clone(),
+                            d.car_number.clone(),
+                            d.irating,
+                            d.license.clone(),
+                            d.class_color.clone(),
+                            d.class_id,
+                        )
+                    } else {
+                        (
+                            format!("Car {idx}"),
+                            format!("{idx}"),
+                            0,
+                            String::new(),
+                            String::new(),
+                            0,
+                        )
+                    };
+                    let pos = positions
+                        .as_ref()
+                        .and_then(|a| a.get(idx as usize).copied())
+                        .unwrap_or(0)
+                        .max(0);
+                    let cpos = class_pos
+                        .as_ref()
+                        .and_then(|a| a.get(idx as usize).copied())
+                        .unwrap_or(pos)
+                        .max(0);
+                    let pct = pcts
+                        .get(idx as usize)
+                        .copied()
+                        .unwrap_or(-1.0);
+                    out.push(CarRow {
+                        car_idx: idx,
+                        position: pos,
+                        class_position: cpos,
+                        car_number: number,
+                        name,
+                        gap: String::new(),
+                        last_lap: String::new(),
+                        best_lap: String::new(),
+                        irating: ir,
+                        irating_delta: None,
+                        class_id,
+                        license: lic,
+                        class_color,
+                        on_pit: false,
+                        in_pit: false,
+                        on_track: false,
+                        approaching_pits: false,
+                        is_player: idx == player_idx,
+                        is_speaking: true,
+                        is_pace_car: false,
+                        lapping: false,
+                        lap_ahead: false,
+                        inactive: pos > 0,
+                        lap_dist_pct: if pct.is_finite() && pct >= 0.0 {
+                            pct.fract().abs()
+                        } else {
+                            -1.0
+                        },
+                        est_time: 0.0,
+                        f2_time: 0.0,
+                        lap: 0,
+                        laps_completed: 0,
+                        speed_mps: 0.0,
+                        status_kind: None,
+                    });
+                }
+            }
         }
         out
     }
