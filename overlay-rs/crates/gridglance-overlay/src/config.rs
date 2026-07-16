@@ -419,7 +419,7 @@ fn default_colors() -> Map<String, Value> {
         ("flag_crossed", "#2a2f38"),
         ("flag_crossed_text", "#f4f6f8"),
         ("player_row", "#ff941670"),
-        ("row_alt", "#ffffff08"),
+        ("row_alt", "#ffffff01"),
         ("accent", "#e23b3b"),
         ("shift_green", "#46df7a"),
         ("shift_yellow", "#ffd23a"),

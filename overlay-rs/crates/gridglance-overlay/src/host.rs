@@ -20,6 +20,10 @@ use std::time::Instant;
 const MIN_PANEL_W: i32 = 90;
 const MIN_PANEL_H: i32 = 44;
 const RESIZE_GRIP: f32 = 28.0;
+/// Frames to keep applying Visible(false) so macOS/eframe actually drops the window.
+const HIDE_RETRY_FRAMES: u8 = 8;
+/// Require this many consecutive absent frames before farewell (avoids config flicker).
+const HIDE_DEBOUNCE_FRAMES: u8 = 3;
 
 struct ResizeDrag {
     key: String,
@@ -47,6 +51,10 @@ pub struct OverlayApp {
     sysstats: SysStats,
     last_tick: Instant,
     open_viewports: HashSet<String>,
+    /// Disabled panels: farewell Visible(false) frames until the OS window dies.
+    pending_hide: HashMap<String, u8>,
+    /// Consecutive frames a panel was absent from still_open (hide debounce).
+    missing_frames: HashMap<String, u8>,
     /// Active panel move in edit mode.
     dragging: Arc<Mutex<Option<PanelDrag>>>,
     /// Active SE-corner resize in edit mode.
@@ -75,6 +83,8 @@ impl OverlayApp {
             sysstats: SysStats::new(),
             last_tick: Instant::now(),
             open_viewports: HashSet::new(),
+            pending_hide: HashMap::new(),
+            missing_frames: HashMap::new(),
             last_click_through: HashMap::new(),
             last_geom: HashMap::new(),
             dragging: Arc::new(Mutex::new(None)),
@@ -85,6 +95,51 @@ impl OverlayApp {
             lap_log,
             fuel_burn: FuelBurnTracker::default(),
         }
+    }
+
+    /// One empty frame with Visible(false) so egui/eframe tear down the OS window.
+    fn farewell_viewport(ctx: &egui::Context, key: &str) {
+        let vid = ViewportId::from_hash_of(key);
+        let title = win_click::panel_title(key);
+        let builder = ViewportBuilder::default()
+            .with_title(title)
+            .with_decorations(false)
+            .with_transparent(true)
+            .with_visible(false)
+            .with_taskbar(false);
+        ctx.show_viewport_immediate(vid, builder, |vp_ctx, _class| {
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
+                .show(vp_ctx, |_| {});
+            vp_ctx.send_viewport_cmd(ViewportCommand::Visible(false));
+            vp_ctx.send_viewport_cmd(ViewportCommand::Close);
+        });
+    }
+
+    fn run_pending_hides(&mut self, ctx: &egui::Context) {
+        let keys: Vec<String> = self.pending_hide.keys().cloned().collect();
+        for key in keys {
+            Self::farewell_viewport(ctx, &key);
+            let done = match self.pending_hide.get_mut(&key) {
+                Some(n) => {
+                    *n = n.saturating_sub(1);
+                    *n == 0
+                }
+                None => true,
+            };
+            if done {
+                self.pending_hide.remove(&key);
+                self.missing_frames.remove(&key);
+                self.last_click_through.remove(&key);
+                self.last_geom.remove(&key);
+            }
+        }
+    }
+
+    fn queue_hide(&mut self, key: String) {
+        self.pending_hide
+            .entry(key)
+            .or_insert(HIDE_RETRY_FRAMES);
     }
 
     fn tick_telemetry(&mut self) {
@@ -217,18 +272,13 @@ impl eframe::App for OverlayApp {
             .show(ctx, |_| {});
 
         if !running {
-            let to_close: Vec<_> = self.open_viewports.iter().cloned().collect();
-            for key in to_close {
-                ctx.send_viewport_cmd_to(
-                    ViewportId::from_hash_of(&key),
-                    ViewportCommand::Close,
-                );
-                self.open_viewports.remove(&key);
-                self.last_click_through.remove(&key);
-                self.last_geom.remove(&key);
+            let to_hide: Vec<_> = self.open_viewports.drain().collect();
+            for key in to_hide {
+                self.queue_hide(key);
             }
             *self.dragging.lock().unwrap_or_else(|e| e.into_inner()) = None;
             *self.resizing.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.run_pending_hides(ctx);
             return;
         }
 
@@ -262,6 +312,7 @@ impl eframe::App for OverlayApp {
                 .with_title(title.clone())
                 .with_decorations(false)
                 .with_transparent(true)
+                .with_visible(true)
                 .with_always_on_top()
                 .with_taskbar(false)
                 .with_mouse_passthrough(passthrough);
@@ -283,6 +334,8 @@ impl eframe::App for OverlayApp {
             let resizing = Arc::clone(&self.resizing);
 
             ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
+                // Undo sticky Visible(false) from a prior hide/flicker.
+                vp_ctx.send_viewport_cmd(ViewportCommand::Visible(true));
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(vp_ctx, |ui| {
@@ -522,20 +575,27 @@ impl eframe::App for OverlayApp {
             layered::present_bgra(hwnd, w, h, &bgra);
         }
 
-        let to_close: Vec<_> = self
+        // Re-enabled widgets leave the hide queue; disabled ones get farewell frames.
+        for key in &still_open {
+            self.pending_hide.remove(key);
+            self.missing_frames.remove(key);
+        }
+        let candidates: Vec<_> = self
             .open_viewports
             .difference(&still_open)
             .cloned()
             .collect();
-        for key in to_close {
-            ctx.send_viewport_cmd_to(
-                ViewportId::from_hash_of(&key),
-                ViewportCommand::Close,
-            );
-            self.open_viewports.remove(&key);
-            self.last_click_through.remove(&key);
-            self.last_geom.remove(&key);
+        // Drop missing counters for keys no longer tracked as open.
+        self.missing_frames
+            .retain(|k, _| self.open_viewports.contains(k) || candidates.contains(k));
+        for key in candidates {
+            let n = self.missing_frames.entry(key.clone()).or_insert(0);
+            *n = n.saturating_add(1);
+            if *n >= HIDE_DEBOUNCE_FRAMES {
+                self.queue_hide(key);
+            }
         }
         self.open_viewports = still_open;
+        self.run_pending_hides(ctx);
     }
 }

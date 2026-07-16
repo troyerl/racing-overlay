@@ -226,13 +226,13 @@ pub fn paint_table(
                 // Python: divider only between nearly-adjacent settled animated slots.
                 if (slot_idx - prev_idx).abs() <= 1.05 && !sliding {
                     let line = cfg.color(section, "border", "#ffffff28");
-                    let a = ((line.a() as f32) * 0.55).max(30.0) as u8;
+                    let a = ((line.a() as f32) * 0.20).max(10.0) as u8;
                     ui.painter().line_segment(
                         [
                             Pos2::new(row_rect.left(), ry),
                             Pos2::new(row_rect.right(), ry),
                         ],
-                        Stroke::new(1.0_f32, color_with_alpha(line, a)),
+                        Stroke::new(0.35_f32, color_with_alpha(line, a)),
                     );
                 }
             }
@@ -335,11 +335,10 @@ fn paint_row_chrome(
         let accent = cfg.color(section, key, fallback);
         draw_row_tint(ui, rect, accent);
     } else if alt && i % 2 == 1 {
-        ui.painter().rect_filled(
-            rect,
-            CornerRadius::ZERO,
-            cfg.color(section, "row_alt", "#ffffff08"),
-        );
+        let c = cfg.color(section, "row_alt", "#ffffff01");
+        let a = (c.a() as f32 * 0.25).max(1.0) as u8;
+        ui.painter()
+            .rect_filled(rect, CornerRadius::ZERO, color_with_alpha(c, a));
     }
 
     // Python `_draw_speaking_accent`: bright stripe + wash on top of any status tint.
