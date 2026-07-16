@@ -118,7 +118,8 @@ pub fn paint_table(
             rows.iter().filter(|r| !r.empty).map(|r| r.key.clone()).collect();
         anim.slots.retain(|k, _| active.contains(k));
 
-        let mut still = false;
+        // Pass A: ensure slots + count mid-reshuffle movers (multi-car swaps).
+        let mut movers = 0usize;
         for (i, row) in rows.iter().enumerate() {
             if row.empty {
                 continue;
@@ -128,10 +129,31 @@ pub fn paint_table(
                 idx: target,
                 opacity: 0.0,
             });
-            if (st.idx - target).abs() > snap {
+            if (st.idx - target).abs() > 0.5 {
+                movers += 1;
+            }
+        }
+        let multi = movers >= 2;
+
+        // Pass B: distance-scaled tau so N-slot jumps settle like 1-slot swaps.
+        let mut still = false;
+        for (i, row) in rows.iter().enumerate() {
+            if row.empty {
+                continue;
+            }
+            let target = i as f32;
+            let Some(st) = anim.slots.get_mut(&row.key) else {
+                continue;
+            };
+            let delta = (st.idx - target).abs();
+            if delta > snap {
                 st.idx = target;
             } else {
-                st.idx = ease(st.idx, target, dt, tau);
+                let mut eff_tau = tau / delta.max(1.0);
+                if multi {
+                    eff_tau = eff_tau.min(DENSE_ROW_EASE_TAU);
+                }
+                st.idx = ease(st.idx, target, dt, eff_tau);
             }
             st.opacity = ease(st.opacity, 1.0, dt, fade_tau);
             if (st.idx - target).abs() > 0.02 || (st.opacity - 1.0).abs() > 0.01 {
@@ -354,7 +376,7 @@ fn paint_row_cols(
     _muted: Color32,
 ) {
     let dim = row.in_pit || (row.inactive && section == "standings") || row.empty;
-    let dim_text = cfg.color(section, "row_dim_text", "#5a616c");
+    let dim_text = cfg.color(section, "muted", "#8b93a1");
     let name_col = columns.iter().any(|c| c == "name");
     let fixed: f32 = columns
         .iter()
