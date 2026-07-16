@@ -335,15 +335,24 @@ impl OverlayApp {
             return;
         }
         self.last_tick = Instant::now();
+        let edit_mode = self.state.read().edit_mode;
         let mut frame = if self.demo_only {
             self.demo.tick()
-        } else if let Some(ir) = &mut self.irsdk {
-            // Do not fall back to demo when iRacing is down — keeps widgets hidden.
-            ir.tick()
         } else {
-            TelemetryFrame {
-                connected: false,
-                ..Default::default()
+            let live = self
+                .irsdk
+                .as_mut()
+                .map(|ir| ir.tick())
+                .unwrap_or(TelemetryFrame {
+                    connected: false,
+                    ..Default::default()
+                });
+            // Edit layout without iRacing: demo feed so widgets have content.
+            // Running + disconnected + not editing stays empty (widgets hidden).
+            if !live.connected && edit_mode {
+                self.demo.tick()
+            } else {
+                live
             }
         };
         let cfg = Arc::clone(&self.state.read().config);
