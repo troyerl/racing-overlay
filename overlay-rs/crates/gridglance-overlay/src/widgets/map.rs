@@ -15,14 +15,13 @@ use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 const SECTION: &str = "map";
-/// Soft pull toward extrapolated telem-now (short = tight tracking).
-const PCT_CORRECT_TAU: f32 = 0.04;
 const PCT_PRED_AGE_CAP: f32 = 0.25;
 const PCT_VEL_MIN: f32 = -0.15;
 const PCT_VEL_MAX: f32 = 0.25;
-const PCT_VEL_EMA: f32 = 0.35;
+/// Faster telem-vel catch-up (higher = less lag after accel).
+const PCT_VEL_EMA: f32 = 0.65;
+/// Route/pit only — racing line uses predicted % XY as-is.
 const SCREEN_EASE_TAU: f32 = 0.05;
-const SCREEN_EASE_RACE_TAU: f32 = 0.03;
 const SCREEN_EASE_SNAP: f32 = 120.0;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
@@ -930,10 +929,10 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Extrapolate telem to now, then short-ease anim pct (no stale-target pull).
+/// Extrapolate telem to now and follow predicted % directly.
 fn advance_car_pcts(
     ctx: &mut WidgetCtx<'_>,
-    dt: f32,
+    _dt: f32,
     wall_secs: f64,
 ) -> HashMap<i32, f32> {
     let mut seen = HashMap::new();
@@ -970,7 +969,7 @@ fn advance_car_pcts(
             st.last_telem_secs = wall_secs;
         }
 
-        // Predict telem at "now" so we track the car, not a frozen sample.
+        // Predict telem at "now"; follow it directly (no soft % ease lag).
         let age = ((wall_secs - st.last_telem_secs) as f32).clamp(0.0, PCT_PRED_AGE_CAP);
         let predicted = (st.last_telem + st.vel * age).rem_euclid(1.0);
 
@@ -978,8 +977,6 @@ fn advance_car_pcts(
         if err.abs() > 0.35 {
             st.pct = predicted;
             st.vel = 0.0;
-        } else if err.abs() > 1e-5 {
-            st.pct = (st.pct + ease(0.0, err, dt, PCT_CORRECT_TAU)).rem_euclid(1.0);
         } else {
             st.pct = predicted;
         }
@@ -1014,7 +1011,7 @@ fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) 
     (Pos2::new(nx, ny), moving)
 }
 
-/// Light screen ease for all cars; racing line uses a shorter tau.
+/// Route/pit: light screen ease. Racing line: predicted-% XY as-is.
 fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
     targets: &HashMap<i32, (Pos2, u8)>,
@@ -1025,20 +1022,19 @@ fn smooth_car_screen_pts(
     for (&idx, &(target, key)) in targets {
         seen.insert(idx);
         let prev = ctx.map.car_screen.get(&idx).copied();
-        let start = match prev {
-            Some(st) => Pos2::new(st.x, st.y),
-            None => target,
-        };
-        let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
-        let tau = if is_route_key(key) {
-            SCREEN_EASE_TAU
-        } else {
-            SCREEN_EASE_RACE_TAU
-        };
-        let pt = if key_changed && start == target {
+        let pt = if !is_route_key(key) {
             target
         } else {
-            smooth_marker_point(start, target, dt, tau).0
+            let start = match prev {
+                Some(st) => Pos2::new(st.x, st.y),
+                None => target,
+            };
+            let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
+            if key_changed && start == target {
+                target
+            } else {
+                smooth_marker_point(start, target, dt, SCREEN_EASE_TAU).0
+            }
         };
         ctx.map.car_screen.insert(
             idx,
