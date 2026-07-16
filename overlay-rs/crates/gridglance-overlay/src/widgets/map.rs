@@ -19,10 +19,12 @@ const PCT_VEL_MIN: f32 = -0.15;
 const PCT_VEL_MAX: f32 = 0.25;
 /// EMA blend toward new telem-derived velocity.
 const PCT_VEL_EMA: f32 = 0.45;
-/// Soft pull toward live telem after coasting (seconds).
+/// Soft pull toward predicted-now (seconds).
 const PCT_CORRECT_TAU: f32 = 0.12;
-/// Snap if more than this fraction of a lap off telem.
+/// Snap if more than this fraction of a lap off prediction.
 const PCT_SNAP_ERR: f32 = 0.35;
+/// Cap prediction age on long disconnects only (not the old 0.25 pulse freeze).
+const PCT_PRED_AGE_MAX: f32 = 2.0;
 /// Entry/exit route only — racing line and OnPitRoad use XY as-is.
 const SCREEN_EASE_TAU: f32 = 0.08;
 const SCREEN_EASE_SNAP: f32 = 120.0;
@@ -989,8 +991,9 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Coast at last velocity between telem samples; soft-correct toward live %.
-/// Avoids the old age-cap freeze that made the whole field pulse move–stop–move.
+/// Extrapolate each car's last telem sample to now; soft-correct toward that
+/// prediction (never toward a frozen batch sample — that caused field-wide
+/// move–stutter–move pulses in demo and live).
 fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap<i32, f32> {
     let mut seen = HashMap::new();
     let mut out = HashMap::new();
@@ -1040,11 +1043,12 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
             st.last_telem_secs = wall_secs;
         }
 
-        // Continuous coast (no age cap freeze), then soft pull toward telem.
-        st.pct = (st.pct + st.vel * dt).rem_euclid(1.0);
-        let err = wrap_lap_delta(telem, st.pct);
+        // Predict telem at paint-time; soft-correct toward prediction only.
+        let age = ((wall_secs - st.last_telem_secs) as f32).clamp(0.0, PCT_PRED_AGE_MAX);
+        let predicted = (st.last_telem + st.vel * age).rem_euclid(1.0);
+        let err = wrap_lap_delta(predicted, st.pct);
         if err.abs() > PCT_SNAP_ERR {
-            st.pct = telem;
+            st.pct = predicted;
             st.vel = 0.0;
         } else {
             let a = (1.0 - (-dt / PCT_CORRECT_TAU).exp()).clamp(0.0, 1.0);

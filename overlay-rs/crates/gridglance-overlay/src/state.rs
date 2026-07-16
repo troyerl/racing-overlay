@@ -19,7 +19,7 @@ pub struct CarScreenAnim {
     pub key: u8,
 }
 
-/// Coast + correct lap-% animation between chunky telem samples.
+/// Predict-to-now lap-% animation between discrete telem samples.
 #[derive(Debug, Clone, Copy)]
 pub struct CarPctAnim {
     pub pct: f32,
@@ -72,7 +72,7 @@ pub struct MapAuthoring {
     pub pit_drag: Option<(u8, u8, usize)>,
     /// Hold-before-switch state for ahead/behind/leader markers.
     pub marker_hold: crate::map_markers::HoldStates,
-    /// Coast + soft-correct lap_dist_pct per car_idx.
+    /// Predict-to-now lap_dist_pct per car_idx.
     pub car_anim: HashMap<i32, CarPctAnim>,
     /// Screen-space eased car dots (Python `_car_anim` screen pts).
     pub car_screen: HashMap<i32, CarScreenAnim>,

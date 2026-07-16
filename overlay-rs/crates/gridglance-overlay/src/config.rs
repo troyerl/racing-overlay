@@ -495,12 +495,6 @@ impl OverlayConfig {
         Ok(())
     }
 
-    /// Write live CFG as sparse overrides into the active preset and save to disk.
-    pub fn save(&mut self) -> Result<()> {
-        self.sync_active_preset_config();
-        self.save_doc()
-    }
-
     pub fn save_for_context(&mut self, context: ConfigContext) -> Result<()> {
         self.sync_active_preset_for_context(context);
         self.save_doc()
