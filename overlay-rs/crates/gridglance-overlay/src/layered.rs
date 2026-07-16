@@ -199,6 +199,8 @@ struct PresentSurface {
     height: i32,
     mem_dc: windows::Win32::Graphics::Gdi::HDC,
     dib: windows::Win32::Graphics::Gdi::HBITMAP,
+    /// Object previously selected into `mem_dc` (restore before DeleteObject).
+    old_obj: windows::Win32::Graphics::Gdi::HGDIOBJ,
     bits: *mut u8,
 }
 
@@ -206,12 +208,8 @@ struct PresentSurface {
 impl Drop for PresentSurface {
     fn drop(&mut self) {
         unsafe {
-            use windows::Win32::Graphics::Gdi::{
-                DeleteDC, DeleteObject, GetStockObject, SelectObject, STOCK_BITMAP,
-            };
-            if let Ok(stock) = GetStockObject(STOCK_BITMAP) {
-                let _ = SelectObject(self.mem_dc, stock);
-            }
+            use windows::Win32::Graphics::Gdi::{DeleteDC, DeleteObject, SelectObject};
+            let _ = SelectObject(self.mem_dc, self.old_obj);
             let _ = DeleteObject(self.dib.into());
             let _ = DeleteDC(self.mem_dc);
             self.bits = std::ptr::null_mut();
@@ -280,7 +278,7 @@ impl PresentCache {
                 let _ = windows::Win32::Graphics::Gdi::DeleteDC(mem_dc);
                 return None;
             }
-            let _ = SelectObject(mem_dc, dib.into());
+            let old_obj = SelectObject(mem_dc, dib.into());
             self.entries.insert(
                 hwnd_key,
                 PresentSurface {
@@ -288,6 +286,7 @@ impl PresentCache {
                     height,
                     mem_dc,
                     dib,
+                    old_obj,
                     bits: bits as *mut u8,
                 },
             );
