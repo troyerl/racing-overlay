@@ -8,7 +8,7 @@ use crate::state::{PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
     demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
-    LapLogAccum, PitStopTracker, SectorTimer,
+    LapLogAccum, PitStopTracker, SectorTimer, TelemetryFrame,
 };
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
@@ -338,14 +338,13 @@ impl OverlayApp {
         let mut frame = if self.demo_only {
             self.demo.tick()
         } else if let Some(ir) = &mut self.irsdk {
-            let live = ir.tick();
-            if live.connected {
-                live
-            } else {
-                self.demo.tick()
-            }
+            // Do not fall back to demo when iRacing is down — keeps widgets hidden.
+            ir.tick()
         } else {
-            self.demo.tick()
+            TelemetryFrame {
+                connected: false,
+                ..Default::default()
+            }
         };
         let cfg = Arc::clone(&self.state.read().config);
 
@@ -436,12 +435,11 @@ impl OverlayApp {
         }
         {
             let mut st = self.state.write();
-            let next_context =
-                if frame.cars.first().and_then(|c| c.status_kind.as_deref()) == Some("garage") {
-                    ConfigContext::Garage
-                } else {
-                    ConfigContext::Race
-                };
+            let next_context = if frame.in_garage {
+                ConfigContext::Garage
+            } else {
+                ConfigContext::Race
+            };
             if st.config_context != next_context {
                 st.set_config_context(next_context);
             }
@@ -469,8 +467,11 @@ impl eframe::App for OverlayApp {
 
         let (running, edit_mode, click_through, keys_layout) = {
             let st = self.state.read();
+            // Python parity: panels only while overlay running AND
+            // (demo / live iRacing / edit layout). Settings stays available.
+            let live = self.demo_only || st.frame.connected || st.edit_mode;
             let mut items = Vec::new();
-            if st.running {
+            if st.running && live {
                 for key in WIDGET_KEYS {
                     if !st.config.widget_shown(key) {
                         continue;
@@ -484,7 +485,7 @@ impl eframe::App for OverlayApp {
                 }
             }
             (
-                st.running,
+                st.running && live,
                 st.edit_mode,
                 st.click_through && !st.map.interactive,
                 items,

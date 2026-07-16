@@ -72,6 +72,9 @@ pub struct CarRow {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TelemetryFrame {
     pub connected: bool,
+    /// Player in garage or garage UI visible (`IsInGarage` / `IsGarageVisible`).
+    #[serde(default)]
+    pub in_garage: bool,
     pub session_time: f64,
     /// iRacing SessionState (4=racing, 5=checkered).
     pub session_state: i32,

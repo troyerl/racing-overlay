@@ -352,6 +352,7 @@ mod win {
 
         TelemetryFrame {
             connected: true,
+            in_garage: read_bool(session, "IsInGarage") || read_bool(session, "IsGarageVisible"),
             session_time,
             session_state,
             flag,
