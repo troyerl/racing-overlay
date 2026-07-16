@@ -83,6 +83,8 @@ pub struct OverlayApp {
     last_geom: HashMap<String, (i32, i32, i32, i32)>,
     /// Per-panel GL→BGRA scratch buffers (Windows layered present).
     readback: HashMap<String, crate::layered::ReadbackScratch>,
+    /// Cached GDI DIB surfaces per HWND.
+    present_cache: crate::layered::PresentCache,
     /// Last presented buffer hash per HWND — skip unchanged UpdateLayeredWindow.
     last_present_hash: HashMap<isize, u64>,
     /// Last successful readback per panel (throttle non-map Windows present).
@@ -139,6 +141,7 @@ impl OverlayApp {
             last_click_through: HashMap::new(),
             last_geom: HashMap::new(),
             readback: HashMap::new(),
+            present_cache: crate::layered::PresentCache::default(),
             last_present_hash: HashMap::new(),
             last_readback: HashMap::new(),
             clock_start: Instant::now(),
@@ -930,7 +933,13 @@ impl eframe::App for OverlayApp {
         for (hwnd, w, h, key, hash) in pending_presents {
             if let Some(scratch) = self.readback.get(&key) {
                 let ulw_start = Instant::now();
-                layered::present_bgra(hwnd, w, h, scratch.bgra());
+                layered::present_bgra(
+                    &mut self.present_cache,
+                    hwnd,
+                    w,
+                    h,
+                    scratch.bgra(),
+                );
                 if self.perf {
                     self.perf_acc.presents += 1;
                     self.perf_acc.ulw_ms += ulw_start.elapsed().as_secs_f64() * 1000.0;
@@ -942,6 +951,15 @@ impl eframe::App for OverlayApp {
         // Drop scratch/hashes for panels that closed.
         self.readback.retain(|k, _| still_open.contains(k));
         self.last_readback.retain(|k, _| still_open.contains(k));
+        let mut open_hwnds = HashSet::new();
+        for key in &still_open {
+            let title = win_click::panel_title(key);
+            if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
+                open_hwnds.insert(hwnd);
+            }
+        }
+        self.last_present_hash.retain(|hwnd, _| open_hwnds.contains(hwnd));
+        self.present_cache.retain_hwnds(&open_hwnds);
 
         // Re-enabled widgets leave the hide queue; disabled ones get farewell frames.
         for key in &still_open {
