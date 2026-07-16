@@ -696,6 +696,75 @@ pub fn pretty_key(key: &str) -> String {
         .join(" ")
 }
 
+/// Header/footer slot keys for Relative (Python `_SLOT_COMMON`).
+pub const TABLE_SLOT_COMMON: &[&str] = &[
+    "none",
+    "sof",
+    "class_sof",
+    "position",
+    "class_position",
+    "session_time",
+    "race_time",
+    "lap",
+    "incidents",
+    "track_name",
+    "track_temp",
+    "air_temp",
+    "best_lap",
+    "my_session_best",
+    "session_best",
+    "local_time",
+    "sim_time",
+    "cpu",
+    "mem",
+    "gpu",
+    "laps_remain",
+    "incident_limit",
+    "fast_repairs",
+    "weather",
+    "track_wetness",
+];
+
+/// Standings adds order_pill / title / count (Python `_SLOT_STANDINGS`).
+pub const TABLE_SLOT_STANDINGS: &[&str] = &[
+    "none",
+    "sof",
+    "class_sof",
+    "position",
+    "class_position",
+    "session_time",
+    "race_time",
+    "lap",
+    "incidents",
+    "track_name",
+    "track_temp",
+    "air_temp",
+    "best_lap",
+    "my_session_best",
+    "session_best",
+    "local_time",
+    "sim_time",
+    "cpu",
+    "mem",
+    "gpu",
+    "laps_remain",
+    "incident_limit",
+    "fast_repairs",
+    "weather",
+    "track_wetness",
+    "order_pill",
+    "title",
+    "count",
+];
+
+pub fn table_slot_options(section: &str) -> &'static [&'static str] {
+    if section == "standings" {
+        TABLE_SLOT_STANDINGS
+    } else {
+        TABLE_SLOT_COMMON
+    }
+}
+
 pub fn matches_search(section: &str, key: &str, query: &str) -> bool {
     if query.trim().is_empty() {
         return true;

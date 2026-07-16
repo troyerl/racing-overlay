@@ -7,7 +7,7 @@ mod widgets;
 
 pub use schema::{
     help_text, is_skipped, matches_search, nav_for_tab, pretty_key, setting_groups, tab_color,
-    top_tab_for, TopTab,
+    table_slot_options, top_tab_for, TopTab,
 };
 
 use crate::config::{parse_color_str, ConfigContext};
@@ -1092,6 +1092,12 @@ fn paint_value(
                 },
             );
         }
+        Value::Object(map) if key == "header" || key == "footer" => {
+            paint_table_slots(ui, state, section, key, map, dirty, accent);
+        }
+        Value::Object(map) if key == "header_icons" || key == "footer_icons" => {
+            paint_table_slot_icons(ui, state, section, key, map, dirty, accent);
+        }
         Value::Object(_) | Value::Array(_) => {
             accordion(
                 ui,
@@ -1281,6 +1287,77 @@ fn paint_footer(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi, dir
             });
         });
     });
+}
+
+const TABLE_SLOT_SIDES: &[&str] = &["left", "center", "right"];
+
+fn paint_table_slots(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    map: &serde_json::Map<String, Value>,
+    dirty: &mut bool,
+    _accent: Color32,
+) {
+    let slots = table_slot_options(section);
+    let options: Vec<String> = slots.iter().map(|s| (*s).to_string()).collect();
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(pretty_key(key))
+            .size(12.0)
+            .color(theme::ROW_LABEL),
+    );
+    ui.add_space(2.0);
+    for side in TABLE_SLOT_SIDES {
+        let current = map
+            .get(*side)
+            .and_then(|v| v.as_str())
+            .unwrap_or("none")
+            .to_string();
+        let selected = if options.iter().any(|o| o == &current) {
+            current
+        } else {
+            "none".into()
+        };
+        setting_row(ui, &pretty_key(side), None, |ui| {
+            if let Some(next) =
+                styled_combo(ui, (section, key, *side), &selected, &options, 200.0)
+            {
+                set_nested(state, section, key, side, json!(next), dirty);
+            }
+        });
+    }
+}
+
+fn paint_table_slot_icons(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    map: &serde_json::Map<String, Value>,
+    dirty: &mut bool,
+    accent: Color32,
+) {
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(pretty_key(key))
+            .size(12.0)
+            .color(theme::ROW_LABEL),
+    );
+    ui.add_space(2.0);
+    for side in TABLE_SLOT_SIDES {
+        let mut on = map
+            .get(*side)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        setting_row(ui, &pretty_key(side), None, |ui| {
+            if toggle_switch(ui, &mut on, accent, ui.id().with((section, key, *side))).changed()
+            {
+                set_nested(state, section, key, side, json!(on), dirty);
+            }
+        });
+    }
 }
 
 fn paint_color_string(
