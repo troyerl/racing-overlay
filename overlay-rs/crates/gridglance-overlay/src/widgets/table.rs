@@ -545,7 +545,14 @@ fn paint_row_cols(
                 );
             }
             "pit" => {
-                let s = if row.in_pit || row.on_pit { "PIT" } else { "—" };
+                // Python `_draw_pit`: "PIT" while in pits, else pit_mode history / em dash.
+                let s = if row.in_pit || row.on_pit {
+                    "PIT"
+                } else if row.pit_text.is_empty() {
+                    "—"
+                } else {
+                    row.pit_text.as_str()
+                };
                 label(
                     ui,
                     Pos2::new(cx + cw * 0.5, cy),

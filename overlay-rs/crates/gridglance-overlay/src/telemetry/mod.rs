@@ -8,6 +8,7 @@ mod lap_compare;
 mod lap_log;
 mod pit_advice;
 mod pit_service;
+mod pit_track;
 mod sector_timer;
 mod strategy_hints;
 mod tables;
@@ -20,6 +21,7 @@ pub use lap_log::{parse_delta_str, signed_delta_1, CompletedLap, LapExtras, LapL
 pub use pit_advice::PitAdvice;
 #[allow(unused_imports)] // IRSDK feed will call decode_pit_flags / any_requested
 pub use pit_service::{any_requested, decode_flags as decode_pit_flags, PitService};
+pub use pit_track::PitStopTracker;
 pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
 pub use tables::{finalize_frame, RadarState, TableRow, TableSlotItem, TableSlots, slot_label};
 
@@ -42,6 +44,9 @@ pub struct CarRow {
     pub on_pit: bool,
     pub in_pit: bool,
     pub on_track: bool,
+    /// CarIdxTrackSurface == ApproachingPits (entry blend / commit).
+    #[serde(default)]
+    pub approaching_pits: bool,
     pub is_player: bool,
     pub is_speaking: bool,
     pub is_pace_car: bool,
@@ -362,6 +367,7 @@ pub mod demo {
                     on_pit: on_pit_lane,
                     in_pit: false,
                     on_track: true,
+                    approaching_pits: false,
                     is_player: i == player_i,
                     is_speaking: (t as i32 / 3) % 12 == i,
                     is_pace_car: false,

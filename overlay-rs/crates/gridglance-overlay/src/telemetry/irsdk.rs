@@ -860,6 +860,7 @@ mod win {
                 .unwrap_or(-1);
             let on_track = surf == TRK_ON_TRACK;
             let in_pit = surf == TRK_IN_PIT_STALL || surf == TRK_APPROACHING_PITS;
+            let approaching_pits = surf == TRK_APPROACHING_PITS;
             let est_t = est
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
@@ -944,6 +945,7 @@ mod win {
                 on_pit: pit,
                 in_pit,
                 on_track,
+                approaching_pits,
                 is_player: i as i32 == player_idx,
                 is_speaking: radio_idx == Some(i as i32),
                 is_pace_car: is_pace,

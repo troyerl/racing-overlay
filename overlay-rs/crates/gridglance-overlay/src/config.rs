@@ -562,6 +562,7 @@ fn default_cfg() -> Value {
             section.insert("row_dividers".into(), Value::Bool(true));
             section.insert("name_font_bold".into(), Value::Bool(true));
             section.insert("gap_font_scale".into(), json!(1.12));
+            section.insert("pit_mode".into(), Value::String("laps_since".into()));
             section.insert(
                 "column_order".into(),
                 json!(["badge", "position", "name", "license", "irating", "gap"]),

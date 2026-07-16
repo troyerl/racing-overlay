@@ -7,7 +7,7 @@ use crate::state::{PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
     demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
-    LapLogAccum, SectorTimer,
+    LapLogAccum, PitStopTracker, SectorTimer,
 };
 use crate::widgets::{self, WidgetCtx};
 use crate::win_click;
@@ -67,6 +67,7 @@ pub struct OverlayApp {
     lap_compare: LapCompareState,
     lap_log: LapLogAccum,
     fuel_burn: FuelBurnTracker,
+    pit_stops: PitStopTracker,
 }
 
 impl OverlayApp {
@@ -94,6 +95,7 @@ impl OverlayApp {
             lap_compare: LapCompareState::new(),
             lap_log,
             fuel_burn: FuelBurnTracker::default(),
+            pit_stops: PitStopTracker::default(),
         }
     }
 
@@ -173,7 +175,11 @@ impl OverlayApp {
             .observe(frame.lap, frame.fuel_l, cap, hist_n);
         frame.fuel_use_history = self.fuel_burn.uses.clone();
 
+        self.pit_stops
+            .observe(&frame.cars, frame.session_time);
+
         finalize_frame(&mut frame, cfg.as_ref());
+        self.pit_stops.apply_frame(&mut frame, cfg.as_ref());
 
         {
             let n = cfg.f64_key("sector_timing", "sectors", 3.0).round().max(1.0) as usize;

@@ -39,6 +39,9 @@ pub struct TableRow {
     pub team: String,
     pub nickname: String,
     pub laps: i32,
+    /// Pit column history text from `pit_mode` (empty → paint as "—"; in-pit still "PIT").
+    #[serde(default)]
+    pub pit_text: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -156,6 +159,7 @@ impl TableRow {
             team: String::new(),
             nickname: String::new(),
             laps: c.lap,
+            pit_text: String::new(),
         }
     }
 }

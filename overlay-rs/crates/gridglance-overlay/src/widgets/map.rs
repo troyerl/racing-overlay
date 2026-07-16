@@ -116,6 +116,10 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     ctx.map.cached_drs_zones.clear();
     ctx.map.cached_p2p_zones.clear();
     ctx.map.cached_corners.clear();
+    ctx.map.pit_route_latch.clear();
+    ctx.map.pit_prev_on.clear();
+    ctx.map.pit_exit_latch.clear();
+    ctx.map.pit_latch_seed_pending = true;
     if let Some(id) = tid {
         if let Some(tp) = track_path::load_for_track_id(id) {
             ctx.map.cached_track_name = tp.name.clone();
@@ -408,6 +412,16 @@ fn pct_in_interval(pct: f32, lo: f32, hi: f32) -> bool {
     ((pct - lo).rem_euclid(1.0)) <= span
 }
 
+/// Lap-% → arc fraction along the racing polyline (Python `_loop_frac_for_pct`).
+fn loop_frac_for_pct(pct: f32, start_finish: f32) -> f32 {
+    (pct - start_finish).rem_euclid(1.0)
+}
+
+/// Loop arc fraction where the start/finish line sits (Python `_sf_loop_frac`).
+fn sf_loop_frac(start_finish: f32) -> f32 {
+    (-start_finish).rem_euclid(1.0)
+}
+
 fn hypot2(a: (f32, f32), b: (f32, f32)) -> f32 {
     let dx = a.0 - b.0;
     let dy = a.1 - b.1;
@@ -665,13 +679,64 @@ fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
 }
 
 fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
-    car.on_pit
+    if car.on_pit
         || ctx
             .map
             .pit_route_latch
             .get(&car.car_idx)
             .copied()
             .unwrap_or(false)
+    {
+        return true;
+    }
+    // Python: player ApproachingPits during entry lap-% is on-route.
+    if car.is_player && car.approaching_pits && car.lap_dist_pct >= 0.0 {
+        let lane = &ctx.map.cached_pit;
+        if lane.has_drawable() {
+            let in_pct = lane
+                .in_pct
+                .or(lane.span.map(|(a, _)| a))
+                .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+            let lane_lo = lane
+                .span
+                .map(|(a, _)| a)
+                .unwrap_or(track_path::DEMO_PIT_LANE_LO);
+            if pct_in_interval(car.lap_dist_pct.rem_euclid(1.0), in_pct, lane_lo) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Seed latches for cars already on the pit route after a mid-session track load.
+fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
+    if !ctx.map.pit_latch_seed_pending {
+        return;
+    }
+    ctx.map.pit_latch_seed_pending = false;
+    let lane = ctx.map.cached_pit.clone();
+    if !lane.has_drawable() {
+        return;
+    }
+    let route_lo = lane
+        .in_pct
+        .or(lane.span.map(|(a, _)| a))
+        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
+    let route_hi = lane
+        .out_pct
+        .or(ctx.map.cached_pit_out_pct)
+        .or(lane.span.map(|(_, b)| b))
+        .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
+    for car in &ctx.frame.cars {
+        let pct = car.lap_dist_pct;
+        if pct < 0.0 {
+            continue;
+        }
+        if car.on_pit || pct_in_interval(pct, route_lo, route_hi) {
+            ctx.map.pit_route_latch.insert(car.car_idx, true);
+        }
+    }
 }
 
 /// Python `_pos_for_schematic_route` (raw=True) — phase poly only.
@@ -746,7 +811,8 @@ fn car_model_xy(
 ) -> (f32, f32) {
     let on_pit = car.on_pit;
     let on_route = car_on_route(ctx, car);
-    let track = track_path::point_at(racing, pct);
+    let sf = ctx.map.cached_start_finish;
+    let track = track_path::point_at(racing, loop_frac_for_pct(pct, sf));
     if !on_route && !on_pit {
         return track;
     }
@@ -1127,6 +1193,7 @@ fn draw_traffic_markers(
     centroid: Pos2,
     asphalt_w: f32,
     text_scale: f32,
+    start_finish: f32,
 ) {
     let sz = (10.0 * text_scale).max(8.0);
     let icon_off = asphalt_w * 1.2 + sz + 10.0;
@@ -1136,7 +1203,7 @@ fn draw_traffic_markers(
             continue;
         };
         let car_pt = car_pts.get(&m.idx).copied().unwrap_or_else(|| {
-            let (nx, ny) = track_path::point_at(path, m.pct);
+            let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(m.pct, start_finish));
             let (mx, my) = model_point(nx, ny, mirror, rot);
             xform.map(mx, my)
         });
@@ -1273,6 +1340,7 @@ fn draw_zones(
     zones: &[(f32, f32)],
     width: f32,
     color: Color32,
+    start_finish: f32,
 ) {
     if path.len() < 2 || zones.is_empty() {
         return;
@@ -1286,7 +1354,7 @@ fn draw_zones(
         let mut pts = Vec::with_capacity(steps + 1);
         for i in 0..=steps {
             let pct = (lo + span * (i as f32 / steps as f32)).rem_euclid(1.0);
-            let (nx, ny) = track_path::point_at(path, pct);
+            let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(pct, start_finish));
             let (mx, my) = model_point(nx, ny, mirror, rot);
             pts.push(xform.map(mx, my));
         }
@@ -1473,6 +1541,7 @@ fn draw_wind(
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     ensure_path_cached(ctx);
+    seed_pit_latches(ctx);
 
     let rect = full_rect(ui);
     if ctx.cfg.bool_key(SECTION, "show_panel", false) {
@@ -1600,17 +1669,18 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 
     let zone_w = (asphalt_w * 1.35).max(4.0);
+    let sf = ctx.map.cached_start_finish;
     if ctx.cfg.bool_key(SECTION, "show_drs_zones", false) && !ctx.map.cached_drs_zones.is_empty()
     {
         let col = ctx.cfg.color(SECTION, "drs_zone", "#46df7a88");
         let zones = ctx.map.cached_drs_zones.clone();
-        draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col);
+        draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf);
     }
     if ctx.cfg.bool_key(SECTION, "show_p2p_zones", false) && !ctx.map.cached_p2p_zones.is_empty()
     {
         let col = ctx.cfg.color(SECTION, "p2p_zone", "#3aa0ff88");
         let zones = ctx.map.cached_p2p_zones.clone();
-        draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col);
+        draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf);
     }
     // Active sector wash (Python `_draw_active_sector`).
     if ctx
@@ -1629,12 +1699,12 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             starts[(idx + 1) % n] as f32
         };
         let col = ctx.cfg.color(SECTION, "active_sector", "#ffd23a66");
-        draw_zones(ui, &path, &xform, mirror, rot, &[(lo, hi)], zone_w, col);
+        draw_zones(ui, &path, &xform, mirror, rot, &[(lo, hi)], zone_w, col, sf);
     }
 
     if show_sf && !modeled.is_empty() {
         // Transform tangent via model: evaluate on modeled path.
-        draw_start_finish(ui, &modeled, &xform, ctx.map.cached_start_finish);
+        draw_start_finish(ui, &modeled, &xform, sf_loop_frac(sf));
     }
 
     let screen_centroid = if screen.is_empty() {
@@ -1831,6 +1901,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             centroid,
             asphalt_w,
             map_text_scale,
+            ctx.map.cached_start_finish,
         );
     }
 
@@ -1940,8 +2011,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 let (mx, my) = xform.unmap(pos);
                 let (rx, ry) = inverse_model(mx, my, mirror, rot);
                 if path.len() >= 2 {
-                    ctx.map.cached_start_finish =
-                        track_path::nearest_pct_on_loop(&path, rx, ry);
+                    // Click is loop frac; store lap-% so sf_loop_frac draws there.
+                    let loop_frac = track_path::nearest_pct_on_loop(&path, rx, ry);
+                    ctx.map.cached_start_finish = (-loop_frac).rem_euclid(1.0);
                 }
             }
         }
@@ -1985,6 +2057,7 @@ fn draw_sector_boundaries(
     starts.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
 
     let sf = ctx.map.cached_start_finish;
+    let sf_frac = sf_loop_frac(sf);
     let line = ctx.cfg.color(SECTION, "sector_line", "#a78bfa");
     let text_col = ctx.cfg.color(SECTION, "sector_text", "#c4b5fd");
     let asph = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
@@ -1994,13 +2067,14 @@ fn draw_sector_boundaries(
     let mut label_num = 2_i32;
 
     for start in starts {
+        let frac = loop_frac_for_pct(start, sf);
         // Skip start/finish (Python: near 0 or sf_frac).
-        if start.abs() < 1e-4 || (start - sf).abs() < 0.01 {
+        if frac.abs() < 1e-4 || (frac - sf_frac).abs() < 0.01 {
             continue;
         }
-        draw_loop_tick(ui, modeled, xform, start, 6.0, 2.0, line, false);
+        draw_loop_tick(ui, modeled, xform, frac, 6.0, 2.0, line, false);
 
-        let (nx, ny) = track_path::point_at(modeled, start);
+        let (nx, ny) = track_path::point_at(modeled, frac);
         let pt = xform.map(nx, ny);
         let outward = outward_from(pt, centroid, label_off);
         let tag = format!("S{label_num}");
@@ -2038,9 +2112,10 @@ fn draw_corners(
     let text_scale = ctx.cfg.text_scale(SECTION);
     let sz = (8.0 * text_scale).max(5.0);
     let off = asphalt_w * 0.5 + sz + 8.0;
+    let sf = ctx.map.cached_start_finish;
     let corners = ctx.map.cached_corners.clone();
     for (idx, c) in corners.iter().enumerate() {
-        let (nx, ny) = track_path::point_at(path, c.pct);
+        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf));
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
         let dx = s.x - centroid.x;
@@ -2355,9 +2430,10 @@ fn handle_corner_edit(
     let text_scale = ctx.cfg.text_scale(SECTION);
     let sz = (8.0 * text_scale).max(5.0);
     let off = asphalt_w * 0.5 + sz + 8.0;
+    let sf = ctx.map.cached_start_finish;
     let corners = ctx.map.cached_corners.clone();
     for (idx, c) in corners.iter().enumerate() {
-        let (nx, ny) = track_path::point_at(path, c.pct);
+        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf));
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
         let dx = s.x - centroid.x;
@@ -2391,7 +2467,9 @@ fn handle_corner_edit(
             let (mx, my) = xform.unmap(pos);
             let (rx, ry) = inverse_model(mx, my, mirror, rot);
             if path.len() >= 2 {
-                let pct = track_path::nearest_pct_on_loop(path, rx, ry);
+                let loop_frac = track_path::nearest_pct_on_loop(path, rx, ry);
+                // Store lap % so display via loop_frac_for_pct matches the click.
+                let pct = (loop_frac + sf).rem_euclid(1.0);
                 let label = (ctx.map.cached_corners.len() + 1).to_string();
                 ctx.map.cached_corners.push(track_path::CornerMark {
                     pct,

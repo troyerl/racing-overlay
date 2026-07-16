@@ -84,6 +84,8 @@ pub struct MapAuthoring {
     pub pit_prev_on: HashMap<i32, bool>,
     /// Lap % when OnPitRoad fell (schematic exit placement).
     pub pit_exit_latch: HashMap<i32, f32>,
+    /// Seed route latches once after a track load (Python `_seed_pit_latches`).
+    pub pit_latch_seed_pending: bool,
 }
 
 /// Pit-edit zoom clamp (match Python `_PIT_EDIT_ZOOM_*`).
@@ -130,6 +132,7 @@ impl Default for MapAuthoring {
             pit_route_latch: HashMap::new(),
             pit_prev_on: HashMap::new(),
             pit_exit_latch: HashMap::new(),
+            pit_latch_seed_pending: false,
         }
     }
 }
