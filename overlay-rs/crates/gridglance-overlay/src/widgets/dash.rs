@@ -986,40 +986,25 @@ fn draw_ring_arc(
     }
     let lit = frac * n as f32;
     let off = cfg.color(SECTION, "ring_track", "#333a42");
-    let glow = color_with_alpha(on_color, 75);
 
-    // Glow pass then solid pass (Python draws arcs from 90° CCW).
-    for pass in 0..2 {
-        for i in 0..n {
-            let on = (i as f32) < lit;
-            if pass == 0 && !on {
-                continue;
-            }
-            let col = if pass == 0 {
-                glow
-            } else if on {
-                on_color
-            } else {
-                off
-            };
-            let width = if pass == 0 { pen_w * 2.0 } else { pen_w };
-            // Python: ang = 90 + (i+0.5)*seg_deg, sweep -span
-            let mid = std::f32::consts::FRAC_PI_2 + (i as f32 + 0.5) * seg;
-            let a0 = mid + span * 0.5;
-            let a1 = mid - span * 0.5;
-            let steps = 8;
-            let mut prev = Pos2::new(cx + r * a0.cos(), cy - r * a0.sin());
-            // egui y grows down; Python Qt y grows down too, but cos/sin with Qt arcs differ.
-            // Match visual: start at top, go counter-clockwise → use screen angles.
-            for s in 1..=steps {
-                let t = s as f32 / steps as f32;
-                let a = a0 + (a1 - a0) * t;
-                // Convert math angle (0=east, CCW) with y-down: y = cy - r*sin
-                let p = Pos2::new(cx + r * a.cos(), cy - r * a.sin());
-                ui.painter()
-                    .line_segment([prev, p], Stroke::new(width, col));
-                prev = p;
-            }
+    // Solid segments only (no glow pass — keeps edges crisp).
+    for i in 0..n {
+        let on = (i as f32) < lit;
+        let col = if on { on_color } else { off };
+        // Python: ang = 90 + (i+0.5)*seg_deg, sweep -span
+        let mid = std::f32::consts::FRAC_PI_2 + (i as f32 + 0.5) * seg;
+        let a0 = mid + span * 0.5;
+        let a1 = mid - span * 0.5;
+        let steps = 8;
+        let mut prev = Pos2::new(cx + r * a0.cos(), cy - r * a0.sin());
+        for s in 1..=steps {
+            let t = s as f32 / steps as f32;
+            let a = a0 + (a1 - a0) * t;
+            // Convert math angle (0=east, CCW) with y-down: y = cy - r*sin
+            let p = Pos2::new(cx + r * a.cos(), cy - r * a.sin());
+            ui.painter()
+                .line_segment([prev, p], Stroke::new(pen_w, col));
+            prev = p;
         }
     }
 }
@@ -1202,7 +1187,7 @@ fn draw_flag(
             &FontId::proportional(sub_px),
             context,
         ));
-        let pad = rect.height() * 0.55;
+        let pad = rect.height() * 0.28;
         let gap = Rect::from_center_size(
             Pos2::new(center_x, rect.center().y),
             Vec2::new(tw + pad * 2.0, rect.height()),
@@ -1234,7 +1219,7 @@ fn draw_flag(
     } else {
         let title_px = rect.height() * 0.52 * text_scale;
         let tw = text_w(ui, &FontId::proportional(title_px), title);
-        let pad = rect.height() * 0.6;
+        let pad = rect.height() * 0.32;
         let gap = Rect::from_center_size(
             Pos2::new(center_x, rect.center().y),
             Vec2::new(tw + pad * 2.0, rect.height()),
