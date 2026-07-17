@@ -2,9 +2,13 @@
 
 #[cfg(windows)]
 mod win {
+    use super::format::{
+        fmt_car_gap, fmt_laptime, format_session_type, map_session_flag_label, parse_race_split,
+        parse_session_types,
+    };
+    use super::pit_service::any_requested;
     use crate::telemetry::{
-        any_requested, decode_pit_flags, CarRow, RadarState, RadioSpeaker, TelemetryFrame,
-        TireCorner,
+        decode_pit_flags, CarRow, RadarState, RadioSpeaker, TelemetryFrame, TireCorner,
     };
     use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
     use std::collections::HashMap;
@@ -460,69 +464,9 @@ mod win {
         }
     }
 
-    fn format_session_type(raw: String) -> String {
-        let st = raw.to_ascii_lowercase();
-        if st.contains("qualif") || st == "qual" {
-            "Qualifying".into()
-        } else if st.contains("race") {
-            "Race".into()
-        } else if st.contains("practice") || st == "open" {
-            "Practice".into()
-        } else {
-            raw.replace('_', " ")
-        }
-    }
-
-    fn map_car_flag(car_flags: i32) -> Option<String> {
-        if car_flags & FLAG_REPAIR != 0 {
-            return Some("meatball".into());
-        }
-        if car_flags & FLAG_BLACK != 0 {
-            return Some("black".into());
-        }
-        if car_flags & FLAG_DQ != 0 {
-            return Some("dq".into());
-        }
-        if car_flags & FLAG_FURLED != 0 {
-            return Some("furled".into());
-        }
-        if car_flags & FLAG_BLUE != 0 {
-            return Some("blue".into());
-        }
-        None
-    }
-
-    fn fmt_car_laptime(secs: f32) -> String {
-        if !secs.is_finite() || secs <= 0.0 {
-            return String::new();
-        }
-        let m = (secs as f64 / 60.0).floor() as i32;
-        let s = secs as f64 - (m as f64) * 60.0;
-        format!("{m}:{s:06.3}")
-    }
-
-    fn fmt_car_gap(position: i32, f2: f32) -> String {
-        if position == 1 {
-            return "LEADER".into();
-        }
-        if !f2.is_finite() || f2 <= 0.0 {
-            return String::new();
-        }
-        format!("+{f2:.1}")
-    }
-
     fn map_car_status_kind(surface: i32, on_pit: bool, car_flags: i32) -> Option<String> {
-        if car_flags & FLAG_REPAIR != 0 {
-            return Some("meatball".into());
-        }
-        if car_flags & FLAG_BLACK != 0 {
-            return Some("black".into());
-        }
-        if car_flags & FLAG_DQ != 0 {
-            return Some("dq".into());
-        }
-        if car_flags & FLAG_FURLED != 0 {
-            return Some("furled".into());
+        if let Some(label) = map_session_flag_label(car_flags) {
+            return Some(label);
         }
         if on_pit || surface == TRK_IN_PIT_STALL || surface == TRK_APPROACHING_PITS {
             return Some("pit".into());
@@ -972,12 +916,12 @@ mod win {
             let last_lap = last_laps
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
-                .map(fmt_car_laptime)
+                .map(|s| fmt_laptime(s as f64, ""))
                 .unwrap_or_default();
             let best_lap = best_laps
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
-                .map(fmt_car_laptime)
+                .map(|s| fmt_laptime(s as f64, ""))
                 .unwrap_or_default();
             let car_lap = laps.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0);
             let speed_mps = speeds
@@ -1034,7 +978,7 @@ mod win {
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(0);
             let status_kind = map_car_status_kind(surf, pit, flags);
-            let car_flag = map_car_flag(flags);
+            let car_flag = map_session_flag_label(flags);
             let gap = fmt_car_gap(pos, if f2_t.is_finite() { f2_t } else { 0.0 });
 
             out.push(CarRow {
@@ -1212,69 +1156,6 @@ mod win {
         }
     }
 
-    /// Parse SessionInfo ResultsPositions entries (prefer Race session block).
-    fn parse_session_types(yaml: &str) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut in_sessions = false;
-        for line in yaml.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("Sessions:") {
-                in_sessions = true;
-                continue;
-            }
-            if in_sessions {
-                let indent = line.len() - line.trim_start().len();
-                if !trimmed.is_empty() && indent == 0 && !trimmed.starts_with('-') {
-                    break;
-                }
-                if trimmed.starts_with("SessionType:") {
-                    let v = trimmed
-                        .trim_start_matches("SessionType:")
-                        .trim()
-                        .trim_matches('"')
-                        .to_string();
-                    out.push(v);
-                }
-            }
-        }
-        out
-    }
-
-    fn parse_race_split(yaml: &str) -> Option<i32> {
-        const KEYS: &[&str] = &[
-            "RaceSplit",
-            "SplitNum",
-            "SplitNumber",
-            "SessionSplit",
-            "SessionSplitNum",
-            "EventSplit",
-        ];
-        for key in KEYS {
-            if let Some(v) = yaml_i32(yaml, key) {
-                if v > 0 {
-                    return Some(v);
-                }
-            }
-        }
-        // Any other *Split* key under WeekendInfo-style YAML.
-        for line in yaml.lines() {
-            let trimmed = line.trim();
-            let Some((key, rest)) = trimmed.split_once(':') else {
-                continue;
-            };
-            if !key.to_ascii_lowercase().contains("split") {
-                continue;
-            }
-            if let Ok(v) = rest.trim().trim_matches('"').parse::<i32>() {
-                if v > 0 {
-                    return Some(v);
-                }
-            }
-        }
-        None
-    }
-
-    /// Parse SessionInfo ResultsPositions entries (prefer Race session block).
     fn parse_results_positions(yaml: &str) -> HashMap<i32, ResultPosEntry> {
         let mut best: HashMap<i32, ResultPosEntry> = HashMap::new();
         let mut current: HashMap<i32, ResultPosEntry> = HashMap::new();

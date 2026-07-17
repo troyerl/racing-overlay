@@ -112,8 +112,8 @@ impl SectorTimer {
 
         let starts = self.starts.as_ref().expect("starts set above");
         let mut new_idx = 0usize;
-        for i in 0..n {
-            if pct >= starts[i] {
+        for (i, &start) in starts.iter().enumerate().take(n) {
+            if pct >= start {
                 new_idx = i;
             }
         }
@@ -137,13 +137,13 @@ impl SectorTimer {
         while self.best.len() <= i {
             self.best.push(None);
         }
-        if self.best[i].map_or(true, |b| t < b) {
+        if self.best[i].is_none_or(|b| t < b) {
             self.best[i] = Some(t);
         }
         while self.session_best.len() <= i {
             self.session_best.push(None);
         }
-        if self.session_best[i].map_or(true, |b| t < b) {
+        if self.session_best[i].is_none_or(|b| t < b) {
             self.session_best[i] = Some(t);
         }
     }
@@ -220,8 +220,8 @@ impl SectorTimer {
             } else if i == self.idx {
                 let running = (self.cur_lap_t - self.seg_start_t).max(0.0);
                 let best = self.best.get(i).copied().flatten();
-                let delta = if show_delta && best.is_some() && running > 0.0 {
-                    Some(running - best.unwrap())
+                let delta = if show_delta && running > 0.0 {
+                    best.map(|b| running - b)
                 } else {
                     None
                 };

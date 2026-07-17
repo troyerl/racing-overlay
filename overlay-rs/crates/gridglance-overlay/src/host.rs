@@ -496,38 +496,11 @@ impl OverlayApp {
             self.lap_compare
                 .view(frame.session_time, &ref_mode, allow_demo_compare);
 
-        let player_on_pit = frame
-            .cars
-            .iter()
-            .find(|c| c.is_player)
-            .map(|c| c.on_pit || c.in_pit)
-            .unwrap_or(false);
-        let tire_wear_pct = {
-            let wears: Vec<f32> = frame
-                .tire_corners
-                .iter()
-                .filter_map(|c| c.wear)
-                .filter(|w| w.is_finite() && *w >= 0.0)
-                .map(|w| if w <= 1.0 { w * 100.0 } else { w })
-                .collect();
-            if wears.is_empty() {
-                None
-            } else {
-                let min = wears.iter().cloned().fold(f32::INFINITY, f32::min);
-                Some(min.round() as i32)
-            }
-        };
         self.lap_log.observe(
             frame.lap,
             frame.last_lap_s,
             frame.track_temp,
-            LapExtras {
-                fuel_l: Some(frame.fuel_l),
-                tires: tire_wear_pct,
-                incidents: Some(frame.incidents),
-                personal_best: frame.best_lap_s,
-                on_pit: player_on_pit,
-            },
+            LapExtras::from_frame(&frame),
         );
         if !self.lap_log.laps.is_empty() {
             frame.lap_log = self.lap_log.build_rows(cfg.as_ref());
@@ -798,7 +771,7 @@ impl eframe::App for OverlayApp {
                                                 let lay = st
                                                     .layout
                                                     .entry(key_clone.clone())
-                                                    .or_insert_with(PanelLayout::default);
+                                                    .or_default();
                                                 lay.w = nw;
                                                 lay.h = nh;
                                             }
@@ -924,7 +897,7 @@ impl eframe::App for OverlayApp {
                         let scratch = self
                             .readback
                             .entry(key.clone())
-                            .or_insert_with(crate::layered::ReadbackScratch::default);
+                            .or_default();
                         let rb_start = Instant::now();
                         if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
                             let rb_ms = rb_start.elapsed().as_secs_f64() * 1000.0;

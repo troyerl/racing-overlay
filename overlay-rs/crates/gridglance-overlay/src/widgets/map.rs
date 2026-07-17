@@ -94,11 +94,10 @@ impl PlotXform {
 /// Python model-space: mirror then 90° rotation steps.
 fn model_point(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
     let mut x = x;
-    let y = y;
     if mirror {
         x = -x;
     }
-    match ((rot % 360) + 360) % 360 {
+    match rot.rem_euclid(360) {
         90 => (y, -x),
         180 => (-x, -y),
         270 => (-y, x),
@@ -1916,7 +1915,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let handle_r = (base_r * ctx.map.pit_edit_zoom.max(1.0).sqrt()).max(8.0);
         let pit_hits = draw_pit_edit_drafts(
             ui,
-            &ctx.map,
+            ctx.map,
             &xform,
             mirror,
             rot,
@@ -2197,7 +2196,8 @@ fn draw_pit_edit_drafts(
 
         let has_joint = ctx.has_joint(lane2);
         let has_entry_joint = ctx.has_entry_joint(lane2);
-        let phases: [(&str, u8, &[(f32, f32)], Color32); 3] = [
+        type PhaseStroke<'a> = (&'a str, u8, &'a [(f32, f32)], Color32);
+        let phases: [PhaseStroke; 3] = [
             ("entry", 0, entry, entry_col),
             ("road", 1, road, road_col),
             ("merge", 2, merge, merge_col),
@@ -2243,9 +2243,9 @@ fn draw_pit_edit_drafts(
                 let (mx, my) = model_point(nx, ny, mirror, rot);
                 let p = xform.map(mx, my);
                 let jcol = Color32::from_rgb(
-                    entry_col.r().saturating_add(20).min(255),
-                    entry_col.g().saturating_add(20).min(255),
-                    entry_col.b().saturating_add(10).min(255),
+                    entry_col.r().saturating_add(20),
+                    entry_col.g().saturating_add(20),
+                    entry_col.b().saturating_add(10),
                 );
                 let dragging = ctx.pit_drag == Some((lane_u, 4, 0));
                 let fill = if dragging || active {
@@ -2465,7 +2465,7 @@ fn handle_corner_edit(
 
 fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
     // Undo rotation first (inverse of rot), then undo mirror.
-    let (mut x, y) = match ((rot % 360) + 360) % 360 {
+    let (mut x, y) = match rot.rem_euclid(360) {
         90 => (-y, x), // inverse of (y, -x)
         180 => (-x, -y),
         270 => (y, -x), // inverse of (-y, x)

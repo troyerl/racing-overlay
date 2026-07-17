@@ -125,6 +125,7 @@ impl OverlayConfig {
     pub fn load_from(path: &Path) -> Result<Self> {
         let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let mut doc: Value = serde_json::from_str(&text).context("parse overlay_config.json")?;
+        sanitize_loaded_config(&mut doc);
         let active = doc
             .get("active_preset")
             .and_then(|v| v.as_str())
@@ -136,6 +137,7 @@ impl OverlayConfig {
             // Legacy flat config
             let mut cfg = default_cfg();
             deep_merge(&mut cfg, &doc);
+            sanitize_config_sections(&mut cfg);
             doc = json!({
                 "schema": 2,
                 "active_preset": "Default",
@@ -232,9 +234,7 @@ impl OverlayConfig {
         if !by_league && !by_car && !to_default {
             return None;
         }
-        let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) else {
-            return None;
-        };
+        let presets = self.doc.get("presets").and_then(|p| p.as_object())?;
         if by_league {
             if let Some(lid) = league_id {
                 if lid > 0 {
@@ -988,6 +988,45 @@ pub fn parse_color_str(s: &str) -> egui::Color32 {
     egui::Color32::from_rgb(255, 0, 255)
 }
 
+const DEAD_TABLE_COLUMNS: &[&str] = &["qual_pos", "qual_best", "gap_pole"];
+
+/// Strip removed widget keys from a loaded config document (schema 2 presets).
+fn sanitize_loaded_config(doc: &mut Value) {
+    if let Some(presets) = doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
+        for preset in presets.values_mut() {
+            if let Some(config) = preset.get_mut("config") {
+                sanitize_config_sections(config);
+            }
+        }
+    }
+}
+
+fn sanitize_config_sections(cfg: &mut Value) {
+    for section in ["relative", "standings"] {
+        if let Some(arr) = cfg
+            .get_mut(section)
+            .and_then(|s| s.get_mut("column_order"))
+            .and_then(|v| v.as_array_mut())
+        {
+            arr.retain(|v| {
+                v.as_str()
+                    .map(|s| !DEAD_TABLE_COLUMNS.contains(&s))
+                    .unwrap_or(true)
+            });
+        }
+    }
+    strip_section_keys(cfg, "ers_hybrid", &["show_lap_energy", "label_lap"]);
+    strip_section_keys(cfg, "inputs", &["show_handbrake", "show_steering_torque"]);
+}
+
+fn strip_section_keys(cfg: &mut Value, section: &str, keys: &[&str]) {
+    if let Some(obj) = cfg.get_mut(section).and_then(|v| v.as_object_mut()) {
+        for key in keys {
+            obj.remove(*key);
+        }
+    }
+}
+
 fn deep_merge(dst: &mut Value, src: &Value) {
     match (dst, src) {
         (Value::Object(d), Value::Object(s)) => {
@@ -1552,6 +1591,22 @@ fn default_cfg() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sanitize_strips_removed_keys() {
+        let mut cfg = json!({
+            "relative": {
+                "column_order": ["position", "qual_pos", "gap"]
+            },
+            "ers_hybrid": { "show_lap_energy": true, "label_lap": "LAP" },
+            "inputs": { "show_handbrake": true }
+        });
+        sanitize_config_sections(&mut cfg);
+        let cols = cfg["relative"]["column_order"].as_array().unwrap();
+        assert_eq!(cols.len(), 2);
+        assert!(cfg["ers_hybrid"].get("show_lap_energy").is_none());
+        assert!(cfg["inputs"].get("show_handbrake").is_none());
+    }
 
     #[test]
     fn parse_hex8() {

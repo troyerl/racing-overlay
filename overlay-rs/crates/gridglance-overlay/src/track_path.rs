@@ -194,28 +194,28 @@ fn parse_pit_lane(v: &Value, suffix: &str) -> PitLane {
             format!("{base}{suffix}")
         }
     };
-    let mut path = parse_polyline(v.get(&key("pit_path")));
+    let mut path = parse_polyline(v.get(key("pit_path")));
     if path.len() < 2 && suffix.is_empty() {
         path = parse_polyline(v.get("pit_lane_points"));
     }
-    let entry = parse_polyline(v.get(&key("pit_in")));
-    let exit = parse_polyline(v.get(&key("pit_out")));
+    let entry = parse_polyline(v.get(key("pit_in")));
+    let exit = parse_polyline(v.get(key("pit_out")));
     let in_pct = v
-        .get(&key("pit_in_pct"))
+        .get(key("pit_in_pct"))
         .and_then(|x| x.as_f64())
         .map(|p| (p as f32).rem_euclid(1.0));
     let out_pct = v
-        .get(&key("pit_out_pct"))
+        .get(key("pit_out_pct"))
         .and_then(|x| x.as_f64())
         .map(|p| (p as f32).rem_euclid(1.0));
-    let span = parse_span(v.get(&key("pit_span")));
+    let span = parse_span(v.get(key("pit_span")));
     let speed_ms = v
         .get("pit_speed")
         .and_then(|x| x.as_f64())
         .map(|s| s as f32)
         .filter(|s| *s > 0.0);
     let lane_speed_pct = v
-        .get(&key("pit_lane_speed_pct"))
+        .get(key("pit_lane_speed_pct"))
         .and_then(|x| x.as_f64())
         .map(|s| s as f32)
         .filter(|s| *s > 0.0)

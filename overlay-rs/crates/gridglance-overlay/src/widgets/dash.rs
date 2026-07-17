@@ -924,9 +924,7 @@ fn draw_ring(
 
     let inputs = selected_inputs(cfg, f);
     let n = inputs.len();
-    let gear_px = if n == 0 {
-        ring_d * 0.50
-    } else if n == 1 {
+    let gear_px = if n <= 1 {
         ring_d * 0.50
     } else if n == 2 {
         ring_d * 0.40

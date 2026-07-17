@@ -110,7 +110,7 @@ impl LapCompareState {
             return;
         }
         self.last = self.cur.clone();
-        let better = self.best_time.map_or(true, |b| lap_t < b);
+        let better = self.best_time.is_none_or(|b| lap_t < b);
         if better {
             self.best = self.cur.clone();
             self.best_time = Some(lap_t);
@@ -121,11 +121,10 @@ impl LapCompareState {
     }
 
     fn ref_curve<'a>(&'a self, mode: &str) -> &'a [(f32, f64, f32, f32)] {
-        if mode.eq_ignore_ascii_case("last_lap") || mode.eq_ignore_ascii_case("last") {
-            if !self.last.is_empty() {
+        if (mode.eq_ignore_ascii_case("last_lap") || mode.eq_ignore_ascii_case("last"))
+            && !self.last.is_empty() {
                 return &self.last;
             }
-        }
         &self.best
     }
 
@@ -326,4 +325,19 @@ fn turns_from_spark(spark: &[f32], allow_demo: bool) -> Vec<(String, f32)> {
             ((*label).into(), loss)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn live_view_skips_demo_fallback() {
+        let state = LapCompareState::new();
+        let view = state.view(10.0, "best", false);
+        assert!(view.spark.is_empty());
+        assert!(view.turns.is_empty());
+        assert!(view.delta.is_none());
+        assert!(view.markers.is_empty());
+    }
 }

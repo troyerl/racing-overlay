@@ -313,7 +313,7 @@ pub fn oval_corners(loop_pts: &[(f32, f32)], n: usize) -> Vec<Value> {
     let cy = loop_pts.iter().map(|p| p.1).sum::<f32>() / loop_pts.len() as f32;
     let labels = ["1", "2", "3", "4"];
     let mut corners = Vec::new();
-    for qi in 0..n.min(4) {
+    for (qi, label) in labels.iter().enumerate().take(n.min(4)) {
         let angle_lo = qi as f32 * std::f32::consts::FRAC_PI_2;
         let angle_hi = (qi as f32 + 1.0) * std::f32::consts::FRAC_PI_2;
         let mut best_i = 0usize;
@@ -333,7 +333,7 @@ pub fn oval_corners(loop_pts: &[(f32, f32)], n: usize) -> Vec<Value> {
         }
         corners.push(json!({
             "pct": (pct_on_loop(loop_pts, loop_pts[best_i]) as f64 * 1e5).round() / 1e5,
-            "label": labels[qi],
+            "label": *label,
         }));
     }
     corners

@@ -10,6 +10,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::sync::Arc;
 
+type PitLaneBufs<'a> = (
+    &'a mut Vec<(f32, f32)>,
+    &'a mut Vec<(f32, f32)>,
+    &'a mut Vec<(f32, f32)>,
+);
+
 /// Per-car screen-space ease state (Python track_map `_car_anim` screen pts).
 #[derive(Debug, Clone, Copy)]
 pub struct CarScreenAnim {
@@ -266,11 +272,7 @@ impl MapAuthoring {
     fn bufs_mut(
         &mut self,
         lane2: bool,
-    ) -> (
-        &mut Vec<(f32, f32)>,
-        &mut Vec<(f32, f32)>,
-        &mut Vec<(f32, f32)>,
-    ) {
+    ) -> PitLaneBufs<'_> {
         if lane2 {
             (
                 &mut self.entry_pts_2,
@@ -412,8 +414,8 @@ impl MapAuthoring {
                     }
                 }
             }
-            2 => {
-                if idx < merge.len() {
+            2
+                if idx < merge.len() => {
                     merge[idx] = (x, y);
                     if idx == 0 {
                         if let Some(r) = road.last_mut() {
@@ -421,7 +423,6 @@ impl MapAuthoring {
                         }
                     }
                 }
-            }
             _ => {}
         }
     }

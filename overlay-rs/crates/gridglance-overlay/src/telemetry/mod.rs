@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+mod format;
 mod fuel;
 mod irsdk;
 mod lap_compare;
@@ -16,11 +17,9 @@ mod tables;
 pub use fuel::{build_fuel_snapshot, FuelBurnTracker, FuelCalcState, FuelInputs, FuelScenario};
 pub use irsdk::IrsdkReader;
 pub use lap_compare::{CompareMarker, LapCompareState, LapCompareView, MarkerKind};
-#[allow(unused_imports)] // parse_delta_str / CompletedLap used by callers / tests later
-pub use lap_log::{parse_delta_str, signed_delta_1, CompletedLap, LapExtras, LapLogAccum};
+pub use lap_log::{signed_delta_1, LapExtras, LapLogAccum};
 pub use pit_advice::PitAdvice;
-#[allow(unused_imports)] // IRSDK feed will call decode_pit_flags / any_requested
-pub use pit_service::{any_requested, decode_flags as decode_pit_flags, PitService};
+pub use pit_service::{decode_flags as decode_pit_flags, PitService};
 pub use pit_track::PitStopTracker;
 pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
 pub use tables::{finalize_frame, slot_label, RadarState, TableRow, TableSlotItem, TableSlots};
@@ -141,7 +140,6 @@ pub struct TelemetryFrame {
     pub gpu: Option<String>,
     pub fps: Option<i32>,
     pub chan_quality: Option<f32>,
-    pub chan_latency: Option<f32>,
     pub ers_pct: Option<f32>,
     pub ers_mode: Option<String>,
     pub have_hybrid: bool,
@@ -414,7 +412,7 @@ pub mod demo {
                 let last_s = 88.0 + (i as f64) * 0.11;
                 // Car 8 visits the demo pit once per lap: OnPitRoad only on the
                 // lane span (not entry/exit blends), matching Python demo.
-                let visit_pit = i == 8 && ((t * 0.03 + i as f64 * 0.08) as i32 / 1) % 3 == 0;
+                let visit_pit = i == 8 && ((t * 0.03 + i as f64 * 0.08) as i32) % 3 == 0;
                 let on_pit_lane = visit_pit && crate::track_path::pct_in_demo_pit_lane(pct);
                 cars.push(CarRow {
                     car_idx: i,
@@ -624,7 +622,6 @@ pub mod demo {
                 gpu: Some("41%".into()),
                 fps: Some(144),
                 chan_quality: Some(92.0),
-                chan_latency: None,
                 ers_pct: Some(ers_pct),
                 ers_mode: Some("Balanced".into()),
                 have_hybrid: true,

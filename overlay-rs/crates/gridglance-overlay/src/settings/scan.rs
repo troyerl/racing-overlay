@@ -648,7 +648,7 @@ fn save_pit(state: &StateHandle) -> String {
         &st.map.merge_pts_2,
         st.map.pit_speed_ms as f32,
         st.map.pit_lane_speed_pct as f32,
-        st.map.cached_pit2.lane_speed_pct as f32,
+        st.map.cached_pit2.lane_speed_pct,
         true,
     );
     if r.ok {
@@ -689,7 +689,7 @@ fn save_track(state: &StateHandle) -> String {
         &st.map.alias_ids,
         st.map.pit_speed_ms as f32,
         st.map.pit_lane_speed_pct as f32,
-        st.map.cached_pit2.lane_speed_pct as f32,
+        st.map.cached_pit2.lane_speed_pct,
         rot,
         mirror,
         true,

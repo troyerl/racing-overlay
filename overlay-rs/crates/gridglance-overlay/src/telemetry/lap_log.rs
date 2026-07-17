@@ -1,11 +1,7 @@
 //! Lap-history accumulator for the laptime log widget.
-//!
-//! Host / IRSDK can call [`LapLogAccum::push_completed`] when a player lap
-//! finishes, then [`LapLogAccum::build_rows`] to fill `TelemetryFrame::lap_log`.
 
-#![allow(dead_code)] // wired by host later; keep for demo / IRSDK integration
-
-use super::LapLogRow;
+use super::format;
+use super::{LapLogRow, TelemetryFrame};
 use crate::config::OverlayConfig;
 
 const MAX_STORED: usize = 60;
@@ -104,6 +100,7 @@ impl LapLogAccum {
     }
 
     /// Manually push a completed lap (newest first).
+    #[allow(dead_code)]
     pub fn push_completed(&mut self, lap: CompletedLap) {
         if self.laps.first().map(|l| l.lap) == Some(lap.lap) {
             return;
@@ -180,7 +177,7 @@ impl LapLogAccum {
                 };
                 LapLogRow::from_parts(
                     l.lap,
-                    fmt_lap_time(l.secs),
+                    format::fmt_laptime_log(l.secs),
                     delta_s,
                     fmt_temp(cfg, l.temp_c),
                     l.fuel_l.map(|f| format!("{f:.1}")),
@@ -206,13 +203,39 @@ pub struct LapExtras {
     pub on_pit: bool,
 }
 
-fn fmt_lap_time(secs: f64) -> String {
-    if secs <= 0.0 {
-        return "—".into();
+impl LapExtras {
+    pub fn from_frame(frame: &TelemetryFrame) -> Self {
+        let on_pit = frame
+            .cars
+            .iter()
+            .find(|c| c.is_player)
+            .map(|c| c.on_pit || c.in_pit)
+            .unwrap_or(false);
+        let tires = tire_wear_pct_snapshot(frame);
+        Self {
+            fuel_l: Some(frame.fuel_l),
+            tires,
+            incidents: Some(frame.incidents),
+            personal_best: frame.best_lap_s,
+            on_pit,
+        }
     }
-    let m = (secs / 60.0).floor() as i32;
-    let s = secs - m as f64 * 60.0;
-    format!("{m:02}:{s:06.3}")
+}
+
+fn tire_wear_pct_snapshot(frame: &TelemetryFrame) -> Option<i32> {
+    let wears: Vec<f32> = frame
+        .tire_corners
+        .iter()
+        .filter_map(|c| c.wear)
+        .filter(|w| w.is_finite() && *w >= 0.0)
+        .map(|w| if w <= 1.0 { w * 100.0 } else { w })
+        .collect();
+    if wears.is_empty() {
+        None
+    } else {
+        let min = wears.iter().cloned().fold(f32::INFINITY, f32::min);
+        Some(min.round() as i32)
+    }
 }
 
 fn fmt_temp(cfg: &OverlayConfig, c: Option<f32>) -> String {
@@ -238,4 +261,45 @@ pub fn parse_delta_str(s: &str) -> Option<f32> {
         return None;
     }
     t.parse::<f32>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pit_out_tag_on_lap_complete() {
+        let mut acc = LapLogAccum::new();
+        acc.observe(1, None, None, LapExtras {
+            incidents: Some(0),
+            ..Default::default()
+        });
+        assert!(acc.observe(2, Some(88.0), None, LapExtras {
+            on_pit: true,
+            incidents: Some(0),
+            ..Default::default()
+        }));
+        assert_eq!(acc.laps[0].tag.as_deref(), Some("PIT"));
+
+        assert!(acc.observe(3, Some(88.5), None, LapExtras {
+            on_pit: false,
+            incidents: Some(0),
+            ..Default::default()
+        }));
+        assert_eq!(acc.laps[0].tag.as_deref(), Some("OUT"));
+    }
+
+    #[test]
+    fn incident_delta_per_lap() {
+        let mut acc = LapLogAccum::new();
+        acc.observe(1, None, None, LapExtras {
+            incidents: Some(2),
+            ..Default::default()
+        });
+        assert!(acc.observe(2, Some(87.0), None, LapExtras {
+            incidents: Some(5),
+            ..Default::default()
+        }));
+        assert_eq!(acc.laps[0].incidents, Some(3));
+    }
 }

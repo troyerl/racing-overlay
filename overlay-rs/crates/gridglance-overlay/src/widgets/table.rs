@@ -1259,7 +1259,6 @@ fn column_order(cfg: &OverlayConfig, section: &str) -> Vec<String> {
         let cols: Vec<String> = arr
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .filter(|c| c != "qual_pos" && c != "qual_best" && c != "gap_pole")
             .collect();
         if !cols.is_empty() {
             return cols;

@@ -138,9 +138,7 @@ impl SysStats {
         frame.mem = Some(self.mem.clone());
         frame.gpu = Some(self.gpu.clone());
         // WiFi fills channel quality when iRacing channel stats are unavailable.
-        let chan_dead = frame.chan_quality.map(|q| q <= 0.0).unwrap_or(true)
-            && frame.chan_latency.map(|l| l <= 0.0).unwrap_or(true);
-        if chan_dead {
+        if frame.chan_quality.map(|q| q <= 0.0).unwrap_or(true) {
             if let Some(ref w) = self.wifi {
                 if let Ok(q) = w.trim_end_matches('%').parse::<f32>() {
                     frame.chan_quality = Some(q);

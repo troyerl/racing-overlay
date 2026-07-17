@@ -58,11 +58,7 @@ fn search_roots() -> Vec<PathBuf> {
 fn find_asset_path() -> Option<PathBuf> {
     for root in search_roots() {
         for rel in ASSET_NAMES {
-            let p = if rel.starts_with("assets/") {
-                root.join(rel)
-            } else {
-                root.join(rel)
-            };
+            let p = root.join(rel);
             if p.is_file() {
                 return Some(p);
             }

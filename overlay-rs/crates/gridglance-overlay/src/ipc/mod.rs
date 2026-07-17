@@ -274,7 +274,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                     &st.map.merge_pts_2,
                     st.map.pit_speed_ms as f32,
                     st.map.pit_lane_speed_pct as f32,
-                    st.map.cached_pit2.lane_speed_pct as f32,
+                    st.map.cached_pit2.lane_speed_pct,
                     true,
                 )
             };

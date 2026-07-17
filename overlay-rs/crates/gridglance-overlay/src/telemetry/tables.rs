@@ -3,7 +3,7 @@
 use crate::config::OverlayConfig;
 use serde::{Deserialize, Serialize};
 
-use super::{CarRow, TelemetryFrame};
+use super::{format, CarRow, TelemetryFrame};
 
 /// One painted table row (relative or standings).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -333,53 +333,52 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
     };
 
     let idxs: Vec<usize> = (0..ranked.len()).collect();
-    let player_pos = ranked.iter().position(|c| c.is_player);
+    let mut out: Vec<TableRow> = match (center, ranked.iter().position(|c| c.is_player)) {
+        (true, Some(pidx)) => {
+            let player = pidx;
+            let above = rows_ahead;
+            let below = rows_behind;
+            let window = above + 1 + below;
 
-    let mut out: Vec<TableRow> = if !center || player_pos.is_none() {
-        ranked.iter().take(rows_n).map(|c| build(c)).collect()
-    } else {
-        let pidx = player_pos.unwrap();
-        let player = pidx;
-        let above = rows_ahead;
-        let below = rows_behind;
-        let window = above + 1 + below;
-
-        if pin_podium {
-            let mut podium = Vec::new();
-            for slot in 0..3 {
-                if slot < ranked.len() {
-                    podium.push(build(ranked[slot]));
-                } else {
-                    podium.push(empty_row(&format!("podium{slot}")));
+            if pin_podium {
+                let mut podium = Vec::new();
+                for slot in 0..3 {
+                    if slot < ranked.len() {
+                        podium.push(build(ranked[slot]));
+                    } else {
+                        podium.push(empty_row(&format!("podium{slot}")));
+                    }
                 }
-            }
-            let podium_set: std::collections::HashSet<usize> = (0..ranked.len().min(3)).collect();
-            let on_podium = podium_set.contains(&player);
-            let mut slots = window.saturating_sub(3);
-            if !on_podium {
-                slots = slots.max(1);
-            }
-            let picked =
-                pick_context_indices(&idxs, pidx, player, &podium_set, slots, above, below);
-            let mut context: Vec<TableRow> = picked.iter().map(|&i| build(ranked[i])).collect();
-            for i in context.len()..slots {
-                context.push(empty_row(&format!("ctx{i}")));
-            }
-            podium.extend(context);
-            podium
-        } else {
-            let mut out = Vec::new();
-            let start = pidx as i32 - above as i32;
-            for i in 0..window {
-                let slot = start + i as i32;
-                if slot >= 0 && (slot as usize) < ranked.len() {
-                    out.push(build(ranked[slot as usize]));
-                } else {
-                    out.push(empty_row(&format!("win{i}")));
+                let podium_set: std::collections::HashSet<usize> =
+                    (0..ranked.len().min(3)).collect();
+                let on_podium = podium_set.contains(&player);
+                let mut slots = window.saturating_sub(3);
+                if !on_podium {
+                    slots = slots.max(1);
                 }
+                let picked =
+                    pick_context_indices(&idxs, pidx, player, &podium_set, slots, above, below);
+                let mut context: Vec<TableRow> = picked.iter().map(|&i| build(ranked[i])).collect();
+                for i in context.len()..slots {
+                    context.push(empty_row(&format!("ctx{i}")));
+                }
+                podium.extend(context);
+                podium
+            } else {
+                let mut out = Vec::new();
+                let start = pidx as i32 - above as i32;
+                for i in 0..window {
+                    let slot = start + i as i32;
+                    if slot >= 0 && (slot as usize) < ranked.len() {
+                        out.push(build(ranked[slot as usize]));
+                    } else {
+                        out.push(empty_row(&format!("win{i}")));
+                    }
+                }
+                out
             }
-            out
         }
+        _ => ranked.iter().take(rows_n).map(|c| build(c)).collect(),
     };
 
     for row in &mut out {
@@ -840,25 +839,6 @@ fn fmt_clock(secs: f64) -> String {
     }
 }
 
-fn fmt_laptime(secs: f64) -> String {
-    if !secs.is_finite() || secs <= 0.0 {
-        return "—".into();
-    }
-    let m = (secs / 60.0).floor() as i32;
-    let s = secs - (m as f64) * 60.0;
-    format!("{m}:{s:06.3}")
-}
-
-fn fmt_tod(secs: f32) -> String {
-    if !secs.is_finite() || secs < 0.0 {
-        return "—".into();
-    }
-    let secs = (secs as i64).rem_euclid(86_400);
-    let h = secs / 3600;
-    let m = (secs % 3600) / 60;
-    format!("{h:02}:{m:02}")
-}
-
 fn format_slot_value(
     key: &str,
     frame: &TelemetryFrame,
@@ -973,7 +953,7 @@ fn format_slot_value(
         }
         "best_lap" => frame
             .best_lap_s
-            .map(fmt_laptime)
+            .map(|s| format::fmt_laptime(s, "—"))
             .unwrap_or_else(|| "—".into()),
         "my_session_best" => player
             .map(|p| {
@@ -1010,7 +990,7 @@ fn format_slot_value(
         }
         "sim_time" => frame
             .session_time_of_day
-            .map(fmt_tod)
+            .map(format::fmt_tod)
             .unwrap_or_else(|| "—".into()),
         "incident_limit" => {
             if frame.incidents_limit > 0 {
@@ -1236,5 +1216,46 @@ mod tests {
         let rows = build_standings(&cars, &cfg);
         assert!(rows.iter().any(|r| r.is_player));
         assert!(!rows.is_empty());
+    }
+
+    #[test]
+    fn format_slot_live_metrics() {
+        let mut frame = TelemetryFrame {
+            session_time_of_day: Some(14.0 * 3600.0 + 30.0 * 60.0),
+            incidents: 3,
+            incidents_limit: 17,
+            pit_repairs_used: Some(1),
+            pit_repairs: Some(2),
+            session_type: Some("Race".into()),
+            race_split: Some(2),
+            ..Default::default()
+        };
+        let cfg = OverlayConfig::default();
+        let rows: Vec<TableRow> = Vec::new();
+        assert_eq!(
+            format_slot_value("sim_time", &frame, &cfg, "relative", &rows),
+            "14:30"
+        );
+        assert_eq!(
+            format_slot_value("incident_limit", &frame, &cfg, "relative", &rows),
+            "3/17x"
+        );
+        assert_eq!(
+            format_slot_value("fast_repairs", &frame, &cfg, "relative", &rows),
+            "1/3"
+        );
+        assert_eq!(
+            format_slot_value("session_type", &frame, &cfg, "relative", &rows),
+            "Race"
+        );
+        assert_eq!(
+            format_slot_value("race_split", &frame, &cfg, "relative", &rows),
+            "Split 2"
+        );
+        frame.incidents_limit = 0;
+        assert_eq!(
+            format_slot_value("incident_limit", &frame, &cfg, "relative", &rows),
+            "3x"
+        );
     }
 }

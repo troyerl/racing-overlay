@@ -1,5 +1,7 @@
 //! GridGlance Rust overlay binary — primary process (no Python required).
 
+#![allow(clippy::too_many_arguments)]
+
 mod app_icon;
 mod autostart;
 mod chrome;
