@@ -302,6 +302,39 @@ impl LapLogRow {
 pub mod demo {
     use super::*;
 
+    /// Deterministic standings order for demo churn (car_idx at each rank, P1 first).
+    /// Reorders about every 2s so relative/standings row animation can be tested offline.
+    fn demo_field_order(t: f64, field_size: usize, player_idx: usize) -> Vec<usize> {
+        let n = field_size.max(1);
+        let phase = (t / 2.0).floor() as i64;
+        let mut order: Vec<usize> = (0..n).collect();
+        order.rotate_left((phase.rem_euclid(n as i64)) as usize);
+        if n >= 2 {
+            let a = ((phase as usize).wrapping_mul(3)) % (n - 1);
+            order.swap(a, a + 1);
+            let b = ((phase as usize).wrapping_mul(5).wrapping_add(1)) % (n - 1);
+            if b != a {
+                order.swap(b, b + 1);
+            }
+        }
+        // Keep the player near midfield, nudging ±1 so centered tables still animate.
+        let mid = n / 2;
+        let nudge = (phase.rem_euclid(3) - 1) as isize;
+        let player_slot = (mid as isize + nudge).clamp(0, (n as isize) - 1) as usize;
+        if let Some(cur) = order.iter().position(|&c| c == player_idx) {
+            order.swap(cur, player_slot);
+        }
+        order
+    }
+
+    /// 1-based race position for a demo car at time `t`.
+    fn demo_position(car_idx: i32, t: f64, field_size: i32, player_idx: i32) -> i32 {
+        let n = field_size.max(1) as usize;
+        let order = demo_field_order(t, n, player_idx.max(0) as usize);
+        let idx = (car_idx.max(0) as usize).min(n.saturating_sub(1));
+        order.iter().position(|&c| c == idx).unwrap_or(idx) as i32 + 1
+    }
+
     fn demo_flag(t: f64) -> (Option<String>, Option<String>, bool) {
         // (flag, context, incident_warn). Dense cycle ~48s matching Python demo.
         let cyc = t % 48.0;
@@ -403,11 +436,13 @@ pub mod demo {
         pub fn tick_at(&self, t: f64) -> TelemetryFrame {
             let lap_est = 90.0_f32;
             let player_i = 3i32;
+            let field_size = 12i32;
             let mut cars = Vec::new();
-            for i in 0..12 {
+            for i in 0..field_size {
                 let pct = ((t * 0.03 + i as f64 * 0.08) % 1.0) as f32;
                 let est = (pct * lap_est + (t as f32 * 0.15)) % lap_est;
-                let f2 = i as f32 * 0.85;
+                let pos = demo_position(i, t, field_size, player_i);
+                let f2 = (pos - 1) as f32 * 0.85;
                 let licenses = ["A 4.12", "B 3.80", "A 2.99", "A 3.50", "C 2.10", "B 4.00"];
                 let last_s = 88.0 + (i as f64) * 0.11;
                 // Car 8 visits the demo pit once per lap: OnPitRoad only on the
@@ -416,14 +451,14 @@ pub mod demo {
                 let on_pit_lane = visit_pit && crate::track_path::pct_in_demo_pit_lane(pct);
                 cars.push(CarRow {
                     car_idx: i,
-                    position: i + 1,
-                    class_position: i + 1,
+                    position: pos,
+                    class_position: pos,
                     car_number: format!("{}", 10 + i),
                     name: format!("Driver {}", i + 1),
-                    gap: if i == 0 {
+                    gap: if pos == 1 {
                         "LEADER".into()
                     } else {
-                        format!("+{:.1}", i as f32 * 0.85)
+                        format!("+{f2:.1}")
                     },
                     last_lap: format!("1:{:05.2}", last_s - 60.0),
                     best_lap: format!("1:{:05.2}", last_s - 60.2),
@@ -462,9 +497,12 @@ pub mod demo {
                     },
                 });
             }
+            let player_pos = cars
+                .iter()
+                .find(|c| c.is_player)
+                .map(|c| c.position)
+                .unwrap_or(4);
             if let Some(p) = cars.iter_mut().find(|c| c.is_player) {
-                p.position = 4;
-                p.class_position = 4;
                 p.car_number = "48".into();
                 p.name = "L Troyer".into();
             }
@@ -595,7 +633,7 @@ pub mod demo {
                 fuel_l,
                 fuel_pct: (fuel_l / 60.0).clamp(0.02, 1.0),
                 laps_fuel: (fuel_l / 0.48).max(0.0),
-                position: 4,
+                position: player_pos,
                 car_number: "48".into(),
                 lap: 12,
                 laps_total,
@@ -660,6 +698,38 @@ pub mod demo {
                 session_time_remain: Some(3300.0 - t as f32 * 0.5),
                 ..Default::default()
             }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::{demo_field_order, demo_position};
+
+        #[test]
+        fn demo_positions_are_unique_and_churn() {
+            let field = 12i32;
+            let player = 3i32;
+            let phase0: Vec<i32> = (0..field)
+                .map(|i| demo_position(i, 0.0, field, player))
+                .collect();
+            let phase1: Vec<i32> = (0..field)
+                .map(|i| demo_position(i, 2.1, field, player))
+                .collect();
+
+            let mut sorted0 = phase0.clone();
+            sorted0.sort_unstable();
+            assert_eq!(sorted0, (1..=field).collect::<Vec<_>>());
+
+            let mut sorted1 = phase1.clone();
+            sorted1.sort_unstable();
+            assert_eq!(sorted1, (1..=field).collect::<Vec<_>>());
+
+            assert_ne!(phase0, phase1, "positions should change across phases");
+
+            let order = demo_field_order(0.0, field as usize, player as usize);
+            let player_slot = order.iter().position(|&c| c == player as usize).unwrap();
+            let mid = (field as usize) / 2;
+            assert!((player_slot as i32 - mid as i32).abs() <= 1);
         }
     }
 }
