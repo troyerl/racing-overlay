@@ -578,6 +578,18 @@ fn paint_row_cols(
                     false,
                 );
             }
+            "car_flag" => {
+                let s = row.car_flag.as_deref().unwrap_or("—");
+                label(
+                    ui,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
+                    s,
+                    fs * 0.85,
+                    if dim { dim_text } else { text },
+                    false,
+                );
+            }
             "laps" => {
                 label(
                     ui,
@@ -634,17 +646,6 @@ fn paint_row_cols(
                     show,
                     fs * 0.9,
                     if dim { dim_text } else { text },
-                    false,
-                );
-            }
-            "car_flag" | "qual_pos" | "qual_best" | "gap_pole" => {
-                label(
-                    ui,
-                    Pos2::new(cx + cw * 0.5, cy),
-                    Align2::CENTER_CENTER,
-                    "—",
-                    fs * 0.9,
-                    dim_text,
                     false,
                 );
             }
@@ -1258,6 +1259,7 @@ fn column_order(cfg: &OverlayConfig, section: &str) -> Vec<String> {
         let cols: Vec<String> = arr
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|c| c != "qual_pos" && c != "qual_best" && c != "gap_pole")
             .collect();
         if !cols.is_empty() {
             return cols;
@@ -1287,12 +1289,12 @@ fn default_width(col: &str) -> f32 {
         "badge" => 0.95,
         "position" => 1.25,
         "car_number" => 1.60,
-        "gap" | "gap_ahead" | "gap_leader" | "gap_pole" => 1.70,
+        "gap" | "gap_ahead" | "gap_leader" => 1.70,
         "irating" => 1.20,
         "license" => 1.35,
         "pit" => 2.10,
-        "last_lap" | "best_lap" | "qual_best" => 2.90,
-        "class_pos" | "status" | "car_flag" | "laps" | "qual_pos" => 1.35,
+        "last_lap" | "best_lap" => 2.90,
+        "class_pos" | "status" | "car_flag" | "laps" => 1.35,
         "closing" => 1.80,
         "team" | "nickname" => 2.20,
         "gutter" => 0.18,

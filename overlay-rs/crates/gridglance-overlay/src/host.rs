@@ -25,8 +25,10 @@ const MIN_PANEL_H: i32 = 44;
 const RESIZE_GRIP: f32 = 28.0;
 /// Frames to keep applying Visible(false) so macOS/eframe actually drops the window.
 const HIDE_RETRY_FRAMES: u8 = 8;
-/// Non-map panels: throttle Windows glReadPixels + present (~15 Hz).
+/// Other panels: throttle Windows glReadPixels + present (~15 Hz).
 const NON_MAP_READBACK_MS: u128 = 66;
+/// Panels that need every-frame present (map motion + table row ease).
+const FULL_RATE_PRESENT: &[&str] = &["map", "relative", "standings"];
 /// Require this many consecutive absent frames before farewell (avoids config flicker).
 const HIDE_DEBOUNCE_FRAMES: u8 = 3;
 
@@ -489,17 +491,42 @@ impl OverlayApp {
             frame.throttle,
             &ref_mode,
         );
-        frame.lap_compare = self.lap_compare.view(frame.session_time, &ref_mode);
+        let allow_demo_compare = self.demo_only || edit_mode;
+        frame.lap_compare =
+            self.lap_compare
+                .view(frame.session_time, &ref_mode, allow_demo_compare);
 
+        let player_on_pit = frame
+            .cars
+            .iter()
+            .find(|c| c.is_player)
+            .map(|c| c.on_pit || c.in_pit)
+            .unwrap_or(false);
+        let tire_wear_pct = {
+            let wears: Vec<f32> = frame
+                .tire_corners
+                .iter()
+                .filter_map(|c| c.wear)
+                .filter(|w| w.is_finite() && *w >= 0.0)
+                .map(|w| if w <= 1.0 { w * 100.0 } else { w })
+                .collect();
+            if wears.is_empty() {
+                None
+            } else {
+                let min = wears.iter().cloned().fold(f32::INFINITY, f32::min);
+                Some(min.round() as i32)
+            }
+        };
         self.lap_log.observe(
             frame.lap,
             frame.last_lap_s,
             frame.track_temp,
             LapExtras {
                 fuel_l: Some(frame.fuel_l),
+                tires: tire_wear_pct,
                 incidents: Some(frame.incidents),
                 personal_best: frame.best_lap_s,
-                ..Default::default()
+                on_pit: player_on_pit,
             },
         );
         if !self.lap_log.laps.is_empty() {
@@ -886,8 +913,8 @@ impl eframe::App for OverlayApp {
             // the next eframe make_current on Windows).
             if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
                 if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
-                    let map_panel = key == "map";
-                    let due = map_panel
+                    let full_rate = FULL_RATE_PRESENT.contains(&key.as_str());
+                    let due = full_rate
                         || self
                             .last_readback
                             .get(&key)
@@ -903,7 +930,7 @@ impl eframe::App for OverlayApp {
                             let rb_ms = rb_start.elapsed().as_secs_f64() * 1000.0;
                             if self.perf {
                                 self.perf_acc.readbacks += 1;
-                                if map_panel {
+                                if key == "map" {
                                     self.perf_acc.rb_map_ms += rb_ms;
                                 } else {
                                     self.perf_acc.rb_other_ms += rb_ms;

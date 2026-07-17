@@ -35,6 +35,9 @@ pub struct TableRow {
     pub strat_tag: Option<String>,
     pub class_position: i32,
     pub status_kind: Option<String>,
+    /// Session flag label (blue / meatball / black / …) for the `car_flag` column.
+    #[serde(default)]
+    pub car_flag: Option<String>,
     pub closing: Option<f32>,
     pub team: String,
     pub nickname: String,
@@ -168,6 +171,7 @@ impl TableRow {
             strat_tag: None,
             class_position: c.class_position,
             status_kind: c.status_kind.clone(),
+            car_flag: c.car_flag.clone(),
             closing: None,
             team: String::new(),
             nickname: String::new(),
@@ -815,6 +819,8 @@ pub fn slot_label(key: &str) -> &'static str {
         "fast_repairs" => "FR",
         "weather" => "WX",
         "track_wetness" => "WET",
+        "session_type" => "SESS",
+        "race_split" => "SPLIT",
         _ => "",
     }
 }
@@ -841,6 +847,16 @@ fn fmt_laptime(secs: f64) -> String {
     let m = (secs / 60.0).floor() as i32;
     let s = secs - (m as f64) * 60.0;
     format!("{m}:{s:06.3}")
+}
+
+fn fmt_tod(secs: f32) -> String {
+    if !secs.is_finite() || secs < 0.0 {
+        return "—".into();
+    }
+    let secs = (secs as i64).rem_euclid(86_400);
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    format!("{h:02}:{m:02}")
 }
 
 fn format_slot_value(
@@ -992,6 +1008,40 @@ fn format_slot_value(
             let ampm = if h24 < 12 { "AM" } else { "PM" };
             format!("{h12}:{:02} {ampm}", now.minute())
         }
+        "sim_time" => frame
+            .session_time_of_day
+            .map(fmt_tod)
+            .unwrap_or_else(|| "—".into()),
+        "incident_limit" => {
+            if frame.incidents_limit > 0 {
+                format!("{}/{}x", frame.incidents, frame.incidents_limit)
+            } else {
+                format!("{}x", frame.incidents)
+            }
+        }
+        "fast_repairs" => match (frame.pit_repairs_used, frame.pit_repairs) {
+            (Some(used), Some(avail)) => {
+                let total = used + avail;
+                if total > 0 {
+                    format!("{used}/{total}")
+                } else {
+                    "—".into()
+                }
+            }
+            (_, Some(avail)) if avail > 0 => format!("{avail}"),
+            (Some(used), _) if used > 0 => format!("{used}"),
+            _ => "—".into(),
+        },
+        "session_type" => frame
+            .session_type
+            .clone()
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "—".into()),
+        "race_split" => frame
+            .race_split
+            .filter(|n| *n > 0)
+            .map(|n| format!("Split {n}"))
+            .unwrap_or_else(|| "—".into()),
         "cpu" => frame.cpu.clone().unwrap_or_else(|| "—".into()),
         "mem" => frame.mem.clone().unwrap_or_else(|| "—".into()),
         "gpu" => frame.gpu.clone().unwrap_or_else(|| "—".into()),

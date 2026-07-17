@@ -1416,8 +1416,6 @@ fn default_cfg() -> Value {
             section.insert("show_brake".into(), Value::Bool(true));
             section.insert("show_clutch".into(), Value::Bool(false));
             section.insert("show_steering".into(), Value::Bool(false));
-            section.insert("show_handbrake".into(), Value::Bool(false));
-            section.insert("show_steering_torque".into(), Value::Bool(false));
             section.insert("show_shift_markers".into(), Value::Bool(false));
             section.insert("show_brake_threshold".into(), Value::Bool(false));
             section.insert("brake_threshold".into(), json!(85));
@@ -1479,11 +1477,9 @@ fn default_cfg() -> Value {
             section.insert("title".into(), Value::String("HYBRID".into()));
             section.insert("empty_text".into(), Value::String("No hybrid data".into()));
             section.insert("show_battery".into(), Value::Bool(true));
-            section.insert("show_lap_energy".into(), Value::Bool(true));
             section.insert("show_boost".into(), Value::Bool(true));
             section.insert("show_p2p".into(), Value::Bool(true));
             section.insert("label_battery".into(), Value::String("ERS".into()));
-            section.insert("label_lap".into(), Value::String("LAP".into()));
             section.insert("label_boost".into(), Value::String("BOOST".into()));
             section.insert("label_p2p".into(), Value::String("P2P".into()));
         }

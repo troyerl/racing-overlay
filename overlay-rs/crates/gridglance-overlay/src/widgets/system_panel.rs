@@ -49,21 +49,14 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             "show_gpu" => f.gpu.clone().unwrap_or_else(|| "—".into()),
             "show_fps" => f.fps.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
             "show_network" => {
-                let mut parts = Vec::new();
                 if let Some(q) = f.chan_quality {
                     if q > 0.0 {
-                        parts.push(format!("{:.0}%", q));
+                        format!("{:.0}%", q)
+                    } else {
+                        "—".into()
                     }
-                }
-                if let Some(l) = f.chan_latency {
-                    if l > 0.0 {
-                        parts.push(format!("{:.0} ms", l));
-                    }
-                }
-                if parts.is_empty() {
-                    "—".into()
                 } else {
-                    parts.join(" · ")
+                    "—".into()
                 }
             }
             _ => "—".into(),

@@ -28,6 +28,9 @@ pub struct CompletedLap {
 pub struct LapLogAccum {
     pub laps: Vec<CompletedLap>,
     prev_lap: Option<i32>,
+    lap_start_incidents: i32,
+    lap_tag: Option<String>,
+    lap_on_pit: bool,
 }
 
 impl LapLogAccum {
@@ -44,9 +47,18 @@ impl LapLogAccum {
         track_temp_c: Option<f32>,
         extras: LapExtras,
     ) -> bool {
+        // Track pit/out tag across the lap (Python `_ll_lap_tag`).
+        if extras.on_pit {
+            self.lap_tag = Some("PIT".into());
+        } else if self.lap_on_pit {
+            self.lap_tag = Some("OUT".into());
+        }
+        self.lap_on_pit = extras.on_pit;
+
         match self.prev_lap {
             None => {
                 self.prev_lap = Some(current_lap);
+                self.lap_start_incidents = extras.incidents.unwrap_or(0);
                 false
             }
             Some(prev) if current_lap > prev => {
@@ -55,6 +67,9 @@ impl LapLogAccum {
                 if let Some(secs) = last_lap_s.filter(|s| *s > 0.0) {
                     let already = self.laps.first().map(|l| l.lap) == Some(completed);
                     if !already {
+                        let start = self.lap_start_incidents;
+                        let now = extras.incidents.unwrap_or(start);
+                        let delta = (now - start).max(0);
                         self.laps.insert(
                             0,
                             CompletedLap {
@@ -63,8 +78,8 @@ impl LapLogAccum {
                                 temp_c: track_temp_c,
                                 fuel_l: extras.fuel_l,
                                 tires: extras.tires,
-                                incidents: extras.incidents,
-                                tag: extras.tag,
+                                incidents: Some(delta),
+                                tag: self.lap_tag.clone(),
                                 personal_best: extras.personal_best,
                             },
                         );
@@ -73,11 +88,15 @@ impl LapLogAccum {
                     }
                 }
                 self.prev_lap = Some(current_lap);
+                self.lap_tag = None;
+                self.lap_start_incidents = extras.incidents.unwrap_or(0);
                 inserted
             }
             Some(prev) if current_lap < prev => {
                 self.laps.clear();
                 self.prev_lap = Some(current_lap);
+                self.lap_tag = None;
+                self.lap_start_incidents = extras.incidents.unwrap_or(0);
                 true
             }
             _ => false,
@@ -116,7 +135,7 @@ impl LapLogAccum {
                 secs: *secs,
                 temp_c: Some(31.5),
                 fuel_l: Some(2.4),
-                tires: None,
+                tires: Some(92),
                 incidents: Some(0),
                 tag: tag.map(|s| s.to_string()),
                 personal_best: Some(best),
@@ -178,10 +197,13 @@ impl LapLogAccum {
 #[derive(Debug, Clone, Default)]
 pub struct LapExtras {
     pub fuel_l: Option<f32>,
+    /// Tire wear percent (0–100) snapshot at lap completion, when known.
     pub tires: Option<i32>,
+    /// Running incident total; accumulator stores the per-lap delta.
     pub incidents: Option<i32>,
-    pub tag: Option<String>,
     pub personal_best: Option<f64>,
+    /// Player currently on pit road (drives PIT/OUT tag).
+    pub on_pit: bool,
 }
 
 fn fmt_lap_time(secs: f64) -> String {

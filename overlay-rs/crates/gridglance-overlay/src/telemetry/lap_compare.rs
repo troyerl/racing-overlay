@@ -217,7 +217,8 @@ impl LapCompareState {
     }
 
     /// Build the widget view; fills synthetic turn losses when none derived.
-    pub fn view(&self, session_time: f64, ref_mode: &str) -> LapCompareView {
+    /// When `allow_demo` is false (live iRacing), empty/missing data stays empty.
+    pub fn view(&self, session_time: f64, ref_mode: &str, allow_demo: bool) -> LapCompareView {
         let use_last =
             ref_mode.eq_ignore_ascii_case("last_lap") || ref_mode.eq_ignore_ascii_case("last");
         let ref_label = if use_last {
@@ -227,20 +228,30 @@ impl LapCompareState {
         };
         let delta = self.live_delta(ref_mode);
         let mut spark = self.build_spark(ref_mode);
-        if spark.is_empty() {
+        if spark.is_empty() && allow_demo {
             spark = demo_spark(session_time);
         }
         let turns = if self.ref_curve(ref_mode).is_empty() {
-            demo_turns(session_time)
+            if allow_demo {
+                demo_turns(session_time)
+            } else {
+                Vec::new()
+            }
         } else {
-            turns_from_spark(&spark)
+            turns_from_spark(&spark, allow_demo)
         };
         let mut markers = self.build_markers();
-        if markers.is_empty() && self.cur.is_empty() {
+        if markers.is_empty() && self.cur.is_empty() && allow_demo {
             markers = demo_markers(session_time);
         }
         LapCompareView {
-            delta: delta.or_else(|| demo_delta(session_time)),
+            delta: delta.or_else(|| {
+                if allow_demo {
+                    demo_delta(session_time)
+                } else {
+                    None
+                }
+            }),
             spark,
             turns,
             ref_label,
@@ -291,9 +302,13 @@ fn demo_markers(t: f64) -> Vec<CompareMarker> {
 }
 
 /// Approximate a few turn loss chips from spark extrema when no map corners exist.
-fn turns_from_spark(spark: &[f32]) -> Vec<(String, f32)> {
+fn turns_from_spark(spark: &[f32], allow_demo: bool) -> Vec<(String, f32)> {
     if spark.len() < 8 {
-        return demo_turns(0.0);
+        return if allow_demo {
+            demo_turns(0.0)
+        } else {
+            Vec::new()
+        };
     }
     let n = spark.len();
     let slices = [(0.12, "T1"), (0.35, "T3"), (0.58, "T7"), (0.82, "T12")];

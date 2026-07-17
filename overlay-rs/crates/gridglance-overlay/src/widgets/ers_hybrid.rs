@@ -11,18 +11,6 @@ fn cell_radius(row_h: f32) -> f32 {
     (row_h * 0.22).clamp(4.0, 8.0)
 }
 
-fn fmt_kj(joules: Option<f32>) -> String {
-    let Some(j) = joules else {
-        return "—".into();
-    };
-    let kj = j / 1000.0;
-    if kj.abs() >= 1000.0 {
-        format!("{:.1} MJ", kj / 1000.0)
-    } else {
-        format!("{kj:.0} kJ")
-    }
-}
-
 fn draw_status_chip(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect, text: &str, active: bool) {
     let r = (rect.height() * 0.35).min(10.0);
     let bg = if active {
@@ -143,15 +131,13 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 ctx.cfg.color(SECTION, "gauge_fill", "#70df7a"),
             );
         }
-        let mut lbl = if f.have_hybrid {
-            // No dedicated battery_j field yet — mirror missing joules as em dash.
-            fmt_kj(None)
+        let lbl = if let Some(p) = pct {
+            format!("{p:.0}%")
+        } else if f.have_hybrid {
+            "—".into()
         } else {
-            "-- kJ".into()
+            "--".into()
         };
-        if let Some(p) = pct {
-            lbl = format!("{p:.0}%  {lbl}");
-        }
         let metric = Rect::from_min_max(
             Pos2::new(bar.left() + 8.0, bar.top()),
             Pos2::new(bar.right() - 8.0, bar.bottom()),
@@ -159,27 +145,6 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let bat_lab = ctx.cfg.str_key(SECTION, "label_battery", "ERS");
         draw_metric_row(ui, ctx, metric, &bat_lab, &lbl, data_bold);
         y += bar_h + pad * 0.4;
-    }
-
-    if ctx.cfg.bool_key(SECTION, "show_lap_energy", true) {
-        let line: String = if edit {
-            "-- / -- lap".into()
-        } else {
-            "—".into()
-        };
-        let row_h = (h * 0.14).max(20.0);
-        let row = Rect::from_min_size(
-            Pos2::new(card.left() + pad, y),
-            Vec2::new(card.width() - 2.0 * pad, row_h),
-        );
-        draw_dark_cell(ui, ctx.cfg, SECTION, row, cell_radius(row_h));
-        let metric = Rect::from_min_max(
-            Pos2::new(row.left() + 8.0, row.top()),
-            Pos2::new(row.right() - 8.0, row.bottom()),
-        );
-        let lap_lab = ctx.cfg.str_key(SECTION, "label_lap", "LAP");
-        draw_metric_row(ui, ctx, metric, &lap_lab, &line, false);
-        y += row_h + pad * 0.35;
     }
 
     let chip_h = (h * 0.12).max(18.0);

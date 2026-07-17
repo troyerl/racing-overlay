@@ -67,6 +67,9 @@ pub struct CarRow {
     pub speed_mps: f32,
     /// Map status badge: pit / off / garage / black / meatball / dq / furled.
     pub status_kind: Option<String>,
+    /// Per-car session flag label for the table `car_flag` column (blue/meatball/…).
+    #[serde(default)]
+    pub car_flag: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -210,6 +213,18 @@ pub struct TelemetryFrame {
     /// Pit engineer recommendation (filled in finalize_frame).
     #[serde(default)]
     pub pit_advice: Option<PitAdvice>,
+    /// Sim clock seconds since midnight (`SessionTimeOfDay`).
+    #[serde(default)]
+    pub session_time_of_day: Option<f32>,
+    /// Active session type label (Practice / Qualifying / Race).
+    #[serde(default)]
+    pub session_type: Option<String>,
+    /// Registration split number when known (1-based).
+    #[serde(default)]
+    pub race_split: Option<i32>,
+    /// Fast repairs already used this session.
+    #[serde(default)]
+    pub pit_repairs_used: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -440,6 +455,13 @@ pub mod demo {
                     } else {
                         None
                     },
+                    car_flag: if i == 2 {
+                        Some("blue".into())
+                    } else if i == 5 {
+                        Some("meatball".into())
+                    } else {
+                        None
+                    },
                 });
             }
             if let Some(p) = cars.iter_mut().find(|c| c.is_player) {
@@ -602,7 +624,7 @@ pub mod demo {
                 gpu: Some("41%".into()),
                 fps: Some(144),
                 chan_quality: Some(92.0),
-                chan_latency: Some(28.0),
+                chan_latency: None,
                 ers_pct: Some(ers_pct),
                 ers_mode: Some("Balanced".into()),
                 have_hybrid: true,
@@ -613,6 +635,10 @@ pub mod demo {
                 lap_est_time: lap_est,
                 track_id: Some(1),
                 track_name: Some("Demo Speedpark".into()),
+                session_time_of_day: Some(14.0 * 3600.0 + (t as f32 * 2.0) % 3600.0),
+                session_type: Some("Race".into()),
+                race_split: Some(2),
+                pit_repairs_used: Some(0),
                 radar: radar.clone(),
                 radar_left: radar.left,
                 radar_right: radar.right,

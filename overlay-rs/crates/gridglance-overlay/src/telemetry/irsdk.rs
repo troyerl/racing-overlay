@@ -73,6 +73,10 @@ mod win {
         redline: f32,
         laps_total: i32,
         incidents_limit: i32,
+        /// SessionType strings indexed by SessionNum.
+        session_types: Vec<String>,
+        /// WeekendInfo split number when present.
+        race_split: Option<i32>,
         drivers: HashMap<i32, DriverInfo>,
         /// From SessionInfo ResultsPositions (race session when present).
         results: HashMap<i32, ResultPosEntry>,
@@ -227,6 +231,22 @@ mod win {
         };
         let pit_compound = read_i32_opt(session, "PitSvTireCompound");
         let pit_repairs = read_i32_opt(session, "FastRepairAvailable");
+        let pit_repairs_used = read_i32_opt(session, "FastRepairUsed");
+
+        let fps = read_f32_opt(session, "FrameRate").map(|v| v.round() as i32);
+        let chan_quality = read_f32_opt(session, "ChanQuality").or_else(|| {
+            read_f32_opt(session, "ConnectionQuality")
+        });
+        let session_time_of_day = read_f32_opt(session, "SessionTimeOfDay").filter(|v| v.is_finite());
+        let session_num = read_i32(session, "SessionNum").max(0) as usize;
+        let session_type = cache
+            .session_types
+            .get(session_num)
+            .cloned()
+            .filter(|s| !s.is_empty())
+            .or_else(|| cache.session_types.last().cloned().filter(|s| !s.is_empty()))
+            .map(format_session_type);
+        let race_split = cache.race_split;
 
         let ers_battery_pct =
             read_f32_opt(session, "EnergyERSBatteryPct").map(
@@ -425,13 +445,70 @@ mod win {
             pit_fuel_to_add: pit_fuel_add_l,
             pit_compound,
             pit_repairs,
+            pit_repairs_used,
             have_hybrid,
             ers_battery_pct,
             ers_pct: ers_battery_pct,
             ers_boost_active,
             ers_p2p_active,
+            fps,
+            chan_quality,
+            session_time_of_day,
+            session_type,
+            race_split,
             ..Default::default()
         }
+    }
+
+    fn format_session_type(raw: String) -> String {
+        let st = raw.to_ascii_lowercase();
+        if st.contains("qualif") || st == "qual" {
+            "Qualifying".into()
+        } else if st.contains("race") {
+            "Race".into()
+        } else if st.contains("practice") || st == "open" {
+            "Practice".into()
+        } else {
+            raw.replace('_', " ")
+        }
+    }
+
+    fn map_car_flag(car_flags: i32) -> Option<String> {
+        if car_flags & FLAG_REPAIR != 0 {
+            return Some("meatball".into());
+        }
+        if car_flags & FLAG_BLACK != 0 {
+            return Some("black".into());
+        }
+        if car_flags & FLAG_DQ != 0 {
+            return Some("dq".into());
+        }
+        if car_flags & FLAG_FURLED != 0 {
+            return Some("furled".into());
+        }
+        if car_flags & FLAG_BLUE != 0 {
+            return Some("blue".into());
+        }
+        None
+    }
+
+    fn fmt_car_laptime(secs: f32) -> String {
+        if !secs.is_finite() || secs <= 0.0 {
+            return String::new();
+        }
+        let m = (secs as f64 / 60.0).floor() as i32;
+        let s = secs as f64 - (m as f64) * 60.0;
+        format!("{m}:{s:06.3}")
+    }
+
+    fn fmt_car_gap(position: i32, f2: f32) -> String {
+        if position == 1 {
+            return "LEADER".into();
+        }
+        if !f2.is_finite() || f2 <= 0.0 {
+            return String::new();
+        }
+        format!("+{f2:.1}")
     }
 
     fn map_car_status_kind(surface: i32, on_pit: bool, car_flags: i32) -> Option<String> {
@@ -829,6 +906,8 @@ mod win {
         let class_pos = int_arr(session, "CarIdxClassPosition");
         let est = float_arr(session, "CarIdxEstTime");
         let f2 = float_arr(session, "CarIdxF2Time");
+        let last_laps = float_arr(session, "CarIdxLastLapTime");
+        let best_laps = float_arr(session, "CarIdxBestLapTime");
         let laps = int_arr(session, "CarIdxLap");
         let laps_done = int_arr(session, "CarIdxLapCompleted");
         let speeds = float_arr(session, "CarIdxSpeed");
@@ -890,6 +969,16 @@ mod win {
             let approaching_pits = surf == TRK_APPROACHING_PITS;
             let est_t = est.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0.0);
             let f2_t = f2.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0.0);
+            let last_lap = last_laps
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .map(fmt_car_laptime)
+                .unwrap_or_default();
+            let best_lap = best_laps
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .map(fmt_car_laptime)
+                .unwrap_or_default();
             let car_lap = laps.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0);
             let speed_mps = speeds
                 .as_ref()
@@ -945,6 +1034,8 @@ mod win {
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(0);
             let status_kind = map_car_status_kind(surf, pit, flags);
+            let car_flag = map_car_flag(flags);
+            let gap = fmt_car_gap(pos, if f2_t.is_finite() { f2_t } else { 0.0 });
 
             out.push(CarRow {
                 car_idx: i as i32,
@@ -952,9 +1043,9 @@ mod win {
                 class_position: cpos,
                 car_number: number,
                 name,
-                gap: String::new(),
-                last_lap: String::new(),
-                best_lap: String::new(),
+                gap,
+                last_lap,
+                best_lap,
                 irating: ir,
                 irating_delta: None,
                 class_id,
@@ -981,6 +1072,7 @@ mod win {
                 laps_completed,
                 speed_mps,
                 status_kind,
+                car_flag,
             });
         }
         // Ensure transmitter appears for map/table speaking badges even when
@@ -1057,6 +1149,7 @@ mod win {
                         laps_completed: 0,
                         speed_mps: 0.0,
                         status_kind: None,
+                        car_flag: None,
                     });
                 }
             }
@@ -1102,6 +1195,8 @@ mod win {
                 cache.incidents_limit = v;
             }
         }
+        cache.session_types = parse_session_types(yaml);
+        cache.race_split = parse_race_split(yaml);
         cache.drivers = parse_drivers(yaml);
         cache.results = parse_results_positions(yaml);
         if let Some(d) = cache.drivers.get(&cache.player_idx) {
@@ -1115,6 +1210,68 @@ mod win {
                 cache.car_path = Some(d.car_path.clone());
             }
         }
+    }
+
+    /// Parse SessionInfo ResultsPositions entries (prefer Race session block).
+    fn parse_session_types(yaml: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut in_sessions = false;
+        for line in yaml.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Sessions:") {
+                in_sessions = true;
+                continue;
+            }
+            if in_sessions {
+                let indent = line.len() - line.trim_start().len();
+                if !trimmed.is_empty() && indent == 0 && !trimmed.starts_with('-') {
+                    break;
+                }
+                if trimmed.starts_with("SessionType:") {
+                    let v = trimmed
+                        .trim_start_matches("SessionType:")
+                        .trim()
+                        .trim_matches('"')
+                        .to_string();
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+
+    fn parse_race_split(yaml: &str) -> Option<i32> {
+        const KEYS: &[&str] = &[
+            "RaceSplit",
+            "SplitNum",
+            "SplitNumber",
+            "SessionSplit",
+            "SessionSplitNum",
+            "EventSplit",
+        ];
+        for key in KEYS {
+            if let Some(v) = yaml_i32(yaml, key) {
+                if v > 0 {
+                    return Some(v);
+                }
+            }
+        }
+        // Any other *Split* key under WeekendInfo-style YAML.
+        for line in yaml.lines() {
+            let trimmed = line.trim();
+            let Some((key, rest)) = trimmed.split_once(':') else {
+                continue;
+            };
+            if !key.to_ascii_lowercase().contains("split") {
+                continue;
+            }
+            if let Ok(v) = rest.trim().trim_matches('"').parse::<i32>() {
+                if v > 0 {
+                    return Some(v);
+                }
+            }
+        }
+        None
     }
 
     /// Parse SessionInfo ResultsPositions entries (prefer Race session block).

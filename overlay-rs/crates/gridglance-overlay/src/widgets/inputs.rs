@@ -9,8 +9,8 @@ use std::time::Instant;
 
 const SECTION: &str = "inputs";
 
-/// (t, thr, brk, clt, steer, abs, handbrake, torque, gear)
-type Sample = (f64, f32, f32, f32, f32, f32, f32, f32, i32);
+/// (t, thr, brk, clt, steer, abs, gear)
+type Sample = (f64, f32, f32, f32, f32, f32, i32);
 
 struct Hist {
     clock: Instant,
@@ -52,21 +52,19 @@ fn push_sample(ctx: &WidgetCtx<'_>) {
     let clt = f.clutch.clamp(0.0, 1.0);
     let steer = ((f.steering + 1.0) * 0.5).clamp(0.0, 1.0);
     let abs_on = if f.abs_active { 1.0 } else { 0.0 };
-    let hb = 0.0;
-    let torque = 0.0;
     let gear = f.gear;
     if let Some(last) = h.samples.back() {
         if (last.1 - thr).abs() < 1e-4
             && (last.2 - brk).abs() < 1e-4
             && (last.3 - clt).abs() < 1e-4
             && (last.4 - steer).abs() < 1e-4
-            && last.8 == gear
+            && last.6 == gear
         {
             return;
         }
     }
     h.samples
-        .push_back((t, thr, brk, clt, steer, abs_on, hb, torque, gear));
+        .push_back((t, thr, brk, clt, steer, abs_on, gear));
     let window = cfg.f64_key(SECTION, "history_seconds", 6.0);
     let cutoff = t - window;
     while h.samples.len() > 2 && h.samples.front().map(|s| s.0 < cutoff).unwrap_or(false) {
@@ -240,8 +238,6 @@ fn draw_graph(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
                     2 => s.2,
                     3 => s.3,
                     4 => s.4,
-                    6 => s.6,
-                    7 => s.7,
                     _ => 0.0,
                 };
                 to_pt(s.0, v)
@@ -279,7 +275,7 @@ fn draw_graph(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
         let mut prev_g: Option<i32> = None;
         for s in h.samples.iter() {
             if let Some(pg) = prev_g {
-                if s.8 != pg {
+                if s.6 != pg {
                     let pt = to_pt(s.0, 0.5);
                     ui.painter().line_segment(
                         [
@@ -290,7 +286,7 @@ fn draw_graph(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
                     );
                 }
             }
-            prev_g = Some(s.8);
+            prev_g = Some(s.6);
         }
     }
 }
@@ -308,7 +304,7 @@ fn draw_bars(
         .samples
         .back()
         .copied()
-        .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0));
+        .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0));
     let abs_on = latest.5 > 0.5;
     let thr = brake_threshold(ctx);
     let label_h = (rect.height() * 0.16).max(10.0);

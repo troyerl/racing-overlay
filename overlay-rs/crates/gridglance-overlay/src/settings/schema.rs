@@ -430,12 +430,10 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "show_title",
                     "title",
                     "label_battery",
-                    "label_lap",
                     "label_boost",
                     "label_p2p",
                     "empty_text",
                     "show_battery",
-                    "show_lap_energy",
                     "show_boost",
                     "show_p2p",
                 ],
@@ -572,8 +570,6 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
         ],
         "inputs" => &[
             "row_dividers",
-            "show_handbrake",
-            "show_steering_torque",
             "show_tc_abs",
             "data_font_bold",
             "text_scale",
@@ -723,6 +719,8 @@ pub const TABLE_SLOT_COMMON: &[&str] = &[
     "fast_repairs",
     "weather",
     "track_wetness",
+    "session_type",
+    "race_split",
 ];
 
 /// Standings adds order_pill / title / count (Python `_SLOT_STANDINGS`).
@@ -752,6 +750,8 @@ pub const TABLE_SLOT_STANDINGS: &[&str] = &[
     "fast_repairs",
     "weather",
     "track_wetness",
+    "session_type",
+    "race_split",
     "order_pill",
     "title",
     "count",

@@ -78,6 +78,7 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("my_session_best", 0xF2F2), // stopwatch
     ("local_time", 0xF017),
     ("sim_time", 0xF185), // sun
+    ("session_type", 0xF0AE), // tasks / session
     ("race_split", 0xF0CB), // list-ol
     ("order_pill", 0xF0CB),
     ("title", 0xF091),
