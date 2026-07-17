@@ -2,11 +2,11 @@
 
 #[cfg(windows)]
 mod win {
-    use super::format::{
+    use crate::telemetry::format::{
         fmt_car_gap, fmt_laptime, format_session_type, map_session_flag_label, parse_race_split,
         parse_session_types,
     };
-    use super::pit_service::any_requested;
+    use crate::telemetry::pit_service::any_requested;
     use crate::telemetry::{
         decode_pit_flags, CarRow, RadarState, RadioSpeaker, TelemetryFrame, TireCorner,
     };
