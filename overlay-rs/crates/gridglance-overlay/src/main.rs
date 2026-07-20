@@ -1,5 +1,8 @@
 //! GridGlance Rust overlay binary — primary process (no Python required).
 
+// Release builds: no console window (tray / overlay only). Debug keeps a
+// console for eprintln! / clap help.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![allow(clippy::too_many_arguments)]
 
 mod app_icon;
