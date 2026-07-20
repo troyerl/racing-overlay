@@ -1,7 +1,7 @@
 //! Shared JSON-RPC protocol for GridGlance overlay IPC.
 //!
 //! Settings, Track Scan, and the race HUD all live in the Rust binary.
-//! External tools (and legacy Python helpers) can still drive the overlay
+//! External tools can still drive the overlay
 //! over this socket.
 //!
 //! Wire format: newline-delimited JSON objects over a local TCP socket

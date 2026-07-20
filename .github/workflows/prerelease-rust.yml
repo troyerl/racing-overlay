@@ -2,7 +2,7 @@ name: Rust Prerelease
 
 # Build a Windows installer from feature/rust and publish it as a GitHub
 # *prerelease* under tag v<version>-rust. Does not touch the stable
-# v<version> release used by the Python / main branch pipeline.
+# v<version> release from main.
 on:
   push:
     branches: [feature/rust]
@@ -21,65 +21,49 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Read version from RELEASE.md
         id: ver
         shell: bash
-        env:
-          PYTHONUTF8: "1"
         run: |
-          python - <<'PY'
-          import os, re, sys
-          if hasattr(sys.stdout, "reconfigure"):
-              sys.stdout.reconfigure(encoding="utf-8")
-          s = open("RELEASE.md", encoding="utf-8").read()
-          m = re.search(r'^##\s+(\d+\.\d+\.\d+)[^\n]*\n', s, re.M)
-          if not m:
-              raise SystemExit("No '## <version>' section found in RELEASE.md")
-          version = m.group(1)
-          # Distinct from stable tag v{version} so main releases are never replaced.
-          preview = f"{version}-rust"
-          sha = os.environ.get("GITHUB_SHA", "")[:7]
-          body = (
-              f"Rust overlay preview build from `feature/rust` (`{sha}`).\n\n"
-              f"This is a **prerelease** — it does not replace the stable "
-              f"`v{version}` release.\n"
-          )
-          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as f:
-              f.write(body)
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"version={version}\n")
-              f.write(f"preview={preview}\n")
-              f.write(f"tag=v{preview}\n")
-          print("stable version:", version)
-          print("preview tag: v" + preview)
-          PY
+          set -euo pipefail
+          version=$(grep -m1 -E '^## [0-9]+\.[0-9]+\.[0-9]+' RELEASE.md | sed -E 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          if [[ -z "$version" ]]; then
+            echo "No '## <version>' section found in RELEASE.md" >&2
+            exit 1
+          fi
+          preview="${version}-rust"
+          sha="${GITHUB_SHA:0:7}"
+          {
+            echo "Rust overlay preview build from \`feature/rust\` (\`${sha}\`)."
+            echo
+            echo "This is a **prerelease** — it does not replace the stable \`v${version}\` release."
+          } > RELEASE_NOTES.md
+          {
+            echo "version=$version"
+            echo "preview=$preview"
+            echo "tag=v$preview"
+          } >> "$GITHUB_OUTPUT"
+          echo "stable version: $version"
+          echo "preview tag: v$preview"
 
       - name: Stamp Cargo workspace version
         shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          python - <<'PY'
-          import os, re
-          v = os.environ["APP_VERSION"]
-          path = "overlay-rs/Cargo.toml"
-          text = open(path, encoding="utf-8").read()
-          new, n = re.subn(
-              r'(\[workspace\.package\]\s*\nversion\s*=\s*")[^"]+(")',
-              rf'\g<1>{v}\2',
-              text,
-              count=1,
-          )
-          if n != 1:
-              raise SystemExit(f"Could not stamp version in {path} (replacements={n})")
-          open(path, "w", encoding="utf-8").write(new)
-          print(f"Stamped workspace version = {v}")
-          PY
+          set -euo pipefail
+          awk -v v="$APP_VERSION" '
+            BEGIN { in_pkg=0 }
+            /^\[workspace\.package\]/ { in_pkg=1; print; next }
+            /^\[/ { in_pkg=0 }
+            in_pkg && /^version[[:space:]]*=/ {
+              print "version = \"" v "\""
+              next
+            }
+            { print }
+          ' overlay-rs/Cargo.toml > overlay-rs/Cargo.toml.tmp
+          mv overlay-rs/Cargo.toml.tmp overlay-rs/Cargo.toml
+          echo "Stamped workspace version = $APP_VERSION"
 
       - name: Build gridglance-overlay (release)
         working-directory: overlay-rs

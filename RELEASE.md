@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.0 - 2026-07-20
+
+- **Rust-only app.** Python package, tests, tools, and PyInstaller packaging
+  removed; the product is `gridglance-overlay` only.
+- **Settings + tray.** Settings live in the Rust/egui host; system tray
+  Settings / left-click / double-click reopen Settings; close Settings can
+  minimize to tray.
+- **No console on release builds.** Installed `gridglance-overlay` runs without
+  a terminal window.
+- **Panel styles.** Per-widget Data vs Elegant layouts with content-fit sizing;
+  denser Elegant widgets (fuel, sector, delta, and related panels).
+
 ## 1.68.0 - 2026-07-12
 
 - **Rust overlay (hybrid).** Race widgets run in a Rust/egui process

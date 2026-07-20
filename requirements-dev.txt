@@ -1,5 +1,0 @@
--r requirements.txt
-# Optional — svgpathtools for inactive pit extraction in svg_layers_to_track tests
-beautifulsoup4>=4.12
-svgpathtools>=1.6
-pytest>=8.0

@@ -20,59 +20,52 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
       - name: Read version & notes from RELEASE.md
         id: ver
         shell: bash
-        env:
-          PYTHONUTF8: "1"
         run: |
-          python - <<'PY'
-          import os, re, sys
-          if hasattr(sys.stdout, "reconfigure"):
-              sys.stdout.reconfigure(encoding="utf-8")
-          s = open("RELEASE.md", encoding="utf-8").read()
-          # The topmost "## <version> - <date>" section drives the release.
-          m = re.search(r'^##\s+(\d+\.\d+\.\d+)[^\n]*\n', s, re.M)
-          if not m:
-              raise SystemExit("No '## <version>' section found in RELEASE.md")
-          version = m.group(1)
-          nxt = re.search(r'^##\s+', s[m.end():], re.M)
-          body = (s[m.end(): m.end() + nxt.start()] if nxt else s[m.end():]).strip()
-          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as f:
-              f.write(body + "\n")
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
-              f.write(f"version={version}\n")
-              f.write(f"tag=v{version}\n")
-          print("version:", version)
-          print(body)
-          PY
+          set -euo pipefail
+          version=$(grep -m1 -E '^## [0-9]+\.[0-9]+\.[0-9]+' RELEASE.md | sed -E 's/^## ([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+          if [[ -z "$version" ]]; then
+            echo "No '## <version>' section found in RELEASE.md" >&2
+            exit 1
+          fi
+          # Body = lines after the top ## until the next ##
+          awk -v ver="$version" '
+            BEGIN { p=0 }
+            /^## / {
+              if (p) exit
+              if ($0 ~ "^## " ver) { p=1; next }
+            }
+            p { print }
+          ' RELEASE.md | sed -e 's/[[:space:]]*$//' | awk 'NF{p=1} p' | awk 'NF{last=NR} {a[NR]=$0} END{for(i=1;i<=last;i++) print a[i]}' > RELEASE_NOTES.md
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+          } >> "$GITHUB_OUTPUT"
+          echo "version: $version"
+          cat RELEASE_NOTES.md
 
       - name: Stamp Cargo workspace version
         shell: bash
         env:
           APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
-          python - <<'PY'
-          import os, re
-          v = os.environ["APP_VERSION"]
-          path = "overlay-rs/Cargo.toml"
-          text = open(path, encoding="utf-8").read()
-          new, n = re.subn(
-              r'(\[workspace\.package\]\s*\nversion\s*=\s*")[^"]+(")',
-              rf'\g<1>{v}\2',
-              text,
-              count=1,
-          )
-          if n != 1:
-              raise SystemExit(f"Could not stamp version in {path} (replacements={n})")
-          open(path, "w", encoding="utf-8").write(new)
-          print(f"Stamped workspace version = {v}")
-          PY
+          set -euo pipefail
+          # Replace version under [workspace.package] only.
+          awk -v v="$APP_VERSION" '
+            BEGIN { in_pkg=0 }
+            /^\[workspace\.package\]/ { in_pkg=1; print; next }
+            /^\[/ { in_pkg=0 }
+            in_pkg && /^version[[:space:]]*=/ {
+              print "version = \"" v "\""
+              next
+            }
+            { print }
+          ' overlay-rs/Cargo.toml > overlay-rs/Cargo.toml.tmp
+          mv overlay-rs/Cargo.toml.tmp overlay-rs/Cargo.toml
+          grep -A2 '\[workspace\.package\]' overlay-rs/Cargo.toml
+          echo "Stamped workspace version = $APP_VERSION"
 
       - name: Build gridglance-overlay (release)
         working-directory: overlay-rs
