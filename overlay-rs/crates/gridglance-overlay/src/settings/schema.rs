@@ -806,6 +806,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("__app__", "check_updates_on_launch") => {
             Some("Silently check GitHub for a newer release when the app starts.")
         }
+        ("__app__", "close_settings_to_tray") => Some(
+            "Closing the Settings window hides it to the system tray instead of quitting the app. Use Quit to exit fully.",
+        ),
         (_, "show") => Some("Show this panel on the overlay."),
         (_, "text_scale") => Some("Per-panel text scale (multiplies global)."),
         (_, "show_panel") => Some("Draw the card background behind this panel."),

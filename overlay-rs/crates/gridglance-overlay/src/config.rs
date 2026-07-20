@@ -1770,6 +1770,7 @@ fn default_cfg() -> Value {
     m.insert("start_overlay_on_launch".into(), Value::Bool(false));
     m.insert("check_updates_on_launch".into(), Value::Bool(true));
     m.insert("start_at_login".into(), Value::Bool(false));
+    m.insert("close_settings_to_tray".into(), Value::Bool(true));
     m.insert("driver_groups".into(), json!([]));
     m.insert("units".into(), Value::String("imperial".into()));
     m.insert("text_scale".into(), json!(1.20));

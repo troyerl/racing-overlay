@@ -31,7 +31,6 @@ use anyhow::Result;
 use clap::Parser;
 use gridglance_ipc::DEFAULT_IPC_PORT;
 use host::OverlayApp;
-use std::sync::mpsc::Receiver;
 
 const WINDOW_TITLE: &str = "GridGlance Overlay";
 
@@ -230,11 +229,11 @@ fn main() -> Result<()> {
 
     ipc::spawn(state.clone(), args.ipc_port)?;
 
-    let tray_rx: Option<Receiver<shell::TrayCommand>> = if args.no_tray {
+    let tray: Option<shell::TrayHandle> = if args.no_tray {
         None
     } else {
         match shell::spawn_tray() {
-            Ok((rx, _icon)) => Some(rx),
+            Ok(handle) => Some(handle),
             Err(e) => {
                 eprintln!("[gridglance] tray unavailable: {e}");
                 None
@@ -279,7 +278,7 @@ fn main() -> Result<()> {
                 demo,
                 perf,
                 cc.gl.clone(),
-                tray_rx,
+                tray,
                 activate_flag,
             )))
         }),

@@ -3,7 +3,7 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
-use tray_icon::{TrayIcon, TrayIconBuilder};
+use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
@@ -15,8 +15,22 @@ pub enum TrayCommand {
     Quit,
 }
 
-/// Spawn the tray icon. Returns a receiver for menu clicks + the icon handle.
-pub fn spawn() -> anyhow::Result<(Receiver<TrayCommand>, TrayIcon)> {
+/// Owns the tray icon + menu items so they stay alive (dropping removes the icon
+/// and breaks menu actions).
+pub struct TrayHandle {
+    rx: Receiver<TrayCommand>,
+    _icon: TrayIcon,
+    _items: Vec<MenuItem>,
+}
+
+impl TrayHandle {
+    pub fn poll(&self) -> Vec<TrayCommand> {
+        poll_events(&self.rx)
+    }
+}
+
+/// Spawn the tray icon. Returns a handle that must be kept for the process lifetime.
+pub fn spawn() -> anyhow::Result<TrayHandle> {
     let (tx, rx) = mpsc::channel();
 
     let menu = Menu::new();
@@ -43,6 +57,9 @@ pub fn spawn() -> anyhow::Result<(Receiver<TrayCommand>, TrayIcon)> {
     let id_updates = updates.id().clone();
     let id_quit = quit.id().clone();
 
+    let items = vec![settings, track_scan, toggle, edit, updates, quit];
+
+    let menu_tx = tx.clone();
     let menu_rx = MenuEvent::receiver();
     std::thread::spawn(move || {
         while let Ok(ev) = menu_rx.recv() {
@@ -62,23 +79,53 @@ pub fn spawn() -> anyhow::Result<(Receiver<TrayCommand>, TrayIcon)> {
                 None
             };
             if let Some(cmd) = cmd {
-                if tx.send(cmd).is_err() {
+                if menu_tx.send(cmd).is_err() {
                     break;
                 }
             }
         }
     });
 
+    // Left click / double-click on the icon → open Settings.
+    let icon_tx = tx;
+    let icon_rx = TrayIconEvent::receiver();
+    std::thread::spawn(move || {
+        while let Ok(ev) = icon_rx.recv() {
+            let open = match &ev {
+                TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                } => true,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } => true,
+                _ => false,
+            };
+            if open && icon_tx.send(TrayCommand::Settings).is_err() {
+                break;
+            }
+        }
+    });
+
     let icon = crate::app_icon::tray_icon();
+    // Right-click → menu; left / double-click → Settings (see icon event thread).
     let tray = TrayIconBuilder::new()
         .with_menu(Box::new(menu))
         .with_tooltip("GridGlance")
         .with_icon(icon)
+        .with_menu_on_left_click(false)
         .build()?;
-    Ok((rx, tray))
+
+    Ok(TrayHandle {
+        rx,
+        _icon: tray,
+        _items: items,
+    })
 }
 
-/// Non-blocking poll of tray menu commands.
+/// Non-blocking poll of tray menu / icon commands.
 pub fn poll_events(rx: &Receiver<TrayCommand>) -> Vec<TrayCommand> {
     let mut out = Vec::new();
     loop {

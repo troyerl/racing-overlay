@@ -723,6 +723,35 @@ fn paint_app(
                 }
             },
         );
+        let mut close_to_tray = state
+            .read()
+            .config
+            .cfg
+            .get("close_settings_to_tray")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        setting_row(
+            ui,
+            "Close settings to tray",
+            help_text("__app__", "close_settings_to_tray"),
+            |ui| {
+                if toggle_switch(
+                    ui,
+                    &mut close_to_tray,
+                    accent,
+                    ui.id().with("app_close_to_tray"),
+                )
+                .changed()
+                {
+                    set_global(
+                        state,
+                        "close_settings_to_tray",
+                        json!(close_to_tray),
+                        dirty,
+                    );
+                }
+            },
+        );
     });
     ui.add_space(8.0);
     enable_card(ui, "Auto-switch presets", accent, |ui| {

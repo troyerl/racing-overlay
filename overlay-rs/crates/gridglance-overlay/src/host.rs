@@ -119,7 +119,8 @@ pub struct OverlayApp {
     settings_autosave_at: Option<Instant>,
     /// Ephemeral Settings UI chrome state.
     settings_ui: settings::SettingsUi,
-    tray_rx: Option<std::sync::mpsc::Receiver<crate::shell::TrayCommand>>,
+    /// System tray (icon + menu + command channel). Kept alive for process lifetime.
+    tray: Option<crate::shell::TrayHandle>,
     activate_peer: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Last car/league seen for preset auto-switch (avoid thrashing).
     last_switch_car: Option<String>,
@@ -152,7 +153,7 @@ impl OverlayApp {
         demo: bool,
         perf: bool,
         gl: Option<Arc<glow::Context>>,
-        tray_rx: Option<std::sync::mpsc::Receiver<crate::shell::TrayCommand>>,
+        tray: Option<crate::shell::TrayHandle>,
         activate_peer: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let mut lap_log = LapLogAccum::new();
@@ -189,7 +190,7 @@ impl OverlayApp {
             settings_dirty: false,
             settings_autosave_at: None,
             settings_ui: settings::SettingsUi::default(),
-            tray_rx,
+            tray,
             activate_peer,
             last_switch_car: None,
             last_switch_league: None,
@@ -275,8 +276,8 @@ impl OverlayApp {
                 self.settings_ui.top_tab = settings::TopTab::Settings;
             }
         }
-        if let Some(rx) = &self.tray_rx {
-            for cmd in crate::shell::poll_events(rx) {
+        if let Some(tray) = &self.tray {
+            for cmd in tray.poll() {
                 match cmd {
                     TrayCommand::Settings => {
                         if let Some(mut st) = self.state.try_write() {
@@ -402,6 +403,21 @@ impl OverlayApp {
             if vp_ctx.input(|i| i.viewport().close_requested()) {
                 if let Some(mut st) = state.try_write() {
                     st.settings_open = false;
+                    let to_tray = st
+                        .config
+                        .cfg
+                        .get("close_settings_to_tray")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    if !to_tray {
+                        // Closing Settings exits the app when tray-minimize is off.
+                        if st.settings_auto_save {
+                            let context = st.effective_context();
+                            let _ = Arc::make_mut(&mut st.config).save_for_context(context);
+                        }
+                        st.running = false;
+                        st.quit_requested = true;
+                    }
                 }
             }
         });

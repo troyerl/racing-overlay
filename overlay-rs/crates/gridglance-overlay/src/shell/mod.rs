@@ -4,4 +4,4 @@ mod single_instance;
 mod tray;
 
 pub use single_instance::acquire as acquire_instance;
-pub use tray::{poll_events, spawn as spawn_tray, TrayCommand};
+pub use tray::{spawn as spawn_tray, TrayCommand, TrayHandle};
