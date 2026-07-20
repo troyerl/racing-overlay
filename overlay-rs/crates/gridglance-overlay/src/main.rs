@@ -29,6 +29,7 @@ mod tracks;
 mod updater;
 mod widgets;
 mod win_click;
+mod win_process;
 
 use anyhow::Result;
 use clap::Parser;

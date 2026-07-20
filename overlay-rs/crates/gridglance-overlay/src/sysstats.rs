@@ -51,13 +51,14 @@ impl SysStats {
 
     fn probe_gpu() -> Option<f32> {
         // nvidia-smi works on Linux/Windows when present; macOS typically unavailable.
-        let out = Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=utilization.gpu",
-                "--format=csv,noheader,nounits",
-            ])
-            .output()
-            .ok()?;
+        // On Windows, CREATE_NO_WINDOW is required or a console flashes every sample.
+        let mut cmd = Command::new("nvidia-smi");
+        cmd.args([
+            "--query-gpu=utilization.gpu",
+            "--format=csv,noheader,nounits",
+        ]);
+        crate::win_process::no_window(&mut cmd);
+        let out = cmd.output().ok()?;
         if !out.status.success() {
             return None;
         }

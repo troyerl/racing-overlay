@@ -53,9 +53,10 @@ mod win {
              $s.IconLocation = '{target_s}'; \
              $s.Save()"
         );
-        let status = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &ps])
-            .status()?;
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps]);
+        crate::win_process::no_window(&mut cmd);
+        let status = cmd.status()?;
         if !status.success() {
             anyhow::bail!("PowerShell shortcut creation failed");
         }

@@ -5,6 +5,11 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.1 - 2026-07-20
+
+- **Fix: console flash.** GPU sampling no longer spawns a visible `nvidia-smi`
+  console every half-second on Windows.
+
 ## 1.69.0 - 2026-07-20
 
 - **Rust-only app.** Python package, tests, tools, and PyInstaller packaging
