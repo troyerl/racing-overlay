@@ -1,0 +1,108 @@
+name: Rust Prerelease
+
+# Build a Windows installer from feature/rust and publish it as a GitHub
+# *prerelease* under tag v<version>-rust. Does not touch the stable
+# v<version> release used by the Python / main branch pipeline.
+on:
+  push:
+    branches: [feature/rust]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prerelease:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read version from RELEASE.md
+        id: ver
+        shell: bash
+        env:
+          PYTHONUTF8: "1"
+        run: |
+          python - <<'PY'
+          import os, re, sys
+          if hasattr(sys.stdout, "reconfigure"):
+              sys.stdout.reconfigure(encoding="utf-8")
+          s = open("RELEASE.md", encoding="utf-8").read()
+          m = re.search(r'^##\s+(\d+\.\d+\.\d+)[^\n]*\n', s, re.M)
+          if not m:
+              raise SystemExit("No '## <version>' section found in RELEASE.md")
+          version = m.group(1)
+          # Distinct from stable tag v{version} so main releases are never replaced.
+          preview = f"{version}-rust"
+          sha = os.environ.get("GITHUB_SHA", "")[:7]
+          body = (
+              f"Rust overlay preview build from `feature/rust` (`{sha}`).\n\n"
+              f"This is a **prerelease** — it does not replace the stable "
+              f"`v{version}` release.\n"
+          )
+          with open("RELEASE_NOTES.md", "w", encoding="utf-8") as f:
+              f.write(body)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
+              f.write(f"version={version}\n")
+              f.write(f"preview={preview}\n")
+              f.write(f"tag=v{preview}\n")
+          print("stable version:", version)
+          print("preview tag: v" + preview)
+          PY
+
+      - name: Stamp Cargo workspace version
+        shell: bash
+        env:
+          APP_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          python - <<'PY'
+          import os, re
+          v = os.environ["APP_VERSION"]
+          path = "overlay-rs/Cargo.toml"
+          text = open(path, encoding="utf-8").read()
+          new, n = re.subn(
+              r'(\[workspace\.package\]\s*\nversion\s*=\s*")[^"]+(")',
+              rf'\g<1>{v}\2',
+              text,
+              count=1,
+          )
+          if n != 1:
+              raise SystemExit(f"Could not stamp version in {path} (replacements={n})")
+          open(path, "w", encoding="utf-8").write(new)
+          print(f"Stamped workspace version = {v}")
+          PY
+
+      - name: Build gridglance-overlay (release)
+        working-directory: overlay-rs
+        env:
+          GRIDGLANCE_GITHUB_REPO: ${{ github.repository }}
+        run: cargo build --release -p gridglance-overlay
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build the installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            "/DMyAppVersion=${{ steps.ver.outputs.preview }}" `
+            "installer\gridglance.iss"
+
+      - name: Publish prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: GridGlance ${{ steps.ver.outputs.preview }} (Rust preview)
+          body_path: RELEASE_NOTES.md
+          files: installer_output/*.exe
+          prerelease: true
+          make_latest: false
