@@ -320,6 +320,7 @@ class AdvancedSimHUD:
         self._weekend_counter = 0
         # Registration split (throttled; optional iRacing results API).
         self._race_split_cache: int | None = None
+        self._race_split_total_cache: int | None = None
         self._race_split_subsession: int | None = None
         self._race_split_fetch_at: float = 0.0
         self._race_split_fetching = False
@@ -3103,16 +3104,19 @@ class AdvancedSimHUD:
                 return "Practice"
             return st.replace("_", " ").title()
         if key == "race_split":
-            n = self._race_split_number()
-            return f"Split {n}" if n else "\u2014"
+            info = self._race_split_info()
+            if not info:
+                return "\u2014"
+            n, total = info
+            return f"{n}/{total}" if total else str(n)
         if key == "count":
             return count
         return None
 
-    def _race_split_number(self) -> int | None:
-        """1-based registration split, or None when unknown."""
+    def _race_split_info(self) -> tuple[int, int | None] | None:
+        """1-based registration split and total, or None when unknown."""
         if self.demo or self._demo_active:
-            return 2
+            return (2, 5)
         if not config.slot_in_use("race_split"):
             return None
         wk = self._weekend_info()
@@ -3121,7 +3125,7 @@ class AdvancedSimHUD:
             try:
                 n = int(raw)
                 if n > 0:
-                    return n
+                    return (n, self._race_split_total_cache)
             except (TypeError, ValueError):
                 pass
         try:
@@ -3129,16 +3133,19 @@ class AdvancedSimHUD:
         except (TypeError, ValueError):
             sid = 0
         if sid <= 0:
-            return self._race_split_cache
+            return ((self._race_split_cache, self._race_split_total_cache)
+                    if self._race_split_cache else None)
         if (self._race_split_subsession == sid
                 and self._race_split_cache is not None):
-            return self._race_split_cache
+            return (self._race_split_cache, self._race_split_total_cache)
         now = time.monotonic()
         if (self._race_split_subsession == sid
                 and now - self._race_split_fetch_at < 120.0):
-            return self._race_split_cache
+            return ((self._race_split_cache, self._race_split_total_cache)
+                    if self._race_split_cache else None)
         if self._race_split_fetching:
-            return self._race_split_cache
+            return ((self._race_split_cache, self._race_split_total_cache)
+                    if self._race_split_cache else None)
         self._race_split_subsession = sid
         self._race_split_fetch_at = now
         self._race_split_fetching = True
@@ -3147,21 +3154,25 @@ class AdvancedSimHUD:
             n = None
             try:
                 from . import iracing_results
-                n = iracing_results.split_number_for_subsession(sub_id)
+                n = iracing_results.split_info_for_subsession(sub_id)
             except Exception:  # noqa: BLE001
                 n = None
             self._on_race_split_fetched(sub_id, n)
 
         threading.Thread(target=_worker, args=(sid,), daemon=True).start()
-        return self._race_split_cache
+        return ((self._race_split_cache, self._race_split_total_cache)
+                if self._race_split_cache else None)
 
     def _on_race_split_fetched(self, subsession_id: int, n) -> None:
         self._race_split_fetching = False
         if self._race_split_subsession != subsession_id:
             return
         try:
-            if n is not None and int(n) > 0:
-                self._race_split_cache = int(n)
+            if n is not None:
+                split, total = n
+                if int(split) > 0 and int(total) > 0:
+                    self._race_split_cache = int(split)
+                    self._race_split_total_cache = int(total)
         except (TypeError, ValueError):
             pass
 

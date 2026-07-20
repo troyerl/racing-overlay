@@ -228,6 +228,22 @@ pub fn ease(cur: f32, target: f32, dt: f32, tau: f32) -> f32 {
     cur + (target - cur) * a
 }
 
+/// Wall-clock dt from a stored previous timestamp (caps stalls at 100 ms).
+pub fn anim_dt(now: f64, last: &mut f64) -> f32 {
+    let dt = if *last > 0.0 {
+        ((now - *last) as f32).clamp(0.0, 0.1)
+    } else {
+        1.0 / 60.0
+    };
+    *last = now;
+    dt
+}
+
+/// True when `cur` is still meaningfully away from `target`.
+pub fn still_easing(cur: f32, target: f32, eps: f32) -> bool {
+    (cur - target).abs() > eps
+}
+
 /// Rebuild a color with a new alpha. egui `Color32` stores premultiplied RGB;
 /// feeding `.r()/.g()/.b()` into `from_rgba_unmultiplied` double-multiplies and
 /// muddies translucent washes — un-premultiply first.

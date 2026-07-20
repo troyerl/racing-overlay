@@ -35,6 +35,7 @@ base64 = "0.22"
 once_cell = "1"
 scraper = "0.22"
 svgtypes = "0.15"
+sha2 = "0.11.0"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [

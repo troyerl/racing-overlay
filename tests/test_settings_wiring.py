@@ -21,6 +21,7 @@ from overlay.config_editor import (
 from overlay.widgets.leaderboard_strip import LeaderboardStripWidget
 from overlay.widgets.pit_board import PitBoardWidget
 from overlay.widgets.relative import RelativeWidget
+from overlay.widgets.standings import StandingsWidget
 from overlay.widgets.weather_panel import WeatherPanelWidget
 
 # Keys that must not appear in Settings for a section (schema-only or N/A).
@@ -192,6 +193,181 @@ def test_table_fade_ease_tau_paint(qapp, monkeypatch):
         "slots": {},
     })
     w.repaint()
+
+
+def _table_rows(a_first: bool):
+    if a_first:
+        return [
+            {"key": 1, "position": 1, "name": "A", "gap": "+0.0",
+             "is_player": True, "class_color": "#888"},
+            {"key": 2, "position": 2, "name": "B", "gap": "+1.0",
+             "class_color": "#888"},
+        ]
+    return [
+        {"key": 2, "position": 1, "name": "B", "gap": "+0.0",
+         "class_color": "#888"},
+        {"key": 1, "position": 2, "name": "A", "gap": "+1.0",
+         "is_player": True, "class_color": "#888"},
+    ]
+
+
+def test_table_stable_reorder_eases(qapp, monkeypatch):
+    """A single reorder after populate eases toward the new slot."""
+    from PyQt6.QtGui import QPaintEvent
+
+    monkeypatch.setitem(config.CFG["relative"], "row_ease_tau", 0.5)
+    w = RelativeWidget()
+    w.resize(400, 240)
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    assert w._anim[1]["idx"] == 0.0
+    assert w._anim[2]["idx"] == 1.0
+
+    # Simulate a frame of elapsed time so easing advances.
+    w._last_ms = w._clock.elapsed() - 50
+    w.set_data({"rows": _table_rows(False), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    # Mid-flight with slow tau — not snapped to final slots.
+    assert 0.02 < w._anim[1]["idx"] < 0.98
+    assert 0.02 < w._anim[2]["idx"] < 0.98
+
+
+def test_table_rapid_reorder_snaps(qapp, monkeypatch):
+    """Standings: a second reorder within the stability window snaps."""
+    from PyQt6.QtGui import QPaintEvent
+
+    monkeypatch.setitem(config.CFG["standings"], "row_ease_tau", 0.5)
+    w = StandingsWidget()
+    w.resize(400, 240)
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+
+    # First reorder starts a slide (and opens the stability window).
+    w._last_ms = w._clock.elapsed() - 50
+    w.set_data({"rows": _table_rows(False), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    assert w._order_stable_after_ms > 0
+    assert abs(w._anim[1]["idx"] - 1.0) > 0.02  # not snapped yet
+
+    # Immediate second reorder must snap, not stack mid-flight.
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    assert w._anim[1]["idx"] == 0.0
+    assert w._anim[2]["idx"] == 1.0
+
+
+def test_relative_rapid_reorder_still_eases(qapp, monkeypatch):
+    """Relative does not force-snap on rapid reorders — slides keep easing."""
+    from PyQt6.QtGui import QPaintEvent
+
+    monkeypatch.setitem(config.CFG["relative"], "row_ease_tau", 0.5)
+    w = RelativeWidget()
+    w.resize(400, 240)
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+
+    w._last_ms = w._clock.elapsed() - 50
+    w.set_data({"rows": _table_rows(False), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    mid = w._anim[1]["idx"]
+    assert 0.02 < mid < 0.98
+
+    # Immediate second reorder — Relative keeps easing (no force-snap).
+    w._last_ms = w._clock.elapsed() - 30
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    # Target is 0 again; should be mid-flight toward 0, not snapped to 0.
+    assert 0.02 < w._anim[1]["idx"] < 0.98
+    assert w._anim[1]["idx"] != mid  # eased further from the prior mid-flight idx
+
+
+def test_relative_pass_across_player_eases(qapp, monkeypatch):
+    """A car crossing the player (|Δidx|≈2) eases — does not distance-snap."""
+    from PyQt6.QtGui import QPaintEvent
+
+    monkeypatch.setitem(config.CFG["relative"], "row_ease_tau", 0.5)
+    w = RelativeWidget()
+    w.resize(400, 280)
+    # ahead / player / behind
+    w.set_data({
+        "rows": [
+            {"key": 2, "position": 1, "name": "Ahead", "gap": "+0.5",
+             "class_color": "#888"},
+            {"key": 1, "position": 2, "name": "Me", "gap": "0.0",
+             "is_player": True, "class_color": "#888"},
+            {"key": 3, "position": 3, "name": "Behind", "gap": "+0.4",
+             "class_color": "#888"},
+        ],
+        "slots": {},
+    })
+    w.paintEvent(QPaintEvent(w.rect()))
+    assert w._anim[2]["idx"] == 0.0
+
+    # Car 2 passes: now behind the player (index 0 → 2).
+    w._last_ms = w._clock.elapsed() - 50
+    w.set_data({
+        "rows": [
+            {"key": 3, "position": 1, "name": "Behind", "gap": "+0.4",
+             "class_color": "#888"},
+            {"key": 1, "position": 2, "name": "Me", "gap": "0.0",
+             "is_player": True, "class_color": "#888"},
+            {"key": 2, "position": 3, "name": "Ahead", "gap": "+0.5",
+             "class_color": "#888"},
+        ],
+        "slots": {},
+    })
+    w.paintEvent(QPaintEvent(w.rect()))
+    # With the old 1.25-slot snap this would teleport to 2.0 instantly.
+    assert 0.02 < w._anim[2]["idx"] < 1.98
+
+
+def test_table_slide_progresses_monotonically(qapp, monkeypatch):
+    """Repeated paints with elapsed wall time move idx steadily toward the
+    target — never backward."""
+    from PyQt6.QtGui import QPaintEvent
+
+    monkeypatch.setitem(config.CFG["relative"], "row_ease_tau", 0.3)
+    w = RelativeWidget()
+    w.resize(400, 240)
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+
+    w._last_ms = w._clock.elapsed() - 30
+    w.set_data({"rows": _table_rows(False), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+
+    # Row 1 slides 0 → 1; each subsequent frame must move it closer.
+    prev = w._anim[1]["idx"]
+    assert 0.0 < prev < 1.0
+    for _ in range(5):
+        w._last_ms = w._clock.elapsed() - 30  # simulate ~30ms frame gap
+        w.paintEvent(QPaintEvent(w.rect()))
+        cur = w._anim[1]["idx"]
+        assert cur >= prev  # monotonic toward target 1.0
+        prev = cur
+    assert prev > 0.4  # converging after ~180ms of simulated time (tau 0.3)
+
+
+def test_table_animating_schedules_timer_repaint(qapp, monkeypatch):
+    """Mid-slide paints go through the fixed-rate anim timer path."""
+    from PyQt6.QtGui import QPaintEvent
+
+    monkeypatch.setitem(config.CFG["relative"], "row_ease_tau", 0.5)
+    w = RelativeWidget()
+    w.resize(400, 240)
+    w.set_data({"rows": _table_rows(True), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+
+    w._last_ms = w._clock.elapsed() - 30
+    w.set_data({"rows": _table_rows(False), "slots": {}})
+    w.paintEvent(QPaintEvent(w.rect()))
+    assert w._animating
+    # A paint inside the 33ms window must arm the timer instead of requesting
+    # an immediate repaint (fixed cadence, no uneven chained repaints).
+    w._anim_timer.stop()
+    w._last_anim_sched_ms = w._clock.elapsed()
+    w.paintEvent(QPaintEvent(w.rect()))
+    assert w._anim_timer.isActive()
 
 
 def test_hidden_row_dividers_still_in_defaults_for_compat():

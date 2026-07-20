@@ -9,5 +9,7 @@ pub fn paint(ui: &mut egui::Ui, ctx: &mut WidgetCtx<'_>) {
         &ctx.frame.standings_cars,
         &ctx.frame.standings_slots,
         false,
+        ctx.mono_secs,
+        ctx.panel_animating,
     );
 }

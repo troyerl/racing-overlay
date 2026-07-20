@@ -8,15 +8,16 @@ use crate::state::{PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
     demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
-    LapLogAccum, PitStopTracker, SectorTimer, TelemetryFrame,
+    LapLogAccum, PitStopTracker, RelativeOrderHysteresis, SectorTimer, TelemetryFrame,
 };
-use crate::widgets::{self, WidgetCtx};
+use crate::widgets::{self, MapPaintMode, WidgetCtx};
 use crate::win_click;
 use eframe::egui::{
     self, CornerRadius, Pos2, Rect, Sense, Stroke, ViewportBuilder, ViewportCommand, ViewportId,
 };
 use eframe::glow;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,10 +26,17 @@ const MIN_PANEL_H: i32 = 44;
 const RESIZE_GRIP: f32 = 28.0;
 /// Frames to keep applying Visible(false) so macOS/eframe actually drops the window.
 const HIDE_RETRY_FRAMES: u8 = 8;
-/// Other panels: throttle Windows glReadPixels + present (~15 Hz).
-const NON_MAP_READBACK_MS: u128 = 66;
-/// Panels that need every-frame present (map motion + table row ease).
-const FULL_RATE_PRESENT: &[&str] = &["map", "relative", "standings"];
+/// Other panels while map composite is hot: keep them rare so ULW budget stays on cars.
+const NON_MAP_WHEN_MAP_HOT_MS: u128 = 250;
+/// Other panels: throttle Windows glReadPixels + present (~10 Hz idle).
+const NON_MAP_READBACK_MS: u128 = 100;
+/// Any panel with active easing / blink. Host frame costs ~10-13 ms, so a
+/// 16 ms post-frame wait only produced ~35-40 FPS.
+const PANEL_ANIM_READBACK_MS: u128 = 8;
+/// Map car motion: target ~60 Hz; real cadence capped by glReadPixels cost.
+const MAP_READBACK_MS: u128 = 16;
+/// If the previous host frame exceeded this, skip non-map paints this tick.
+const HEAVY_FRAME_MS: f64 = 40.0;
 /// Require this many consecutive absent frames before farewell (avoids config flicker).
 const HIDE_DEBOUNCE_FRAMES: u8 = 3;
 
@@ -60,6 +68,8 @@ struct PerfAccum {
     ulw_ms: f64,
     map_dt_sum: f64,
     map_dt_n: u32,
+    paint_on: u32,
+    paint_off: u32,
 }
 
 pub struct OverlayApp {
@@ -85,12 +95,16 @@ pub struct OverlayApp {
     last_geom: HashMap<String, (i32, i32, i32, i32)>,
     /// Per-panel GL→BGRA scratch buffers (Windows layered present).
     readback: HashMap<String, crate::layered::ReadbackScratch>,
+    /// Map-only pipelined readback (avoids sync glReadPixels on the hot path).
+    map_pipe: crate::layered::MapReadbackPipe,
     /// Cached GDI DIB surfaces per HWND.
     present_cache: crate::layered::PresentCache,
     /// Last presented buffer hash per HWND — skip unchanged UpdateLayeredWindow.
     last_present_hash: HashMap<isize, u64>,
     /// Last successful readback per panel (throttle non-map Windows present).
     last_readback: HashMap<String, Instant>,
+    /// Previous paint's table-animating flag (drives table present cadence).
+    panel_animating: HashMap<String, bool>,
     /// Shared monotonic clock (demo telem + map easing).
     clock_start: Instant,
     gl: Option<Arc<glow::Context>>,
@@ -115,6 +129,19 @@ pub struct OverlayApp {
     perf_emit_at: Instant,
     perf_acc: PerfAccum,
     perf_last_map_paint_secs: f64,
+    /// Sticky Relative EstTime order (live noise hysteresis).
+    rel_order: RelativeOrderHysteresis,
+    /// Last Relative/Standings focus car (player or spectated) — reset sticky on change.
+    last_table_focus: Option<i32>,
+    /// Previous update() duration (ms) — defer sibling paints when heavy.
+    last_frame_ms: f64,
+    /// Full-res static map BGRA cache (no cars) for CPU composite presents.
+    map_bg: Option<(i32, i32, Vec<u8>)>,
+    map_bg_fp: u64,
+    /// `pixels_per_point` at the time `map_bg` was captured (DPI align).
+    map_bg_ppp: f32,
+    /// StaticOnly paint kicked; next ready PBO becomes `map_bg`.
+    map_capturing_bg: bool,
 }
 
 impl OverlayApp {
@@ -143,9 +170,11 @@ impl OverlayApp {
             last_click_through: HashMap::new(),
             last_geom: HashMap::new(),
             readback: HashMap::new(),
+            map_pipe: crate::layered::MapReadbackPipe::default(),
             present_cache: crate::layered::PresentCache::default(),
             last_present_hash: HashMap::new(),
             last_readback: HashMap::new(),
+            panel_animating: HashMap::new(),
             clock_start: Instant::now(),
             dragging: Arc::new(Mutex::new(None)),
             resizing: Arc::new(Mutex::new(None)),
@@ -166,6 +195,13 @@ impl OverlayApp {
             perf_emit_at: Instant::now(),
             perf_acc: PerfAccum::default(),
             perf_last_map_paint_secs: 0.0,
+            rel_order: RelativeOrderHysteresis::default(),
+            last_table_focus: None,
+            last_frame_ms: 0.0,
+            map_bg: None,
+            map_bg_fp: 0,
+            map_bg_ppp: 1.0,
+            map_capturing_bg: false,
         }
     }
 
@@ -186,9 +222,11 @@ impl OverlayApp {
             0.0
         };
         eprintln!(
-            "perf fps={fps:.0} frame={frame_ms:.1}ms readbacks={}/{} (map={:.1}ms other={:.1}ms) presents={} ulw={:.1}ms map_dt={map_dt:.3}",
+            "perf fps={fps:.0} frame={frame_ms:.1}ms readbacks={}/{} paints={}/{} (map={:.1}ms other={:.1}ms) presents={} ulw={:.1}ms map_dt={map_dt:.3}",
             acc.readbacks,
             acc.panel_slots,
+            acc.paint_on,
+            acc.paint_off,
             acc.rb_map_ms,
             acc.rb_other_ms,
             acc.presents,
@@ -461,7 +499,24 @@ impl OverlayApp {
 
         self.pit_stops.observe(&frame.cars, frame.session_time);
 
-        finalize_frame(&mut frame, cfg.as_ref());
+        // Camera / player focus change: drop sticky relative order so rows don't
+        // inherit the previous car's ahead/behind ranking.
+        let table_focus = frame.camera_car_idx.or_else(|| {
+            frame
+                .cars
+                .iter()
+                .find(|c| c.is_player)
+                .map(|c| c.car_idx)
+        });
+        if table_focus != self.last_table_focus {
+            self.rel_order = RelativeOrderHysteresis::default();
+            self.last_table_focus = table_focus;
+        }
+
+        // Header/footer slots (cpu/mem/gpu) read these fields — sample before finalize.
+        self.sysstats.sample_into(&mut frame);
+
+        finalize_frame(&mut frame, cfg.as_ref(), &mut self.rel_order);
         self.pit_stops.apply_frame(&mut frame, cfg.as_ref());
 
         {
@@ -506,7 +561,6 @@ impl OverlayApp {
             frame.lap_log = self.lap_log.build_rows(cfg.as_ref());
         }
 
-        self.sysstats.sample_into(&mut frame);
         // Auto-switch presets when league/car bindings match.
         {
             let league = frame.league_id;
@@ -523,6 +577,7 @@ impl OverlayApp {
                     if let Some(target) = st.config.preset_for_session(league, &car) {
                         if target != st.config.active_preset {
                             let _ = Arc::make_mut(&mut st.config).set_active_preset(&target);
+                            st.apply_effective_context();
                         }
                     }
                 }
@@ -530,7 +585,9 @@ impl OverlayApp {
         }
         {
             let mut st = self.state.write();
-            let next_context = if frame.in_garage {
+            // On track only while seated in-car. Spectating / garage / menus use
+            // the In garage profile (and Settings profile combo follows this).
+            let next_context = if frame.connected && (frame.in_garage || !frame.in_car) {
                 ConfigContext::Garage
             } else {
                 ConfigContext::Race
@@ -559,11 +616,7 @@ impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_shell_commands();
         self.tick_telemetry();
-        let frame_start = if self.perf {
-            Some(Instant::now())
-        } else {
-            None
-        };
+        let frame_start = Instant::now();
         // Keep mono clock fresh between telem ticks for map prediction.
         let mono = self.clock_start.elapsed().as_secs_f64();
         if let Some(mut st) = self.state.try_write() {
@@ -597,7 +650,7 @@ impl eframe::App for OverlayApp {
             )
         };
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(4));
+        ctx.request_repaint_after(std::time::Duration::from_millis(16));
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
@@ -623,11 +676,32 @@ impl eframe::App for OverlayApp {
         }
 
         let panel_count = keys_layout.len() as u32;
+        let map_open = keys_layout.iter().any(|(k, _)| k == "map");
+        let demo_only = self.demo_only;
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
         let gl = self.gl.clone();
-        // (hwnd, w, h, panel_key, hash) — present from per-key scratch after all GL work.
-        let mut pending_presents: Vec<(isize, i32, i32, String, u64)> = Vec::new();
+        // Coast map cars every host tick (independent of GL paint / present).
+        if keys_layout.iter().any(|(k, _)| k == "map") {
+            let mut st = self.state.write();
+            let mono_secs = st.mono_secs;
+            let cfg = Arc::clone(&st.config);
+            let frame = Arc::clone(&st.frame);
+            let mut panel_animating = false;
+            let mut wctx = WidgetCtx {
+                cfg: cfg.as_ref(),
+                frame: frame.as_ref(),
+                edit_mode,
+                demo: demo_only,
+                map: &mut st.map,
+                mono_secs,
+                panel_animating: &mut panel_animating,
+                map_paint_mode: MapPaintMode::Full,
+            };
+            widgets::tick_car_motion(&mut wctx);
+        }
+        // (hwnd, dst_w, dst_h, src_w, src_h, panel_key, hash)
+        let mut pending_presents: Vec<(isize, i32, i32, i32, i32, String, u64)> = Vec::new();
         let dragging_key = self
             .dragging
             .lock()
@@ -640,7 +714,6 @@ impl eframe::App for OverlayApp {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|r| r.key.clone());
-
         for (key, lay) in keys_layout {
             still_open.insert(key.clone());
             let vid = ViewportId::from_hash_of(&key);
@@ -649,6 +722,122 @@ impl eframe::App for OverlayApp {
             let is_resizing = resizing_key.as_deref() == Some(key.as_str());
             let geom = (lay.x, lay.y, lay.w, lay.h);
             let geom_changed = self.last_geom.get(&key) != Some(&geom);
+
+            let map_panel = key == "map";
+            let was_animating = self.panel_animating.get(&key).copied().unwrap_or(false);
+
+            // CPU-composite map path: cache static track, present cars without GL readback.
+            // Invalidate on *client pixel* size (not layout) to avoid DPI thrash.
+            let map_client = if map_panel {
+                win_click::find_overlay_hwnd(&title)
+                    .and_then(|h| layered::client_size(h))
+            } else {
+                None
+            };
+            let map_authoring_busy = if map_panel {
+                let m = &self.state.read().map;
+                m.pit_edit || m.corner_edit || m.sf_edit
+            } else {
+                false
+            };
+            let use_map_composite = map_panel && !edit_mode && !map_authoring_busy;
+            if use_map_composite {
+                let (cw, ch) = map_client.unwrap_or((lay.w, lay.h));
+                let fp = {
+                    let st = self.state.read();
+                    widgets::bg_fingerprint(
+                        st.config.as_ref(),
+                        &st.map,
+                        st.frame.as_ref(),
+                        cw,
+                        ch,
+                    )
+                };
+                if fp != self.map_bg_fp {
+                    self.map_bg = None;
+                    self.map_bg_fp = fp;
+                    self.map_capturing_bg = true;
+                }
+                if let Some((bw, bh, _)) = &self.map_bg {
+                    if *bw != cw || *bh != ch {
+                        self.map_bg = None;
+                        self.map_capturing_bg = true;
+                    }
+                }
+                if self.map_bg.is_none() {
+                    self.map_capturing_bg = true;
+                }
+            } else if map_panel {
+                self.map_capturing_bg = false;
+            }
+            let map_hot = use_map_composite
+                && self.map_bg.is_some()
+                && !self.map_capturing_bg;
+            let map_paint_mode = if use_map_composite && self.map_capturing_bg {
+                MapPaintMode::StaticOnly
+            } else {
+                MapPaintMode::Full
+            };
+
+            let min_ms = if map_panel {
+                if map_hot {
+                    0
+                } else {
+                    MAP_READBACK_MS
+                }
+            } else if was_animating {
+                // Tables, radar, delta, dash blink, etc. need ~60 Hz presents.
+                PANEL_ANIM_READBACK_MS
+            } else if key == "relative" || key == "standings" {
+                // Idle tables refresh often enough to catch reorder starts
+                // without staircasey first frames.
+                33
+            } else if map_hot {
+                NON_MAP_WHEN_MAP_HOT_MS
+            } else {
+                NON_MAP_READBACK_MS
+            };
+            let due = self
+                .last_readback
+                .get(&key)
+                .map(|t| t.elapsed().as_millis() >= min_ms)
+                .unwrap_or(true);
+            let live_connected = self.state.read().frame.connected;
+            let heavy = self.last_frame_ms > HEAVY_FRAME_MS;
+            // Yield to map only when map is open in this layout. Absent
+            // last_readback["map"] must not starve siblings (black Relative).
+            let map_due_now = map_open
+                && self
+                    .last_readback
+                    .get("map")
+                    .map(|t| t.elapsed().as_millis() >= MAP_READBACK_MS)
+                    .unwrap_or(false);
+            let readback_now = if map_panel {
+                // Hot composite: present every host tick (coast needs steady ULW).
+                map_hot || due || is_dragging || is_resizing
+            } else if is_dragging || is_resizing || was_animating {
+                due || is_dragging || is_resizing
+            } else if map_hot && live_connected && !edit_mode {
+                // Protect map ULW budget; refresh siblings ~4 Hz.
+                due && !heavy
+            } else if heavy || (live_connected && !edit_mode && map_due_now) {
+                false
+            } else {
+                due
+            };
+            // Hot composite: skip GL paint; cold capture / edit / classic still paint.
+            let paint_now = if map_hot {
+                false
+            } else {
+                edit_mode || readback_now
+            };
+            if self.perf {
+                if paint_now {
+                    self.perf_acc.paint_on += 1;
+                } else {
+                    self.perf_acc.paint_off += 1;
+                }
+            }
 
             let mut builder = ViewportBuilder::default()
                 .with_title(title.clone())
@@ -674,31 +863,52 @@ impl eframe::App for OverlayApp {
             let key_clone = key.clone();
             let dragging = Arc::clone(&self.dragging);
             let resizing = Arc::clone(&self.resizing);
+            let panel_anim_flag = Arc::new(AtomicBool::new(false));
+            let panel_anim_flag_paint = Arc::clone(&panel_anim_flag);
+            let do_paint = paint_now;
+            let paint_mode = map_paint_mode;
+            let demo = demo_only;
 
+            // Immediate viewports must be shown every tick or eframe closes them.
+            // Skip expensive widget paint when present is not due.
             ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
                 // Undo sticky Visible(false) from a prior hide/flicker.
                 vp_ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                if !do_paint {
+                    return;
+                }
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
                     .show(vp_ctx, |ui| {
-                        let (cfg, frame, mut map, mono_secs) = {
+                        let (cfg, frame, mono_secs) = {
                             let st = state.read();
                             (
                                 Arc::clone(&st.config),
                                 Arc::clone(&st.frame),
-                                st.map.clone(),
                                 st.mono_secs,
                             )
                         };
+                        // Map: move authoring state in/out (no deep clone of path/pits).
+                        // Other panels: empty stub — they never touch map geometry.
+                        let mut map = if key_clone == "map" {
+                            std::mem::take(&mut state.write().map)
+                        } else {
+                            crate::state::MapAuthoring::default()
+                        };
                         {
+                            let mut panel_animating = false;
                             let mut wctx = WidgetCtx {
                                 cfg: cfg.as_ref(),
                                 frame: frame.as_ref(),
                                 edit_mode,
+                                demo,
                                 map: &mut map,
                                 mono_secs,
+                                panel_animating: &mut panel_animating,
+                                map_paint_mode: paint_mode,
                             };
                             widgets::paint(ui, &key_clone, &mut wctx);
+                            panel_anim_flag_paint.store(panel_animating, Ordering::Relaxed);
                         }
                         if key_clone == "map" {
                             state.write().map = map;
@@ -881,38 +1091,195 @@ impl eframe::App for OverlayApp {
                 }
             });
 
+            if paint_now {
+                self.panel_animating.insert(
+                    key.clone(),
+                    panel_anim_flag.load(Ordering::Relaxed),
+                );
+            }
+
             // Read pixels while this viewport's GL context is still current.
             // Defer UpdateLayeredWindow until after all viewports (GDI poisons
             // the next eframe make_current on Windows).
             if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
-                if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
-                    let full_rate = FULL_RATE_PRESENT.contains(&key.as_str());
-                    let due = full_rate
-                        || self
-                            .last_readback
-                            .get(&key)
-                            .map(|t| t.elapsed().as_millis() >= NON_MAP_READBACK_MS)
-                            .unwrap_or(true);
-                    if due {
-                        let scratch = self
-                            .readback
-                            .entry(key.clone())
-                            .or_default();
+                let ppp = ctx.pixels_per_point();
+                if map_hot && readback_now {
+                    // Hot path: memcpy cached bg + CPU car dots (no GL readback).
+                    let dims = self.map_bg.as_ref().map(|(bw, bh, _)| (*bw, *bh));
+                    if let Some((bw, bh)) = dims {
+                        let sprite_ppp = if self.map_bg_ppp > 0.25 {
+                            self.map_bg_ppp
+                        } else {
+                            ppp
+                        };
+                        let sprites = {
+                            let mut st = self.state.write();
+                            let mono_secs = st.mono_secs;
+                            let cfg = Arc::clone(&st.config);
+                            let frame = Arc::clone(&st.frame);
+                            let mut panel_animating = false;
+                            let mut wctx = WidgetCtx {
+                                cfg: cfg.as_ref(),
+                                frame: frame.as_ref(),
+                                edit_mode,
+                                demo: demo_only,
+                                map: &mut st.map,
+                                mono_secs,
+                                panel_animating: &mut panel_animating,
+                                map_paint_mode: MapPaintMode::Full,
+                            };
+                            widgets::build_car_sprites(
+                                &mut wctx,
+                                bw as f32,
+                                bh as f32,
+                                sprite_ppp,
+                            )
+                        };
+                        let scratch = self.readback.entry(key.clone()).or_default();
+                        if let Some((_, _, bg)) = self.map_bg.as_ref() {
+                            layered::composite_map_cars(bg, bw, bh, &sprites, scratch.bgra_mut());
+                        }
+                        // Always present — cars move every frame; skip full-buffer hash.
+                        let hash = self
+                            .last_present_hash
+                            .get(&hwnd)
+                            .copied()
+                            .unwrap_or(0)
+                            .wrapping_add(1);
+                        pending_presents.push((hwnd, bw, bh, bw, bh, key.clone(), hash));
+                        self.last_readback.insert(key.clone(), Instant::now());
+                        if self.perf {
+                            self.perf_acc.readbacks += 1;
+                        }
+                    }
+                } else if readback_now {
+                    if let (Some(gl), Some((w, h))) = (gl.as_ref(), layered::client_size(hwnd)) {
                         let rb_start = Instant::now();
-                        if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
-                            let rb_ms = rb_start.elapsed().as_secs_f64() * 1000.0;
-                            if self.perf {
-                                self.perf_acc.readbacks += 1;
-                                if key == "map" {
-                                    self.perf_acc.rb_map_ms += rb_ms;
+                        if map_panel {
+                            let taken_owned = {
+                                let scratch = self.readback.entry(key.clone()).or_default();
+                                layered::map_take_ready_bgra(gl, &mut self.map_pipe, scratch)
+                                    .map(|s| s.to_vec())
+                            };
+                            if let Some(bgra) = taken_owned {
+                                if self.map_capturing_bg && use_map_composite {
+                                    // Store static track as bg, then composite cars for present.
+                                    self.map_bg = Some((w, h, bgra));
+                                    self.map_bg_ppp = ppp;
+                                    self.map_capturing_bg = false;
+                                    let sprites = {
+                                        let mut st = self.state.write();
+                                        let mono_secs = st.mono_secs;
+                                        let cfg = Arc::clone(&st.config);
+                                        let frame = Arc::clone(&st.frame);
+                                        let mut panel_animating = false;
+                                        let mut wctx = WidgetCtx {
+                                            cfg: cfg.as_ref(),
+                                            frame: frame.as_ref(),
+                                            edit_mode,
+                                            demo: demo_only,
+                                            map: &mut st.map,
+                                            mono_secs,
+                                            panel_animating: &mut panel_animating,
+                                            map_paint_mode: MapPaintMode::Full,
+                                        };
+                                        widgets::build_car_sprites(
+                                            &mut wctx,
+                                            w as f32,
+                                            h as f32,
+                                            ppp,
+                                        )
+                                    };
+                                    let scratch = self.readback.entry(key.clone()).or_default();
+                                    if let Some((_, _, bg)) = self.map_bg.as_ref() {
+                                        layered::composite_map_cars(
+                                            bg,
+                                            w,
+                                            h,
+                                            &sprites,
+                                            scratch.bgra_mut(),
+                                        );
+                                    }
+                                    let hash = layered::hash_bgra(scratch.bgra());
+                                    pending_presents.push((hwnd, w, h, w, h, key.clone(), hash));
                                 } else {
-                                    self.perf_acc.rb_other_ms += rb_ms;
+                                    let scratch = self.readback.entry(key.clone()).or_default();
+                                    *scratch.bgra_mut() = bgra;
+                                    let hash = layered::hash_bgra(scratch.bgra());
+                                    let (sw, sh) =
+                                        self.map_pipe.last_taken_dims.unwrap_or((w, h));
+                                    pending_presents.push((hwnd, w, h, sw, sh, key.clone(), hash));
                                 }
                             }
-                            self.last_readback.insert(key.clone(), Instant::now());
-                            let hash = layered::hash_bgra(bgra);
-                            if self.last_present_hash.get(&hwnd) != Some(&hash) {
-                                pending_presents.push((hwnd, w, h, key.clone(), hash));
+                            let kicked =
+                                layered::map_kick_readback(gl, w, h, &mut self.map_pipe);
+                            if kicked {
+                                self.last_readback.insert(key.clone(), Instant::now());
+                            } else if layered::map_pipe_disabled(&self.map_pipe) {
+                                // Driver rejected the PBO path; keep the map visible
+                                // on the old sync path rather than dropping presents.
+                                let scratch = self.readback.entry(key.clone()).or_default();
+                                if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
+                                    if self.map_capturing_bg && use_map_composite {
+                                        self.map_bg = Some((w, h, bgra.to_vec()));
+                                        self.map_bg_ppp = ppp;
+                                        self.map_capturing_bg = false;
+                                        let sprites = {
+                                            let mut st = self.state.write();
+                                            let mono_secs = st.mono_secs;
+                                            let cfg = Arc::clone(&st.config);
+                                            let frame = Arc::clone(&st.frame);
+                                            let mut panel_animating = false;
+                                            let mut wctx = WidgetCtx {
+                                                cfg: cfg.as_ref(),
+                                                frame: frame.as_ref(),
+                                                edit_mode,
+                                                demo: demo_only,
+                                                map: &mut st.map,
+                                                mono_secs,
+                                                panel_animating: &mut panel_animating,
+                                                map_paint_mode: MapPaintMode::Full,
+                                            };
+                                            widgets::build_car_sprites(
+                                                &mut wctx,
+                                                w as f32,
+                                                h as f32,
+                                                ppp,
+                                            )
+                                        };
+                                        if let Some((_, _, bg)) = self.map_bg.as_ref() {
+                                            layered::composite_map_cars(
+                                                bg,
+                                                w,
+                                                h,
+                                                &sprites,
+                                                scratch.bgra_mut(),
+                                            );
+                                        }
+                                    }
+                                    let hash = layered::hash_bgra(scratch.bgra());
+                                    pending_presents.push((hwnd, w, h, w, h, key.clone(), hash));
+                                    self.last_readback.insert(key.clone(), Instant::now());
+                                }
+                            }
+                            if self.perf {
+                                self.perf_acc.readbacks += 1;
+                                self.perf_acc.rb_map_ms +=
+                                    rb_start.elapsed().as_secs_f64() * 1000.0;
+                            }
+                        } else {
+                            let scratch = self.readback.entry(key.clone()).or_default();
+                            if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
+                                let rb_ms = rb_start.elapsed().as_secs_f64() * 1000.0;
+                                if self.perf {
+                                    self.perf_acc.readbacks += 1;
+                                    self.perf_acc.rb_other_ms += rb_ms;
+                                }
+                                self.last_readback.insert(key.clone(), Instant::now());
+                                let hash = layered::hash_bgra(bgra);
+                                if self.last_present_hash.get(&hwnd) != Some(&hash) {
+                                    pending_presents.push((hwnd, w, h, w, h, key.clone(), hash));
+                                }
                             }
                         }
                     }
@@ -923,23 +1290,35 @@ impl eframe::App for OverlayApp {
                 }
             }
 
-            if key == "map" {
+            if key == "map" && readback_now {
                 self.perf_record_map_dt();
             }
 
             self.open_viewports.insert(key);
         }
 
-        for (hwnd, w, h, key, hash) in pending_presents {
+        for (hwnd, dst_w, dst_h, src_w, src_h, key, hash) in pending_presents {
             if let Some(scratch) = self.readback.get(&key) {
                 let ulw_start = Instant::now();
-                layered::present_bgra(
-                    &mut self.present_cache,
-                    hwnd,
-                    w,
-                    h,
-                    scratch.bgra(),
-                );
+                if src_w == dst_w && src_h == dst_h {
+                    layered::present_bgra(
+                        &mut self.present_cache,
+                        hwnd,
+                        dst_w,
+                        dst_h,
+                        scratch.bgra(),
+                    );
+                } else {
+                    layered::present_bgra_scaled(
+                        &mut self.present_cache,
+                        hwnd,
+                        dst_w,
+                        dst_h,
+                        src_w,
+                        src_h,
+                        scratch.bgra(),
+                    );
+                }
                 if self.perf {
                     self.perf_acc.presents += 1;
                     self.perf_acc.ulw_ms += ulw_start.elapsed().as_secs_f64() * 1000.0;
@@ -951,6 +1330,7 @@ impl eframe::App for OverlayApp {
         // Drop scratch/hashes for panels that closed.
         self.readback.retain(|k, _| still_open.contains(k));
         self.last_readback.retain(|k, _| still_open.contains(k));
+        self.panel_animating.retain(|k, _| still_open.contains(k));
         let mut open_hwnds = HashSet::new();
         for key in &still_open {
             let title = win_click::panel_title(key);
@@ -984,9 +1364,11 @@ impl eframe::App for OverlayApp {
         self.open_viewports = still_open;
         self.run_pending_hides(ctx);
 
-        if let Some(start) = frame_start {
+        let ms = frame_start.elapsed().as_secs_f64() * 1000.0;
+        self.last_frame_ms = ms;
+        if self.perf {
             self.perf_acc.frames += 1;
-            self.perf_acc.frame_ms_sum += start.elapsed().as_secs_f64() * 1000.0;
+            self.perf_acc.frame_ms_sum += ms;
             self.perf_acc.panel_slots += panel_count;
             self.perf_maybe_emit();
         }

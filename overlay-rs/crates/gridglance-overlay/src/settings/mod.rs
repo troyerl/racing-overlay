@@ -68,6 +68,28 @@ impl SettingsUi {
             }
         }
     }
+
+    /// 1 → 0 over the last 400 ms of the status flash.
+    pub fn status_opacity(&self) -> f32 {
+        match self.status_deadline {
+            Some(deadline) if !self.status.is_empty() => {
+                let left = deadline.saturating_duration_since(Instant::now());
+                let ms = left.as_millis() as f32;
+                if ms >= 400.0 {
+                    1.0
+                } else {
+                    (ms / 400.0).clamp(0.0, 1.0)
+                }
+            }
+            _ => {
+                if self.status.is_empty() {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+        }
+    }
 }
 
 /// Paint the Settings window contents.
@@ -199,7 +221,7 @@ pub fn paint(
                 // Advance past the allocated body so status/footer sit below it.
                 ui.advance_cursor_after_rect(body_rect);
 
-                status_line(ui, &ui_state.status);
+                status_line(ui, &ui_state.status, ui_state.status_opacity());
                 paint_footer(ui, state, ui_state, dirty);
             });
         });
@@ -404,7 +426,7 @@ fn paint_profile_row(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi
     });
     ui.label(
         RichText::new(
-            "On-track and garage overrides are edited separately; live preview follows telemetry.",
+            "On track = seated in-car. In garage = garage, menus, or spectating. Live preview follows telemetry.",
         )
         .size(11.0)
         .color(MUTED),
@@ -1042,20 +1064,30 @@ fn paint_value(
             });
         }
         Value::Number(n) => {
+            if matches!(key, "rows" | "rows_ahead" | "rows_behind")
+                && matches!(section, "relative" | "standings")
+            {
+                paint_linked_row_counts(ui, state, section, key, dirty, accent);
+                return;
+            }
             let mut v = n.as_f64().unwrap_or(0.0) as f32;
-            let range = if key.contains("scale") || key.contains("tau") || key.contains("frac") {
+            let range = if key.contains("tau") {
+                // 0 disables easing (instant snap) — keep a usable floor.
+                0.05..=1.0
+            } else if key.contains("scale") || key.contains("frac") {
                 0.0..=4.0
             } else if key.contains("opacity") || key.contains("pct") {
                 0.0..=1.0
             } else {
                 0.0..=500.0
             };
+            let step = if key.contains("tau") { 0.01 } else { 0.05 };
             if number_row(
                 ui,
                 &pretty_key(key),
                 &mut v,
                 range,
-                0.05,
+                step,
                 accent,
                 help_text(section, key),
             ) {
@@ -1436,6 +1468,91 @@ fn set_section_key(state: &StateHandle, section: &str, key: &str, val: Value, di
         let cfg = Arc::make_mut(&mut st.config);
         cfg.apply_cfg_patch(&json!({ section: { key: val } }));
         *dirty = true;
+    }
+}
+
+/// Relative / Standings: keep rows == rows_ahead + rows_behind while editing.
+fn paint_linked_row_counts(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    dirty: &mut bool,
+    accent: Color32,
+) {
+    let (total, ahead, behind) = {
+        let st = state.read();
+        let sec = st.config.section(section);
+        let ahead = sec
+            .get("rows_ahead")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(3.0)
+            .max(0.0)
+            .round() as i32;
+        let behind = sec
+            .get("rows_behind")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(3.0)
+            .max(0.0)
+            .round() as i32;
+        let total = sec
+            .get("rows")
+            .and_then(|v| v.as_f64())
+            .map(|v| v.max(0.0).round() as i32)
+            .unwrap_or(ahead + behind);
+        (total.max(ahead + behind), ahead.max(0), behind.max(0))
+    };
+
+    let label = match key {
+        "rows" => "Total rows",
+        "rows_ahead" => "Rows ahead",
+        "rows_behind" => "Rows behind",
+        _ => return,
+    };
+    let mut v = match key {
+        "rows" => total as f32,
+        "rows_ahead" => ahead as f32,
+        "rows_behind" => behind as f32,
+        _ => return,
+    };
+    let max = if key == "rows" { 30.0 } else { total.max(0) as f32 };
+    if number_row(
+        ui,
+        label,
+        &mut v,
+        0.0..=max,
+        1.0,
+        accent,
+        help_text(section, key),
+    ) {
+        let n = v.round().clamp(0.0, 30.0) as i32;
+        let (new_total, new_ahead, new_behind) = match key {
+            "rows" => {
+                let t = n.max(0);
+                let a = ahead.min(t).max(0);
+                (t, a, t - a)
+            }
+            "rows_ahead" => {
+                let a = n.clamp(0, total);
+                (total, a, total - a)
+            }
+            "rows_behind" => {
+                let b = n.clamp(0, total);
+                (total, total - b, b)
+            }
+            _ => return,
+        };
+        if let Some(mut st) = state.try_write() {
+            let cfg = Arc::make_mut(&mut st.config);
+            cfg.apply_cfg_patch(&json!({
+                section: {
+                    "rows": new_total,
+                    "rows_ahead": new_ahead,
+                    "rows_behind": new_behind,
+                }
+            }));
+            *dirty = true;
+        }
     }
 }
 

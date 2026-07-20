@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from overlay.iracing_results import _split_from_results
+from overlay.iracing_results import _split_from_results, _split_info_from_results
 
 
 def test_split_from_results_ranks_by_sof():
@@ -19,8 +19,10 @@ def test_split_from_results_ranks_by_sof():
     assert _split_from_results(data, 300) == 2
     assert _split_from_results(data, 100) == 3
     assert _split_from_results(data, 999) is None
+    assert _split_info_from_results(data, 300) == (2, 3)
 
 
 def test_split_from_results_single():
     assert _split_from_results({"subsession_id": 42}, 42) == 1
     assert _split_from_results({"subsession_id": 42}, 99) is None
+    assert _split_info_from_results({"subsession_id": 42}, 42) == (1, 1)

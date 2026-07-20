@@ -9,10 +9,16 @@ use crate::telemetry::{slot_label, TableRow, TableSlotItem, TableSlots};
 use egui::{Align2, Color32, CornerRadius, FontId, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 use std::collections::HashMap;
 
+/// Snap only on large jumps — one/two-slot position swaps must ease.
 const ROW_SNAP_SLOTS: f32 = 6.0;
 const DENSE_ROW_COUNT: usize = 20;
 const DENSE_ROW_SNAP_SLOTS: f32 = 5.0;
 const DENSE_ROW_EASE_TAU: f32 = 0.10;
+/// Relative passes skip the player row (|Δidx|≈2); use a high threshold so
+/// those slides ease instead of teleporting. Larger window jumps still snap.
+const RELATIVE_ROW_SNAP_SLOTS: f32 = 8.0;
+/// Second reorder within this window snaps instead of stacking mid-flight slides.
+const ORDER_STABLE_S: f64 = 0.120;
 
 #[derive(Clone, Default)]
 struct RowAnimState {
@@ -24,7 +30,42 @@ struct RowAnimState {
 struct TableAnim {
     /// key -> visual slot + fade
     slots: HashMap<String, RowAnimState>,
-    last_ms: f64,
+    last_paint_secs: f64,
+    last_order: Vec<String>,
+    order_stable_after: f64,
+}
+
+/// Vertical scroll (in row slots) so the focus car stays visible with behind rows.
+fn standings_paint_scroll(
+    cfg: &OverlayConfig,
+    section: &str,
+    rows: &[TableRow],
+    visible_slots: usize,
+) -> f32 {
+    if section != "standings" || !cfg.bool_key(section, "center_on_player", true) {
+        return 0.0;
+    }
+    if rows.len() <= visible_slots {
+        return 0.0;
+    }
+    let Some(fi) = rows.iter().position(|r| r.is_player && !r.empty) else {
+        return 0.0;
+    };
+    let ahead_cfg = cfg.f64_key(section, "rows_ahead", 4.0).max(0.0) as usize;
+    let behind_cfg = cfg.f64_key(section, "rows_behind", 5.0).max(0.0) as usize;
+    let behind_in_list = rows.len().saturating_sub(fi + 1);
+    let ideal_ahead = ahead_cfg.min(fi);
+    // Keep some behind rows on-screen when the focus is near the front.
+    let min_behind = if behind_in_list > 0 && behind_cfg > 0 {
+        behind_cfg
+            .min(behind_in_list)
+            .min((visible_slots / 2).max(1))
+    } else {
+        0
+    };
+    let max_ahead = visible_slots.saturating_sub(1 + min_behind);
+    let want_ahead = ideal_ahead.min(max_ahead);
+    fi.saturating_sub(want_ahead) as f32
 }
 
 pub fn paint_table(
@@ -34,6 +75,8 @@ pub fn paint_table(
     rows: &[TableRow],
     slots: &TableSlots,
     signed_gaps: bool,
+    mono_secs: f64,
+    panel_animating: &mut bool,
 ) {
     let rect = crate::chrome::full_rect(ui);
     let (card, radius) = draw_card(ui, cfg, section, rect);
@@ -90,24 +133,36 @@ pub fn paint_table(
         card.bottom() - pad
     };
 
-    // Row motion
+    // Row motion: ease when order is stable; snap on rapid reorders / big jumps.
+    // dt comes from the host wall clock (mono_secs), not per-viewport paint
+    // time — batch paint gaps jitter and made slides move-stutter-move.
     let id = egui::Id::new(("table_anim", section));
+    let now = mono_secs;
     let animating = {
-        let now = ui.input(|i| i.time);
         let mut anim = ui
             .ctx()
             .data_mut(|d| d.get_temp::<TableAnim>(id).unwrap_or_default());
-        let dt = if anim.last_ms > 0.0 {
-            ((now - anim.last_ms) as f32).clamp(0.0, 0.1)
+        let dt = if anim.last_paint_secs > 0.0 {
+            ((now - anim.last_paint_secs) as f32).clamp(0.0, 0.1)
         } else {
-            0.016
+            1.0 / 60.0
         };
-        anim.last_ms = now;
+        anim.last_paint_secs = now;
 
         let mut tau = cfg.f64_key(section, "row_ease_tau", 0.16) as f32;
-        let fade_tau = cfg.f64_key(section, "fade_ease_tau", 0.12) as f32;
+        let mut fade_tau = cfg.f64_key(section, "fade_ease_tau", 0.12) as f32;
+        // tau<=0 makes ease() snap instantly → one-frame teleports that look
+        // like low-FPS lag. Floor so the settings slider can't kill slides.
+        if !(tau.is_finite() && tau > 1e-3) {
+            tau = 0.16;
+        }
+        if !(fade_tau.is_finite() && fade_tau > 1e-3) {
+            fade_tau = 0.12;
+        }
         let dense = rows.len() >= DENSE_ROW_COUNT;
-        let snap = if dense {
+        let snap = if section == "relative" {
+            RELATIVE_ROW_SNAP_SLOTS
+        } else if dense {
             DENSE_ROW_SNAP_SLOTS
         } else {
             ROW_SNAP_SLOTS
@@ -116,14 +171,32 @@ pub fn paint_table(
             tau = tau.min(DENSE_ROW_EASE_TAU);
         }
 
-        let active: std::collections::HashSet<String> = rows
+        let order: Vec<String> = rows
             .iter()
             .filter(|r| !r.empty)
             .map(|r| r.key.clone())
             .collect();
+        let mut force_snap = false;
+        if order != anim.last_order {
+            // Rapid follow-up while the prior slide window is open → snap.
+            // Initial populate (empty → first order) does not open the window.
+            // Relative reorders every telem tick (gap sort), so force-snap would
+            // kill every pass slide — only standings uses the debounce.
+            if !anim.last_order.is_empty()
+                && now < anim.order_stable_after
+                && section != "relative"
+            {
+                force_snap = true;
+            }
+            if !anim.last_order.is_empty() {
+                anim.order_stable_after = now + ORDER_STABLE_S;
+            }
+            anim.last_order = order.clone();
+        }
+
+        let active: std::collections::HashSet<String> = order.into_iter().collect();
         anim.slots.retain(|k, _| active.contains(k));
 
-        // Fixed tau (no distance/multi scaling) — smoother multi-car reshuffles.
         let mut still = false;
         for (i, row) in rows.iter().enumerate() {
             if row.empty {
@@ -135,7 +208,7 @@ pub fn paint_table(
                 opacity: 0.0,
             });
             let delta = (st.idx - target).abs();
-            if delta > snap {
+            if force_snap || delta > snap {
                 st.idx = target;
             } else {
                 st.idx = ease(st.idx, target, dt, tau);
@@ -148,8 +221,12 @@ pub fn paint_table(
         ui.ctx().data_mut(|d| d.insert_temp(id, anim));
         still
     };
+    *panel_animating = animating;
     if animating {
-        ui.ctx().request_repaint();
+        // Schedule almost immediately after the current frame. request_repaint_after
+        // is a post-frame delay, so 16 ms plus rendering time only reached ~35 FPS.
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1));
     }
 
     let anim = ui
@@ -194,6 +271,13 @@ pub fn paint_table(
     .intersect(ui.clip_rect());
     let prev_clip = ui.clip_rect();
     ui.set_clip_rect(body_clip);
+
+    // When the panel is shorter than the row window, scroll so the focus car
+    // stays on-screen with configured behind rows (fixes spectating near P1–P5
+    // where the window starts at the leader and clips everyone behind).
+    let visible_slots = ((body_bottom - body_top) / rh).floor().max(1.0) as usize;
+    let scroll = standings_paint_scroll(cfg, section, rows, visible_slots);
+
     let mut prev_draw_idx: Option<f32> = None;
     for &i in &draw_order {
         let row = &rows[i];
@@ -201,14 +285,18 @@ pub fn paint_table(
             continue;
         }
         let st = anim.slots.get(&row.key);
-        let slot_idx = st.map(|s| s.idx).unwrap_or(i as f32);
+        let slot_idx = st.map(|s| s.idx).unwrap_or(i as f32) - scroll;
         let opacity = st.map(|s| s.opacity).unwrap_or(1.0);
         let ry = body_top + slot_idx * rh;
         let row_rect = Rect::from_min_size(Pos2::new(left, ry), Vec2::new(inner_w, rh));
-        let sliding = dense && (slot_idx - i as f32).abs() > 0.02;
+        // Skip rows wholly outside the body (scrolled away).
+        if row_rect.bottom() < body_top - rh || row_rect.top() > body_bottom + rh {
+            continue;
+        }
+        let sliding = dense && (slot_idx + scroll - i as f32).abs() > 0.02;
         if dividers {
             if let Some(prev_idx) = prev_draw_idx {
-                // Python: divider only between nearly-adjacent settled animated slots.
+                // Divider only between nearly-adjacent settled animated slots.
                 if (slot_idx - prev_idx).abs() <= 1.05 && !sliding {
                     let line = cfg.color(section, "border", "#ffffff28");
                     let a = ((line.a() as f32) * 0.20).max(10.0) as u8;
@@ -255,6 +343,29 @@ pub fn paint_table(
             text,
             muted,
         );
+        // When the podium is pinned, separate it only when the next displayed
+        // row skips P4. A continuous P1-P4 list needs no boundary.
+        let fourth_is_next = rows
+            .get(i + 1)
+            .map(|next| !next.empty && next.position == 4)
+            .unwrap_or(false);
+        if section == "standings"
+            && cfg.bool_key("standings", "pin_podium", false)
+            && row.position == 3
+            && !fourth_is_next
+        {
+            let y = row_rect.bottom() - 1.0;
+            ui.painter().line_segment(
+                [
+                    Pos2::new(row_rect.left(), y),
+                    Pos2::new(row_rect.right(), y),
+                ],
+                Stroke::new(
+                    2.0_f32,
+                    cfg.color("standings", "podium_separator", "#22c55e"),
+                ),
+            );
+        }
     }
     ui.set_clip_rect(prev_clip);
 
@@ -294,7 +405,8 @@ fn paint_row_chrome(
     let tint_key = if row.is_player {
         Some("player_row")
     } else if row.lapping {
-        Some(if row.lap_ahead { "threat" } else { "lapped" })
+        // Red = traffic the focus car is lapping; blue = car lapping the focus.
+        Some(if row.lap_ahead { "lapped" } else { "threat" })
     } else if row.in_pit {
         Some("pit_row")
     } else if row.inactive && section == "standings" {

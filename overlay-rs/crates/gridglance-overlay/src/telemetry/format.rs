@@ -133,10 +133,33 @@ pub fn parse_race_split(yaml: &str) -> Option<i32> {
         let Some((key, rest)) = trimmed.split_once(':') else {
             continue;
         };
-        if !key.to_ascii_lowercase().contains("split") {
+        let lower = key.to_ascii_lowercase();
+        if !lower.contains("split")
+            || lower.contains("total")
+            || lower.contains("count")
+            || lower == "numsplits"
+        {
             continue;
         }
         if let Ok(v) = rest.trim().trim_matches('"').parse::<i32>() {
+            if v > 0 {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// Total registration splits when a provider adds it to WeekendInfo.
+pub fn parse_race_split_total(yaml: &str) -> Option<i32> {
+    for key in [
+        "RaceSplitTotal",
+        "TotalSplits",
+        "NumSplits",
+        "SplitCount",
+        "SessionSplitCount",
+    ] {
+        if let Some(v) = yaml_i32(yaml, key) {
             if v > 0 {
                 return Some(v);
             }
@@ -208,7 +231,8 @@ Sessions:
 
     #[test]
     fn parse_race_split_yaml() {
-        let yaml = "RaceSplit: 2\nOther: 1\n";
+        let yaml = "RaceSplit: 2\nRaceSplitTotal: 5\nOther: 1\n";
         assert_eq!(parse_race_split(yaml), Some(2));
+        assert_eq!(parse_race_split_total(yaml), Some(5));
     }
 }

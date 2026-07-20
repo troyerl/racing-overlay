@@ -1,5 +1,15 @@
 //! Shared mutable overlay state (config, telemetry, map authoring, layout).
 
+/// Whether the map has real track geometry (live mode skips the oval demo).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TrackPathStatus {
+    #[default]
+    None,
+    Loading,
+    Ready,
+    Unavailable,
+}
+
 use crate::config::{default_geom, ConfigContext, OverlayConfig, WIDGET_KEYS};
 use crate::paths;
 use crate::telemetry::TelemetryFrame;
@@ -58,6 +68,8 @@ pub struct MapAuthoring {
     /// Cached track polyline for map MVP (`None` = try load / oval fallback).
     pub cached_track_id: Option<i32>,
     pub cached_path: Vec<(f32, f32)>,
+    /// Live map: loading / ready / missing (oval demo only when `--demo`).
+    pub path_status: TrackPathStatus,
     pub cached_track_name: String,
     pub cached_start_finish: f32,
     pub cached_pit_out_pct: Option<f32>,
@@ -119,6 +131,7 @@ impl Default for MapAuthoring {
             alias_ids: Vec::new(),
             cached_track_id: None,
             cached_path: Vec::new(),
+            path_status: TrackPathStatus::None,
             cached_track_name: String::new(),
             cached_start_finish: 0.0,
             cached_pit_out_pct: None,
@@ -252,6 +265,7 @@ impl MapAuthoring {
     pub fn invalidate_track_cache(&mut self) {
         self.cached_track_id = None;
         self.cached_path.clear();
+        self.path_status = TrackPathStatus::None;
         self.cached_track_name.clear();
         self.cached_start_finish = 0.0;
         self.cached_pit_out_pct = None;

@@ -83,8 +83,8 @@ def _authenticate(opener: urllib.request.OpenerDirector,
         return False
 
 
-def split_number_for_subsession(subsession_id: int) -> int | None:
-    """1-based split index from ``session_splits`` ranked by SOF (highest = 1).
+def split_info_for_subsession(subsession_id: int) -> tuple[int, int] | None:
+    """Return ``(1-based split index, total splits)`` ranked by SOF.
 
     Returns ``None`` when credentials are missing or the lookup fails.
     """
@@ -105,11 +105,18 @@ def split_number_for_subsession(subsession_id: int) -> int | None:
     data = _follow_data_link(opener, url)
     if not data:
         return None
-    return _split_from_results(data, sid)
+    return _split_info_from_results(data, sid)
 
 
-def _split_from_results(data: dict, subsession_id: int) -> int | None:
-    """Rank ``session_splits`` by event SOF (desc); return 1-based index."""
+def split_number_for_subsession(subsession_id: int) -> int | None:
+    """Compatibility wrapper returning only the 1-based split index."""
+    info = split_info_for_subsession(subsession_id)
+    return info[0] if info else None
+
+
+def _split_info_from_results(
+        data: dict, subsession_id: int) -> tuple[int, int] | None:
+    """Rank ``session_splits`` by event SOF; return index and total."""
     for key in ("session_splits", "sessionSplits"):
         splits = data.get(key)
         if isinstance(splits, list) and splits:
@@ -121,7 +128,7 @@ def _split_from_results(data: dict, subsession_id: int) -> int | None:
         own = data.get("subsession_id") or data.get("subsessionId")
         try:
             if own is not None and int(own) == int(subsession_id):
-                return 1
+                return (1, 1)
         except (TypeError, ValueError):
             pass
         return None
@@ -142,5 +149,11 @@ def _split_from_results(data: dict, subsession_id: int) -> int | None:
     ranked.sort(key=lambda t: (-t[1], t[0]))
     for i, (ss, _) in enumerate(ranked, start=1):
         if ss == int(subsession_id):
-            return i
+            return (i, len(ranked))
     return None
+
+
+def _split_from_results(data: dict, subsession_id: int) -> int | None:
+    """Compatibility helper used by existing callers/tests."""
+    info = _split_info_from_results(data, subsession_id)
+    return info[0] if info else None

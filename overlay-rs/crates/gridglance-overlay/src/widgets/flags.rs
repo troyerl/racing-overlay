@@ -90,11 +90,29 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         .as_deref()
         .map(|s| !s.is_empty())
         .unwrap_or(false);
-    if f.flag.is_none() && !ctx.edit_mode && !f.incident_warn && !have_secondary {
+    let visible = f.flag.is_some() || ctx.edit_mode || f.incident_warn || have_secondary;
+    let id = egui::Id::new("flags_fade");
+    let mut fade = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<(f32, f64)>(id).unwrap_or((0.0, 0.0)));
+    let dt = crate::chrome::anim_dt(ctx.mono_secs, &mut fade.1);
+    let target = if visible { 1.0 } else { 0.0 };
+    fade.0 = crate::chrome::ease(fade.0, target, dt, 0.12);
+    let opacity = fade.0;
+    let fading = crate::chrome::still_easing(opacity, target, 0.02);
+    *ctx.panel_animating = fading;
+    if fading {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1));
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(id, fade));
+
+    if opacity < 0.01 {
         let _ = full_rect(ui);
         return;
     }
     let rect = full_rect(ui);
+    ui.set_opacity(opacity);
     draw_card(ui, ctx.cfg, SECTION, rect);
     let pad = (rect.height() * 0.12).max(6.0);
     let inner = rect.shrink(pad);

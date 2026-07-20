@@ -122,6 +122,7 @@ _TABLE_STYLE: dict = {
         "cover_row": "#ff941644",
         "undercut_gap": "#3aa0ff",
         "cover_gap": "#ff9416",
+        "podium_separator": "#22c55e",
         "badge_undercut": "#3aa0ff",
         "badge_cover": "#ff9416",
         "text": "#f4f6f8",
@@ -208,6 +209,8 @@ DEFAULTS: dict = {
         "text_scale": 1.0,
         "rows_ahead": 3,
         "rows_behind": 3,
+        # Total neighbor slots: rows_ahead + rows_behind (player center is extra).
+        "rows": 6,
         "center_on_player": True,
         "show_footer": True,
         # pit_mode: one of "laps_since" (laps out since last stop),
@@ -245,7 +248,7 @@ DEFAULTS: dict = {
         "show": True,
         # Per-widget text size, multiplied by the global text_scale.
         "text_scale": 1.0,
-        "rows": 10,  # how many to show in top-N mode (center_on_player off)
+        "rows": 9,  # rows_ahead + rows_behind (also top-N when center_on_player off)
         # When centered, the window is rows_ahead + you + rows_behind.
         "rows_ahead": 4,
         "rows_behind": 5,

@@ -4,7 +4,7 @@
 mod win {
     use crate::telemetry::format::{
         fmt_car_gap, fmt_laptime, format_session_type, map_session_flag_label, parse_race_split,
-        parse_session_types,
+        parse_race_split_total, parse_session_types,
     };
     use crate::telemetry::pit_service::any_requested;
     use crate::telemetry::{
@@ -12,6 +12,7 @@ mod win {
     };
     use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
     use std::collections::HashMap;
+    use std::sync::mpsc::{self, Receiver, Sender};
 
     // SessionFlags bits (match overlay/app.py)
     const FLAG_CHECKERED: i32 = 0x0000_0001;
@@ -81,19 +82,27 @@ mod win {
         session_types: Vec<String>,
         /// WeekendInfo split number when present.
         race_split: Option<i32>,
+        race_split_total: Option<i32>,
+        subsession_id: i32,
         drivers: HashMap<i32, DriverInfo>,
         /// From SessionInfo ResultsPositions (race session when present).
         results: HashMap<i32, ResultPosEntry>,
+        /// From QualifyResultsInfo.Results (starting grid / live qual order).
+        qualify_grid: HashMap<i32, ResultPosEntry>,
     }
 
     pub struct IrsdkReader {
         client: Client,
         session: Option<Session>,
         cache: SessionCache,
+        split_tx: Sender<(i32, Option<(i32, i32)>)>,
+        split_rx: Receiver<(i32, Option<(i32, i32)>)>,
+        split_pending: Option<i32>,
     }
 
     impl IrsdkReader {
         pub fn new() -> Self {
+            let (split_tx, split_rx) = mpsc::channel();
             Self {
                 client: Client::new(),
                 session: None,
@@ -102,6 +111,9 @@ mod win {
                     update: -1,
                     ..Default::default()
                 },
+                split_tx,
+                split_rx,
+                split_pending: None,
             }
         }
 
@@ -112,6 +124,14 @@ mod win {
         }
 
         unsafe fn tick_inner(&mut self) -> TelemetryFrame {
+            while let Ok((sid, result)) = self.split_rx.try_recv() {
+                if self.cache.subsession_id == sid {
+                    if let Some((split, total)) = result {
+                        self.cache.race_split = Some(split);
+                        self.cache.race_split_total = Some(total);
+                    }
+                }
+            }
             if self.session.as_ref().map(|s| s.expired()).unwrap_or(true) {
                 self.session = self.client.session();
                 self.cache.update = -1;
@@ -137,6 +157,18 @@ mod win {
             if info_upd != self.cache.update {
                 self.cache.update = info_upd;
                 refresh_cache(&mut self.cache, &session.session_info());
+            }
+            if self.cache.race_split.is_none()
+                && self.cache.subsession_id > 0
+                && self.split_pending != Some(self.cache.subsession_id)
+            {
+                let sid = self.cache.subsession_id;
+                let tx = self.split_tx.clone();
+                self.split_pending = Some(sid);
+                std::thread::spawn(move || {
+                    let result = crate::iracing_results::split_for_subsession(sid);
+                    let _ = tx.send((sid, result));
+                });
             }
 
             build_frame(session, &self.cache)
@@ -169,6 +201,9 @@ mod win {
         let cur_lap = read_f32(session, "LapCurrentLapTime");
         let session_time = read_f64(session, "SessionTime");
         let session_state = read_i32(session, "SessionState");
+        let camera_car_idx = read_i32_opt(session, "CamCarIdx").filter(|idx| *idx >= 0);
+        // Seated in the car (driving). Spectators / garage / menus are false.
+        let in_car = read_bool(session, "IsOnTrackCar");
         let lf = read_f32(session, "LFwearM");
         let rf = read_f32(session, "RFwearM");
         let lr = read_f32(session, "LRwearM");
@@ -192,7 +227,6 @@ mod win {
             }
         };
 
-        let position = player_position(session, cache.player_idx);
         let sf = read_i32(session, "SessionFlags");
         let flag = map_flag(sf);
         // Incident warn is computed in finalize_frame from count/limit + settings.
@@ -251,6 +285,7 @@ mod win {
             .or_else(|| cache.session_types.last().cloned().filter(|s| !s.is_empty()))
             .map(format_session_type);
         let race_split = cache.race_split;
+        let race_split_total = cache.race_split_total;
 
         let ers_battery_pct =
             read_f32_opt(session, "EnergyERSBatteryPct").map(
@@ -289,7 +324,20 @@ mod win {
                 None
             }
         };
-        let cars = car_rows(session, cache, radio_idx, session_state);
+        let cars = car_rows(
+            session,
+            cache,
+            radio_idx,
+            session_state,
+            session_type.as_deref().unwrap_or(""),
+        );
+        // Prefer resolved grid/qual position over raw CarIdxPosition (often 0 pre-green).
+        let position = cars
+            .iter()
+            .find(|c| c.is_player)
+            .map(|c| c.position)
+            .filter(|&p| p > 0)
+            .unwrap_or_else(|| player_position(session, cache.player_idx));
         let lead_lap = cars
             .iter()
             .filter(|c| !c.is_pace_car && c.lap > 0)
@@ -377,6 +425,8 @@ mod win {
 
         TelemetryFrame {
             connected: true,
+            camera_car_idx,
+            in_car,
             in_garage: read_bool(session, "IsInGarage") || read_bool(session, "IsGarageVisible"),
             session_time,
             session_state,
@@ -460,6 +510,7 @@ mod win {
             session_time_of_day,
             session_type,
             race_split,
+            race_split_total,
             ..Default::default()
         }
     }
@@ -841,6 +892,7 @@ mod win {
         cache: &SessionCache,
         radio_idx: Option<i32>,
         session_state: i32,
+        session_type: &str,
     ) -> Vec<CarRow> {
         let Some(pcts) = float_arr(session, "CarIdxLapDistPct") else {
             return Vec::new();
@@ -862,24 +914,37 @@ mod win {
             .as_ref()
             .and_then(|a| a.get(player_idx as usize).copied())
             .unwrap_or(0);
+        let lap_completed = read_i32(session, "LapCompleted");
         let use_results = session_state >= 5 && !cache.results.is_empty();
+        let resolved = resolve_positions(
+            cache,
+            session_state,
+            session_type,
+            player_idx,
+            lap_completed,
+            positions.as_deref(),
+            best_laps.as_deref(),
+            use_results,
+        );
 
         let mut out = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for (i, &pct) in pcts.iter().enumerate() {
             let di = cache.drivers.get(&(i as i32));
             if di.map(|d| d.is_pace_car).unwrap_or(false) {
                 // Still include pace car marked so builders can skip.
             }
-            let mut pos = positions
+            let live_pos = positions
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
                 .unwrap_or(0)
                 .max(0);
-            let mut cpos = class_pos
+            let live_cpos = class_pos
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
-                .unwrap_or(pos)
+                .unwrap_or(live_pos)
                 .max(0);
+            let (mut pos, mut cpos) = resolved_pos_for(i as i32, live_pos, live_cpos, &resolved);
             let mut laps_completed = laps_done
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
@@ -930,17 +995,19 @@ mod win {
                 .filter(|v| v.is_finite() && *v > 0.0)
                 .unwrap_or(0.0);
 
-            // Skip empty world slots.
+            // Keep DriverInfo entries with a grid/qual position even when they
+            // haven't joined (NOT_IN_WORLD / invalid LapDistPct).
             let has_driver = di.is_some();
+            let joined = on_track || in_pit || pit;
             if !pct.is_finite() || pct < 0.0 {
-                if !has_driver || pos <= 0 {
+                if !has_driver || (pos <= 0 && !joined && i as i32 != player_idx) {
                     continue;
                 }
             }
-            if pct == 0.0 && i as i32 != player_idx && pos <= 0 && !has_driver {
+            if pct == 0.0 && i as i32 != player_idx && pos <= 0 && !has_driver && !joined {
                 continue;
             }
-            if !has_driver && pos <= 0 && !on_track && !in_pit && i as i32 != player_idx {
+            if !has_driver && pos <= 0 && !joined && i as i32 != player_idx {
                 continue;
             }
 
@@ -980,6 +1047,15 @@ mod win {
             let status_kind = map_car_status_kind(surf, pit, flags);
             let car_flag = map_session_flag_label(flags);
             let gap = fmt_car_gap(pos, if f2_t.is_finite() { f2_t } else { 0.0 });
+            let lap_dist_pct = if pct.is_finite() && pct >= 0.0 {
+                pct.fract().abs()
+            } else {
+                -1.0
+            };
+            // Garage / not joined → greyed in standings & relative.
+            let inactive = surf == TRK_NOT_IN_WORLD
+                || lap_dist_pct < 0.0
+                || (!on_track && !in_pit && !pit && pos > 0);
 
             out.push(CarRow {
                 car_idx: i as i32,
@@ -1004,12 +1080,8 @@ mod win {
                 is_pace_car: is_pace,
                 lapping,
                 lap_ahead,
-                inactive: !on_track && !in_pit && pos > 0,
-                lap_dist_pct: if pct.is_finite() && pct >= 0.0 {
-                    pct.fract().abs()
-                } else {
-                    -1.0
-                },
+                inactive,
+                lap_dist_pct,
                 est_time: if est_t.is_finite() { est_t } else { 0.0 },
                 f2_time: if f2_t.is_finite() { f2_t } else { 0.0 },
                 lap: car_lap.max(0),
@@ -1018,7 +1090,49 @@ mod win {
                 status_kind,
                 car_flag,
             });
+            seen.insert(i as i32);
         }
+
+        // Drivers registered in session YAML but missing from telem arrays —
+        // still show on pre-race grid if they have a qualify slot.
+        for (&idx, d) in &cache.drivers {
+            if seen.contains(&idx) || d.is_pace_car {
+                continue;
+            }
+            let live_pos = positions
+                .as_ref()
+                .and_then(|a| a.get(idx as usize).copied())
+                .unwrap_or(0)
+                .max(0);
+            let live_cpos = class_pos
+                .as_ref()
+                .and_then(|a| a.get(idx as usize).copied())
+                .unwrap_or(live_pos)
+                .max(0);
+            let (pos, cpos) = resolved_pos_for(idx, live_pos, live_cpos, &resolved);
+            if pos <= 0 && idx != player_idx {
+                continue;
+            }
+            out.push(CarRow {
+                car_idx: idx,
+                position: pos,
+                class_position: cpos,
+                car_number: d.car_number.clone(),
+                name: d.name.clone(),
+                gap: "—".into(),
+                irating: d.irating,
+                class_id: d.class_id,
+                license: d.license.clone(),
+                class_color: d.class_color.clone(),
+                is_player: idx == player_idx,
+                is_speaking: radio_idx == Some(idx),
+                inactive: true,
+                lap_dist_pct: -1.0,
+                status_kind: Some("garage".into()),
+                ..Default::default()
+            });
+        }
+
         // Ensure transmitter appears for map/table speaking badges even when
         // car_rows filters them out (garage / invalid LapDistPct, etc.).
         if let Some(idx) = radio_idx {
@@ -1044,60 +1158,263 @@ mod win {
                             0,
                         )
                     };
-                    let pos = positions
+                    let live_pos = positions
                         .as_ref()
                         .and_then(|a| a.get(idx as usize).copied())
                         .unwrap_or(0)
                         .max(0);
-                    let cpos = class_pos
-                        .as_ref()
-                        .and_then(|a| a.get(idx as usize).copied())
-                        .unwrap_or(pos)
-                        .max(0);
-                    let pct = pcts
-                        .get(idx as usize)
-                        .copied()
-                        .unwrap_or(-1.0);
+                    let (pos, cpos) = resolved_pos_for(idx, live_pos, live_pos, &resolved);
                     out.push(CarRow {
                         car_idx: idx,
                         position: pos,
                         class_position: cpos,
                         car_number: number,
                         name,
-                        gap: String::new(),
-                        last_lap: String::new(),
-                        best_lap: String::new(),
+                        gap: "—".into(),
                         irating: ir,
-                        irating_delta: None,
                         class_id,
                         license: lic,
                         class_color,
-                        on_pit: false,
-                        in_pit: false,
-                        on_track: false,
-                        approaching_pits: false,
                         is_player: idx == player_idx,
                         is_speaking: true,
-                        is_pace_car: false,
-                        lapping: false,
-                        lap_ahead: false,
-                        inactive: pos > 0,
-                        lap_dist_pct: if pct.is_finite() && pct >= 0.0 {
-                            pct.fract().abs()
-                        } else {
-                            -1.0
-                        },
-                        est_time: 0.0,
-                        f2_time: 0.0,
-                        lap: 0,
-                        laps_completed: 0,
-                        speed_mps: 0.0,
-                        status_kind: None,
-                        car_flag: None,
+                        inactive: true,
+                        lap_dist_pct: -1.0,
+                        status_kind: Some("garage".into()),
+                        ..Default::default()
                     });
                 }
             }
         }
+        out
+    }
+
+    /// Resolved overall + class positions (Python `_resolve_positions`).
+    struct ResolvedPositions {
+        /// Per CarIdx override; missing keys fall back to live telem unless strict.
+        by_idx: HashMap<i32, ResultPosEntry>,
+        strict: bool,
+    }
+
+    fn is_qualifying_session(session_type: &str) -> bool {
+        session_type.to_ascii_lowercase().contains("qual")
+    }
+
+    fn prefer_grid_positions(
+        live: Option<&[i32]>,
+        player_idx: i32,
+        grid: &HashMap<i32, ResultPosEntry>,
+        session_state: i32,
+        lap_completed: i32,
+    ) -> bool {
+        if grid.values().all(|e| e.position <= 0) {
+            return false;
+        }
+        if session_state < 4 {
+            return true;
+        }
+        if lap_completed < 0 {
+            return true;
+        }
+        if let Some(live) = live {
+            if player_idx >= 0 {
+                let p = live.get(player_idx as usize).copied().unwrap_or(0);
+                if p <= 0 {
+                    return true;
+                }
+            }
+            let valid_live = live.iter().filter(|&&p| p > 0).count();
+            if valid_live == 0 {
+                return true;
+            }
+            let grid_count = grid.values().filter(|e| e.position > 0).count();
+            if grid_count >= 2 && valid_live < (2).max(grid_count / 2) {
+                return true;
+            }
+        } else {
+            return true;
+        }
+        false
+    }
+
+    fn positions_from_best_lap(
+        best: Option<&[f32]>,
+        drivers: &HashMap<i32, DriverInfo>,
+    ) -> HashMap<i32, ResultPosEntry> {
+        let Some(best) = best else {
+            return HashMap::new();
+        };
+        let mut entries: Vec<(f32, i32)> = Vec::new();
+        for (idx, &t) in best.iter().enumerate() {
+            let i = idx as i32;
+            if drivers.get(&i).map(|d| d.is_pace_car).unwrap_or(false) {
+                continue;
+            }
+            if t.is_finite() && t > 0.0 {
+                entries.push((t, i));
+            }
+        }
+        entries.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut out = HashMap::new();
+        for (rank, (_, idx)) in entries.into_iter().enumerate() {
+            let p = (rank + 1) as i32;
+            out.insert(
+                idx,
+                ResultPosEntry {
+                    position: p,
+                    class_position: p,
+                    laps_complete: 0,
+                },
+            );
+        }
+        out
+    }
+
+    fn resolve_positions(
+        cache: &SessionCache,
+        session_state: i32,
+        session_type: &str,
+        player_idx: i32,
+        lap_completed: i32,
+        live: Option<&[i32]>,
+        best_laps: Option<&[f32]>,
+        use_results: bool,
+    ) -> ResolvedPositions {
+        if use_results {
+            return ResolvedPositions {
+                by_idx: cache.results.clone(),
+                strict: false,
+            };
+        }
+        if is_qualifying_session(session_type) {
+            if cache.qualify_grid.values().any(|e| e.position > 0) {
+                return ResolvedPositions {
+                    by_idx: cache.qualify_grid.clone(),
+                    strict: false,
+                };
+            }
+            let blap = positions_from_best_lap(best_laps, &cache.drivers);
+            if !blap.is_empty() {
+                return ResolvedPositions {
+                    by_idx: blap,
+                    strict: true,
+                };
+            }
+            return ResolvedPositions {
+                by_idx: HashMap::new(),
+                strict: false,
+            };
+        }
+        if prefer_grid_positions(
+            live,
+            player_idx,
+            &cache.qualify_grid,
+            session_state,
+            lap_completed,
+        ) {
+            return ResolvedPositions {
+                by_idx: cache.qualify_grid.clone(),
+                strict: true,
+            };
+        }
+        ResolvedPositions {
+            by_idx: HashMap::new(),
+            strict: false,
+        }
+    }
+
+    fn resolved_pos_for(
+        idx: i32,
+        live_pos: i32,
+        live_cpos: i32,
+        resolved: &ResolvedPositions,
+    ) -> (i32, i32) {
+        if let Some(e) = resolved.by_idx.get(&idx) {
+            let pos = if e.position > 0 {
+                e.position
+            } else if !resolved.strict {
+                live_pos
+            } else {
+                0
+            };
+            let cpos = if e.class_position > 0 {
+                e.class_position
+            } else if pos > 0 {
+                pos
+            } else if !resolved.strict {
+                live_cpos
+            } else {
+                0
+            };
+            return (pos, cpos);
+        }
+        if resolved.strict {
+            (0, 0)
+        } else {
+            (live_pos, live_cpos)
+        }
+    }
+
+    fn parse_qualify_results(yaml: &str) -> HashMap<i32, ResultPosEntry> {
+        let mut out = HashMap::new();
+        let mut in_qualify = false;
+        let mut in_results = false;
+        let mut cur_idx: Option<i32> = None;
+        let mut cur = ResultPosEntry::default();
+
+        let flush = |map: &mut HashMap<i32, ResultPosEntry>,
+                     idx: &mut Option<i32>,
+                     e: &mut ResultPosEntry| {
+            if let Some(i) = idx.take() {
+                if e.position > 0 || e.class_position > 0 {
+                    map.insert(i, e.clone());
+                }
+            }
+            *e = ResultPosEntry::default();
+        };
+
+        for line in yaml.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("QualifyResultsInfo:") {
+                in_qualify = true;
+                in_results = false;
+                continue;
+            }
+            if in_qualify {
+                let indent = line.len() - line.trim_start().len();
+                if !trimmed.is_empty()
+                    && indent == 0
+                    && trimmed.contains(':')
+                    && !trimmed.starts_with('-')
+                    && !trimmed.starts_with("QualifyResultsInfo:")
+                {
+                    flush(&mut out, &mut cur_idx, &mut cur);
+                    break;
+                }
+            }
+            if !in_qualify {
+                continue;
+            }
+            if trimmed.starts_with("Results:") {
+                in_results = true;
+                continue;
+            }
+            if !in_results {
+                continue;
+            }
+            if trimmed.starts_with("- ") || trimmed == "-" {
+                flush(&mut out, &mut cur_idx, &mut cur);
+                if let Some(rest) = trimmed.strip_prefix("- ") {
+                    if let Some((k, v)) = rest.split_once(':') {
+                        apply_result_field(&mut cur_idx, &mut cur, k.trim(), v.trim());
+                    }
+                }
+                continue;
+            }
+            if let Some((k, v)) = trimmed.split_once(':') {
+                apply_result_field(&mut cur_idx, &mut cur, k.trim(), v.trim());
+            }
+        }
+        flush(&mut out, &mut cur_idx, &mut cur);
         out
     }
 
@@ -1141,8 +1458,11 @@ mod win {
         }
         cache.session_types = parse_session_types(yaml);
         cache.race_split = parse_race_split(yaml);
+        cache.race_split_total = parse_race_split_total(yaml);
+        cache.subsession_id = yaml_i32(yaml, "SubSessionID").unwrap_or(0);
         cache.drivers = parse_drivers(yaml);
         cache.results = parse_results_positions(yaml);
+        cache.qualify_grid = parse_qualify_results(yaml);
         if let Some(d) = cache.drivers.get(&cache.player_idx) {
             if !d.car_number.is_empty() {
                 cache.car_number = d.car_number.clone();

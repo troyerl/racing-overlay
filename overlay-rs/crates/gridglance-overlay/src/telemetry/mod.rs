@@ -22,7 +22,10 @@ pub use pit_advice::PitAdvice;
 pub use pit_service::{decode_flags as decode_pit_flags, PitService};
 pub use pit_track::PitStopTracker;
 pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
-pub use tables::{finalize_frame, slot_label, RadarState, TableRow, TableSlotItem, TableSlots};
+pub use tables::{
+    finalize_frame, slot_label, RadarState, RelativeOrderHysteresis, TableRow, TableSlotItem,
+    TableSlots,
+};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CarRow {
@@ -74,6 +77,14 @@ pub struct CarRow {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TelemetryFrame {
     pub connected: bool,
+    /// Car currently shown by the iRacing camera. Relative/Standings center on
+    /// this car while spectating, without changing player telemetry semantics.
+    #[serde(default)]
+    pub camera_car_idx: Option<i32>,
+    /// Player is seated in their car (`IsOnTrackCar`). False while spectating,
+    /// in menus, or in the garage — drives the On track / In garage profile.
+    #[serde(default)]
+    pub in_car: bool,
     /// Player in garage or garage UI visible (`IsInGarage` / `IsGarageVisible`).
     #[serde(default)]
     pub in_garage: bool,
@@ -220,6 +231,9 @@ pub struct TelemetryFrame {
     /// Registration split number when known (1-based).
     #[serde(default)]
     pub race_split: Option<i32>,
+    /// Number of registration splits for this event.
+    #[serde(default)]
+    pub race_split_total: Option<i32>,
     /// Fast repairs already used this session.
     #[serde(default)]
     pub pit_repairs_used: Option<i32>,
@@ -437,10 +451,25 @@ pub mod demo {
             let lap_est = 90.0_f32;
             let player_i = 3i32;
             let field_size = 12i32;
+            // Field order drives Relative est_time (list slides). Map pct stays
+            // continuous by car_idx so dots don't teleport every phase.
+            let order = demo_field_order(t, field_size as usize, player_i as usize);
+            let player_rank = order
+                .iter()
+                .position(|&c| c == player_i as usize)
+                .unwrap_or(0);
+            const PLAYER_EST: f32 = 40.0;
             let mut cars = Vec::new();
             for i in 0..field_size {
-                let pct = ((t * 0.03 + i as f64 * 0.08) % 1.0) as f32;
-                let est = (pct * lap_est + (t as f32 * 0.15)) % lap_est;
+                let rank = order
+                    .iter()
+                    .position(|&c| c == i as usize)
+                    .unwrap_or(i as usize);
+                // Map: smooth continuous spacing (pre–Relative-churn formula).
+                let pct = ((t * 0.03 + i as f64 * 0.08).rem_euclid(1.0)) as f32;
+                // Relative: pack by race rank so list reorders when field churns.
+                // Positive delta vs player ⇒ ahead (build_relative).
+                let est = PLAYER_EST + (player_rank as f32 - rank as f32) * 1.5;
                 let pos = demo_position(i, t, field_size, player_i);
                 let f2 = (pos - 1) as f32 * 0.85;
                 let licenses = ["A 4.12", "B 3.80", "A 2.99", "A 3.50", "C 2.10", "B 4.00"];
@@ -609,6 +638,7 @@ pub mod demo {
 
             TelemetryFrame {
                 connected: true,
+                in_car: true,
                 session_time: t,
                 session_state: 4,
                 flag,
@@ -673,6 +703,7 @@ pub mod demo {
                 session_time_of_day: Some(14.0 * 3600.0 + (t as f32 * 2.0) % 3600.0),
                 session_type: Some("Race".into()),
                 race_split: Some(2),
+                race_split_total: Some(5),
                 pit_repairs_used: Some(0),
                 radar: radar.clone(),
                 radar_left: radar.left,
@@ -703,7 +734,9 @@ pub mod demo {
 
     #[cfg(test)]
     mod tests {
-        use super::{demo_field_order, demo_position};
+        use super::{demo_field_order, demo_position, DemoFeed};
+        use crate::config::OverlayConfig;
+        use crate::telemetry::tables::build_relative;
 
         #[test]
         fn demo_positions_are_unique_and_churn() {
@@ -730,6 +763,48 @@ pub mod demo {
             let player_slot = order.iter().position(|&c| c == player as usize).unwrap();
             let mid = (field as usize) / 2;
             assert!((player_slot as i32 - mid as i32).abs() <= 1);
+        }
+
+        #[test]
+        fn demo_relative_key_order_churns_across_phases() {
+            let feed = DemoFeed::new();
+            let cfg = OverlayConfig::default();
+            let f0 = feed.tick_at(0.0);
+            let f1 = feed.tick_at(2.1);
+            let keys = |cars: &[super::super::CarRow]| -> Vec<String> {
+                build_relative(cars, &cfg, 90.0, None, 4)
+                    .into_iter()
+                    .filter(|r| !r.empty)
+                    .map(|r| r.key)
+                    .collect()
+            };
+            let k0 = keys(&f0.cars);
+            let k1 = keys(&f1.cars);
+            assert!(
+                k0.iter().any(|k| k == "3"),
+                "player key present in relative at t=0"
+            );
+            assert_ne!(
+                k0, k1,
+                "Relative key order should change when demo field order churns"
+            );
+        }
+
+        #[test]
+        fn demo_lap_dist_pct_moves_continuously() {
+            let feed = DemoFeed::new();
+            let a = feed.tick_at(1.0);
+            let b = feed.tick_at(1.05);
+            let car = 5usize;
+            let pct_a = a.cars[car].lap_dist_pct;
+            let pct_b = b.cars[car].lap_dist_pct;
+            let delta = (pct_b - pct_a).abs();
+            // Continuous formula advances ~0.03 * 0.05 = 0.0015 per 50ms.
+            // Rank jumps used to be ~0.02 — reject anything near that scale.
+            assert!(
+                delta > 0.0 && delta < 0.01,
+                "lap_dist_pct should nudge continuously, got delta={delta} ({pct_a} -> {pct_b})"
+            );
         }
     }
 }

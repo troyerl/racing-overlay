@@ -121,14 +121,24 @@ fn track_id_filter(track_id: &Value) -> Document {
     let mut ors = vec![];
     if let Some(i) = track_id.as_i64() {
         ors.push(doc! { "track_id": i });
+        // Atlas docs are often Int32 — match both widths.
+        if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+            ors.push(doc! { "track_id": i as i32 });
+        }
         ors.push(doc! { "track_id": i.to_string() });
     } else if let Some(s) = track_id.as_str() {
         ors.push(doc! { "track_id": s });
         if let Ok(i) = s.parse::<i64>() {
             ors.push(doc! { "track_id": i });
+            if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                ors.push(doc! { "track_id": i as i32 });
+            }
         }
     } else if let Some(u) = track_id.as_u64() {
         ors.push(doc! { "track_id": u as i64 });
+        if u <= i32::MAX as u64 {
+            ors.push(doc! { "track_id": u as i32 });
+        }
     }
     if ors.is_empty() {
         doc! { "track_id": track_id.to_string() }
@@ -249,9 +259,24 @@ pub fn take_fetch_ready(tid: i64) -> bool {
         .unwrap_or(false)
 }
 
+/// Cloud lookup finished with no document for this TrackID.
+pub fn fetch_missed(tid: i64) -> bool {
+    FETCH_TRIED
+        .lock()
+        .map(|s| s.contains(&tid))
+        .unwrap_or(false)
+}
+
 /// Download one track into the local cache (deduped; never panics).
 pub fn fetch_track_async(tid: i64) {
     if !read_available() || tid <= 0 {
+        return;
+    }
+    // Local file already present — nothing to fetch (and clear a prior miss).
+    if crate::track_path::find_track_file(tid as i32).is_some() {
+        if let Ok(mut tried) = FETCH_TRIED.lock() {
+            tried.remove(&tid);
+        }
         return;
     }
     {
@@ -278,12 +303,12 @@ pub fn fetch_track_async(tid: i64) {
                         if let Ok(mut ready) = FETCH_READY.lock() {
                             ready.insert(tid);
                         }
+                        if let Ok(mut tried) = FETCH_TRIED.lock() {
+                            tried.remove(&tid);
+                        }
                         eprintln!("[gridglance] fetched track {tid} from cloud");
                     }
                     Err(e) => eprintln!("[gridglance] write track {tid}: {e}"),
-                }
-                if let Ok(mut tried) = FETCH_TRIED.lock() {
-                    tried.insert(tid);
                 }
             }
             Ok(None) => {

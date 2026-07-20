@@ -1,16 +1,25 @@
 //! Scrolling input telemetry (Python `inputs.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, full_rect, label};
+use crate::chrome::{anim_dt, draw_card, ease, full_rect, label, still_easing};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;
 
 const SECTION: &str = "inputs";
+const BAR_EASE_TAU: f32 = 0.07;
 
 /// (t, thr, brk, clt, steer, abs, gear)
 type Sample = (f64, f32, f32, f32, f32, f32, i32);
+
+#[derive(Clone, Default)]
+struct BarAnim {
+    thr: f32,
+    brk: f32,
+    clt: f32,
+    last_secs: f64,
+}
 
 struct Hist {
     clock: Instant,
@@ -53,8 +62,15 @@ fn push_sample(ctx: &WidgetCtx<'_>) {
     let steer = ((f.steering + 1.0) * 0.5).clamp(0.0, 1.0);
     let abs_on = if f.abs_active { 1.0 } else { 0.0 };
     let gear = f.gear;
+    // Always append on a short cadence so the graph scrolls smoothly even when
+    // pedals are held steady (otherwise the trace freezes then jumps).
+    let force = match h.samples.back() {
+        Some(last) => t - last.0 >= 1.0 / 30.0,
+        None => true,
+    };
     if let Some(last) = h.samples.back() {
-        if (last.1 - thr).abs() < 1e-4
+        if !force
+            && (last.1 - thr).abs() < 1e-4
             && (last.2 - brk).abs() < 1e-4
             && (last.3 - clt).abs() < 1e-4
             && (last.4 - steer).abs() < 1e-4
@@ -211,7 +227,8 @@ fn draw_graph(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
         return;
     }
     let window = ctx.cfg.f64_key(SECTION, "history_seconds", 6.0);
-    let now = h.samples.back().map(|s| s.0).unwrap_or(0.0);
+    // Wall clock (not last sample) so the trace keeps scrolling while pedals are held.
+    let now = h.clock.elapsed().as_secs_f64();
     let lw = ctx.cfg.f64_key(SECTION, "line_width", 2.4) as f32;
     let to_pt = |t: f64, frac: f32| -> Pos2 {
         let x = rect.right() - ((now - t) / window).min(1.0) as f32 * rect.width();
@@ -293,7 +310,7 @@ fn draw_graph(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
 
 fn draw_bars(
     ui: &mut Ui,
-    ctx: &WidgetCtx<'_>,
+    ctx: &mut WidgetCtx<'_>,
     rect: Rect,
     bw: f32,
     bgap: f32,
@@ -305,17 +322,38 @@ fn draw_bars(
         .back()
         .copied()
         .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.5, 0.0, 0));
+    drop(h);
     let abs_on = latest.5 > 0.5;
     let thr = brake_threshold(ctx);
+
+    let id = egui::Id::new("inputs_bar_anim");
+    let mut anim = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<BarAnim>(id).unwrap_or_default());
+    let dt = anim_dt(ctx.mono_secs, &mut anim.last_secs);
+    anim.thr = ease(anim.thr, latest.1, dt, BAR_EASE_TAU);
+    anim.brk = ease(anim.brk, latest.2, dt, BAR_EASE_TAU);
+    anim.clt = ease(anim.clt, latest.3, dt, BAR_EASE_TAU);
+    let animating = still_easing(anim.thr, latest.1, 0.005)
+        || still_easing(anim.brk, latest.2, 0.005)
+        || still_easing(anim.clt, latest.3, 0.005);
+    if animating {
+        *ctx.panel_animating = true;
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1));
+    }
+    let eased = (anim.thr, anim.brk, anim.clt);
+    ui.ctx().data_mut(|d| d.insert_temp(id, anim));
+
     let label_h = (rect.height() * 0.16).max(10.0);
     let track_top = rect.top() + label_h;
     let track_h = rect.height() - label_h;
     let mut x = rect.left();
     for &(di, colk) in chans {
         let val = match di {
-            1 => latest.1,
-            2 => latest.2,
-            3 => latest.3,
+            1 => eased.0,
+            2 => eased.1,
+            3 => eased.2,
             _ => 0.0,
         }
         .clamp(0.0, 1.0);

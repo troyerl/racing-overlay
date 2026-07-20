@@ -124,7 +124,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
 fn draw_top(
     ui: &mut Ui,
-    ctx: &WidgetCtx<'_>,
+    ctx: &mut WidgetCtx<'_>,
     d: &FuelCalcState,
     x: f32,
     y: f32,
@@ -210,7 +210,7 @@ fn draw_add(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32,
     );
 }
 
-fn draw_gauge(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32, w: f32, h: f32) {
+fn draw_gauge(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32, w: f32, h: f32) {
     let bar = Rect::from_min_size(Pos2::new(x, y + h * 0.18), Vec2::new(w, h * 0.36));
     ui.painter().rect_filled(
         bar,
@@ -225,7 +225,20 @@ fn draw_gauge(ui: &mut Ui, ctx: &WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f3
     );
     if let (Some(level), Some(cap)) = (d.level, d.cap) {
         if cap > 0.0 {
-            let frac = (level / cap).clamp(0.0, 1.0);
+            let target = (level / cap).clamp(0.0, 1.0) as f32;
+            let id = egui::Id::new("fuel_gauge_anim");
+            let mut st = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<(f32, f64)>(id).unwrap_or((target, 0.0)));
+            let dt = crate::chrome::anim_dt(ctx.mono_secs, &mut st.1);
+            st.0 = crate::chrome::ease(st.0, target, dt, 0.14);
+            if crate::chrome::still_easing(st.0, target, 0.004) {
+                *ctx.panel_animating = true;
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(1));
+            }
+            let frac = st.0;
+            ui.ctx().data_mut(|d| d.insert_temp(id, st));
             let fill = Rect::from_min_size(
                 Pos2::new(bar.left() + 1.0, bar.top() + 1.0),
                 Vec2::new((bar.width() - 2.0) * frac, bar.height() - 2.0),

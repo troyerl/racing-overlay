@@ -319,6 +319,8 @@ LABEL_OVERRIDES = {
     "standings.rows_behind": "Rows below player",
     "relative.rows_ahead": "Rows above player",
     "relative.rows_behind": "Rows below player",
+    "relative.rows": "Total rows (ahead + behind)",
+    "standings.rows": "Total rows (ahead + behind)",
     "relative.center_on_player": "Center on player",
 }
 
@@ -611,7 +613,7 @@ _TABLE_SETTING_GROUPS = [
 SETTING_GROUPS: dict[str, list[tuple[str, list[str]]]] = {
     "relative": [
         ("Content", [
-            "center_on_player", "rows_ahead", "rows_behind", "show_footer",
+            "center_on_player", "rows", "rows_ahead", "rows_behind", "show_footer",
             "text_scale",
             "show_strategy_hints", "strategy_fuel_pct_thresh",
             "undercut_gap_max_s", "cover_gap_max_s",

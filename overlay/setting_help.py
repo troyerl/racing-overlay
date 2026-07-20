@@ -140,8 +140,9 @@ HELP_OVERRIDES: dict[str, str] = {
     "irating_show_icon": "Shows a small chart icon beside iRating values.",
     "header_font_scale": "Header band text size, independent of row text.",
     "footer_font_scale": "Footer band text size, independent of row text.",
-    "row_ease_tau": "How quickly row reorder animations ease (lower = snappier).",
     "fade_ease_tau": "How quickly row fade-in/out animations ease.",
+    "row_ease_tau": "How quickly row reorder animations ease (lower = snappier). "
+    "Rapid back-to-back reorders snap instead of stacking mid-flight slides.",
     "map.asphalt_width": "Thickness of the track surface line on the map. "
     "Higher = thicker racing line.",
     "map.outline_width": "Thickness of the track outline stroke. "
@@ -185,8 +186,12 @@ HELP_OVERRIDES: dict[str, str] = {
     "when a car is ~one lap ahead.",
     "relative.center_on_player": "Keeps your car centered with rows above/below. "
     "Off shows a fixed top-N list instead.",
-    "relative.rows_ahead": "How many cars to show above you in centered mode.",
-    "relative.rows_behind": "How many cars to show below you in centered mode.",
+    "relative.rows_ahead": "How many cars to show above you in centered mode. "
+    "Rows ahead + rows behind must equal total rows.",
+    "relative.rows_behind": "How many cars to show below you in centered mode. "
+    "Rows ahead + rows behind must equal total rows.",
+    "relative.rows": "Total cars ahead and behind (rows ahead + rows behind). "
+    "Your centered row is extra.",
     "relative.show_strategy_hints": "When the fuel pit window is open, tint nearby "
     "cars for undercut (ahead) or cover (behind) risk.",
     "relative.strategy_fuel_pct_thresh": "Fuel fraction that also opens strategy "
@@ -196,9 +201,12 @@ HELP_OVERRIDES: dict[str, str] = {
     "relative.pit_loss_seconds": "Assumed pit-stop time loss (seconds); reserved for strategy math.",
     "standings.center_on_player": "Scrolls the table to keep your row visible.",
     "standings.pin_podium": "Always keeps P1–P3 in the first three rows when centered.",
-    "standings.rows": "Number of rows when not using center-on-player mode.",
-    "standings.rows_ahead": "Rows above your car when centered.",
-    "standings.rows_behind": "Rows below your car when centered.",
+    "standings.rows": "Total rows ahead+behind when centered; also top-N count "
+    "when center-on-player is off.",
+    "standings.rows_ahead": "Rows above your car when centered. "
+    "Rows ahead + rows behind must equal total rows.",
+    "standings.rows_behind": "Rows below your car when centered. "
+    "Rows ahead + rows behind must equal total rows.",
     "radar.show_front": "Enables front blind-spot sensing bar.",
     "radar.show_rear": "Enables rear blind-spot sensing bar.",
     "radar.side_span_pct": "How far side markers travel along the radar bar.",

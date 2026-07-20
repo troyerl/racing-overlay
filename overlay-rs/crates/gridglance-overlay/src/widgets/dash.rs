@@ -271,6 +271,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 ),
             ),
             f,
+            ctx.mono_secs,
+            ctx.panel_animating,
         );
     }
 
@@ -401,12 +403,19 @@ fn shift_should_blink(cfg: &OverlayConfig, f: &TelemetryFrame) -> bool {
     f.rpm >= redline * pct.clamp(0.5, 1.0)
 }
 
-fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) {
+fn draw_shift(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    rect: Rect,
+    f: &TelemetryFrame,
+    mono_secs: f64,
+    panel_animating: &mut bool,
+) {
     let n = cfg.f64_key(SECTION, "shift_segments", 20.0).max(1.0) as i32;
     let gap = rect.width() / n as f32 * 0.30;
     let bw = rect.width() / n as f32 - gap;
     let redline = f.redline.max(1.0);
-    let lit = (f.rpm / redline).clamp(0.0, 1.0) * n as f32;
+    let lit_target = (f.rpm / redline).clamp(0.0, 1.0) * n as f32;
     let red_f = cfg.f64_key(SECTION, "shift_red_frac", 0.16).clamp(0.0, 1.0) as f32;
     let yel_f = cfg
         .f64_key(SECTION, "shift_yellow_frac", 0.24)
@@ -418,13 +427,23 @@ fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) 
     let red = cfg.color(SECTION, "shift_red", "#e23b3b");
     let off = cfg.color(SECTION, "shift_off", "#333a42");
 
+    let lit_id = egui::Id::new("dash_shift_lit");
+    let mut lit_st = ui.ctx().data_mut(|d| {
+        d.get_temp::<(f32, f64)>(lit_id).unwrap_or((lit_target, 0.0))
+    });
+    let dt = crate::chrome::anim_dt(mono_secs, &mut lit_st.1);
+    lit_st.0 = crate::chrome::ease(lit_st.0, lit_target, dt, 0.08);
+    let lit = lit_st.0;
+    let lit_animating = crate::chrome::still_easing(lit, lit_target, 0.05);
+    ui.ctx().data_mut(|d| d.insert_temp(lit_id, lit_st));
+
     // Blink: dark half forces all segments to off ticks (Python `_draw_shift`).
     let id = egui::Id::new("dash_shift_blink");
     let now = f.session_time;
     let eligible = shift_should_blink(cfg, f);
     let max_sec = cfg.f64_key(SECTION, "shift_blink_max_sec", 3.0);
     let hz = cfg.f64_key(SECTION, "shift_blink_hz", 7.0).max(0.1);
-    let mut need_repaint = false;
+    let mut need_repaint = lit_animating;
     let blink_dark = ui.ctx().data_mut(|d| {
         let st = d.get_temp_mut_or_default::<ShiftBlinkState>(id);
         if eligible {
@@ -451,8 +470,10 @@ fn draw_shift(ui: &mut Ui, cfg: &OverlayConfig, rect: Rect, f: &TelemetryFrame) 
             false
         }
     });
+    *panel_animating = need_repaint;
     if need_repaint {
-        ui.ctx().request_repaint();
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1));
     }
 
     let full_h = rect.height();

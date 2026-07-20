@@ -124,7 +124,21 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             ctx.cfg.color(SECTION, "gauge_bg", "#ffffff18"),
         );
         if let Some(p) = pct {
-            let fw = inner.width() * (p / 100.0).clamp(0.0, 1.0);
+            let target = (p as f32 / 100.0).clamp(0.0, 1.0);
+            let id = egui::Id::new("ers_battery_anim");
+            let mut st = ui
+                .ctx()
+                .data_mut(|d| d.get_temp::<(f32, f64)>(id).unwrap_or((target, 0.0)));
+            let dt = crate::chrome::anim_dt(ctx.mono_secs, &mut st.1);
+            st.0 = crate::chrome::ease(st.0, target, dt, 0.14);
+            if crate::chrome::still_easing(st.0, target, 0.005) {
+                *ctx.panel_animating = true;
+                ui.ctx()
+                    .request_repaint_after(std::time::Duration::from_millis(1));
+            }
+            let fill_t = st.0;
+            ui.ctx().data_mut(|d| d.insert_temp(id, st));
+            let fw = inner.width() * fill_t;
             ui.painter().rect_filled(
                 Rect::from_min_size(inner.min, Vec2::new(fw, inner.height())),
                 CornerRadius::same(4),

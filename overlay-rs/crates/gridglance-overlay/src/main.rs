@@ -12,6 +12,7 @@ mod host;
 mod icons;
 mod ipc;
 mod irating;
+mod iracing_results;
 mod layered;
 mod map_markers;
 mod paths;

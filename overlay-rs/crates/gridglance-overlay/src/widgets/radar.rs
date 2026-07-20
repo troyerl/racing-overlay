@@ -1,7 +1,7 @@
 //! Directional proximity radar HUD (Python `radar.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, draw_card, ease, full_rect, label};
+use crate::chrome::{color_with_alpha, draw_card, ease, full_rect, label, anim_dt, still_easing};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
 const SECTION: &str = "radar";
@@ -14,7 +14,7 @@ struct RadarAnim {
     behind: f32,
     left_pos: f32,
     right_pos: f32,
-    last_ms: f64,
+    last_secs: f64,
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
@@ -43,16 +43,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let prox = ctx.cfg.bool_key(SECTION, "side_proximity_color", false);
 
     let id = egui::Id::new("radar_anim");
-    let now = ui.input(|i| i.time);
     let mut a = ui
         .ctx()
         .data_mut(|data| data.get_temp::<RadarAnim>(id).unwrap_or_default());
-    let dt = if a.last_ms > 0.0 {
-        ((now - a.last_ms) as f32).clamp(0.0, 0.1)
-    } else {
-        0.016
-    };
-    a.last_ms = now;
+    let dt = anim_dt(ctx.mono_secs, &mut a.last_secs);
 
     let t_left = if d.left { 1.0 } else { 0.0 };
     let t_right = if d.right { 1.0 } else { 0.0 };
@@ -72,6 +66,18 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     a.behind = ease(a.behind, t_behind, dt, glow_tau);
     a.left_pos = ease(a.left_pos, d.left_pos, dt, side_tau);
     a.right_pos = ease(a.right_pos, d.right_pos, dt, side_tau);
+
+    let animating = still_easing(a.left, t_left, 0.01)
+        || still_easing(a.right, t_right, 0.01)
+        || still_easing(a.ahead, t_ahead, 0.01)
+        || still_easing(a.behind, t_behind, 0.01)
+        || still_easing(a.left_pos, d.left_pos, 0.01)
+        || still_easing(a.right_pos, d.right_pos, 0.01);
+    *ctx.panel_animating = animating;
+    if animating {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1));
+    }
     ui.ctx().data_mut(|data| data.insert_temp(id, a.clone()));
 
     if show_front && a.ahead > 0.01 {

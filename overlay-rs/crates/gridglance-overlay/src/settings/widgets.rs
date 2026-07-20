@@ -59,23 +59,40 @@ pub fn nav_item(
     selected: bool,
     accent: Color32,
     dot_on: bool,
-    _id: egui::Id,
+    id: egui::Id,
 ) -> Response {
     let w = ui.available_width();
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, NAV_ITEM_H), Sense::click());
+    let t = ui
+        .ctx()
+        .animate_bool_with_time(id.with("sel"), selected, 0.14);
     let p = ui.painter();
     let pill = rect.shrink2(Vec2::new(6.0, 3.0));
-    if selected {
+    if t > 0.01 {
+        let a = (34.0 * t) as u8;
         p.rect_filled(
             pill,
             10.0,
-            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 34),
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), a),
         );
-        p.rect_stroke(pill, 10.0, Stroke::new(1.3_f32, accent), StrokeKind::Inside);
+        p.rect_stroke(
+            pill,
+            10.0,
+            Stroke::new(1.3_f32, Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (255.0 * t) as u8)),
+            StrokeKind::Inside,
+        );
         let bar = Rect::from_min_max(pill.min, Pos2::new(pill.left() + 3.0, pill.bottom()));
-        p.rect_filled(bar, 2.0, accent);
+        p.rect_filled(
+            bar,
+            2.0,
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (255.0 * t) as u8),
+        );
     }
-    let text_col = if selected { TITLE } else { NAV_IDLE };
+    let text_col = Color32::from_rgb(
+        (NAV_IDLE.r() as f32 + (TITLE.r() as f32 - NAV_IDLE.r() as f32) * t) as u8,
+        (NAV_IDLE.g() as f32 + (TITLE.g() as f32 - NAV_IDLE.g() as f32) * t) as u8,
+        (NAV_IDLE.b() as f32 + (TITLE.b() as f32 - NAV_IDLE.b() as f32) * t) as u8,
+    );
     p.text(
         rect.left_center() + Vec2::new(18.0, 0.0),
         egui::Align2::LEFT_CENTER,
@@ -684,9 +701,23 @@ fn framed_text_edit(
 }
 
 /// Accent status line (Python `#status`).
-pub fn status_line(ui: &mut Ui, text: &str) {
-    if !text.is_empty() {
-        ui.label(RichText::new(text).size(11.0).color(ACCENT));
+pub fn status_line(ui: &mut Ui, text: &str, opacity: f32) {
+    if !text.is_empty() && opacity > 0.01 {
+        let a = (255.0 * opacity.clamp(0.0, 1.0)) as u8;
+        ui.label(
+            RichText::new(text)
+                .size(11.0)
+                .color(Color32::from_rgba_unmultiplied(
+                    ACCENT.r(),
+                    ACCENT.g(),
+                    ACCENT.b(),
+                    a,
+                )),
+        );
+        if opacity < 0.999 {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(16));
+        }
     }
 }
 
@@ -722,21 +753,20 @@ pub fn accordion<R>(
         .ctx()
         .animate_bool_with_time(id.with("open_t"), open, 0.16);
     let fill = Color32::from_rgba_unmultiplied(20, 23, 29, 217);
-    let stroke_col = if t > 0.15 || resp.hovered() {
-        ACCENT_DIM
-    } else {
-        CARD_BORDER
-    };
-    // Square bottom corners when open so header joins the body.
-    let header_radius = if t > 0.15 {
-        CornerRadius {
-            nw: theme::ACCORDION_RADIUS as u8,
-            ne: theme::ACCORDION_RADIUS as u8,
-            sw: 0,
-            se: 0,
-        }
-    } else {
-        CornerRadius::same(theme::ACCORDION_RADIUS as u8)
+    let stroke_t = ((t - 0.0) / 0.15).clamp(0.0, 1.0);
+    let stroke_base = if resp.hovered() { ACCENT_DIM } else { CARD_BORDER };
+    let stroke_col = Color32::from_rgb(
+        (stroke_base.r() as f32 + (ACCENT_DIM.r() as f32 - stroke_base.r() as f32) * stroke_t) as u8,
+        (stroke_base.g() as f32 + (ACCENT_DIM.g() as f32 - stroke_base.g() as f32) * stroke_t) as u8,
+        (stroke_base.b() as f32 + (ACCENT_DIM.b() as f32 - stroke_base.b() as f32) * stroke_t) as u8,
+    );
+    // Soften bottom corners as the body opens (no hard pop at 0.15).
+    let open_corner = ((1.0 - t) * theme::ACCORDION_RADIUS as f32).round() as u8;
+    let header_radius = CornerRadius {
+        nw: theme::ACCORDION_RADIUS as u8,
+        ne: theme::ACCORDION_RADIUS as u8,
+        sw: open_corner,
+        se: open_corner,
     };
     ui.painter().rect_filled(rect, header_radius, fill);
     ui.painter().rect_stroke(
@@ -751,7 +781,11 @@ pub fn accordion<R>(
         2.0,
         Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (255.0 * t) as u8),
     );
-    let title_col = if t > 0.5 { TITLE } else { ROW_LABEL };
+    let title_col = Color32::from_rgb(
+        (ROW_LABEL.r() as f32 + (TITLE.r() as f32 - ROW_LABEL.r() as f32) * t) as u8,
+        (ROW_LABEL.g() as f32 + (TITLE.g() as f32 - ROW_LABEL.g() as f32) * t) as u8,
+        (ROW_LABEL.b() as f32 + (TITLE.b() as f32 - ROW_LABEL.b() as f32) * t) as u8,
+    );
     let chevron_key = if t > 0.5 {
         "chevron_down"
     } else {
@@ -776,7 +810,7 @@ pub fn accordion<R>(
     );
 
     // Natural-height body when open — no clip/measure height animation
-    // (that thrashed layout inside ScrollArea).
+    // (that thrashed layout inside ScrollArea). Fade content opacity instead.
     let out = if t <= 0.001 {
         None
     } else {
@@ -788,7 +822,7 @@ pub fn accordion<R>(
         };
         let border = Color32::from_rgb(0x20, 0x24, 0x2c);
         let inner = egui::Frame::new()
-            .fill(Color32::from_rgba_unmultiplied(13, 16, 20, 140))
+            .fill(Color32::from_rgba_unmultiplied(13, 16, 20, (140.0 * t) as u8))
             .stroke(Stroke::NONE)
             .corner_radius(bottom_only)
             .inner_margin(egui::Margin {
@@ -799,35 +833,37 @@ pub fn accordion<R>(
             })
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 7.0;
+                ui.set_opacity(t);
                 body(ui)
             });
         let r = inner.response.rect;
         let p = ui.painter();
+        let ba = (255.0 * t) as u8;
         p.line_segment(
             [
                 Pos2::new(r.left(), r.top()),
                 Pos2::new(r.left(), r.bottom()),
             ],
-            Stroke::new(1.0_f32, border),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba)),
         );
         p.line_segment(
             [
                 Pos2::new(r.right(), r.top()),
                 Pos2::new(r.right(), r.bottom()),
             ],
-            Stroke::new(1.0_f32, border),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba)),
         );
         p.line_segment(
             [
                 Pos2::new(r.left(), r.bottom()),
                 Pos2::new(r.right(), r.bottom()),
             ],
-            Stroke::new(1.0_f32, border),
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba)),
         );
         p.rect_filled(
             Rect::from_min_max(r.min, Pos2::new(r.left() + 2.0, r.bottom())),
             1.0,
-            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), 51),
+            Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (51.0 * t) as u8),
         );
         Some(inner.inner)
     };

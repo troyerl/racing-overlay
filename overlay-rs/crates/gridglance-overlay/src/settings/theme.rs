@@ -105,7 +105,7 @@ pub fn apply_settings_visuals(ctx: &egui::Context) {
     ctx.set_visuals(visuals);
 
     ctx.style_mut(|style| {
-        style.animation_time = 0.14;
+        style.animation_time = 0.16;
         style
             .text_styles
             .insert(TextStyle::Body, FontId::new(12.0, FontFamily::Proportional));

@@ -7,7 +7,7 @@ All colors, fonts, column visibility, sizing and easing come from config.CFG
 
 from __future__ import annotations
 
-from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt
+from PyQt6.QtCore import QElapsedTimer, QPointF, QRectF, Qt, QTimer
 from PyQt6.QtGui import QColor, QFontMetricsF, QLinearGradient, QPainter, QPen
 from PyQt6.QtWidgets import QWidget
 
@@ -52,7 +52,6 @@ SLOT_ITEMS: dict[str, tuple[str, str]] = {
     "race_split":     ("",     "race_split"),
 }
 
-
 # When a row jumps farther than this many slots, snap instead of sliding through
 # intermediate rows (avoids cars crossing each other on big reorder).
 _ROW_SNAP_SLOTS = 1.25
@@ -60,6 +59,11 @@ _ROW_SNAP_SLOTS = 1.25
 _DENSE_ROW_COUNT = 20
 _DENSE_ROW_SNAP_SLOTS = 0.5
 _DENSE_ROW_EASE_TAU = 0.08
+# Relative passes skip the player row (|Δidx|≈2); high threshold so those
+# slides ease instead of teleporting. Larger window jumps still snap.
+_RELATIVE_ROW_SNAP_SLOTS = 8.0
+# Second reorder within this window snaps instead of stacking mid-flight slides.
+_ORDER_STABLE_MS = 120
 
 
 def _tcfg() -> dict:
@@ -105,6 +109,15 @@ class BaseTable(QWidget):
         self._clock = QElapsedTimer()
         self._clock.start()
         self._last_ms = 0
+        self._last_order: tuple = ()
+        self._order_stable_after_ms = 0
+        # Steady ~30 Hz repaints while rows slide/fade (bare update() chains
+        # repaint at whatever cadence Qt happens to deliver, which stutters).
+        self._anim_min_interval_ms = 33
+        self._last_anim_sched_ms = 0
+        self._anim_timer = QTimer(self)
+        self._anim_timer.setSingleShot(True)
+        self._anim_timer.timeout.connect(self.update)
 
     def set_data(self, data: dict) -> None:
         changed = data != self.data
@@ -345,8 +358,29 @@ class BaseTable(QWidget):
         tau = float(tc.get("row_ease_tau", 0.16) or 0.16)
         if dense:
             tau = min(tau, _DENSE_ROW_EASE_TAU)
-        snap_slots = _DENSE_ROW_SNAP_SLOTS if dense else _ROW_SNAP_SLOTS
+        if self.section == "relative":
+            snap_slots = _RELATIVE_ROW_SNAP_SLOTS
+        else:
+            snap_slots = _DENSE_ROW_SNAP_SLOTS if dense else _ROW_SNAP_SLOTS
         fade_tau = float(tc.get("fade_ease_tau", 0.12) or 0.12)
+
+        order = tuple(
+            row.get("key", i) for i, row in enumerate(rows) if not row.get("empty")
+        )
+        now_ms = self._clock.elapsed()
+        force_snap = False
+        if order != self._last_order:
+            # Rapid follow-up reorder while the prior slide window is open → snap.
+            # Initial populate (empty → first order) does not open the window.
+            # Relative reorders every telem tick (gap sort), so force-snap would
+            # kill every pass slide — only standings uses the debounce.
+            if (self._last_order and now_ms < self._order_stable_after_ms
+                    and self.section != "relative"):
+                force_snap = True
+            if self._last_order:
+                self._order_stable_after_ms = now_ms + _ORDER_STABLE_MS
+            self._last_order = order
+
         for tgt, row in enumerate(rows):
             key = row.get("key", tgt)
             keys_now.add(key)
@@ -362,7 +396,7 @@ class BaseTable(QWidget):
                 st = {"idx": float(tgt), "opacity": 0.0}
                 self._anim[key] = st
             target = float(tgt)
-            if abs(st["idx"] - target) > snap_slots:
+            if force_snap or abs(st["idx"] - target) > snap_slots:
                 st["idx"] = target
             else:
                 st["idx"] = ease(st["idx"], target, dt, tau)
@@ -405,7 +439,15 @@ class BaseTable(QWidget):
             self.draw_footer(p, card, radius, pad, footer_h)
 
         if animating:
-            self.update()
+            # Same pattern as track_map: repaint on a fixed cadence, not
+            # immediately (immediate chains repaint at uneven intervals).
+            now = self._clock.elapsed()
+            wait = self._anim_min_interval_ms - (now - self._last_anim_sched_ms)
+            if wait <= 0:
+                self._last_anim_sched_ms = now
+                self.update()
+            elif not self._anim_timer.isActive():
+                self._anim_timer.start(max(1, int(wait)))
 
     # --- row + cells --------------------------------------------------------
 
@@ -618,6 +660,20 @@ class BaseTable(QWidget):
         if "gap_pole" in slots:
             px, pw = slots["gap_pole"]
             self._draw_gap_text(p, row, "gap_pole", px, y, pw, h, fs, gutter)
+
+        # Separate pinned P1-P3 only when the next displayed row skips P4.
+        rows = (self.data or {}).get("rows", [])
+        next_row = rows[i + 1] if i + 1 < len(rows) else None
+        fourth_is_next = bool(
+            next_row and not next_row.get("empty")
+            and next_row.get("position") == 4)
+        if (self.section == "standings"
+                and config.CFG["standings"].get("pin_podium", False)
+                and row.get("position") == 3
+                and not fourth_is_next):
+            p.setPen(QPen(col("podium_separator"), 2.0))
+            p.drawLine(QPointF(row_rect.left(), row_rect.bottom() - 1.0),
+                       QPointF(row_rect.right(), row_rect.bottom() - 1.0))
 
     def _draw_row_tint(self, p, rect: QRectF, color_key: str) -> None:
         """Soft horizontal wash for player / lapped-traffic row highlights."""

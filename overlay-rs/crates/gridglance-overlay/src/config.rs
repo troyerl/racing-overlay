@@ -1014,9 +1014,35 @@ fn sanitize_config_sections(cfg: &mut Value) {
                     .unwrap_or(true)
             });
         }
+        normalize_table_row_counts(cfg, section);
     }
     strip_section_keys(cfg, "ers_hybrid", &["show_lap_energy", "label_lap"]);
     strip_section_keys(cfg, "inputs", &["show_handbrake", "show_steering_torque"]);
+}
+
+/// Keep `rows == rows_ahead + rows_behind` for Relative / Standings.
+fn normalize_table_row_counts(cfg: &mut Value, section: &str) {
+    let Some(obj) = cfg.get_mut(section).and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    let ahead = obj
+        .get("rows_ahead")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(if section == "relative" { 3.0 } else { 4.0 })
+        .max(0.0)
+        .round() as i64;
+    let behind = obj
+        .get("rows_behind")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(if section == "relative" { 3.0 } else { 5.0 })
+        .max(0.0)
+        .round() as i64;
+    let sum = ahead + behind;
+    // Ahead/behind drive the live table; `rows` is their total. If an older
+    // preset has a mismatched top-N `rows`, sync total to the split.
+    obj.insert("rows_ahead".into(), json!(ahead.max(0)));
+    obj.insert("rows_behind".into(), json!(behind.max(0)));
+    obj.insert("rows".into(), json!(sum.max(0)));
 }
 
 fn strip_section_keys(cfg: &mut Value, section: &str, keys: &[&str]) {
@@ -1253,6 +1279,11 @@ fn default_cfg() -> Value {
                 "rows_behind".into(),
                 json!(if *key == "relative" { 3 } else { 5 }),
             );
+            // Total neighbor slots: rows_ahead + rows_behind.
+            section.insert(
+                "rows".into(),
+                json!(if *key == "relative" { 6 } else { 9 }),
+            );
             section.insert("center_on_player".into(), Value::Bool(true));
             section.insert("show_footer".into(), Value::Bool(true));
             section.insert("row_ease_tau".into(), json!(0.16));
@@ -1301,9 +1332,15 @@ fn default_cfg() -> Value {
                 );
             }
             if *key == "standings" {
-                section.insert("rows".into(), json!(10));
+                section.insert("rows".into(), json!(9));
                 section.insert("pin_podium".into(), Value::Bool(false));
                 section.insert("title".into(), Value::String("Standings".into()));
+                if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                    colors.insert(
+                        "podium_separator".into(),
+                        Value::String("#22c55e".into()),
+                    );
+                }
                 section.insert(
                     "header".into(),
                     json!({"left": "order_pill", "center": "title", "right": "count"}),

@@ -1,8 +1,15 @@
 use super::WidgetCtx;
-use crate::chrome::{draw_card, full_rect, label, panel_pad};
+use crate::chrome::{anim_dt, draw_card, ease, full_rect, label, panel_pad, still_easing};
 use egui::{Align2, Pos2, Stroke, Ui};
 
 const SECTION: &str = "delta_bar";
+const EASE_TAU: f32 = 0.10;
+
+#[derive(Clone, Default)]
+struct DeltaAnim {
+    fill: f32,
+    last_secs: f64,
+}
 
 fn signed_delta(d: Option<f64>) -> String {
     match d {
@@ -19,6 +26,21 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let have = delta.is_some();
     let rng = ctx.cfg.f64_key(SECTION, "range", 1.0).max(0.001);
     let target = delta.map(|d| (d / rng).clamp(-1.0, 1.0)).unwrap_or(0.0) as f32;
+
+    let id = egui::Id::new("delta_bar_anim");
+    let mut anim = ui
+        .ctx()
+        .data_mut(|d| d.get_temp::<DeltaAnim>(id).unwrap_or_default());
+    let dt = anim_dt(ctx.mono_secs, &mut anim.last_secs);
+    anim.fill = ease(anim.fill, target, dt, EASE_TAU);
+    let animating = still_easing(anim.fill, target, 0.002);
+    *ctx.panel_animating = animating;
+    if animating {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1));
+    }
+    let eased = anim.fill;
+    ui.ctx().data_mut(|d| d.insert_temp(id, anim));
 
     let show_val = ctx.cfg.bool_key(SECTION, "show_value", true);
     if show_val {
@@ -57,10 +79,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         egui::CornerRadius::same(r as u8),
         ctx.cfg.color(SECTION, "track", "#262b34"),
     );
-    if have && target.abs() > 0.001 {
+    if eased.abs() > 0.001 {
         let cx = bar.center().x;
-        let fill_w = (bar.width() * 0.5) * target.abs();
-        let fill = if target < 0.0 {
+        let fill_w = (bar.width() * 0.5) * eased.abs();
+        let fill = if eased < 0.0 {
             egui::Rect::from_min_max(
                 Pos2::new(cx - fill_w, bar.top()),
                 Pos2::new(cx, bar.bottom()),
@@ -71,7 +93,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 Pos2::new(cx + fill_w, bar.bottom()),
             )
         };
-        let col = if target < 0.0 {
+        let col = if eased < 0.0 {
             ctx.cfg.color(SECTION, "faster", "#46df7a")
         } else {
             ctx.cfg.color(SECTION, "slower", "#e23b3b")

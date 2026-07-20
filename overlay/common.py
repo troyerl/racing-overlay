@@ -61,11 +61,12 @@ def make_irsdk(demo: bool = False):
 
 
 def in_garage_from_ir(ir) -> bool:
-    """True when the player is in garage or the garage UI is showing.
+    """True when the player is in garage, menus, or spectating (not in-car).
 
     ``IsInGarage`` covers car physics in the garage. Spectators / out-of-car
     clients often have that false while the enter-car screen is open —
-    ``IsGarageVisible`` covers that case.
+    ``IsGarageVisible`` covers that case. ``IsOnTrackCar`` is false whenever
+    the local player is not seated in their car (spectating, replay, menus).
     """
     if ir is None:
         return False
@@ -76,7 +77,15 @@ def in_garage_from_ir(ir) -> bool:
         except Exception:
             return False
 
-    return _flag("IsInGarage") or _flag("IsGarageVisible")
+    if _flag("IsInGarage") or _flag("IsGarageVisible"):
+        return True
+    # Connected but not seated → use the garage / spectating profile.
+    try:
+        # Presence of the var means we have live IR; missing → leave as race.
+        _ = ir["IsOnTrackCar"]
+        return not _flag("IsOnTrackCar")
+    except Exception:
+        return False
 
 
 def sync_context_from_ir(ir) -> str:

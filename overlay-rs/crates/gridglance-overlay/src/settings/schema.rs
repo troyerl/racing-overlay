@@ -96,6 +96,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 "Content",
                 &[
                     "center_on_player",
+                    "rows",
                     "rows_ahead",
                     "rows_behind",
                     "show_footer",
@@ -794,8 +795,18 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         (_, "show") => Some("Show this panel on the overlay."),
         (_, "text_scale") => Some("Per-panel text scale (multiplies global)."),
         (_, "show_panel") => Some("Draw the card background behind this panel."),
-        (_, "rows_ahead") => Some("How many cars to list ahead of you."),
-        (_, "rows_behind") => Some("How many cars to list behind you."),
+        ("relative", "rows") => {
+            Some("Total cars ahead+behind (must equal rows ahead + rows behind).")
+        }
+        ("standings", "rows") => Some(
+            "Top-N row count when not centered; when centered, equals rows ahead + rows behind.",
+        ),
+        (_, "rows_ahead") => {
+            Some("Cars ahead of you. Rows ahead + rows behind must equal total rows.")
+        }
+        (_, "rows_behind") => {
+            Some("Cars behind you. Rows ahead + rows behind must equal total rows.")
+        }
         (_, "center_on_player") => Some("Keep your row centered in the table."),
         _ => None,
     }

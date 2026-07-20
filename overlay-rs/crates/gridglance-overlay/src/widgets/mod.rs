@@ -10,6 +10,7 @@ mod lap_compare;
 mod laptime_log;
 mod leaderboard_strip;
 mod map;
+pub use map::{bg_fingerprint, build_car_sprites, tick_car_motion};
 mod pit_advisor;
 mod pit_board;
 mod radar;
@@ -32,9 +33,25 @@ pub struct WidgetCtx<'a> {
     pub cfg: &'a OverlayConfig,
     pub frame: &'a TelemetryFrame,
     pub edit_mode: bool,
+    /// Launched with `--demo` (oval map fallback allowed).
+    pub demo: bool,
     pub map: &'a mut MapAuthoring,
     /// Shared host monotonic seconds (demo telem + map easing).
     pub mono_secs: f64,
+    /// Set while this panel has active easing/blink so the host presents ~60 Hz.
+    pub panel_animating: &'a mut bool,
+    /// Map paint mode: static track for bg capture, or full (cars included).
+    pub map_paint_mode: MapPaintMode,
+}
+
+/// How the map widget paints inside the GL viewport.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum MapPaintMode {
+    /// Track + cars (classic / edit path).
+    #[default]
+    Full,
+    /// Track chrome only — captured into the CPU bg cache.
+    StaticOnly,
 }
 
 pub fn paint(ui: &mut Ui, key: &str, ctx: &mut WidgetCtx<'_>) {
