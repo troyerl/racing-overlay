@@ -25,6 +25,14 @@ impl ConfigContext {
     }
 }
 
+/// Per-widget presentation: dense telemetry (`Data`) vs softer minimal (`Elegant`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PanelStyle {
+    #[default]
+    Data,
+    Elegant,
+}
+
 /// Widget section keys owned by the Rust overlay.
 pub const WIDGET_KEYS: &[&str] = &[
     "standings",
@@ -49,7 +57,7 @@ pub const WIDGET_KEYS: &[&str] = &[
     "pit_advisor",
 ];
 
-/// Default geometries (x, y, w, h) matching Python panel defaults loosely.
+/// Default geometries (x, y, w, h) for **Data** panel style.
 pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
     match key {
         "standings" => (40, 40, 420, 520),
@@ -65,7 +73,7 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "sector_timing" => (1160, 40, 280, 200),
         "lap_compare" => (1160, 260, 280, 220),
         "tire_panel" => (1160, 500, 280, 200),
-        "pit_board" => (40, 980, 320, 140),
+        "pit_board" => (40, 980, 320, 160),
         "weather_panel" => (380, 980, 260, 180),
         "leaderboard_strip" => (660, 980, 480, 80),
         "radio_tower" => (1160, 720, 220, 56),
@@ -73,6 +81,123 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "system_panel" => (1160, 940, 220, 180),
         "pit_advisor" => (660, 1080, 320, 160),
         _ => (100, 100, 280, 160),
+    }
+}
+
+/// Content-fitted (w, h) for Elegant — panels hug their content (no empty band below).
+pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
+    match key {
+        "delta_bar" => (260, 40),
+        "flags" => (200, 48),
+        "radio_tower" => (240, 44),
+        "inputs" => (300, 120),
+        "leaderboard_strip" => (480, 72),
+        "radar" => (200, 200),
+        "map" => (320, 320),
+        "ers_hybrid" => (200, 78),
+        "pit_advisor" => (280, 96),
+        "tire_panel" => (240, 128),
+        "sector_timing" => {
+            let pred = cfg.bool_key(key, "show_predicted_lap", false);
+            let delta = cfg.bool_key(key, "show_sector_delta", false);
+            let h = 96 + if pred { 14 } else { 0 } + if delta { 8 } else { 0 };
+            (260, h)
+        }
+        "lap_compare" => {
+            let graph = cfg.bool_key(key, "show_graph", true);
+            let turns = cfg.f64_key(key, "max_turns", 6.0).clamp(1.0, 8.0) as i32;
+            let h = 36 + if graph { 28 } else { 0 } + turns * 20 + 12;
+            (260, h)
+        }
+        "laptime_log" => {
+            let rows = cfg.f64_key(key, "rows", 8.0).clamp(1.0, 20.0) as i32;
+            let header = if cfg.bool_key(key, "show_header", true) {
+                22
+            } else {
+                0
+            };
+            (300, 16 + header + rows * 20)
+        }
+        "weather_panel" => {
+            let mut h = 14; // pad
+            if cfg.bool_key(key, "show_title", true) {
+                h += 12;
+            }
+            if cfg.bool_key(key, "show_skies", true) {
+                h += 22;
+            }
+            if cfg.bool_key(key, "show_rain", true) {
+                h += 18;
+            }
+            if cfg.bool_key(key, "show_temps", true) || cfg.bool_key(key, "show_wind", true) {
+                h += 18;
+            }
+            h += 10;
+            (240, h.max(56))
+        }
+        "system_panel" => {
+            let mut n = 0;
+            for k in ["show_cpu", "show_mem", "show_gpu", "show_fps", "show_network"] {
+                if cfg.bool_key(key, k, true) {
+                    n += 1;
+                }
+            }
+            let title = if cfg.bool_key(key, "show_title", true) {
+                14
+            } else {
+                0
+            };
+            (200, 14 + title + n.max(1) * 20)
+        }
+        "pit_board" => {
+            // Typical 3 services + title; grows with live list via host fit slack.
+            let title = if cfg.bool_key(key, "show_title", true) {
+                14
+            } else {
+                0
+            };
+            (260, 14 + title + 3 * 24 + 20)
+        }
+        "fuel_calc" => {
+            let mut h = 16;
+            if cfg.bool_key(key, "show_title", true) {
+                h += 18;
+            }
+            if cfg.bool_key(key, "show_pill", true)
+                || cfg.bool_key(key, "show_add", true)
+                || cfg.bool_key(key, "show_gauge", true)
+            {
+                h += 56 + 8;
+            }
+            if cfg.bool_key(key, "show_time", true) {
+                h += 40 + 8;
+            }
+            if cfg.bool_key(key, "show_laps", true) {
+                h += 40;
+            }
+            h += 14;
+            (360, h.max(170))
+        }
+        "dash" | "standings" | "relative" => {
+            let (_, _, w, h) = default_geom(key);
+            (w, h)
+        }
+        _ => {
+            let (_, _, w, h) = default_geom(key);
+            // Slightly tighter than Data for unknown widgets.
+            (w, (h as f32 * 0.78).round() as i32)
+        }
+    }
+}
+
+/// Preferred size for the widget's current panel style.
+pub fn preferred_panel_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
+    match cfg.panel_style(key) {
+        PanelStyle::Elegant => elegant_content_size(cfg, key),
+        PanelStyle::Data => {
+            let (_, _, w, h) = default_geom(key);
+            (w, h)
+        }
     }
 }
 
@@ -808,6 +933,18 @@ impl OverlayConfig {
             .to_string()
     }
 
+    /// Per-widget Data vs Elegant presentation (standings/relative/dash stay Data).
+    pub fn panel_style(&self, section: &str) -> PanelStyle {
+        match self
+            .str_key(section, "panel_style", "data")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "elegant" => PanelStyle::Elegant,
+            _ => PanelStyle::Data,
+        }
+    }
+
     /// Nested string under `section[group][key]` (e.g. `header.left`).
     pub fn nested_str(&self, section: &str, group: &str, key: &str, default: &str) -> String {
         self.section(section)
@@ -1232,6 +1369,9 @@ fn default_cfg() -> Value {
             Value::String(key.to_uppercase().replace('_', " ")),
         );
         section.insert("show_title".into(), Value::Bool(true));
+        if !matches!(*key, "standings" | "relative" | "dash") {
+            section.insert("panel_style".into(), Value::String("data".into()));
+        }
         section.insert("idle_text".into(), Value::String("TRACK CLEAR".into()));
         section.insert("range".into(), json!(1.0));
         section.insert("show_value".into(), Value::Bool(true));
@@ -1544,9 +1684,20 @@ fn default_cfg() -> Value {
             if let Some(Value::Object(colors)) = section.get_mut("colors") {
                 colors.insert("wear".into(), Value::String("#46df7a".into()));
                 colors.insert("warn".into(), Value::String("#ff9416".into()));
+                colors.insert("temp_cold".into(), Value::String("#5aa9ff".into()));
+                colors.insert("temp_hot".into(), Value::String("#ff9416".into()));
                 colors.insert("bar_bg".into(), Value::String("#262b34".into()));
                 colors.insert("header".into(), Value::String("#8b93a1".into()));
             }
+        }
+        if *key == "weather_panel" {
+            section.insert("panel_style".into(), Value::String("data".into()));
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("WEATHER".into()));
+            section.insert("show_skies".into(), Value::Bool(true));
+            section.insert("show_rain".into(), Value::Bool(true));
+            section.insert("show_temps".into(), Value::Bool(true));
+            section.insert("show_wind".into(), Value::Bool(true));
         }
         if *key == "ers_hybrid" {
             section.insert("show_title".into(), Value::Bool(true));

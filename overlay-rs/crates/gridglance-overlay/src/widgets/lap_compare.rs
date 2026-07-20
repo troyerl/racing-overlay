@@ -1,7 +1,7 @@
 //! Lap compare — live delta, sparkline, turn losses.
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, draw_dark_cell, full_rect, label, panel_pad};
+use crate::chrome::{panel_card, draw_dark_cell, full_rect, label, panel_pad};
 use egui::{Align2, Pos2, Rect, Shape, Stroke, Ui};
 
 const SECTION: &str = "lap_compare";
@@ -74,64 +74,91 @@ fn draw_spark(
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
-    let (card, radius) = draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = panel_pad(card.height()).max(7.0);
+    let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let elegant = crate::chrome::is_elegant(ctx.cfg, SECTION);
+    let pad = if elegant {
+        (card.height() * 0.05).max(6.0)
+    } else {
+        panel_pad(card.height()).max(7.0)
+    };
     let h = card.height();
     let w = card.width();
     let iw = w - 2.0 * pad;
     let scale = ctx.cfg.text_scale(SECTION);
     let view = &ctx.frame.lap_compare;
-    let mut y = card.top() + pad * 0.4;
+    let mut y = card.top() + pad * 0.35;
 
-    // Header
-    let hh = h * 0.12;
-    let band = Rect::from_min_size(Pos2::new(card.left(), y), egui::vec2(card.width(), hh));
-    ui.painter().rect_filled(
-        band,
-        egui::CornerRadius {
-            nw: radius as u8,
-            ne: radius as u8,
-            sw: 0,
-            se: 0,
-        },
-        ctx.cfg.color(SECTION, "header_bg", "#0b0e12bb"),
-    );
+    // Elegant: ref label + delta on one compact band (no stacked hero).
     let ref_label = if view.ref_label.is_empty() {
         "VS BEST"
     } else {
         view.ref_label.as_str()
     };
-    label(
-        ui,
-        Pos2::new(card.left() + pad, y + hh * 0.5),
-        Align2::LEFT_CENTER,
-        ref_label,
-        (hh * 0.55 * scale).clamp(11.0, 18.0),
-        ctx.cfg.color(SECTION, "accent", "#e23b3b"),
-        true,
-    );
-    y += hh;
-
-    // Big delta
-    let bh = h * 0.20;
     let delta = view.delta;
-    label(
-        ui,
-        Pos2::new(card.center().x, y + bh * 0.45),
-        Align2::CENTER_CENTER,
-        &delta.map(signed_delta).unwrap_or_else(|| "--.--".into()),
-        (bh * 0.72 * scale).clamp(22.0, 48.0),
-        delta_color(ctx, delta),
-        true,
-    );
-    y += bh;
+    if elegant {
+        let hh = (h * 0.14).clamp(22.0, 32.0);
+        label(
+            ui,
+            Pos2::new(card.left() + pad, y + hh * 0.5),
+            Align2::LEFT_CENTER,
+            ref_label,
+            10.0,
+            crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, "muted", "#8b93a1"), 200),
+            false,
+        );
+        label(
+            ui,
+            Pos2::new(card.right() - pad, y + hh * 0.5),
+            Align2::RIGHT_CENTER,
+            &delta.map(signed_delta).unwrap_or_else(|| "--.--".into()),
+            (hh * 0.55 * scale).clamp(14.0, 22.0),
+            delta_color(ctx, delta),
+            true,
+        );
+        y += hh + 2.0;
+    } else {
+        let hh = h * 0.12;
+        let band = Rect::from_min_size(Pos2::new(card.left(), y), egui::vec2(card.width(), hh));
+        ui.painter().rect_filled(
+            band,
+            egui::CornerRadius {
+                nw: radius as u8,
+                ne: radius as u8,
+                sw: 0,
+                se: 0,
+            },
+            ctx.cfg.color(SECTION, "header_bg", "#0b0e12bb"),
+        );
+        label(
+            ui,
+            Pos2::new(card.left() + pad, y + hh * 0.5),
+            Align2::LEFT_CENTER,
+            ref_label,
+            (hh * 0.55 * scale).clamp(11.0, 18.0),
+            ctx.cfg.color(SECTION, "accent", "#e23b3b"),
+            true,
+        );
+        y += hh;
+
+        let bh = h * 0.20;
+        label(
+            ui,
+            Pos2::new(card.center().x, y + bh * 0.45),
+            Align2::CENTER_CENTER,
+            &delta.map(signed_delta).unwrap_or_else(|| "--.--".into()),
+            (bh * 0.72 * scale).clamp(18.0, 40.0),
+            delta_color(ctx, delta),
+            true,
+        );
+        y += bh;
+    }
 
     // Sparkline
     if ctx.cfg.bool_key(SECTION, "show_graph", true) && !view.spark.is_empty() {
-        let gh = h * 0.16;
+        let gh = h * (if elegant { 0.10 } else { 0.16 });
         let graph = Rect::from_min_size(Pos2::new(card.left() + pad, y), egui::vec2(iw, gh));
         draw_spark(ui, ctx, graph, &view.spark, &view.markers);
-        y += gh + pad * 0.4;
+        y += gh + if elegant { 2.0 } else { pad * 0.4 };
     }
 
     // Turn losses
@@ -149,28 +176,41 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         return;
     }
 
-    let body_h = (card.bottom() - pad - y).max(20.0);
+    let body_h = (card.bottom() - pad - y).max(18.0);
     let max_turns = ctx.cfg.f64_key(SECTION, "max_turns", 6.0).max(1.0) as usize;
     let shown: Vec<_> = turns.iter().take(max_turns).collect();
-    let rh = (body_h / shown.len().max(1) as f32).clamp(18.0, body_h * 0.35);
+    let rh = if elegant {
+        (body_h / shown.len().max(1) as f32).clamp(16.0, 22.0)
+    } else {
+        let max_rh = (body_h * 0.35).max(18.0);
+        (body_h / shown.len().max(1) as f32).clamp(18.0, max_rh)
+    };
     let mut row_y = y;
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
     let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
     for (i, (name, loss)) in shown.iter().enumerate() {
         let row = Rect::from_min_size(Pos2::new(card.left() + pad, row_y), egui::vec2(iw, rh));
-        if ctx.cfg.bool_key(SECTION, "alt_row_shading", true) && i % 2 == 1 {
+        if !elegant && ctx.cfg.bool_key(SECTION, "alt_row_shading", true) && i % 2 == 1 {
             ui.painter().rect_filled(
                 row,
                 egui::CornerRadius::ZERO,
                 ctx.cfg.color(SECTION, "row_alt", "#ffffff0a"),
             );
         }
-        let chip_w = row.width() * 0.18;
+        let chip_w = row.width() * (if elegant { 0.16 } else { 0.18 });
         let chip = Rect::from_min_size(
             Pos2::new(row.left(), row.top() + rh * 0.12),
             egui::vec2(chip_w, rh * 0.76),
         );
-        draw_dark_cell(ui, ctx.cfg, SECTION, chip, 5.0);
+        if elegant {
+            ui.painter().rect_filled(
+                chip,
+                egui::CornerRadius::same(8),
+                crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, "cell_dark", "#0b0e12"), 80),
+            );
+        } else {
+            draw_dark_cell(ui, ctx.cfg, SECTION, chip, 5.0);
+        }
         label(
             ui,
             chip.center(),
@@ -203,7 +243,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Align2::RIGHT_CENTER,
             tip,
             (rh * 0.26 * scale).clamp(9.0, 14.0),
-            muted,
+            if elegant {
+                crate::chrome::color_with_alpha(muted, 180)
+            } else {
+                muted
+            },
             false,
         );
         row_y += rh;

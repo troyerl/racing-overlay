@@ -1099,6 +1099,21 @@ fn paint_value(
                 paint_color_string(ui, state, section, key, s, dirty);
                 return;
             }
+            if key == "panel_style" {
+                let options = vec!["data".into(), "elegant".into()];
+                let selected = if options.iter().any(|o| o == s) {
+                    s.clone()
+                } else {
+                    "data".into()
+                };
+                setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
+                    if let Some(next) = styled_combo(ui, (section, key), &selected, &options, 160.0)
+                    {
+                        set_section_key(state, section, key, json!(next), dirty);
+                    }
+                });
+                return;
+            }
             let mut text = s.clone();
             setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
                 if text_field(ui, &mut text, "", 220.0).changed() {
@@ -1466,7 +1481,12 @@ fn set_global(state: &StateHandle, key: &str, val: Value, dirty: &mut bool) {
 fn set_section_key(state: &StateHandle, section: &str, key: &str, val: Value, dirty: &mut bool) {
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
-        cfg.apply_cfg_patch(&json!({ section: { key: val } }));
+        cfg.apply_cfg_patch(&json!({ section: { key: val.clone() } }));
+        if key == "panel_style" {
+            let (w, h) = crate::config::preferred_panel_size(st.config.as_ref(), section);
+            crate::state::fit_panel_size(&mut st.layout, section, w, h);
+            st.save_layout_to_preset();
+        }
         *dirty = true;
     }
 }

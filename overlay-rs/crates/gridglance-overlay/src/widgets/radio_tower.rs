@@ -1,7 +1,9 @@
 //! Radio tower — current team-radio speaker (Python parity).
 
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, draw_card, draw_section_header, full_rect, panel_pad};
+use crate::chrome::{
+    color_with_alpha, full_rect, panel_card, panel_content_pad, panel_title,
+};
 use crate::config::parse_color_str;
 use crate::icons;
 use crate::telemetry::RadioSpeaker;
@@ -62,42 +64,46 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     };
 
     let rect = full_rect(ui);
-    let (card, radius) = draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = panel_pad(card.height());
+    let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let pad = panel_content_pad(ctx.cfg, SECTION, card.height());
     let mut y = card.top() + pad;
-
-    let show_title = ctx.cfg.bool_key(SECTION, "show_title", true);
-    if show_title {
-        let hh = (card.height() * 0.22).max(18.0);
-        let hdr = Rect::from_min_size(
-            Pos2::new(card.left() + pad, y),
-            Vec2::new(card.width() - 2.0 * pad, hh),
-        );
-        let title = ctx.cfg.str_key(SECTION, "title", "RADIO");
-        draw_section_header(ui, ctx.cfg, SECTION, hdr, &title, radius);
-        y += hh + pad * 0.2;
-    }
+    y = panel_title(ui, ctx.cfg, SECTION, card, radius, y, pad, "RADIO");
 
     let show_pos = ctx.cfg.bool_key(SECTION, "show_position", true);
     let show_num = ctx.cfg.bool_key(SECTION, "show_car_number", true);
     let show_name = ctx.cfg.bool_key(SECTION, "show_name", true);
     let highlight = ctx.cfg.bool_key(SECTION, "highlight_player", true);
 
-    let body_h = (card.bottom() - pad - y).max(22.0);
+    let body_h = (card.bottom() - pad - y).max(18.0);
     let fixed_rh = ctx.cfg.f64_key(SECTION, "row_height_px", 0.0) as f32;
-    let row_h = if fixed_rh > 0.0 { fixed_rh } else { body_h }.max(22.0);
+    let elegant = crate::chrome::is_elegant(ctx.cfg, SECTION);
+    let row_h = if elegant {
+        body_h.clamp(20.0, 28.0)
+    } else if fixed_rh > 0.0 {
+        fixed_rh
+    } else {
+        body_h
+    }
+    .max(18.0);
 
     let content_w = card.width() - 2.0 * pad;
-    let text_size = row_h * 0.46 * ctx.cfg.text_scale(SECTION);
+    let text_size = row_h
+        * (if elegant { 0.42 } else { 0.46 })
+        * ctx.cfg.text_scale(SECTION);
     let x0 = card.left() + pad;
-    let row_rect = Rect::from_min_size(Pos2::new(x0, y), Vec2::new(content_w, row_h - 2.0));
+    let row_y = y;
+    let row_rect = Rect::from_min_size(Pos2::new(x0, row_y), Vec2::new(content_w, row_h - 2.0));
 
     if row.active {
         draw_speaking_accent(ui, ctx, row_rect);
     } else if row.is_player && highlight {
         ui.painter().rect_filled(
             row_rect,
-            CornerRadius::ZERO,
+            if elegant {
+                CornerRadius::same(8)
+            } else {
+                CornerRadius::ZERO
+            },
             ctx.cfg.color(SECTION, "player_row", "#ffffff14"),
         );
     }

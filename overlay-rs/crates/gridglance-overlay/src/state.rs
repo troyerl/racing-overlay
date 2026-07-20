@@ -598,6 +598,16 @@ fn ensure_default_layouts(layout: &mut HashMap<String, PanelLayout>) {
     }
 }
 
+/// Resize a panel to an explicit size (keeps x/y).
+pub fn fit_panel_size(layout: &mut HashMap<String, PanelLayout>, key: &str, w: i32, h: i32) {
+    let lay = layout.entry(key.to_string()).or_insert_with(|| {
+        let (x, y, _, _) = default_geom(key);
+        PanelLayout { x, y, w, h }
+    });
+    lay.w = w.max(80);
+    lay.h = h.max(32);
+}
+
 pub struct SharedState {
     pub config: Arc<OverlayConfig>,
     pub frame: Arc<TelemetryFrame>,

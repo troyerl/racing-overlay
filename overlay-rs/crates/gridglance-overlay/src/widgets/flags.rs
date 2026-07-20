@@ -1,7 +1,7 @@
 //! Flags banner — plate + hatch/checker (Python `flags.py`).
 
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, draw_card, draw_dark_cell, full_rect, label};
+use crate::chrome::{color_with_alpha, panel_card, draw_dark_cell, full_rect, label};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 
 const SECTION: &str = "flags";
@@ -113,8 +113,15 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
     let rect = full_rect(ui);
     ui.set_opacity(opacity);
-    draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = (rect.height() * 0.12).max(6.0);
+    // Elegant: flag plate only — no outer data card.
+    if !crate::chrome::is_elegant(ctx.cfg, SECTION) {
+        panel_card(ui, ctx.cfg, SECTION, rect);
+    }
+    let pad = if crate::chrome::is_elegant(ctx.cfg, SECTION) {
+        (rect.height() * 0.05).max(3.0)
+    } else {
+        (rect.height() * 0.12).max(6.0)
+    };
     let inner = rect.shrink(pad);
 
     if f.flag.is_none() && f.incident_warn {

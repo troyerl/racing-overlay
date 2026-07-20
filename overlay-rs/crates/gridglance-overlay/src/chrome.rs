@@ -121,6 +121,88 @@ pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) ->
     (rect, radius)
 }
 
+/// Soft / minimal card for Elegant panel styles — quieter fill, modest radius, hairline border.
+pub fn draw_elegant_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> (Rect, f32) {
+    let h = rect.height();
+    let frac = cfg.f64_key(section, "corner_radius_frac", 0.0) as f32;
+    let radius = (h * frac.max(0.10)).min(h * 0.22).max(4.0).min(h * 0.5);
+    let top = color_with_alpha(cfg.color(section, "bg_top", "#1b1f26f2"), 108);
+    let bottom = color_with_alpha(cfg.color(section, "bg_bottom", "#0f1216f2"), 88);
+    let border = color_with_alpha(cfg.color(section, "border", "#ffffff28"), 36);
+
+    fill_vertical_gradient(ui, rect, radius, top, bottom);
+    ui.painter().rect_stroke(
+        rect,
+        CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8),
+        Stroke::new(1.0_f32, border),
+        egui::StrokeKind::Inside,
+    );
+    (rect, radius)
+}
+
+/// Data vs Elegant card for a section.
+pub fn panel_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> (Rect, f32) {
+    match cfg.panel_style(section) {
+        crate::config::PanelStyle::Elegant => draw_elegant_card(ui, cfg, section, rect),
+        crate::config::PanelStyle::Data => draw_card(ui, cfg, section, rect),
+    }
+}
+
+/// True when this section uses the softer Elegant presentation.
+pub fn is_elegant(cfg: &OverlayConfig, section: &str) -> bool {
+    cfg.panel_style(section) == crate::config::PanelStyle::Elegant
+}
+
+/// Horizontal inset for panel content (tighter in Elegant so panels can stay compact).
+pub fn panel_content_pad(cfg: &OverlayConfig, section: &str, card_h: f32) -> f32 {
+    let base = panel_pad(card_h);
+    if is_elegant(cfg, section) {
+        (base * 0.75).max(6.0)
+    } else {
+        base
+    }
+}
+
+/// Draw optional title. Data = section header band; Elegant = whisper label.
+/// Returns the y cursor below the title (or `y` unchanged when hidden).
+pub fn panel_title(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    section: &str,
+    card: Rect,
+    radius: f32,
+    y: f32,
+    pad: f32,
+    default_title: &str,
+) -> f32 {
+    if !cfg.bool_key(section, "show_title", true) {
+        return y;
+    }
+    let title = cfg.str_key(section, "title", default_title);
+    if is_elegant(cfg, section) {
+        let muted = color_with_alpha(cfg.color(section, "muted", "#8b93a1"), 200);
+        let th = 12.0;
+        label(
+            ui,
+            Pos2::new(card.left() + pad, y + th * 0.5),
+            egui::Align2::LEFT_CENTER,
+            &title,
+            10.0,
+            muted,
+            false,
+        );
+        y + th + 4.0
+    } else {
+        let hh = (card.height() * 0.12).max(20.0);
+        let hdr = Rect::from_min_size(
+            Pos2::new(card.left() + pad, y),
+            Vec2::new(card.width() - 2.0 * pad, hh),
+        );
+        draw_section_header(ui, cfg, section, hdr, &title, radius);
+        y + hh + pad * 0.35
+    }
+}
+
 pub fn draw_section_header(
     ui: &mut Ui,
     cfg: &OverlayConfig,

@@ -119,6 +119,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "rows",
                     "delta_mode",
                     "column_order",
@@ -146,6 +147,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Visibility",
                 &[
+                    "panel_style",
                     "show_title",
                     "show_pill",
                     "show_add",
@@ -186,6 +188,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Behavior",
                 &[
+                    "panel_style",
                     "range_pct",
                     "show_front",
                     "show_rear",
@@ -254,6 +257,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Visibility",
                 &[
+                    "panel_style",
                     "show_label",
                     "show_graph",
                     "show_bars",
@@ -278,7 +282,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             ("Colors", &["colors"]),
         ],
         "delta_bar" => vec![
-            ("Behavior", &["mode", "range", "show_value"]),
+            ("Behavior", &["panel_style", "mode", "range", "show_value"]),
             ("Layout", &["corner_radius_frac"]),
             ("Colors", &["colors"]),
         ],
@@ -286,6 +290,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "idle_text",
                     "show_incident_warning",
                     "incident_warn_pct",
@@ -297,14 +302,14 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             ("Colors", &["colors"]),
         ],
         "lap_compare" => vec![
-            ("Content", &["max_turns", "show_graph"]),
+            ("Content", &["panel_style", "max_turns", "show_graph"]),
             ("Row layout", &["alt_row_shading"]),
             ("Colors", &["colors"]),
         ],
         "sector_timing" => vec![
             (
                 "Content",
-                &["show_sector_delta", "show_predicted_lap", "text_scale"],
+                &["panel_style", "show_sector_delta", "show_predicted_lap", "text_scale"],
             ),
             ("Row layout", &["row_height_px", "max_row_height_frac"]),
             ("Layout", &["corner_radius_frac"]),
@@ -314,6 +319,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "show_wear",
@@ -329,6 +335,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "show_pit_banner",
@@ -345,6 +352,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "show_skies",
@@ -360,6 +368,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "rows",
                     "show_position",
                     "show_car_number",
@@ -378,6 +387,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "show_position",
@@ -395,6 +405,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "show_cpu",
@@ -412,6 +423,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "show_only_when_actionable",
@@ -428,6 +440,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Content",
                 &[
+                    "panel_style",
                     "show_title",
                     "title",
                     "label_battery",
@@ -446,6 +459,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             (
                 "Display",
                 &[
+                    "panel_style",
                     "show_infield",
                     "show_corners",
                     "show_start_finish",
@@ -795,6 +809,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         (_, "show") => Some("Show this panel on the overlay."),
         (_, "text_scale") => Some("Per-panel text scale (multiplies global)."),
         (_, "show_panel") => Some("Draw the card background behind this panel."),
+        (_, "panel_style") => Some(
+            "Data: dense telemetry layout. Elegant: softer minimal visual layout.",
+        ),
         ("relative", "rows") => {
             Some("Total cars ahead+behind (must equal rows ahead + rows behind).")
         }

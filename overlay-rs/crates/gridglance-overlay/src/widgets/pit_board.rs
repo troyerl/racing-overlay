@@ -2,7 +2,10 @@
 //! Ports `overlay/widgets/pit_board.py`.
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, draw_dark_cell, draw_section_header, full_rect, label, panel_pad};
+use crate::chrome::{
+    color_with_alpha, draw_dark_cell, full_rect, is_elegant, label, panel_card, panel_content_pad,
+    panel_title,
+};
 use crate::telemetry::PitService;
 use egui::{Align2, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
@@ -69,27 +72,60 @@ fn draw_status_chip(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect, text: &str, ac
 fn draw_row_divider(ui: &mut Ui, ctx: &WidgetCtx<'_>, x: f32, y: f32, w: f32) {
     let mut edge = ctx.cfg.color(SECTION, "border", "#ffffff28");
     let a = ((edge.a() as f32) * 0.55).max(30.0) as u8;
-    edge = crate::chrome::color_with_alpha(edge, a);
+    edge = color_with_alpha(edge, a);
     ui.painter().line_segment(
         [Pos2::new(x, y), Pos2::new(x + w, y)],
         Stroke::new(1.0_f32, edge),
     );
 }
 
-pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+fn collect_services(ctx: &WidgetCtx<'_>) -> Vec<PitService> {
     let f = ctx.frame;
     let mut services = f.pit_services.clone();
     if services.is_empty() && ctx.edit_mode {
         services = preview_services();
     }
-    if services.is_empty() && !ctx.edit_mode && !f.pit_active {
+    services
+}
+
+fn collect_extras(ctx: &WidgetCtx<'_>) -> Vec<String> {
+    let f = ctx.frame;
+    let mut extras: Vec<String> = Vec::new();
+    if ctx.cfg.bool_key(SECTION, "show_compound", true) {
+        if let Some(c) = f.pit_compound {
+            extras.push(format!("Set {c}"));
+        }
+    }
+    if let Some(fuel_l) = f.pit_fuel_add_l.or(f.pit_fuel_to_add) {
+        let v = ctx.cfg.conv_fuel(fuel_l);
+        extras.push(format!("+{v:.1} {}", ctx.cfg.fuel_unit()));
+    }
+    if ctx.cfg.bool_key(SECTION, "show_fast_repairs", true) {
+        if let Some(r) = f.pit_repairs {
+            extras.push(format!("Repairs {r}"));
+        }
+    }
+    extras
+}
+
+pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    let services = collect_services(ctx);
+    if services.is_empty() && !ctx.edit_mode && !ctx.frame.pit_active {
         let _ = full_rect(ui);
         return;
     }
+    if is_elegant(ctx.cfg, SECTION) {
+        paint_elegant(ui, ctx, &services);
+    } else {
+        paint_data(ui, ctx, &services);
+    }
+}
 
+fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, services: &[PitService]) {
+    let f = ctx.frame;
     let rect = full_rect(ui);
-    let (card, radius) = draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = panel_pad(card.height());
+    let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let pad = panel_content_pad(ctx.cfg, SECTION, card.height());
     let h = card.height();
     let mut y = card.top() + pad;
     let data_bold = true;
@@ -107,17 +143,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         y += banner_h + pad * 0.4;
     }
 
-    if ctx.cfg.bool_key(SECTION, "show_title", true) {
-        let hh = (h * 0.10).max(20.0);
-        let hdr = Rect::from_min_size(
-            Pos2::new(card.left() + pad, y),
-            Vec2::new(card.width() - 2.0 * pad, hh),
-        );
-        let title = ctx.cfg.str_key(SECTION, "title", "PIT SERVICES");
-        let radius_top = if f.pit_active { 0.0 } else { radius };
-        draw_section_header(ui, ctx.cfg, SECTION, hdr, &title, radius_top);
-        y += hh + pad * 0.25;
-    }
+    y = panel_title(ui, ctx.cfg, SECTION, card, radius, y, pad, "PIT SERVICES");
 
     let n = services.len().max(1);
     let extras_h = h * 0.14;
@@ -173,21 +199,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
     }
 
-    let mut extras: Vec<String> = Vec::new();
-    if ctx.cfg.bool_key(SECTION, "show_compound", true) {
-        if let Some(c) = f.pit_compound {
-            extras.push(format!("Set {c}"));
-        }
-    }
-    if let Some(fuel_l) = f.pit_fuel_add_l.or(f.pit_fuel_to_add) {
-        let v = ctx.cfg.conv_fuel(fuel_l);
-        extras.push(format!("+{v:.1} {}", ctx.cfg.fuel_unit()));
-    }
-    if ctx.cfg.bool_key(SECTION, "show_fast_repairs", true) {
-        if let Some(r) = f.pit_repairs {
-            extras.push(format!("Repairs {r}"));
-        }
-    }
+    let extras = collect_extras(ctx);
     if !extras.is_empty() {
         label(
             ui,
@@ -195,6 +207,116 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Align2::LEFT_CENTER,
             &extras.join("  •  "),
             (row_h * 0.38).clamp(10.0, 14.0),
+            muted,
+            false,
+        );
+    }
+}
+
+/// Soft pill checklist — compact chips, same service list.
+fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, services: &[PitService]) {
+    let f = ctx.frame;
+    let rect = full_rect(ui);
+    let (card, _radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let pad_x = (card.width() * 0.05).clamp(8.0, 12.0);
+    let pad_y = (card.height() * 0.05).clamp(6.0, 10.0);
+    let mut y = card.top() + pad_y;
+    let muted = color_with_alpha(ctx.cfg.color(SECTION, "muted", "#8b93a1"), 200);
+    let text_c = ctx.cfg.color(SECTION, "text", "#f4f6f8");
+    let checked_c = ctx.cfg.color(SECTION, "checked", "#70df7a");
+    let active_bg = color_with_alpha(ctx.cfg.color(SECTION, "active_bg", "#3d8bfd"), 200);
+    let soft_cell = color_with_alpha(ctx.cfg.color(SECTION, "cell_dark", "#0b0e12"), 70);
+
+    if ctx.cfg.bool_key(SECTION, "show_title", true) {
+        label(
+            ui,
+            Pos2::new(card.left() + pad_x, y + 6.0),
+            Align2::LEFT_CENTER,
+            &ctx.cfg.str_key(SECTION, "title", "PIT SERVICES"),
+            10.0,
+            muted,
+            false,
+        );
+        y += 14.0;
+    }
+
+    if f.pit_active && ctx.cfg.bool_key(SECTION, "show_pit_banner", true) {
+        let banner_h = 22.0;
+        let banner = Rect::from_min_size(
+            Pos2::new(card.left() + pad_x, y),
+            Vec2::new(card.width() - 2.0 * pad_x, banner_h),
+        );
+        ui.painter()
+            .rect_filled(banner, CornerRadius::same(8), active_bg);
+        label(
+            ui,
+            banner.center(),
+            Align2::CENTER_CENTER,
+            &ctx.cfg
+                .str_key(SECTION, "pit_banner_text", "PIT STOP ACTIVE"),
+            11.0,
+            text_c,
+            true,
+        );
+        y += banner_h + 6.0;
+    }
+
+    let extras = collect_extras(ctx);
+    let extras_h = if extras.is_empty() { 0.0 } else { 18.0 };
+    let n = services.len().max(1) as f32;
+    let body_h = (card.bottom() - pad_y - y - extras_h).max(n * 18.0);
+    let gap = 4.0;
+    let chip_h = ((body_h - gap * (n - 1.0)) / n).clamp(18.0, 26.0);
+    let inner_w = card.width() - 2.0 * pad_x;
+
+    for svc in services {
+        let chip = Rect::from_min_size(
+            Pos2::new(card.left() + pad_x, y),
+            Vec2::new(inner_w, chip_h),
+        );
+        if svc.checked {
+            ui.painter().rect_filled(
+                chip,
+                CornerRadius::same(8),
+                color_with_alpha(checked_c, 40),
+            );
+        } else {
+            ui.painter()
+                .rect_filled(chip, CornerRadius::same(8), soft_cell);
+        }
+        let mark = if svc.checked { "●" } else { "○" };
+        label(
+            ui,
+            Pos2::new(chip.left() + 10.0, chip.center().y),
+            Align2::LEFT_CENTER,
+            mark,
+            10.0,
+            if svc.checked { checked_c } else { muted },
+            false,
+        );
+        label(
+            ui,
+            Pos2::new(chip.left() + 26.0, chip.center().y),
+            Align2::LEFT_CENTER,
+            &svc.label,
+            (chip_h * 0.48).clamp(11.0, 14.0),
+            if svc.checked {
+                text_c
+            } else {
+                color_with_alpha(text_c, 160)
+            },
+            svc.checked,
+        );
+        y += chip_h + gap;
+    }
+
+    if !extras.is_empty() {
+        label(
+            ui,
+            Pos2::new(card.left() + pad_x, card.bottom() - pad_y - 8.0),
+            Align2::LEFT_CENTER,
+            &extras.join("  ·  "),
+            10.0,
             muted,
             false,
         );

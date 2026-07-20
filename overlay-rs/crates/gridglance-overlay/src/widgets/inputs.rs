@@ -1,7 +1,7 @@
 //! Scrolling input telemetry (Python `inputs.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{anim_dt, draw_card, ease, full_rect, label, still_easing};
+use crate::chrome::{anim_dt, panel_card, ease, full_rect, label, still_easing};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -91,14 +91,19 @@ fn push_sample(ctx: &WidgetCtx<'_>) {
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     push_sample(ctx);
     let rect = full_rect(ui);
-    draw_card(ui, ctx.cfg, SECTION, rect);
+    panel_card(ui, ctx.cfg, SECTION, rect);
     let h = rect.height();
-    let pad = (h * 0.08).max(6.0);
+    let pad = if crate::chrome::is_elegant(ctx.cfg, SECTION) {
+        (h * 0.06).max(5.0)
+    } else {
+        (h * 0.08).max(6.0)
+    };
     let gap = (h * 0.06).max(6.0);
     let mut left = rect.left() + pad;
     let mut right = rect.right() - pad;
 
-    if ctx.cfg.bool_key(SECTION, "show_label", true) {
+    if ctx.cfg.bool_key(SECTION, "show_label", true) && !crate::chrome::is_elegant(ctx.cfg, SECTION)
+    {
         left = draw_label(ui, ctx, left, pad, h) + gap;
     }
     if ctx.cfg.bool_key(SECTION, "show_gauge", true) {

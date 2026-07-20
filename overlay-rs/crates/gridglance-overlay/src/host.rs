@@ -4,7 +4,7 @@ use crate::chrome::color_with_alpha;
 use crate::config::{ConfigContext, WIDGET_KEYS};
 use crate::layered;
 use crate::settings;
-use crate::state::{PanelLayout, StateHandle};
+use crate::state::{fit_panel_size, PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
     demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
@@ -135,6 +135,8 @@ pub struct OverlayApp {
     last_table_focus: Option<i32>,
     /// Previous update() duration (ms) — defer sibling paints when heavy.
     last_frame_ms: f64,
+    /// Last panel_style string per widget — detect Elegant/Data switches for content fit.
+    last_panel_style: HashMap<String, String>,
     /// Full-res static map BGRA cache (no cars) for CPU composite presents.
     map_bg: Option<(i32, i32, Vec<u8>)>,
     map_bg_fp: u64,
@@ -198,6 +200,7 @@ impl OverlayApp {
             rel_order: RelativeOrderHysteresis::default(),
             last_table_focus: None,
             last_frame_ms: 0.0,
+            last_panel_style: HashMap::new(),
             map_bg: None,
             map_bg_fp: 0,
             map_bg_ppp: 1.0,
@@ -621,6 +624,48 @@ impl eframe::App for OverlayApp {
         let mono = self.clock_start.elapsed().as_secs_f64();
         if let Some(mut st) = self.state.try_write() {
             st.mono_secs = mono;
+        }
+
+        // Snap panel geometry to content size when panel_style changes (Elegant hugs content).
+        {
+            let mut st = self.state.write();
+            let mut changed = false;
+            for key in WIDGET_KEYS {
+                let style = match st.config.panel_style(key) {
+                    crate::config::PanelStyle::Elegant => "elegant",
+                    crate::config::PanelStyle::Data => "data",
+                };
+                let prev = self.last_panel_style.get(*key).map(String::as_str);
+                let style_changed = prev != Some(style);
+                if style_changed {
+                    // Fit on Elegant first-sight (migrate oversized Data layouts) and on
+                    // any later style toggle. Leave untouched Data layouts alone on first see.
+                    let should_fit = style == "elegant" || prev.is_some();
+                    if should_fit {
+                        let (w, h) =
+                            crate::config::preferred_panel_size(st.config.as_ref(), key);
+                        fit_panel_size(&mut st.layout, key, w, h);
+                        changed = true;
+                    }
+                    self.last_panel_style
+                        .insert((*key).to_string(), style.to_string());
+                } else if style == "elegant" {
+                    // Grow if content preferred size increased (avoids clipped/overlapping text).
+                    let (pw, ph) =
+                        crate::config::preferred_panel_size(st.config.as_ref(), key);
+                    let lay = st.layout.get(*key);
+                    let too_small = lay
+                        .map(|l| l.h + 8 < ph || l.w + 8 < pw)
+                        .unwrap_or(true);
+                    if too_small {
+                        fit_panel_size(&mut st.layout, key, pw, ph);
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                st.save_layout_to_preset();
+            }
         }
 
         let (running, edit_mode, click_through, keys_layout) = {

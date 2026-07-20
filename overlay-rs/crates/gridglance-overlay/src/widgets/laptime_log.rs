@@ -1,7 +1,7 @@
 //! Laptime log — recent laps with delta + track temp.
 
 use super::WidgetCtx;
-use crate::chrome::{draw_card, draw_dark_cell, full_rect, label, panel_pad};
+use crate::chrome::{panel_card, draw_dark_cell, full_rect, label, panel_pad};
 use crate::icons;
 use crate::telemetry::{signed_delta_1, LapLogRow};
 use egui::{Align2, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
@@ -103,8 +103,13 @@ fn cell_value(row: &LapLogRow, key: &str) -> String {
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
-    let (card, radius) = draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = panel_pad(card.height()).max((card.height() * 0.03).max(8.0));
+    let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let elegant = crate::chrome::is_elegant(ctx.cfg, SECTION);
+    let pad = if elegant {
+        (card.height() * 0.04).max(6.0)
+    } else {
+        panel_pad(card.height()).max((card.height() * 0.03).max(8.0))
+    };
 
     let order = column_order(ctx);
     let cols = col_layout(&order);
@@ -159,21 +164,32 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(inner_x, card.top() + pad),
             Vec2::new(inner_w, header_h),
         );
-        ui.painter().rect_filled(
-            hdr,
-            egui::CornerRadius {
-                nw: radius as u8,
-                ne: radius as u8,
-                sw: 0,
-                se: 0,
-            },
-            ctx.cfg.color(SECTION, "header_bg", "#0b0e12bb"),
-        );
-        ui.painter().line_segment(
-            [hdr.left_bottom(), hdr.right_bottom()],
-            Stroke::new(1.0_f32, divider),
-        );
-        let hs = header_h * 0.42 * hscale * text_scale;
+        if !elegant {
+            ui.painter().rect_filled(
+                hdr,
+                egui::CornerRadius {
+                    nw: radius as u8,
+                    ne: radius as u8,
+                    sw: 0,
+                    se: 0,
+                },
+                ctx.cfg.color(SECTION, "header_bg", "#0b0e12bb"),
+            );
+            ui.painter().line_segment(
+                [hdr.left_bottom(), hdr.right_bottom()],
+                Stroke::new(1.0_f32, divider),
+            );
+        }
+        let hs = if elegant {
+            11.0
+        } else {
+            header_h * 0.42 * hscale * text_scale
+        };
+        let hdr_col = if elegant {
+            crate::chrome::color_with_alpha(muted, 200)
+        } else {
+            header_col
+        };
         for (key, x, cw) in &cells {
             label(
                 ui,
@@ -181,14 +197,14 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 Align2::CENTER_CENTER,
                 col_header(key),
                 hs,
-                header_col,
-                true,
+                hdr_col,
+                !elegant,
             );
         }
     }
 
     let shown: Vec<&LapLogRow> = ctx.frame.lap_log.iter().take(n).collect();
-    let alt = ctx.cfg.bool_key(SECTION, "alt_row_shading", true);
+    let alt = ctx.cfg.bool_key(SECTION, "alt_row_shading", true) && !elegant;
     let dividers = ctx.cfg.bool_key(SECTION, "row_dividers", true);
     let temp_icon = ctx.cfg.bool_key(SECTION, "temp_icon", true);
     let data_size = row_h * font_scale * text_scale;

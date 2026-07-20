@@ -1,5 +1,7 @@
 use super::WidgetCtx;
-use crate::chrome::{draw_card, draw_section_header, full_rect, label, panel_pad};
+use crate::chrome::{
+    color_with_alpha, full_rect, is_elegant, label, panel_card, panel_content_pad, panel_title,
+};
 use crate::icons;
 use egui::{Align2, Pos2, Ui};
 
@@ -14,31 +16,9 @@ const ROW_SPECS: &[(&str, &str, &str)] = &[
     ("show_network", "NET", "network"),
 ];
 
-pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
-    let rect = full_rect(ui);
-    let (card, radius) = draw_card(ui, ctx.cfg, SECTION, rect);
-    let pad = panel_pad(card.height());
-    let mut y = card.top() + pad;
-    if ctx.cfg.bool_key(SECTION, "show_title", true) {
-        let hh = (card.height() * 0.12).max(22.0);
-        let hdr = egui::Rect::from_min_size(
-            Pos2::new(card.left() + pad, y),
-            egui::vec2(card.width() - 2.0 * pad, hh),
-        );
-        draw_section_header(
-            ui,
-            ctx.cfg,
-            SECTION,
-            hdr,
-            &ctx.cfg.str_key(SECTION, "title", "SYSTEM"),
-            radius,
-        );
-        y += hh + pad * 0.35;
-    }
-
+fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String)> {
     let f = ctx.frame;
-    let show_icons = ctx.cfg.bool_key(SECTION, "show_icons", false);
-    let mut rows: Vec<(&str, &str, String)> = Vec::new();
+    let mut rows = Vec::new();
     for &(cfg_key, text_label, icon_key) in ROW_SPECS {
         if !ctx.cfg.bool_key(SECTION, cfg_key, true) {
             continue;
@@ -63,7 +43,26 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         };
         rows.push((text_label, icon_key, value));
     }
+    rows
+}
 
+pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    if is_elegant(ctx.cfg, SECTION) {
+        paint_elegant(ui, ctx);
+    } else {
+        paint_data(ui, ctx);
+    }
+}
+
+fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    let rect = full_rect(ui);
+    let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let pad = panel_content_pad(ctx.cfg, SECTION, card.height());
+    let mut y = card.top() + pad;
+    y = panel_title(ui, ctx.cfg, SECTION, card, radius, y, pad, "SYSTEM");
+
+    let show_icons = ctx.cfg.bool_key(SECTION, "show_icons", false);
+    let rows = collect_rows(ctx);
     let n = rows.len().max(1) as f32;
     let avail = card.bottom() - pad - y;
     let rh = (avail / n).min(ctx.cfg.f64_key(SECTION, "row_height_px", 36.0) as f32);
@@ -75,8 +74,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(card.left() + pad, y),
             egui::vec2(card.width() - 2.0 * pad, rh),
         );
-        let icon_on = show_icons && icons::has(icon_key);
-        if icon_on {
+        if show_icons && icons::has(icon_key) {
             if let Some(g) = icons::glyph(icon_key) {
                 ui.painter().text(
                     Pos2::new(row.left() + 8.0, row.center().y),
@@ -107,5 +105,85 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             true,
         );
         y += rh;
+    }
+}
+
+/// Soft metric stack: dense icon + value rows (same data, less chrome).
+fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    let rect = full_rect(ui);
+    let (card, _radius) = panel_card(ui, ctx.cfg, SECTION, rect);
+    let pad_x = (card.width() * 0.05).clamp(8.0, 12.0);
+    let pad_y = (card.height() * 0.05).clamp(6.0, 10.0);
+    let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
+    let muted = color_with_alpha(ctx.cfg.color(SECTION, "muted", "#8b93a1"), 200);
+    let accent = ctx.cfg.color(SECTION, "accent", "#9aa3b2");
+    let rows = collect_rows(ctx);
+    if rows.is_empty() {
+        return;
+    }
+
+    let show_title = ctx.cfg.bool_key(SECTION, "show_title", true);
+    let mut y = card.top() + pad_y;
+    let left = card.left() + pad_x;
+    let width = card.width() - 2.0 * pad_x;
+
+    if show_title {
+        let title = ctx.cfg.str_key(SECTION, "title", "SYSTEM");
+        label(
+            ui,
+            Pos2::new(left, y + 6.0),
+            Align2::LEFT_CENTER,
+            &title,
+            10.0,
+            muted,
+            false,
+        );
+        y += 14.0;
+    }
+
+    let avail = (card.bottom() - pad_y - y).max(rows.len() as f32 * 18.0);
+    let row_h = (avail / rows.len() as f32).clamp(16.0, 22.0);
+
+    for (text_label, icon_key, value) in rows {
+        let cy = y + row_h * 0.5;
+        let icon_sz = 12.0;
+        if let Some(g) = icons::glyph(icon_key) {
+            ui.painter().text(
+                Pos2::new(left, cy),
+                Align2::LEFT_CENTER,
+                g,
+                icons::font_id(icon_sz),
+                accent,
+            );
+            label(
+                ui,
+                Pos2::new(left + icon_sz + 6.0, cy),
+                Align2::LEFT_CENTER,
+                text_label,
+                11.0,
+                muted,
+                false,
+            );
+        } else {
+            label(
+                ui,
+                Pos2::new(left, cy),
+                Align2::LEFT_CENTER,
+                text_label,
+                11.0,
+                muted,
+                false,
+            );
+        }
+        label(
+            ui,
+            Pos2::new(left + width, cy),
+            Align2::RIGHT_CENTER,
+            &value,
+            12.0,
+            text,
+            true,
+        );
+        y += row_h;
     }
 }

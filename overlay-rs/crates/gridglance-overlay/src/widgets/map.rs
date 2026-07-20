@@ -1,5 +1,5 @@
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, draw_card, draw_dark_cell, ease, full_rect, label};
+use crate::chrome::{color_with_alpha, panel_card, draw_dark_cell, ease, full_rect, label};
 use crate::config::OverlayConfig;
 use crate::icons;
 use crate::map_markers::{self, TrafficMarker};
@@ -1620,7 +1620,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let rect = full_rect(ui);
     if ctx.cfg.bool_key(SECTION, "show_panel", false) {
-        draw_card(ui, ctx.cfg, SECTION, rect);
+        panel_card(ui, ctx.cfg, SECTION, rect);
     }
 
     if !ctx.demo && ctx.map.path_status != TrackPathStatus::Ready {

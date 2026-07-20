@@ -1,7 +1,7 @@
 //! Directional proximity radar HUD (Python `radar.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, draw_card, ease, full_rect, label, anim_dt, still_easing};
+use crate::chrome::{color_with_alpha, panel_card, ease, full_rect, label, anim_dt, still_easing};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
 const SECTION: &str = "radar";
@@ -20,7 +20,7 @@ struct RadarAnim {
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
     if ctx.cfg.bool_key(SECTION, "show_panel", false) {
-        draw_card(ui, ctx.cfg, SECTION, rect);
+        panel_card(ui, ctx.cfg, SECTION, rect);
     }
 
     let w = rect.width();
