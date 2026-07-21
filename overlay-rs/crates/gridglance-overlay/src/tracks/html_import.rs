@@ -155,9 +155,7 @@ pub fn import_track_source(
         .unwrap_or("")
         .to_ascii_lowercase();
     let html = if ext == "svg" {
-        format!(
-            r#"<div class="track-svg active-config"><svg>{text}</svg></div>"#
-        )
+        format!(r#"<div class="track-svg active-config"><svg>{text}</svg></div>"#)
     } else if ext == "html" || ext == "htm" || ext.is_empty() {
         text
     } else {

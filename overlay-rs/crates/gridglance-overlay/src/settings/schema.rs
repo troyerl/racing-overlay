@@ -309,7 +309,12 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
         "sector_timing" => vec![
             (
                 "Content",
-                &["panel_style", "show_sector_delta", "show_predicted_lap", "text_scale"],
+                &[
+                    "panel_style",
+                    "show_sector_delta",
+                    "show_predicted_lap",
+                    "text_scale",
+                ],
             ),
             ("Row layout", &["row_height_px", "max_row_height_frac"]),
             ("Layout", &["corner_radius_frac"]),
@@ -498,6 +503,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 &[
                     "rotation",
                     "mirror",
+                    "reverse_path",
                     "asphalt_width",
                     "outline_width",
                     "corner_radius_frac",

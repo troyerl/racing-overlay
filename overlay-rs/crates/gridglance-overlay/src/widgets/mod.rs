@@ -10,7 +10,7 @@ mod lap_compare;
 mod laptime_log;
 mod leaderboard_strip;
 mod map;
-pub use map::{bg_fingerprint, build_car_sprites, tick_car_motion};
+pub use map::{bg_fingerprint, build_car_sprites, tick_car_motion, MAP_MOTION_REV};
 mod pit_advisor;
 mod pit_board;
 mod radar;

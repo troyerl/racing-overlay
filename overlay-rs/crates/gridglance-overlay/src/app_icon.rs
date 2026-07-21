@@ -83,10 +83,7 @@ fn load_inner() -> Option<AppIconRgba> {
     match decode_file(&path) {
         Ok(icon) => Some(icon),
         Err(e) => {
-            eprintln!(
-                "[gridglance] app icon {}: {e}",
-                path.display()
-            );
+            eprintln!("[gridglance] app icon {}: {e}", path.display());
             None
         }
     }

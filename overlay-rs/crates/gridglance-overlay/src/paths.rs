@@ -117,3 +117,8 @@ pub fn tracks_dir() -> PathBuf {
 pub fn layout_path() -> PathBuf {
     data_dir().join("overlay_layout.json")
 }
+
+/// Localhost IPC shared secret (read by external tools; never commit).
+pub fn ipc_token_path() -> PathBuf {
+    data_dir().join("ipc_token")
+}

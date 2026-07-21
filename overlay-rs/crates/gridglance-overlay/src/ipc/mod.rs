@@ -1,8 +1,11 @@
 //! Local TCP JSON-RPC server for Settings (Python Track Scan + Rust egui).
 
 use crate::config::OverlayConfig;
+use crate::paths;
 use crate::state::StateHandle;
 use anyhow::Result;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use gridglance_ipc::{
     methods, ConfigApplyParams, LayoutSetParams, MapAliasIdsParams, MapBoolParams,
     MapClearPitParams, MapLaneSpeedParams, MapLoadPitParams, MapNumTurnsParams, MapPitEditParams,
@@ -10,32 +13,71 @@ use gridglance_ipc::{
     OverlayModeParams, PingResult, Request, Response, PROTOCOL_VERSION,
 };
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const LOCK_WAIT: Duration = Duration::from_millis(100);
 
+/// Load or create the localhost IPC shared secret under LocalAppData.
+pub fn ensure_ipc_token() -> Result<String> {
+    let path = paths::ipc_token_path();
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        let t = existing.trim().to_string();
+        if !t.is_empty() {
+            return Ok(t);
+        }
+    }
+    let token = generate_token();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, format!("{token}\n"))?;
+    Ok(token)
+}
+
+fn generate_token() -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"gridglance-ipc-v1");
+    if let Ok(d) = SystemTime::now().duration_since(UNIX_EPOCH) {
+        hasher.update(d.as_nanos().to_le_bytes());
+    }
+    hasher.update(std::process::id().to_le_bytes());
+    let marker = &hasher as *const _ as usize;
+    hasher.update(marker.to_le_bytes());
+    // Thread timing jitter for extra uniqueness across rapid calls.
+    let t0 = std::time::Instant::now();
+    std::thread::yield_now();
+    hasher.update(t0.elapsed().as_nanos().to_le_bytes());
+    URL_SAFE_NO_PAD.encode(hasher.finalize())
+}
+
 pub fn spawn(state: StateHandle, port: u16) -> Result<()> {
+    let token = ensure_ipc_token()?;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     listener.set_nonblocking(false)?;
     thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let st = state.clone();
+            let tok = token.clone();
             thread::spawn(move || {
-                if let Err(e) = handle_client(st, stream) {
+                if let Err(e) = handle_client(st, stream, &tok) {
                     eprintln!("ipc client error: {e}");
                 }
             });
         }
     });
-    eprintln!("GridGlance IPC listening on 127.0.0.1:{port}");
+    eprintln!(
+        "GridGlance IPC listening on 127.0.0.1:{port} (token: {})",
+        paths::ipc_token_path().display()
+    );
     Ok(())
 }
 
-fn handle_client(state: StateHandle, stream: TcpStream) -> Result<()> {
+fn handle_client(state: StateHandle, stream: TcpStream, token: &str) -> Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut line = String::new();
@@ -57,15 +99,25 @@ fn handle_client(state: StateHandle, stream: TcpStream) -> Result<()> {
                 continue;
             }
         };
-        let resp = dispatch(&state, req);
+        let resp = dispatch(&state, req, token);
         writeln!(writer, "{}", serde_json::to_string(&resp)?)?;
         writer.flush()?;
     }
     Ok(())
 }
 
-fn dispatch(state: &StateHandle, req: Request) -> Response {
+fn token_ok(req: &Request, expected: &str) -> bool {
+    req.token
+        .as_deref()
+        .map(|t| t.trim() == expected)
+        .unwrap_or(false)
+}
+
+fn dispatch(state: &StateHandle, req: Request, expected_token: &str) -> Response {
     let id = req.id;
+    if !methods::is_public(&req.method) && !token_ok(&req, expected_token) {
+        return Response::err(id, "unauthorized: missing or invalid token");
+    }
     match req.method.as_str() {
         methods::PING => {
             let gen = state.read().config.generation;
@@ -75,6 +127,7 @@ fn dispatch(state: &StateHandle, req: Request) -> Response {
                     version: PROTOCOL_VERSION,
                     backend: "rust".into(),
                     generation: gen,
+                    auth_required: true,
                 })
                 .unwrap_or(Value::Null),
             )
@@ -509,4 +562,17 @@ fn parse_corner_values(vals: &[Value]) -> Vec<crate::track_path::CornerMark> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generate_token_nonempty() {
+        let a = generate_token();
+        let b = generate_token();
+        assert!(!a.is_empty());
+        assert_ne!(a, b);
+    }
 }

@@ -1,7 +1,7 @@
 //! Sector / lap timing widget — current, last, best + sector cells.
 
 use super::WidgetCtx;
-use crate::chrome::{panel_card, draw_dark_cell, full_rect, label, panel_pad};
+use crate::chrome::{draw_dark_cell, full_rect, label, panel_card, panel_pad};
 use crate::telemetry::SectorCell;
 use egui::{Align2, CornerRadius, Pos2, Rect, Stroke, Ui};
 
@@ -99,22 +99,19 @@ fn paint_sector_cell(
     };
     if elegant {
         let soft = match status {
-            "best" => crate::chrome::color_with_alpha(
-                ctx.cfg.color(SECTION, bg_key.0, bg_key.1),
-                90,
-            ),
+            "best" => {
+                crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, bg_key.0, bg_key.1), 90)
+            }
             "running" => crate::chrome::color_with_alpha(
                 ctx.cfg.color(SECTION, "sec_running_edge", "#46df7a"),
                 40,
             ),
-            "done" => crate::chrome::color_with_alpha(
-                ctx.cfg.color(SECTION, bg_key.0, bg_key.1),
-                70,
-            ),
-            _ => crate::chrome::color_with_alpha(
-                ctx.cfg.color(SECTION, "cell_dark", "#0b0e12"),
-                55,
-            ),
+            "done" => {
+                crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, bg_key.0, bg_key.1), 70)
+            }
+            _ => {
+                crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, "cell_dark", "#0b0e12"), 55)
+            }
         };
         ui.painter()
             .rect_filled(inner, CornerRadius::same(rad as u8), soft);
@@ -133,10 +130,8 @@ fn paint_sector_cell(
             );
         }
         // Compact: "S1 12.3" on one line (+ optional delta below).
-        let sec_text = crate::chrome::color_with_alpha(
-            ctx.cfg.color(SECTION, "sec_text", "#dfe3ea"),
-            230,
-        );
+        let sec_text =
+            crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, "sec_text", "#dfe3ea"), 230);
         let line = format!("S{num} {}", fmt_sec(cell.time));
         let cy = if show_delta && cell.delta.filter(|d| d.abs() >= 0.005).is_some() {
             rect.center().y - rect.height() * 0.12
@@ -256,7 +251,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let iw = card.width() - 2.0 * pad;
     // Elegant stays denser than Data — smaller clock band.
     let cur_h = if elegant {
-        if show_pred { h * 0.20 } else { h * 0.22 }
+        if show_pred {
+            h * 0.20
+        } else {
+            h * 0.22
+        }
     } else if show_pred {
         h * 0.26
     } else {
@@ -289,7 +288,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let sub_top = card.top()
         + pad
         + if elegant {
-            if show_pred { h * 0.26 } else { h * 0.22 }
+            if show_pred {
+                h * 0.26
+            } else {
+                h * 0.22
+            }
         } else if show_pred {
             h * 0.34
         } else {

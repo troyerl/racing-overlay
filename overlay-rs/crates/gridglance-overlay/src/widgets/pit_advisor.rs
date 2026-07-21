@@ -97,7 +97,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         },
         false,
     );
-    y += if elegant { 28.0 } else { 28.0 };
+    y += 28.0;
 
     if let Some(sec) = advice
         .secondary

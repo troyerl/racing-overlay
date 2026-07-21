@@ -1,4 +1,4 @@
-//! In-overlay Settings UI (egui). Schema-driven pages matching Python ConfigEditor.
+﻿//! In-overlay Settings UI (egui). Schema-driven pages matching Python ConfigEditor.
 
 mod scan;
 mod schema;
@@ -20,9 +20,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use theme::{paint_background, MUTED, NAV_SECTION, NAV_WIDTH, TITLE};
 use widgets::{
-    accordion, button_kind, color_button, enable_card, enable_card_row, nav_item,
-    number_row, preset_button, search_field, setting_row, status_line, styled_combo, text_field,
-    toggle_switch, top_tab_button, top_tabs_frame, ButtonKind,
+    accordion, button_kind, color_button, enable_card, enable_card_row, nav_item, number_row,
+    preset_button, search_field, setting_row, status_line, styled_combo, text_field, toggle_switch,
+    top_tab_button, top_tabs_frame, ButtonKind,
 };
 
 const WINDOW_TITLE: &str = "GridGlance Settings";
@@ -46,18 +46,28 @@ pub struct SettingsUi {
     pub pro_aliases: String,
     pub pro_sel: Option<String>,
     pub admin_loaded: bool,
+    /// Background cloud admin fetch in flight.
+    pub admin_loading: bool,
     pub update_url: Option<String>,
     pub dg_sel: Option<String>,
     pub dg_name: String,
     pub dg_icon: String,
     pub dg_color: String,
     pub dg_members: String,
+    /// Cached widget section values (invalidated on edit / section change).
+    pub section_cache_id: String,
+    pub section_cache: Option<std::sync::Arc<std::collections::HashMap<String, Value>>>,
 }
 
 impl SettingsUi {
     pub fn flash(&mut self, msg: impl Into<String>) {
         self.status = msg.into();
         self.status_deadline = Some(Instant::now() + Duration::from_millis(2500));
+    }
+
+    pub fn invalidate_section_cache(&mut self) {
+        self.section_cache = None;
+        self.section_cache_id.clear();
     }
 
     pub fn tick_status(&mut self) {
@@ -69,7 +79,7 @@ impl SettingsUi {
         }
     }
 
-    /// 1 → 0 over the last 400 ms of the status flash.
+    /// 1 -> 0 over the last 400 ms of the status flash.
     pub fn status_opacity(&self) -> f32 {
         match self.status_deadline {
             Some(deadline) if !self.status.is_empty() => {
@@ -101,6 +111,7 @@ pub fn paint(
     dirty: &mut bool,
 ) {
     ui_state.tick_status();
+    scan::poll_cloud_jobs(ui_state);
     paint_background(ui);
 
     egui::Frame::new()
@@ -245,7 +256,7 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
                     Ok(()) => {
                         st.apply_effective_context();
                         *dirty = false;
-                        ui_state.flash(format!("Switched to “{name}”"));
+                        ui_state.flash(format!("Switched to \"{name}\""));
                     }
                     Err(e) => ui_state.flash(e.to_string()),
                 }
@@ -264,7 +275,7 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
                         ui_state.new_preset_input.clear();
                         st.apply_effective_context();
                         *dirty = false;
-                        ui_state.flash(format!("Created “{name}”"));
+                        ui_state.flash(format!("Created \"{name}\""));
                     }
                     Err(e) => ui_state.flash(e.to_string()),
                 }
@@ -277,7 +288,7 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
                     Ok(()) => {
                         st.apply_effective_context();
                         *dirty = false;
-                        ui_state.flash(format!("Duplicated as “{to}”"));
+                        ui_state.flash(format!("Duplicated as \"{to}\""));
                     }
                     Err(e) => ui_state.flash(e.to_string()),
                 }
@@ -320,90 +331,97 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
     });
 
     let active = state.read().config.active_preset.clone();
-    accordion(ui, "preset_advanced", "Advanced", theme::MUTED, false, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Preset name").size(11.0).color(MUTED));
-            text_field(
-                ui,
-                &mut ui_state.new_preset_input,
-                "for New / Rename / Import",
-                ui.available_width().min(280.0),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("File path").size(11.0).color(MUTED));
-            text_field(
-                ui,
-                &mut ui_state.file_path_input,
-                ".ggprofile.json path",
-                ui.available_width().min(360.0),
-            );
-        });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 8.0;
-            if preset_button(ui, "Export").clicked() {
-                let path = ui_state.file_path_input.trim();
-                if path.is_empty() {
-                    ui_state.flash("Type an export path above");
-                } else {
-                    let payload = state.read().config.export_preset_value(&active);
-                    match payload.and_then(|v| {
-                        std::fs::write(path, serde_json::to_string_pretty(&v)?)
-                            .map_err(anyhow::Error::from)
-                    }) {
-                        Ok(()) => ui_state.flash("Preset exported"),
-                        Err(e) => ui_state.flash(e.to_string()),
+    accordion(
+        ui,
+        "preset_advanced",
+        "Advanced",
+        theme::MUTED,
+        false,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("Preset name").size(11.0).color(MUTED));
+                text_field(
+                    ui,
+                    &mut ui_state.new_preset_input,
+                    "for New / Rename / Import",
+                    ui.available_width().min(280.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("File path").size(11.0).color(MUTED));
+                text_field(
+                    ui,
+                    &mut ui_state.file_path_input,
+                    ".ggprofile.json path",
+                    ui.available_width().min(360.0),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if preset_button(ui, "Export").clicked() {
+                    let path = ui_state.file_path_input.trim();
+                    if path.is_empty() {
+                        ui_state.flash("Type an export path above");
+                    } else {
+                        let payload = state.read().config.export_preset_value(&active);
+                        match payload.and_then(|v| {
+                            std::fs::write(path, serde_json::to_string_pretty(&v)?)
+                                .map_err(anyhow::Error::from)
+                        }) {
+                            Ok(()) => ui_state.flash("Preset exported"),
+                            Err(e) => ui_state.flash(e.to_string()),
+                        }
                     }
                 }
-            }
-            if preset_button(ui, "Import").clicked() {
-                let path = ui_state.file_path_input.trim();
-                let name = ui_state.new_preset_input.trim();
-                if path.is_empty() || name.is_empty() {
-                    ui_state.flash("Type import path + name above");
-                } else {
-                    match std::fs::read_to_string(path)
-                        .map_err(anyhow::Error::from)
-                        .and_then(|text| {
-                            serde_json::from_str::<Value>(&text).map_err(anyhow::Error::from)
-                        }) {
-                        Ok(payload) => {
-                            if let Some(mut st) = state.try_write() {
-                                match Arc::make_mut(&mut st.config)
-                                    .import_preset_value(name, &payload, false)
-                                {
-                                    Ok(()) => {
-                                        st.apply_effective_context();
-                                        *dirty = false;
-                                        ui_state.flash("Preset imported");
+                if preset_button(ui, "Import").clicked() {
+                    let path = ui_state.file_path_input.trim();
+                    let name = ui_state.new_preset_input.trim();
+                    if path.is_empty() || name.is_empty() {
+                        ui_state.flash("Type import path + name above");
+                    } else {
+                        match std::fs::read_to_string(path)
+                            .map_err(anyhow::Error::from)
+                            .and_then(|text| {
+                                serde_json::from_str::<Value>(&text).map_err(anyhow::Error::from)
+                            }) {
+                            Ok(payload) => {
+                                if let Some(mut st) = state.try_write() {
+                                    match Arc::make_mut(&mut st.config)
+                                        .import_preset_value(name, &payload, false)
+                                    {
+                                        Ok(()) => {
+                                            st.apply_effective_context();
+                                            *dirty = false;
+                                            ui_state.flash("Preset imported");
+                                        }
+                                        Err(e) => ui_state.flash(e.to_string()),
                                     }
-                                    Err(e) => ui_state.flash(e.to_string()),
                                 }
                             }
+                            Err(e) => ui_state.flash(e.to_string()),
                         }
-                        Err(e) => ui_state.flash(e.to_string()),
                     }
                 }
-            }
-            if preset_button(ui, "Rename").clicked() {
-                let to = ui_state.new_preset_input.trim().to_string();
-                if to.is_empty() {
-                    ui_state.flash("Type a new name above");
-                } else if let Some(mut st) = state.try_write() {
-                    match Arc::make_mut(&mut st.config).rename_preset(&active, &to) {
-                        Ok(()) => {
-                            ui_state.new_preset_input.clear();
-                            ui_state.flash(format!("Renamed to “{to}”"));
+                if preset_button(ui, "Rename").clicked() {
+                    let to = ui_state.new_preset_input.trim().to_string();
+                    if to.is_empty() {
+                        ui_state.flash("Type a new name above");
+                    } else if let Some(mut st) = state.try_write() {
+                        match Arc::make_mut(&mut st.config).rename_preset(&active, &to) {
+                            Ok(()) => {
+                                ui_state.new_preset_input.clear();
+                                ui_state.flash(format!("Renamed to \"{to}\""));
+                            }
+                            Err(e) => ui_state.flash(e.to_string()),
                         }
-                        Err(e) => ui_state.flash(e.to_string()),
                     }
                 }
+            });
+            if *dirty {
+                ui.label(RichText::new("unsaved").color(theme::YELLOW));
             }
-        });
-        if *dirty {
-            ui.label(RichText::new("unsaved").color(theme::YELLOW));
-        }
-    });
+        },
+    );
 }
 
 fn paint_profile_row(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi) {
@@ -502,7 +520,7 @@ fn paint_page(
 fn paint_general(
     ui: &mut Ui,
     state: &StateHandle,
-    _ui_state: &SettingsUi,
+    ui_state: &mut SettingsUi,
     dirty: &mut bool,
     accent: Color32,
 ) {
@@ -524,7 +542,7 @@ fn paint_general(
             let unit_options = vec!["metric".to_string(), "imperial".to_string()];
             if let Some(next) = styled_combo(ui, "units", &units, &unit_options, 150.0) {
                 units = next;
-                set_global(state, "units", json!(units), dirty);
+                set_global(state, "units", json!(units), dirty, ui_state);
             }
         });
 
@@ -545,7 +563,13 @@ fn paint_general(
             accent,
             help_text("__general__", "text_scale"),
         ) {
-            set_global(state, "text_scale", json!(text_scale as f64), dirty);
+            set_global(
+                state,
+                "text_scale",
+                json!(text_scale as f64),
+                dirty,
+                ui_state,
+            );
         }
 
         let mut start_on = {
@@ -563,7 +587,13 @@ fn paint_general(
             |ui| {
                 if toggle_switch(ui, &mut start_on, accent, ui.id().with("start_launch")).changed()
                 {
-                    set_global(state, "start_overlay_on_launch", json!(start_on), dirty);
+                    set_global(
+                        state,
+                        "start_overlay_on_launch",
+                        json!(start_on),
+                        dirty,
+                        ui_state,
+                    );
                 }
             },
         );
@@ -667,6 +697,7 @@ fn paint_app(
                         "start_overlay_on_launch",
                         json!(start_overlay),
                         dirty,
+                        ui_state,
                     );
                 }
             },
@@ -691,7 +722,7 @@ fn paint_app(
                 )
                 .changed()
                 {
-                    set_global(state, "start_at_login", json!(start_login), dirty);
+                    set_global(state, "start_at_login", json!(start_login), dirty, ui_state);
                     let args = if start_overlay { "--no-settings" } else { "" };
                     if let Err(e) = crate::autostart::set_enabled(start_login, args) {
                         ui_state.flash(e.to_string());
@@ -719,7 +750,13 @@ fn paint_app(
                 )
                 .changed()
                 {
-                    set_global(state, "check_updates_on_launch", json!(check_upd), dirty);
+                    set_global(
+                        state,
+                        "check_updates_on_launch",
+                        json!(check_upd),
+                        dirty,
+                        ui_state,
+                    );
                 }
             },
         );
@@ -748,6 +785,7 @@ fn paint_app(
                         "close_settings_to_tray",
                         json!(close_to_tray),
                         dirty,
+                        ui_state,
                     );
                 }
             },
@@ -850,14 +888,11 @@ fn paint_driver_groups(
         });
         setting_row(ui, "Icon", None, |ui| {
             if ui_state.dg_icon.is_empty()
-                || !crate::driver_groups::DRIVER_GROUP_ICONS
-                    .contains(&ui_state.dg_icon.as_str())
+                || !crate::driver_groups::DRIVER_GROUP_ICONS.contains(&ui_state.dg_icon.as_str())
             {
                 ui_state.dg_icon = "league".into();
             }
-            if let Some(next) =
-                widgets::icon_combo(ui, "dg_icon", &ui_state.dg_icon, 180.0)
-            {
+            if let Some(next) = widgets::icon_combo(ui, "dg_icon", &ui_state.dg_icon, 180.0) {
                 ui_state.dg_icon = next;
             }
         });
@@ -894,21 +929,21 @@ fn paint_driver_groups(
                         groups.push(entry);
                     }
                     ui_state.dg_sel = Some(name);
-                    set_global(state, "driver_groups", json!(groups), dirty);
+                    set_global(state, "driver_groups", json!(groups), dirty, ui_state);
                     ui_state.flash("Driver group saved");
                 }
             }
             if button_kind(ui, "Remove", ButtonKind::Warn).clicked() {
                 if let Some(sel) = ui_state.dg_sel.clone() {
                     groups.retain(|g| g.get("name").and_then(|n| n.as_str()) != Some(sel.as_str()));
-                    set_global(state, "driver_groups", json!(groups), dirty);
+                    set_global(state, "driver_groups", json!(groups), dirty, ui_state);
                     ui_state.dg_sel = None;
                     ui_state.dg_name.clear();
                     ui_state.dg_members.clear();
                     ui_state.flash("Driver group removed");
                 }
             }
-            if button_kind(ui, "Import from results…", ButtonKind::Default).clicked() {
+            if button_kind(ui, "Import from results...", ButtonKind::Default).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
                     .add_filter("JSON", &["json"])
                     .pick_file()
@@ -945,7 +980,7 @@ fn paint_driver_groups(
 fn paint_widget_section(
     ui: &mut Ui,
     state: &StateHandle,
-    ui_state: &SettingsUi,
+    ui_state: &mut SettingsUi,
     section: &str,
     dirty: &mut bool,
     accent: Color32,
@@ -963,13 +998,14 @@ fn paint_widget_section(
                     let context = st.effective_context();
                     Arc::make_mut(&mut st.config).reset_section(context, section);
                     *dirty = true;
+                    ui_state.invalidate_section_cache();
                 }
             }
         });
     });
     ui.add_space(4.0);
 
-    let values = section_values(state, section);
+    let values = cached_section_values(state, section, ui_state);
     let mut show = values
         .get("show")
         .and_then(|v| v.as_bool())
@@ -982,7 +1018,7 @@ fn paint_widget_section(
         &mut show,
         ui.id().with((section, "show")),
     ) {
-        set_section_key(state, section, "show", json!(show), dirty);
+        set_section_key(state, section, "show", json!(show), dirty, ui_state);
     }
     ui.add_space(6.0);
     if !show {
@@ -997,7 +1033,7 @@ fn paint_widget_section(
     let groups = setting_groups(section);
     if !groups.is_empty() {
         let mut grouped: HashMap<&str, &Value> = HashMap::new();
-        for (k, v) in &values {
+        for (k, v) in values.iter() {
             grouped.insert(k.as_str(), v);
         }
         let mut used = std::collections::HashSet::new();
@@ -1065,12 +1101,83 @@ fn paint_widget_section(
     }
 }
 
+fn cached_section_values(
+    state: &StateHandle,
+    section: &str,
+    ui_state: &mut SettingsUi,
+) -> std::sync::Arc<std::collections::HashMap<String, Value>> {
+    if ui_state.section_cache_id != section || ui_state.section_cache.is_none() {
+        ui_state.section_cache_id = section.to_string();
+        ui_state.section_cache = Some(std::sync::Arc::new(section_values(state, section)));
+    }
+    std::sync::Arc::clone(
+        ui_state
+            .section_cache
+            .as_ref()
+            .expect("section cache filled"),
+    )
+}
+
 fn section_values(state: &StateHandle, section: &str) -> HashMap<String, Value> {
     let st = state.read();
     match st.config.section(section) {
-        Value::Object(map) => map.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        Value::Object(map) => map.clone().into_iter().collect(),
         _ => HashMap::new(),
     }
+}
+
+/// Slider/spin bounds for a numeric setting key (min..=max, step).
+fn number_setting_bounds(key: &str) -> (std::ops::RangeInclusive<f32>, f32) {
+    match key {
+        "rows" | "rows_ahead" | "rows_behind" => return (0.0..=40.0, 1.0),
+        "max_turns" => return (1.0..=8.0, 1.0),
+        "sectors" => return (2.0..=12.0, 1.0),
+        "history_laps" => return (1.0..=50.0, 1.0),
+        "shift_segments" | "ring_segments" => return (4.0..=48.0, 1.0),
+        "row_height_px" => return (0.0..=80.0, 1.0),
+        "asphalt_width" => return (1.0..=40.0, 1.0),
+        "outline_width" => return (0.0..=24.0, 1.0),
+        "rotation" => return (0.0..=360.0, 90.0),
+        "brake_threshold" => return (0.0..=100.0, 1.0),
+        "warn_wear_pct" => return (0.0..=100.0, 1.0),
+        "line_width" => return (0.5..=8.0, 0.1),
+        "delta_bar_range" | "range" => return (0.1..=5.0, 0.05),
+        "pit_loss_seconds" => return (0.0..=90.0, 1.0),
+        "low_fuel_time_threshold" => return (0.0..=600.0, 5.0),
+        "low_fuel_laps_threshold" => return (0.0..=20.0, 0.5),
+        "shift_blink_hz" => return (1.0..=20.0, 0.5),
+        "history_seconds" | "marker_hold_seconds" | "shift_blink_max_sec" => {
+            return (0.0..=30.0, 0.5);
+        }
+        "undercut_gap_max_s" | "cover_gap_max_s" => return (0.0..=60.0, 0.5),
+        "range_pct" => return (0.0..=0.15, 0.005),
+        "alongside_zone_pct" | "side_span_pct" => return (0.0..=0.02, 0.0005),
+        "dot_radius_frac" | "other_dot_radius_frac" => return (0.01..=0.15, 0.005),
+        _ => {}
+    }
+
+    if key.contains("tau") {
+        // 0 disables easing in some widgets — keep a usable floor.
+        return (0.05..=1.0, 0.01);
+    }
+    if key.ends_with("_frac") || key.contains("opacity") {
+        return (0.0..=1.0, 0.01);
+    }
+    // Fraction-style pct (0–1). Integer-style wear pct handled above.
+    if key.ends_with("_pct") || key.contains("pct") {
+        return (0.0..=1.0, 0.01);
+    }
+    if key.contains("scale") {
+        return (0.25..=2.5, 0.05);
+    }
+    if key.ends_with("_seconds") || key.ends_with("_sec") || key.ends_with("_s") {
+        return (0.0..=60.0, 0.5);
+    }
+    if key.ends_with("_px") || key.ends_with("_width") {
+        return (0.0..=80.0, 1.0);
+    }
+    // Unknown numeric — keep modest so the slider stays usable.
+    (0.0..=50.0, 0.05)
 }
 
 fn paint_value(
@@ -1081,14 +1188,14 @@ fn paint_value(
     value: &Value,
     dirty: &mut bool,
     accent: Color32,
-    _ui_state: &SettingsUi,
+    ui_state: &mut SettingsUi,
 ) {
     match value {
         Value::Bool(b) => {
             let mut v = *b;
             setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
                 if toggle_switch(ui, &mut v, accent, ui.id().with((section, key))).changed() {
-                    set_section_key(state, section, key, json!(v), dirty);
+                    set_section_key(state, section, key, json!(v), dirty, ui_state);
                 }
             });
         }
@@ -1096,21 +1203,12 @@ fn paint_value(
             if matches!(key, "rows" | "rows_ahead" | "rows_behind")
                 && matches!(section, "relative" | "standings")
             {
-                paint_linked_row_counts(ui, state, section, key, dirty, accent);
+                paint_linked_row_counts(ui, state, section, key, dirty, accent, ui_state);
                 return;
             }
             let mut v = n.as_f64().unwrap_or(0.0) as f32;
-            let range = if key.contains("tau") {
-                // 0 disables easing (instant snap) — keep a usable floor.
-                0.05..=1.0
-            } else if key.contains("scale") || key.contains("frac") {
-                0.0..=4.0
-            } else if key.contains("opacity") || key.contains("pct") {
-                0.0..=1.0
-            } else {
-                0.0..=500.0
-            };
-            let step = if key.contains("tau") { 0.01 } else { 0.05 };
+            let (range, step) = number_setting_bounds(key);
+            v = v.clamp(*range.start(), *range.end());
             if number_row(
                 ui,
                 &pretty_key(key),
@@ -1120,12 +1218,12 @@ fn paint_value(
                 accent,
                 help_text(section, key),
             ) {
-                set_section_key(state, section, key, json!(v as f64), dirty);
+                set_section_key(state, section, key, json!(v as f64), dirty, ui_state);
             }
         }
         Value::String(s) => {
             if looks_like_color(s) {
-                paint_color_string(ui, state, section, key, s, dirty);
+                paint_color_string(ui, state, section, key, s, dirty, ui_state);
                 return;
             }
             if key == "panel_style" {
@@ -1138,7 +1236,7 @@ fn paint_value(
                 setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
                     if let Some(next) = styled_combo(ui, (section, key), &selected, &options, 160.0)
                     {
-                        set_section_key(state, section, key, json!(next), dirty);
+                        set_section_key(state, section, key, json!(next), dirty, ui_state);
                     }
                 });
                 return;
@@ -1146,7 +1244,7 @@ fn paint_value(
             let mut text = s.clone();
             setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
                 if text_field(ui, &mut text, "", 220.0).changed() {
-                    set_section_key(state, section, key, json!(text), dirty);
+                    set_section_key(state, section, key, json!(text), dirty, ui_state);
                 }
             });
         }
@@ -1162,17 +1260,17 @@ fn paint_value(
                     entries.sort_by(|a, b| a.0.cmp(b.0));
                     for (ck, cv) in entries {
                         if let Some(hex) = cv.as_str() {
-                            paint_nested_color(ui, state, section, key, ck, hex, dirty);
+                            paint_nested_color(ui, state, section, key, ck, hex, dirty, ui_state);
                         }
                     }
                 },
             );
         }
         Value::Object(map) if key == "header" || key == "footer" => {
-            paint_table_slots(ui, state, section, key, map, dirty, accent);
+            paint_table_slots(ui, state, section, key, map, dirty, accent, ui_state);
         }
         Value::Object(map) if key == "header_icons" || key == "footer_icons" => {
-            paint_table_slot_icons(ui, state, section, key, map, dirty, accent);
+            paint_table_slot_icons(ui, state, section, key, map, dirty, accent, ui_state);
         }
         Value::Object(_) | Value::Array(_) => {
             accordion(
@@ -1190,7 +1288,7 @@ fn paint_value(
                     );
                     if resp.changed() {
                         if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
-                            set_section_key(state, section, key, parsed, dirty);
+                            set_section_key(state, section, key, parsed, dirty, ui_state);
                         }
                     }
                 },
@@ -1245,7 +1343,7 @@ fn paint_footer(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi, dir
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
                 let more_id = ui.make_persistent_id("settings_footer_more");
-                let more_resp = button_kind(ui, "More…", ButtonKind::GhostAccent);
+                let more_resp = button_kind(ui, "More...", ButtonKind::GhostAccent);
                 if more_resp.clicked() {
                     ui.memory_mut(|mem| mem.toggle_popup(more_id));
                 }
@@ -1375,6 +1473,7 @@ fn paint_table_slots(
     map: &serde_json::Map<String, Value>,
     dirty: &mut bool,
     _accent: Color32,
+    ui_state: &mut SettingsUi,
 ) {
     let slots = table_slot_options(section);
     let options: Vec<String> = slots.iter().map(|s| (*s).to_string()).collect();
@@ -1397,10 +1496,9 @@ fn paint_table_slots(
             "none".into()
         };
         setting_row(ui, &pretty_key(side), None, |ui| {
-            if let Some(next) =
-                styled_combo(ui, (section, key, *side), &selected, &options, 200.0)
+            if let Some(next) = styled_combo(ui, (section, key, *side), &selected, &options, 200.0)
             {
-                set_nested(state, section, key, side, json!(next), dirty);
+                set_nested(state, section, key, side, json!(next), dirty, ui_state);
             }
         });
     }
@@ -1414,6 +1512,7 @@ fn paint_table_slot_icons(
     map: &serde_json::Map<String, Value>,
     dirty: &mut bool,
     accent: Color32,
+    ui_state: &mut SettingsUi,
 ) {
     ui.add_space(4.0);
     ui.label(
@@ -1423,14 +1522,10 @@ fn paint_table_slot_icons(
     );
     ui.add_space(2.0);
     for side in TABLE_SLOT_SIDES {
-        let mut on = map
-            .get(*side)
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        let mut on = map.get(*side).and_then(|v| v.as_bool()).unwrap_or(false);
         setting_row(ui, &pretty_key(side), None, |ui| {
-            if toggle_switch(ui, &mut on, accent, ui.id().with((section, key, *side))).changed()
-            {
-                set_nested(state, section, key, side, json!(on), dirty);
+            if toggle_switch(ui, &mut on, accent, ui.id().with((section, key, *side))).changed() {
+                set_nested(state, section, key, side, json!(on), dirty, ui_state);
             }
         });
     }
@@ -1443,6 +1538,7 @@ fn paint_color_string(
     key: &str,
     hex: &str,
     dirty: &mut bool,
+    ui_state: &mut SettingsUi,
 ) {
     let col = parse_color_str(hex);
     let mut rgba = [
@@ -1454,7 +1550,7 @@ fn paint_color_string(
     setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
         if color_button(ui, (section, key), hex, &mut rgba) {
             let hex = rgba_to_hex(rgba);
-            set_section_key(state, section, key, json!(hex), dirty);
+            set_section_key(state, section, key, json!(hex), dirty, ui_state);
         }
     });
 }
@@ -1467,6 +1563,7 @@ fn paint_nested_color(
     key: &str,
     hex: &str,
     dirty: &mut bool,
+    ui_state: &mut SettingsUi,
 ) {
     let col = parse_color_str(hex);
     let mut rgba = [
@@ -1478,7 +1575,7 @@ fn paint_nested_color(
     setting_row(ui, &pretty_key(key), None, |ui| {
         if color_button(ui, (section, group, key), hex, &mut rgba) {
             let hex = rgba_to_hex(rgba);
-            set_nested(state, section, group, key, json!(hex), dirty);
+            set_nested(state, section, group, key, json!(hex), dirty, ui_state);
         }
     });
 }
@@ -1499,15 +1596,29 @@ fn looks_like_color(s: &str) -> bool {
     s.starts_with('#') || s.starts_with("rgba(")
 }
 
-fn set_global(state: &StateHandle, key: &str, val: Value, dirty: &mut bool) {
+fn set_global(
+    state: &StateHandle,
+    key: &str,
+    val: Value,
+    dirty: &mut bool,
+    ui_state: &mut SettingsUi,
+) {
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
         cfg.apply_cfg_patch(&json!({ key: val }));
         *dirty = true;
+        ui_state.invalidate_section_cache();
     }
 }
 
-fn set_section_key(state: &StateHandle, section: &str, key: &str, val: Value, dirty: &mut bool) {
+fn set_section_key(
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    val: Value,
+    dirty: &mut bool,
+    ui_state: &mut SettingsUi,
+) {
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
         cfg.apply_cfg_patch(&json!({ section: { key: val.clone() } }));
@@ -1517,6 +1628,7 @@ fn set_section_key(state: &StateHandle, section: &str, key: &str, val: Value, di
             st.save_layout_to_preset();
         }
         *dirty = true;
+        ui_state.invalidate_section_cache();
     }
 }
 
@@ -1528,6 +1640,7 @@ fn paint_linked_row_counts(
     key: &str,
     dirty: &mut bool,
     accent: Color32,
+    ui_state: &mut SettingsUi,
 ) {
     let (total, ahead, behind) = {
         let st = state.read();
@@ -1564,7 +1677,11 @@ fn paint_linked_row_counts(
         "rows_behind" => behind as f32,
         _ => return,
     };
-    let max = if key == "rows" { 30.0 } else { total.max(0) as f32 };
+    let max = if key == "rows" {
+        40.0
+    } else {
+        total.max(0) as f32
+    };
     if number_row(
         ui,
         label,
@@ -1574,7 +1691,7 @@ fn paint_linked_row_counts(
         accent,
         help_text(section, key),
     ) {
-        let n = v.round().clamp(0.0, 30.0) as i32;
+        let n = v.round().clamp(0.0, 40.0) as i32;
         let (new_total, new_ahead, new_behind) = match key {
             "rows" => {
                 let t = n.max(0);
@@ -1601,6 +1718,7 @@ fn paint_linked_row_counts(
                 }
             }));
             *dirty = true;
+            ui_state.invalidate_section_cache();
         }
     }
 }
@@ -1612,11 +1730,13 @@ fn set_nested(
     key: &str,
     val: Value,
     dirty: &mut bool,
+    ui_state: &mut SettingsUi,
 ) {
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
         cfg.apply_cfg_patch(&json!({ section: { group: { key: val } } }));
         *dirty = true;
+        ui_state.invalidate_section_cache();
     }
 }
 

@@ -67,10 +67,17 @@ jobs:
           grep -A2 '\[workspace\.package\]' overlay-rs/Cargo.toml
           echo "Stamped workspace version = $APP_VERSION"
 
+      - name: Test workspace
+        working-directory: overlay-rs
+        run: cargo test --workspace
+
       - name: Build gridglance-overlay (release)
         working-directory: overlay-rs
         env:
           GRIDGLANCE_GITHUB_REPO: ${{ github.repository }}
+          # Read-only Atlas URI baked into the binary (installers need no .env).
+          # Repo secret; leave unset to ship without cloud track sync.
+          GRIDGLANCE_MONGODB_READ_URI: ${{ secrets.GRIDGLANCE_MONGODB_READ_URI }}
         run: cargo build --release -p gridglance-overlay
 
       - name: Install Inno Setup

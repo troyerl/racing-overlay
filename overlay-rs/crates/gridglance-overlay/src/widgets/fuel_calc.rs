@@ -1,9 +1,7 @@
 //! Fuel calculator — Python `fuel_calc.py` parity.
 
 use super::WidgetCtx;
-use crate::chrome::{
-    color_with_alpha, draw_dark_cell, full_rect, is_elegant, label, panel_card,
-};
+use crate::chrome::{color_with_alpha, draw_dark_cell, full_rect, is_elegant, label, panel_card};
 use crate::telemetry::{FuelCalcState, FuelScenario};
 use egui::{Align2, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
 
@@ -95,7 +93,9 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 let band = Rect::from_min_size(Pos2::new(x, cy), Vec2::new(inner, bh));
                 crate::chrome::draw_section_header(ui, ctx.cfg, SECTION, band, &title, radius);
             }
-            "top" => draw_top(ui, ctx, d, x, cy, inner, bh, show_pill, show_add, show_gauge),
+            "top" => draw_top(
+                ui, ctx, d, x, cy, inner, bh, show_pill, show_add, show_gauge,
+            ),
             "stats" => draw_stats(ui, ctx, d, x, cy, inner, bh),
             "strip" => draw_strip(ui, ctx, d, x, cy, inner, bh),
             "time" => draw_box(
@@ -160,7 +160,9 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let show_gauge = ctx.cfg.bool_key(SECTION, "show_gauge", true);
     if show_pill || show_add || show_gauge {
         let top_h = 56.0_f32;
-        draw_top_elegant(ui, ctx, d, x, y, inner, top_h, show_pill, show_add, show_gauge);
+        draw_top_elegant(
+            ui, ctx, d, x, y, inner, top_h, show_pill, show_add, show_gauge,
+        );
         y += top_h + gap;
     }
 
@@ -343,7 +345,10 @@ fn draw_gauge_elegant(
 ) {
     let show_low_alert = ctx.cfg.bool_key(SECTION, "show_low_fuel_alert", true);
     let alert = d.alert && show_low_alert;
-    let bar = Rect::from_min_size(Pos2::new(x, y + 4.0), Vec2::new(w, (h * 0.42).clamp(14.0, 22.0)));
+    let bar = Rect::from_min_size(
+        Pos2::new(x, y + 4.0),
+        Vec2::new(w, (h * 0.42).clamp(14.0, 22.0)),
+    );
     ui.painter().rect_filled(
         bar,
         CornerRadius::same(4),
@@ -356,7 +361,7 @@ fn draw_gauge_elegant(
     };
     if let (Some(level), Some(cap)) = (d.level, d.cap) {
         if cap > 0.0 {
-            let frac = (level / cap).clamp(0.0, 1.0) as f32;
+            let frac = (level / cap).clamp(0.0, 1.0);
             ui.painter().rect_filled(
                 Rect::from_min_size(
                     Pos2::new(bar.left() + 1.0, bar.top() + 1.0),
@@ -401,7 +406,15 @@ fn draw_gauge_elegant(
     );
 }
 
-fn draw_gauge(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, d: &FuelCalcState, x: f32, y: f32, w: f32, h: f32) {
+fn draw_gauge(
+    ui: &mut Ui,
+    ctx: &mut WidgetCtx<'_>,
+    d: &FuelCalcState,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+) {
     let show_tank_pct = ctx.cfg.bool_key(SECTION, "show_tank_pct", false);
     let show_live_burn = ctx.cfg.bool_key(SECTION, "show_live_burn", false);
     let show_low_alert = ctx.cfg.bool_key(SECTION, "show_low_fuel_alert", true);
@@ -426,7 +439,7 @@ fn draw_gauge(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, d: &FuelCalcState, x: f32, y
     };
     if let (Some(level), Some(cap)) = (d.level, d.cap) {
         if cap > 0.0 {
-            let target = (level / cap).clamp(0.0, 1.0) as f32;
+            let target = (level / cap).clamp(0.0, 1.0);
             let id = egui::Id::new("fuel_gauge_anim");
             let mut st = ui
                 .ctx()

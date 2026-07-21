@@ -1,5 +1,5 @@
 use super::WidgetCtx;
-use crate::chrome::{anim_dt, panel_card, ease, full_rect, label, panel_pad, still_easing};
+use crate::chrome::{anim_dt, ease, full_rect, label, panel_card, panel_pad, still_easing};
 use egui::{Align2, Pos2, Stroke, Ui};
 
 const SECTION: &str = "delta_bar";
@@ -32,7 +32,10 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, rect: egui::Rect) {
     let pad = (rect.height() * 0.12).clamp(3.0, 8.0);
     let bar = egui::Rect::from_min_size(
         Pos2::new(rect.left() + pad, rect.top() + pad),
-        egui::vec2(rect.width() - 2.0 * pad, (rect.height() - 2.0 * pad).max(10.0)),
+        egui::vec2(
+            rect.width() - 2.0 * pad,
+            (rect.height() - 2.0 * pad).max(10.0),
+        ),
     );
     let (eased, delta, have) = animate_delta(ui, ctx);
     let r = (bar.height() * 0.35).clamp(4.0, 12.0);
@@ -110,10 +113,7 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, rect: egui::Rect) {
         };
         label(
             ui,
-            Pos2::new(
-                rect.center().x,
-                rect.top() + pad + rect.height() * 0.22,
-            ),
+            Pos2::new(rect.center().x, rect.top() + pad + rect.height() * 0.22),
             Align2::CENTER_CENTER,
             &signed_delta(delta),
             rect.height() * 0.46,

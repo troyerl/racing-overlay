@@ -6,6 +6,8 @@ use std::path::PathBuf;
 /// Populate `std::env` from local `.env` files; existing vars win.
 pub fn load_dotenv() {
     let mut candidates = Vec::new();
+    // Packaged installs: `%LOCALAPPDATA%\GridGlance\.env`
+    candidates.push(crate::paths::data_dir().join(".env"));
     if let Ok(cwd) = std::env::current_dir() {
         candidates.push(cwd.join(".env"));
     }

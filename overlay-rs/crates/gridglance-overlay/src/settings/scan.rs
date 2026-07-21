@@ -276,15 +276,20 @@ pub fn paint_track_scan(
             }
         });
         let mut sf_edit = state.read().map.sf_edit;
-        setting_row(ui, "Edit start/finish on map", None, |ui| {
-            if toggle_switch(ui, &mut sf_edit, accent, ui.id().with("sf_edit")).changed() {
-                if let Some(mut st) = state.try_write() {
-                    st.map.sf_edit = sf_edit;
-                    st.map.corner_edit = false;
-                    st.map.interactive = sf_edit;
+        setting_row(
+            ui,
+            "Calibrate map position",
+            Some("While on track: click where you are on the map. Save track after."),
+            |ui| {
+                if toggle_switch(ui, &mut sf_edit, accent, ui.id().with("sf_edit")).changed() {
+                    if let Some(mut st) = state.try_write() {
+                        st.map.sf_edit = sf_edit;
+                        st.map.corner_edit = false;
+                        st.map.interactive = sf_edit;
+                    }
                 }
-            }
-        });
+            },
+        );
     });
 }
 
@@ -313,27 +318,28 @@ pub fn paint_cloud_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32
         }
         if button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked() {
             let tid = ui_state.demo_track_id;
-            match cloud::fetch_track(&json!(tid)) {
-                Ok(Some(doc)) => {
-                    let name = doc
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    match cloud::save_app_settings(&json!({
-                        "demo_track_id": tid,
-                        "demo_track_name": name,
-                    })) {
-                        Ok(_) => {
-                            ui_state.demo_track_status = format!("Saved demo track {tid} ({name})");
-                            ui_state.flash("Demo track saved");
+            ui_state.flash("Saving demo track…");
+            std::thread::spawn(move || {
+                let msg = match cloud::fetch_track(&json!(tid)) {
+                    Ok(Some(doc)) => {
+                        let name = doc
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        match cloud::save_app_settings(&json!({
+                            "demo_track_id": tid,
+                            "demo_track_name": name,
+                        })) {
+                            Ok(_) => format!("Saved demo track {tid} ({name})"),
+                            Err(e) => e.to_string(),
                         }
-                        Err(e) => ui_state.flash(e.to_string()),
                     }
-                }
-                Ok(None) => ui_state.flash(format!("TrackID {tid} not found in cloud")),
-                Err(e) => ui_state.flash(e.to_string()),
-            }
+                    Ok(None) => format!("TrackID {tid} not found in cloud"),
+                    Err(e) => e.to_string(),
+                };
+                enqueue_cloud_flash(msg);
+            });
         }
     });
 
@@ -422,10 +428,15 @@ pub fn paint_cloud_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32
                 }
             }
             if button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked() {
-                match cloud::save_app_settings(&json!({ "pro_drivers": ui_state.pro_drivers })) {
-                    Ok(_) => ui_state.flash("Pro drivers saved"),
-                    Err(e) => ui_state.flash(e.to_string()),
-                }
+                let drivers = ui_state.pro_drivers.clone();
+                ui_state.flash("Saving pro drivers…");
+                std::thread::spawn(move || {
+                    let msg = match cloud::save_app_settings(&json!({ "pro_drivers": drivers })) {
+                        Ok(_) => "Pro drivers saved".into(),
+                        Err(e) => e.to_string(),
+                    };
+                    enqueue_cloud_flash(msg);
+                });
             }
         });
     });
@@ -479,35 +490,96 @@ pub fn paint_about(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32) {
 }
 
 pub fn ensure_admin_loaded(ui_state: &mut SettingsUi) {
-    if ui_state.admin_loaded {
-        return;
+    // Apply any finished background fetch.
+    if let Some(pending) = take_admin_result() {
+        ui_state.admin_loading = false;
+        ui_state.admin_loaded = true;
+        match pending {
+            Ok(s) => apply_admin_settings(ui_state, &s),
+            Err(e) => {
+                ui_state.demo_track_status = format!("Cloud settings: {e}");
+            }
+        }
     }
-    ui_state.admin_loaded = true;
-    match cloud::fetch_app_settings() {
-        Ok(s) => {
-            if let Some(id) = s.get("demo_track_id").and_then(|v| {
-                v.as_i64()
-                    .or_else(|| v.as_u64().map(|u| u as i64))
-                    .or_else(|| v.as_str()?.parse().ok())
-            }) {
-                ui_state.demo_track_id = id;
-            }
-            let name = s
-                .get("demo_track_name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("");
-            ui_state.demo_track_status = if ui_state.demo_track_id > 0 {
-                format!("Current: {} ({name})", ui_state.demo_track_id)
-            } else {
-                "No demo track set".into()
-            };
-            if let Some(arr) = s.get("pro_drivers").and_then(|a| a.as_array()) {
-                ui_state.pro_drivers = arr.clone();
-            }
+    // Prefer local cache immediately (no UI freeze).
+    if !ui_state.admin_loaded {
+        if let Some(cached) = cloud::load_app_settings_cache() {
+            apply_admin_settings(ui_state, &cached);
+            ui_state.admin_loaded = true;
         }
-        Err(e) => {
-            ui_state.demo_track_status = format!("Cloud settings: {e}");
+    }
+    // Kick a single background refresh from cloud.
+    if ADMIN_FETCH_STARTED
+        .compare_exchange(
+            false,
+            true,
+            std::sync::atomic::Ordering::SeqCst,
+            std::sync::atomic::Ordering::SeqCst,
+        )
+        .is_ok()
+    {
+        ui_state.admin_loading = true;
+        std::thread::spawn(|| {
+            let result = cloud::fetch_app_settings().map_err(|e| e.to_string());
+            store_admin_result(result);
+        });
+    }
+}
+
+fn apply_admin_settings(ui_state: &mut SettingsUi, s: &serde_json::Value) {
+    if let Some(id) = s.get("demo_track_id").and_then(|v| {
+        v.as_i64()
+            .or_else(|| v.as_u64().map(|u| u as i64))
+            .or_else(|| v.as_str()?.parse().ok())
+    }) {
+        ui_state.demo_track_id = id;
+    }
+    let name = s
+        .get("demo_track_name")
+        .and_then(|n| n.as_str())
+        .unwrap_or("");
+    ui_state.demo_track_status = if ui_state.demo_track_id > 0 {
+        format!("Current: {} ({name})", ui_state.demo_track_id)
+    } else {
+        "No demo track set".into()
+    };
+    if let Some(arr) = s.get("pro_drivers").and_then(|a| a.as_array()) {
+        ui_state.pro_drivers = arr.clone();
+    }
+}
+
+static ADMIN_FETCH_STARTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+static ADMIN_RESULT: once_cell::sync::Lazy<
+    std::sync::Mutex<Option<Result<serde_json::Value, String>>>,
+> = once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+fn store_admin_result(r: Result<serde_json::Value, String>) {
+    if let Ok(mut g) = ADMIN_RESULT.lock() {
+        *g = Some(r);
+    }
+}
+
+fn take_admin_result() -> Option<Result<serde_json::Value, String>> {
+    ADMIN_RESULT.lock().ok().and_then(|mut g| g.take())
+}
+
+static CLOUD_FLASH: once_cell::sync::Lazy<std::sync::Mutex<Option<String>>> =
+    once_cell::sync::Lazy::new(|| std::sync::Mutex::new(None));
+
+/// Poll background cloud save flashes into the status line.
+pub fn poll_cloud_jobs(ui_state: &mut SettingsUi) {
+    if let Ok(mut g) = CLOUD_FLASH.lock() {
+        if let Some(msg) = g.take() {
+            ui_state.flash(msg);
         }
+    }
+}
+
+fn enqueue_cloud_flash(msg: String) {
+    if let Ok(mut g) = CLOUD_FLASH.lock() {
+        *g = Some(msg);
     }
 }
 

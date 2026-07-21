@@ -83,8 +83,7 @@ impl TrayHandle {
                     // is enqueued synchronously via TPM_RETURNCMD.
                     #[cfg(windows)]
                     unsafe {
-                        self.menu
-                            .show_context_menu_for_hwnd(self.menu_hwnd, None);
+                        self.menu.show_context_menu_for_hwnd(self.menu_hwnd, None);
                     }
                     #[cfg(not(windows))]
                     {

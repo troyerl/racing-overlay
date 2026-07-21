@@ -35,14 +35,17 @@ pub struct CarScreenAnim {
     pub key: u8,
 }
 
-/// Predict-to-now lap-% animation between discrete telem samples.
+/// Lap-% animation between discrete telem samples (map motion).
 #[derive(Debug, Clone, Copy)]
 pub struct CarPctAnim {
     pub pct: f32,
-    /// Lap fractions per second (extrapolate between telem updates).
     pub vel: f32,
     pub last_telem: f32,
     pub last_telem_secs: f64,
+    /// `TelemetryFrame::session_time` at last meaningful LapDistPct sample.
+    pub last_telem_session: f64,
+    /// Host mono time when this car was last present in `frame.cars`.
+    pub last_seen_secs: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +99,8 @@ pub struct MapAuthoring {
     pub car_screen: HashMap<i32, CarScreenAnim>,
     /// Wall time of last map paint on the shared host mono clock (for car easing dt).
     pub last_paint_secs: f64,
+    /// Separate clock for screen-space ease (host may already have advanced pct this frame).
+    pub last_screen_secs: f64,
     /// Hold car on pit route after OnPitRoad clears until past pit_out.
     pub pit_route_latch: HashMap<i32, bool>,
     /// Previous OnPitRoad per car (for exit edge).
@@ -104,6 +109,10 @@ pub struct MapAuthoring {
     pub pit_exit_latch: HashMap<i32, f32>,
     /// Seed route latches once after a track load (Python `_seed_pit_latches`).
     pub pit_latch_seed_pending: bool,
+    /// Cache key for CPU-composite plot fit (`build_car_sprites`).
+    pub sprite_fit_key: u64,
+    /// Cached plot fit: origin_x, origin_y, scale, min_x, min_y.
+    pub sprite_fit: Option<(f32, f32, f32, f32, f32)>,
 }
 
 /// Pit-edit zoom clamp (match Python `_PIT_EDIT_ZOOM_*`).
@@ -148,10 +157,13 @@ impl Default for MapAuthoring {
             car_anim: HashMap::new(),
             car_screen: HashMap::new(),
             last_paint_secs: 0.0,
+            last_screen_secs: 0.0,
             pit_route_latch: HashMap::new(),
             pit_prev_on: HashMap::new(),
             pit_exit_latch: HashMap::new(),
             pit_latch_seed_pending: false,
+            sprite_fit_key: 0,
+            sprite_fit: None,
         }
     }
 }
@@ -275,6 +287,8 @@ impl MapAuthoring {
         self.cached_p2p_zones.clear();
         self.cached_corners.clear();
         self.drag_corner = None;
+        self.sprite_fit_key = 0;
+        self.sprite_fit = None;
     }
 
     pub fn reset_pit_edit_view(&mut self) {
@@ -283,10 +297,7 @@ impl MapAuthoring {
         self.pit_drag = None;
     }
 
-    fn bufs_mut(
-        &mut self,
-        lane2: bool,
-    ) -> PitLaneBufs<'_> {
+    fn bufs_mut(&mut self, lane2: bool) -> PitLaneBufs<'_> {
         if lane2 {
             (
                 &mut self.entry_pts_2,
@@ -428,15 +439,14 @@ impl MapAuthoring {
                     }
                 }
             }
-            2
-                if idx < merge.len() => {
-                    merge[idx] = (x, y);
-                    if idx == 0 {
-                        if let Some(r) = road.last_mut() {
-                            *r = (x, y);
-                        }
+            2 if idx < merge.len() => {
+                merge[idx] = (x, y);
+                if idx == 0 {
+                    if let Some(r) = road.last_mut() {
+                        *r = (x, y);
                     }
                 }
+            }
             _ => {}
         }
     }
@@ -452,9 +462,11 @@ mod pit_edit_tests {
 
     #[test]
     fn joint_drag_moves_road_end_and_merge_start() {
-        let mut m = MapAuthoring::default();
-        m.road_pts = vec![(0.0, 0.0), (1.0, 0.0)];
-        m.merge_pts = vec![(1.0, 0.0), (2.0, 1.0)];
+        let mut m = MapAuthoring {
+            road_pts: vec![(0.0, 0.0), (1.0, 0.0)],
+            merge_pts: vec![(1.0, 0.0), (2.0, 1.0)],
+            ..Default::default()
+        };
         m.set_point_with_joints(false, 3, 0, 5.0, 6.0);
         assert_eq!(*m.road_pts.last().unwrap(), (5.0, 6.0));
         assert_eq!(*m.merge_pts.first().unwrap(), (5.0, 6.0));
@@ -462,9 +474,11 @@ mod pit_edit_tests {
 
     #[test]
     fn entry_joint_drag_moves_entry_end_and_road_start() {
-        let mut m = MapAuthoring::default();
-        m.entry_pts = vec![(0.0, 0.0), (1.0, 1.0)];
-        m.road_pts = vec![(1.0, 1.0), (2.0, 2.0)];
+        let mut m = MapAuthoring {
+            entry_pts: vec![(0.0, 0.0), (1.0, 1.0)],
+            road_pts: vec![(1.0, 1.0), (2.0, 2.0)],
+            ..Default::default()
+        };
         m.set_point_with_joints(false, 4, 0, 3.0, 4.0);
         assert_eq!(*m.entry_pts.last().unwrap(), (3.0, 4.0));
         assert_eq!(*m.road_pts.first().unwrap(), (3.0, 4.0));
@@ -472,9 +486,11 @@ mod pit_edit_tests {
 
     #[test]
     fn seed_road_and_reset_view() {
-        let mut m = MapAuthoring::default();
-        m.entry_pts = vec![(1.0, 2.0)];
-        m.phase = "road".into();
+        let mut m = MapAuthoring {
+            entry_pts: vec![(1.0, 2.0)],
+            phase: "road".into(),
+            ..Default::default()
+        };
         m.seed_road_from_entry(false);
         assert_eq!(m.road_pts, vec![(1.0, 2.0)]);
         m.pit_edit_zoom = 2.5;

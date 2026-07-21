@@ -5,7 +5,8 @@
 //! over this socket.
 //!
 //! Wire format: newline-delimited JSON objects over a local TCP socket
-//! (`127.0.0.1:19847` by default). Each request has `id`, `method`, `params`;
+//! (`127.0.0.1:19847` by default). Each request has `id`, `method`, `params`,
+//! and (for mutating methods) `token` matching `%LOCALAPPDATA%\GridGlance\ipc_token`;
 //! each response has `id`, `ok`, and either `result` or `error`.
 
 use serde::{Deserialize, Serialize};
@@ -14,8 +15,8 @@ use serde_json::Value;
 /// Default localhost port for overlay IPC.
 pub const DEFAULT_IPC_PORT: u16 = 19847;
 
-/// Protocol version advertised in `ping`.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Protocol version advertised in `ping` (2 = token auth for mutating methods).
+pub const PROTOCOL_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -23,6 +24,9 @@ pub struct Request {
     pub method: String,
     #[serde(default)]
     pub params: Value,
+    /// Shared secret from the local `ipc_token` file (required for mutating methods).
+    #[serde(default)]
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +64,9 @@ pub struct PingResult {
     pub version: u32,
     pub backend: String,
     pub generation: u64,
+    /// Mutating methods require `token` matching the local ipc_token file.
+    #[serde(default)]
+    pub auth_required: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -217,6 +224,14 @@ pub mod methods {
     pub const MAP_SET_CORNERS: &str = "map.set_corners";
     pub const MAP_SET_START_FINISH: &str = "map.set_start_finish";
     pub const TRACK_AUTHORING_STATE: &str = "track.authoring_state";
+
+    /// Methods that do not require the local IPC token.
+    pub fn is_public(method: &str) -> bool {
+        matches!(
+            method,
+            PING | LAYOUT_GET | MAP_GET_STATE | TRACK_AUTHORING_STATE
+        )
+    }
 }
 
 #[cfg(test)]
@@ -229,9 +244,17 @@ mod tests {
             id: 1,
             method: methods::PING.into(),
             params: Value::Null,
+            token: None,
         };
         let s = serde_json::to_string(&req).unwrap();
         let back: Request = serde_json::from_str(&s).unwrap();
         assert_eq!(back.method, methods::PING);
+        assert!(back.token.is_none());
+    }
+
+    #[test]
+    fn public_methods() {
+        assert!(methods::is_public(methods::PING));
+        assert!(!methods::is_public(methods::CONFIG_APPLY));
     }
 }

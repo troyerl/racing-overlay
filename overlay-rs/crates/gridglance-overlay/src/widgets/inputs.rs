@@ -1,7 +1,7 @@
 //! Scrolling input telemetry (Python `inputs.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{anim_dt, panel_card, ease, full_rect, label, still_easing};
+use crate::chrome::{anim_dt, ease, full_rect, label, panel_card, still_easing};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -79,8 +79,7 @@ fn push_sample(ctx: &WidgetCtx<'_>) {
             return;
         }
     }
-    h.samples
-        .push_back((t, thr, brk, clt, steer, abs_on, gear));
+    h.samples.push_back((t, thr, brk, clt, steer, abs_on, gear));
     let window = cfg.f64_key(SECTION, "history_seconds", 6.0);
     let cutoff = t - window;
     while h.samples.len() > 2 && h.samples.front().map(|s| s.0 < cutoff).unwrap_or(false) {

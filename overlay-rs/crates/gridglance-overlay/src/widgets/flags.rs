@@ -1,7 +1,7 @@
 //! Flags banner — plate + hatch/checker (Python `flags.py`).
 
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, panel_card, draw_dark_cell, full_rect, label};
+use crate::chrome::{color_with_alpha, draw_dark_cell, full_rect, label, panel_card};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
 
 const SECTION: &str = "flags";

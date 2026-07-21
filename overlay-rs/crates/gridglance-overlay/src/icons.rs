@@ -28,9 +28,9 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("class_pos", 0xF292),
     ("car_number", 0xF1B9), // car
     // lap / fuel / tire metrics
-    ("lap", 0xF11E),        // flag-checkered
-    ("lap_count", 0xF11E),  // flag-checkered
-    ("laps_left", 0xF11E),  // flag-checkered
+    ("lap", 0xF11E),       // flag-checkered
+    ("lap_count", 0xF11E), // flag-checkered
+    ("laps_left", 0xF11E), // flag-checkered
     ("laps_remain", 0xF11E),
     ("fuel", 0xF52F),       // gas-pump
     ("fuel_laps", 0xF52F),  // gas-pump
@@ -53,9 +53,9 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("incidents_limit", 0xF071),
     ("incidents_team", 0xF0C0),
     // environment
-    ("track_temp", 0xF2C9), // temperature-half
-    ("air_temp", 0xF72E),   // wind
-    ("weather", 0xF0C2),    // cloud
+    ("track_temp", 0xF2C9),    // temperature-half
+    ("air_temp", 0xF72E),      // wind
+    ("weather", 0xF0C2),       // cloud
     ("track_wetness", 0xF043), // droplet
     ("water_temp", 0xF043),
     ("oil_temp", 0xF613), // oil-can
@@ -70,20 +70,20 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("bolt", 0xF0E7),       // bolt
     ("voltage", 0xF0E7),
     // table header / footer
-    ("sof", 0xF0C0),       // users
-    ("class_sof", 0xF0C0), // users
+    ("sof", 0xF0C0),          // users
+    ("class_sof", 0xF0C0),    // users
     ("session_time", 0xF017), // clock
     ("race_time", 0xF017),
-    ("session_best", 0xF091), // trophy
+    ("session_best", 0xF091),    // trophy
     ("my_session_best", 0xF2F2), // stopwatch
     ("local_time", 0xF017),
-    ("sim_time", 0xF185), // sun
+    ("sim_time", 0xF185),     // sun
     ("session_type", 0xF0AE), // tasks / session
-    ("race_split", 0xF0CB), // list-ol
+    ("race_split", 0xF0CB),   // list-ol
     ("order_pill", 0xF0CB),
     ("title", 0xF091),
     ("count", 0xF0C0),
-    ("track_name", 0xF018), // road
+    ("track_name", 0xF018),   // road
     ("fast_repairs", 0xF0AD), // wrench
     // system panel
     ("cpu", 0xF2DB),     // microchip
@@ -92,10 +92,10 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("fps", 0xF624),     // gauge
     ("network", 0xF1EB), // wifi
     // radio / map traffic
-    ("speaking", 0xF028), // volume-high
-    ("radio", 0xF130),    // microphone
-    ("leader", 0xF521),   // crown
-    ("car_ahead", 0xF062), // arrow-up
+    ("speaking", 0xF028),   // volume-high
+    ("radio", 0xF130),      // microphone
+    ("leader", 0xF521),     // crown
+    ("car_ahead", 0xF062),  // arrow-up
     ("car_behind", 0xF063), // arrow-down
     ("gap_ahead", 0xF062),
     ("gap_behind", 0xF063),

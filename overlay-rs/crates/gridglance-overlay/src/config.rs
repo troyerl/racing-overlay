@@ -137,7 +137,13 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
         }
         "system_panel" => {
             let mut n = 0;
-            for k in ["show_cpu", "show_mem", "show_gpu", "show_fps", "show_network"] {
+            for k in [
+                "show_cpu",
+                "show_mem",
+                "show_gpu",
+                "show_fps",
+                "show_network",
+            ] {
                 if cfg.bool_key(key, k, true) {
                     n += 1;
                 }
@@ -1420,10 +1426,7 @@ fn default_cfg() -> Value {
                 json!(if *key == "relative" { 3 } else { 5 }),
             );
             // Total neighbor slots: rows_ahead + rows_behind.
-            section.insert(
-                "rows".into(),
-                json!(if *key == "relative" { 6 } else { 9 }),
-            );
+            section.insert("rows".into(), json!(if *key == "relative" { 6 } else { 9 }));
             section.insert("center_on_player".into(), Value::Bool(true));
             section.insert("show_footer".into(), Value::Bool(true));
             section.insert("row_ease_tau".into(), json!(0.16));
@@ -1476,10 +1479,7 @@ fn default_cfg() -> Value {
                 section.insert("pin_podium".into(), Value::Bool(false));
                 section.insert("title".into(), Value::String("Standings".into()));
                 if let Some(Value::Object(colors)) = section.get_mut("colors") {
-                    colors.insert(
-                        "podium_separator".into(),
-                        Value::String("#22c55e".into()),
-                    );
+                    colors.insert("podium_separator".into(), Value::String("#22c55e".into()));
                 }
                 section.insert(
                     "header".into(),
@@ -1507,6 +1507,7 @@ fn default_cfg() -> Value {
             section.insert("outline_width".into(), json!(6));
             section.insert("rotation".into(), json!(0));
             section.insert("mirror".into(), Value::Bool(false));
+            section.insert("reverse_path".into(), Value::Bool(false));
             section.insert("dot_radius_frac".into(), json!(0.05));
             section.insert("other_dot_radius_frac".into(), json!(0.05));
             section.insert("pit_dot_opacity".into(), json!(0.45));

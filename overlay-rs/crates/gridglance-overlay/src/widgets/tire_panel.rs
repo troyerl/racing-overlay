@@ -74,7 +74,17 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, corners: &[TireCorner; 4]) {
     let gap = (iw * 0.04).max(4.0);
     let cw = (iw - gap) / 2.0;
     let ch = (ih - gap) / 2.0;
-    paint_tire_grid(ui, ctx, corners, card.left() + pad, grid_top, cw, ch, gap, false);
+    paint_tire_grid(
+        ui,
+        ctx,
+        corners,
+        card.left() + pad,
+        grid_top,
+        cw,
+        ch,
+        gap,
+        false,
+    );
 }
 
 /// Compact 2×2: label+temp on one line, thin wear bar — same data, less bulk.

@@ -182,9 +182,7 @@ pub fn paint_table(
             // Initial populate (empty → first order) does not open the window.
             // Relative reorders every telem tick (gap sort), so force-snap would
             // kill every pass slide — only standings uses the debounce.
-            if !anim.last_order.is_empty()
-                && now < anim.order_stable_after
-                && section != "relative"
+            if !anim.last_order.is_empty() && now < anim.order_stable_after && section != "relative"
             {
                 force_snap = true;
             }

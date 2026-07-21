@@ -275,11 +275,8 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>, services: &[PitService]) 
             Vec2::new(inner_w, chip_h),
         );
         if svc.checked {
-            ui.painter().rect_filled(
-                chip,
-                CornerRadius::same(8),
-                color_with_alpha(checked_c, 40),
-            );
+            ui.painter()
+                .rect_filled(chip, CornerRadius::same(8), color_with_alpha(checked_c, 40));
         } else {
             ui.painter()
                 .rect_filled(chip, CornerRadius::same(8), soft_cell);

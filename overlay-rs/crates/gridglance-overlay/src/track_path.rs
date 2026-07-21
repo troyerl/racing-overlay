@@ -240,7 +240,10 @@ fn parse_pit_lane(v: &Value, suffix: &str) -> PitLane {
     }
 }
 
-/// Load `points` from a track JSON; resample to ~n points by arc length.
+/// Load `points` from a track JSON.
+///
+/// Members imports already arc-resample the outline. Keep those samples (do not
+/// re-arc-resample on load). Car placement uses arc `point_at` to match S/F tools.
 pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
     let text = fs::read_to_string(path).ok()?;
     let v: Value = serde_json::from_str(&text).ok()?;
@@ -281,7 +284,12 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         pit.out_pct = pit_out_pct;
     }
     let target = n.clamp(64, 720);
-    let resampled = resample_closed(&pts, target);
+    // Keep authoring indices when dense enough; only densify sparse paths by index.
+    let points = if pts.len() >= target.min(128) {
+        pts
+    } else {
+        densify_closed_by_index(&pts, target)
+    };
     let is_demo = path
         .file_stem()
         .and_then(|s| s.to_str())
@@ -298,7 +306,7 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
 
     let corners = parse_corners(v.get("corners"));
     let mut tp = TrackPath {
-        points: resampled,
+        points,
         name,
         start_finish: start_finish.fract().rem_euclid(1.0),
         pit_out_pct,
@@ -563,6 +571,19 @@ fn arc_lengths(pts: &[(f32, f32)], closed: bool) -> (Vec<f32>, f32) {
     (cum, total)
 }
 
+fn densify_closed_by_index(pts: &[(f32, f32)], n: usize) -> Vec<(f32, f32)> {
+    if pts.len() < 2 || n < 2 {
+        return pts.to_vec();
+    }
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        // Densify along arc so new samples stay consistent with point_at.
+        out.push(point_at(pts, i as f32 / n as f32));
+    }
+    out
+}
+
+#[allow(dead_code)] // used by tests
 fn resample_closed(pts: &[(f32, f32)], n: usize) -> Vec<(f32, f32)> {
     if pts.len() < 2 || n < 2 {
         return pts.to_vec();
@@ -602,19 +623,40 @@ fn sample_at_dist(pts: &[(f32, f32)], cum: &[f32], target: f32, closed: bool) ->
     pts[0]
 }
 
+/// Sample a closed track at lap fraction `pct` (0..1) by **arc length**.
+///
+/// Members-site imports arc-resample the outline (`sample_best_subpath`), and
+/// S/F / corner tools use `nearest_pct_on_loop` (arc). Car placement must match.
 pub fn point_at(pts: &[(f32, f32)], pct: f32) -> (f32, f32) {
     if pts.len() < 2 {
         return pts.first().copied().unwrap_or((0.5, 0.5));
     }
-    let mut p = pct.fract();
-    if p < 0.0 {
-        p += 1.0;
-    }
+    let p = pct.rem_euclid(1.0);
     let (cum, total) = arc_lengths(pts, true);
     if total <= 1e-6 {
         return pts[0];
     }
     sample_at_dist(pts, &cum, p * total, true)
+}
+
+/// Index-uniform sample (only if points were authored as LapDistPct slots).
+#[allow(dead_code)]
+pub fn point_at_index(pts: &[(f32, f32)], pct: f32) -> (f32, f32) {
+    let n = pts.len();
+    if n == 0 {
+        return (0.5, 0.5);
+    }
+    if n == 1 {
+        return pts[0];
+    }
+    let p = pct.rem_euclid(1.0);
+    let f = p * n as f32;
+    let i0 = (f.floor() as usize) % n;
+    let i1 = (i0 + 1) % n;
+    let t = f - f.floor();
+    let a = pts[i0];
+    let b = pts[i1];
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
 }
 
 /// Unit tangent along the closed path at `pct` (for S/F tick).

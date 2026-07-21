@@ -17,9 +17,12 @@ const SETTINGS_COLL: &str = "app_settings";
 const SETTINGS_DOC_ID: &str = "global";
 const APP_SETTINGS_CACHE: &str = "_app_settings.json";
 
-/// Embedded read-only Atlas URI (same as Python `_READ_URI_DEFAULT`).
-const READ_URI_DEFAULT: &str =
-    "mongodb+srv://GridGlanceUser:3w69ejWh1WGKenQa@gridglance.dguyept.mongodb.net/?appName=GridGlance";
+/// Read-only Atlas URI stamped at compile time by release CI
+/// (`GRIDGLANCE_MONGODB_READ_URI` secret). Empty in local/dev builds.
+const BAKED_READ_URI: &str = match option_env!("GRIDGLANCE_MONGODB_READ_URI") {
+    Some(u) => u,
+    None => "",
+};
 
 static RUNTIME: Lazy<tokio::runtime::Runtime> = Lazy::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -49,7 +52,11 @@ fn read_uri() -> String {
             }
         }
     }
-    READ_URI_DEFAULT.trim().to_string()
+    let baked = BAKED_READ_URI.trim();
+    if !baked.is_empty() {
+        return baked.to_string();
+    }
+    String::new()
 }
 
 /// True when author/dev write credential is present.
@@ -443,12 +450,78 @@ pub fn write_json_atomic(path: &Path, doc: &Value) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Download every track document from Atlas into `tracks_dir`.
+///
+/// Used when the local cache was wiped or is nearly empty — `sync_down` only
+/// refreshes files that already exist on disk.
+pub fn sync_library(tracks_dir: &Path) -> anyhow::Result<usize> {
+    if !read_available() {
+        anyhow::bail!("no Mongo read URI (set GRIDGLANCE_MONGODB_READ_URI or GRIDGLANCE_MONGODB_URI)");
+    }
+    fs::create_dir_all(tracks_dir)?;
+    block_on(async {
+        use futures::stream::TryStreamExt;
+        let col = collection(TRACKS_COLL, false).await?;
+        let mut cursor = col.find(None, None).await?;
+        let mut n = 0usize;
+        while let Some(doc) = cursor.try_next().await? {
+            let v = doc_to_value(doc);
+            let Some(tid) = v.get("track_id") else {
+                continue;
+            };
+            // Skip non-numeric / settings-like docs.
+            let tid_ok = tid.as_i64().is_some()
+                || tid.as_u64().is_some()
+                || tid
+                    .as_str()
+                    .map(|s| s.chars().all(|c| c.is_ascii_digit()))
+                    .unwrap_or(false);
+            if !tid_ok {
+                continue;
+            }
+            let out = track_file_path(tracks_dir, tid);
+            write_json_atomic(&out, &v)?;
+            n += 1;
+        }
+        Ok(n)
+    })
+}
+
+fn count_local_tracks(tracks_dir: &Path) -> usize {
+    let Ok(rd) = fs::read_dir(tracks_dir) else {
+        return 0;
+    };
+    rd.flatten()
+        .filter(|e| {
+            let p = e.path();
+            if p.extension().and_then(|x| x.to_str()) != Some("json") {
+                return false;
+            }
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            !name.starts_with('_')
+        })
+        .count()
+}
+
 /// Background sync-down; logs errors, never panics.
+///
+/// If the local cache has few tracks (e.g. after a wipe), pull the full cloud
+/// library once; otherwise only refresh files already on disk.
 pub fn sync_down_async(tracks_dir: PathBuf) {
-    std::thread::spawn(move || match sync_down(&tracks_dir) {
-        Ok(n) if n > 0 => eprintln!("[gridglance] refreshed {n} local tracks from cloud"),
-        Ok(_) => {}
-        Err(e) => eprintln!("[gridglance] track sync: {e}"),
+    std::thread::spawn(move || {
+        let local_n = count_local_tracks(&tracks_dir);
+        if local_n < 8 {
+            match sync_library(&tracks_dir) {
+                Ok(n) => eprintln!("[gridglance] pulled {n} tracks from cloud (local cache was sparse)"),
+                Err(e) => eprintln!("[gridglance] track library sync: {e}"),
+            }
+        } else {
+            match sync_down(&tracks_dir) {
+                Ok(n) if n > 0 => eprintln!("[gridglance] refreshed {n} local tracks from cloud"),
+                Ok(_) => {}
+                Err(e) => eprintln!("[gridglance] track sync: {e}"),
+            }
+        }
     });
 }
 

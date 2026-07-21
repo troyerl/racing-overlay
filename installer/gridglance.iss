@@ -45,9 +45,9 @@ Source: "assets\app.ico"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreve
 Source: "assets\app.ico"; DestDir: "{app}\assets"; DestName: "app.ico"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\GridGlance"; Filename: "{app}\GridGlance.exe"; Parameters: "--settings"
+Name: "{group}\GridGlance"; Filename: "{app}\GridGlance.exe"
 Name: "{group}\Uninstall GridGlance"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\GridGlance"; Filename: "{app}\GridGlance.exe"; Parameters: "--settings"; Tasks: desktopicon
+Name: "{userdesktop}\GridGlance"; Filename: "{app}\GridGlance.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\GridGlance.exe"; Parameters: "--settings"; Description: "Launch GridGlance"; Flags: nowait postinstall
+Filename: "{app}\GridGlance.exe"; Description: "Launch GridGlance"; Flags: nowait postinstall

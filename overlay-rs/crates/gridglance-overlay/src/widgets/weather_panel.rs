@@ -1,6 +1,7 @@
 use super::WidgetCtx;
 use crate::chrome::{
-    color_with_alpha, draw_card, draw_elegant_card, draw_section_header, full_rect, label, panel_pad,
+    color_with_alpha, draw_card, draw_elegant_card, draw_section_header, full_rect, label,
+    panel_pad,
 };
 use crate::config::PanelStyle;
 use crate::icons;
@@ -10,7 +11,10 @@ use std::f32::consts::TAU;
 const SECTION: &str = "weather_panel";
 
 enum WeatherRow {
-    Text { key: String, value: String },
+    Text {
+        key: String,
+        value: String,
+    },
     Wet {
         track: Option<f32>,
         rain: Option<f32>,
@@ -291,7 +295,15 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             } else {
                 parts.join(" ")
             };
-            label(ui, Pos2::new(x, cy), Align2::LEFT_CENTER, &val, 11.0, text, false);
+            label(
+                ui,
+                Pos2::new(x, cy),
+                Align2::LEFT_CENTER,
+                &val,
+                11.0,
+                text,
+                false,
+            );
             x += 78.0;
         }
         if show_wind {
@@ -414,8 +426,7 @@ fn paint_soft_meter(
         Vec2::new((w - cap_w - pct_w).max(24.0), h),
     );
     let rad = (h * 0.5).round().clamp(0.0, 255.0) as u8;
-    ui.painter()
-        .rect_filled(bar, CornerRadius::same(rad), bg);
+    ui.painter().rect_filled(bar, CornerRadius::same(rad), bg);
     if let Some(p) = pct {
         let frac = (p / 100.0).clamp(0.0, 1.0);
         let fill_w = bar.width() * frac;
@@ -475,8 +486,7 @@ fn paint_wet_bar(
         Pos2::new(x + tag_w, y),
         Vec2::new((w - tag_w - 34.0).max(20.0), h),
     );
-    ui.painter()
-        .rect_filled(bar, CornerRadius::same(3), bg);
+    ui.painter().rect_filled(bar, CornerRadius::same(3), bg);
     if let Some(p) = pct {
         let frac = (p / 100.0).clamp(0.0, 1.0);
         let fill_w = bar.width() * frac;
@@ -532,8 +542,11 @@ fn paint_wind_tick(ui: &mut Ui, c: Pos2, r: f32, dir_rad: f32, color: Color32) {
     let perp = Pos2::new(-screen.sin(), screen.cos());
     let left = Pos2::new(back.x + perp.x * r * 0.4, back.y + perp.y * r * 0.4);
     let right = Pos2::new(back.x - perp.x * r * 0.4, back.y - perp.y * r * 0.4);
-    ui.painter()
-        .circle_stroke(c, r * 0.95, Stroke::new(1.0_f32, color_with_alpha(color, 140)));
+    ui.painter().circle_stroke(
+        c,
+        r * 0.95,
+        Stroke::new(1.0_f32, color_with_alpha(color, 140)),
+    );
     ui.painter()
         .line_segment([back, tip], Stroke::new(1.6_f32, color));
     ui.painter()

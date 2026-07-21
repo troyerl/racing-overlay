@@ -1,7 +1,7 @@
 //! Laptime log — recent laps with delta + track temp.
 
 use super::WidgetCtx;
-use crate::chrome::{panel_card, draw_dark_cell, full_rect, label, panel_pad};
+use crate::chrome::{draw_dark_cell, full_rect, label, panel_card, panel_pad};
 use crate::icons;
 use crate::telemetry::{signed_delta_1, LapLogRow};
 use egui::{Align2, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};

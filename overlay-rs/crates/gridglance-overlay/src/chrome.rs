@@ -122,7 +122,12 @@ pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) ->
 }
 
 /// Soft / minimal card for Elegant panel styles — quieter fill, modest radius, hairline border.
-pub fn draw_elegant_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> (Rect, f32) {
+pub fn draw_elegant_card(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    section: &str,
+    rect: Rect,
+) -> (Rect, f32) {
     let h = rect.height();
     let frac = cfg.f64_key(section, "corner_radius_frac", 0.0) as f32;
     let radius = (h * frac.max(0.10)).min(h * 0.22).max(4.0).min(h * 0.5);

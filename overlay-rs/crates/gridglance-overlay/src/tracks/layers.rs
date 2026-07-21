@@ -359,10 +359,7 @@ pub fn apply_iracing_oval_labels(corners: Vec<Value>, num_turns: i64) -> Vec<Val
             let label = c.get("label").and_then(|v| v.as_str())?;
             let mut out = c.clone();
             if let Some(obj) = out.as_object_mut() {
-                obj.insert(
-                    "label".into(),
-                    json!(iracing_oval_label(label, num_turns)),
-                );
+                obj.insert("label".into(), json!(iracing_oval_label(label, num_turns)));
             }
             Some(out)
         })

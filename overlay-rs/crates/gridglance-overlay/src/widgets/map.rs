@@ -1,5 +1,7 @@
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, panel_card, draw_dark_cell, ease, full_rect, label};
+use crate::chrome::{
+    anim_dt, color_with_alpha, draw_dark_cell, ease, full_rect, label, panel_card,
+};
 use crate::config::OverlayConfig;
 use crate::icons;
 use crate::map_markers::{self, TrafficMarker};
@@ -15,15 +17,30 @@ use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
 
 const SECTION: &str = "map";
-const PCT_VEL_MIN: f32 = -0.15;
-const PCT_VEL_MAX: f32 = 0.25;
-/// EMA blend toward telem-derived velocity (only when sample is trustworthy).
-const PCT_VEL_EMA: f32 = 0.30;
-/// Snap pct only if more than this fraction of a lap off (teleport / reset).
-const PCT_SNAP_ERR: f32 = 0.35;
-/// Soft screen ease for classic GL paint path only (composite uses raw targets).
-const SCREEN_EASE_TAU: f32 = 0.06;
+/// Bump when changing map car motion; shown in `--perf` as `map_motion_rev=`.
+/// Keep in sync with `docs/map-wiki.md`.
+pub const MAP_MOTION_REV: u32 = 23;
+/// Screen ease for pit-route / non-pct modes only (Python `_smooth_marker_point`).
+const SCREEN_EASE_TAU: f32 = 0.09;
 const SCREEN_EASE_SNAP: f32 = 120.0;
+/// Keep anim if a car drops out of `frame.cars` briefly.
+const PCT_SEEN_GRACE_SECS: f64 = 2.0;
+/// Teleport / tow: snap instead of easing across the track.
+const PCT_SNAP_ERR: f32 = 0.40;
+/// Ignore micro LapDistPct jitter when measuring vel / refreshing anchor.
+const TELEM_EPS: f32 = 0.00008;
+/// EMA blend for measured lap-%/s.
+const VEL_EMA: f32 = 0.45;
+const VEL_DT_MIN: f64 = 0.004;
+const VEL_DT_MAX: f64 = 3.5;
+/// Decay vel only after a long pause (not 2.5s — that matched old stutter).
+const QUIET_DECAY_SECS: f64 = 20.0;
+/// Ease display toward wall-clock predict (Python used 0.09 lag-only).
+const PCT_FOLLOW_TAU: f32 = 0.055;
+/// Cap predict age so a long telem gap does not run away.
+const PREDICT_AGE_MAX: f32 = 1.5;
+/// Still-easing / coasting threshold for `panel_animating`.
+const PCT_MOVING_EPS: f32 = 1e-5;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
 #[derive(Clone, Copy)]
@@ -224,35 +241,120 @@ fn fill_infield(ui: &mut Ui, screen: &[Pos2], fill: Color32) {
     if screen.len() < 3 {
         return;
     }
-    // Centroid fan — works for typical race outlines (centroid inside).
-    let mut cx = 0.0_f32;
-    let mut cy = 0.0_f32;
-    for p in screen {
-        cx += p.x;
-        cy += p.y;
+    // Drop duplicate closing vertex if the path repeats the start point.
+    let mut pts: Vec<Pos2> = screen.to_vec();
+    if pts.len() >= 2 {
+        let a = pts[0];
+        let b = *pts.last().unwrap();
+        if (a.x - b.x).abs() < 1e-3 && (a.y - b.y).abs() < 1e-3 {
+            pts.pop();
+        }
     }
-    let n = screen.len() as f32;
-    let c = Pos2::new(cx / n, cy / n);
+    if pts.len() < 3 {
+        return;
+    }
+    // Concave race outlines: centroid fan leaks triangles outside the polygon
+    // (visible as black shards once the static map bg is cached for composite).
+    let tris = earcut_triangles(&pts);
+    if tris.is_empty() {
+        return;
+    }
     let mut mesh = egui::Mesh::default();
-    let ci = mesh.vertices.len() as u32;
-    mesh.vertices.push(egui::epaint::Vertex {
-        pos: c,
-        uv: egui::epaint::WHITE_UV,
-        color: fill,
-    });
-    for p in screen {
+    let base = mesh.vertices.len() as u32;
+    for p in &pts {
         mesh.vertices.push(egui::epaint::Vertex {
             pos: *p,
             uv: egui::epaint::WHITE_UV,
             color: fill,
         });
     }
-    for i in 0..screen.len() {
-        let a = ci + 1 + i as u32;
-        let b = ci + 1 + ((i + 1) % screen.len()) as u32;
-        mesh.indices.extend_from_slice(&[ci, a, b]);
+    for [a, b, c] in tris {
+        mesh.indices
+            .extend_from_slice(&[base + a, base + b, base + c]);
     }
     ui.painter().add(Shape::mesh(mesh));
+}
+
+/// Ear-clip a simple polygon into triangles (no holes). Returns index triples.
+fn earcut_triangles(pts: &[Pos2]) -> Vec<[u32; 3]> {
+    let n = pts.len();
+    if n < 3 {
+        return Vec::new();
+    }
+    let cross = |i: usize, j: usize, k: usize| -> f32 {
+        let a = pts[i];
+        let b = pts[j];
+        let c = pts[k];
+        (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)
+    };
+    let point_in_tri = |p: Pos2, i: usize, j: usize, k: usize| -> bool {
+        let a = pts[i];
+        let b = pts[j];
+        let c = pts[k];
+        let area = (b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y);
+        if area.abs() < 1e-8 {
+            return false;
+        }
+        let s = if area > 0.0 { 1.0 } else { -1.0 };
+        let d1 = (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+        let d2 = (c.x - b.x) * (p.y - b.y) - (c.y - b.y) * (p.x - b.x);
+        let d3 = (a.x - c.x) * (p.y - c.y) - (a.y - c.y) * (p.x - c.x);
+        d1 * s >= -1e-5 && d2 * s >= -1e-5 && d3 * s >= -1e-5
+    };
+
+    // Ensure CCW for consistent ear tests.
+    let mut idx: Vec<usize> = (0..n).collect();
+    let signed: f32 = (0..n)
+        .map(|i| {
+            let j = (i + 1) % n;
+            pts[i].x * pts[j].y - pts[j].x * pts[i].y
+        })
+        .sum();
+    if signed < 0.0 {
+        idx.reverse();
+    }
+
+    let mut out = Vec::with_capacity(n.saturating_sub(2));
+    let mut guard = 0;
+    let max_guard = n * n + 8;
+    while idx.len() > 3 && guard < max_guard {
+        guard += 1;
+        let m = idx.len();
+        let mut clipped = false;
+        for i in 0..m {
+            let i0 = idx[(i + m - 1) % m];
+            let i1 = idx[i];
+            let i2 = idx[(i + 1) % m];
+            // Convex vertex in CCW polygon: positive cross.
+            if cross(i0, i1, i2) <= 1e-8 {
+                continue;
+            }
+            let mut ear = true;
+            for &t in &idx {
+                if t == i0 || t == i1 || t == i2 {
+                    continue;
+                }
+                if point_in_tri(pts[t], i0, i1, i2) {
+                    ear = false;
+                    break;
+                }
+            }
+            if !ear {
+                continue;
+            }
+            out.push([i0 as u32, i1 as u32, i2 as u32]);
+            idx.remove(i);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            break;
+        }
+    }
+    if idx.len() == 3 {
+        out.push([idx[0] as u32, idx[1] as u32, idx[2] as u32]);
+    }
+    out
 }
 
 fn stroke_closed(ui: &mut Ui, screen: &[Pos2], width: f32, color: Color32) {
@@ -472,14 +574,33 @@ fn pct_in_interval(pct: f32, lo: f32, hi: f32) -> bool {
     ((pct - lo).rem_euclid(1.0)) <= span
 }
 
-/// Lap-% → arc fraction along the racing polyline (Python `_loop_frac_for_pct`).
-fn loop_frac_for_pct(pct: f32, start_finish: f32) -> f32 {
-    (pct - start_finish).rem_euclid(1.0)
+/// Lap-% → loop fraction along the racing polyline (Python `_loop_frac_for_pct`).
+/// `reverse_path`: SVG driving direction opposite iRacing LapDistPct.
+fn loop_frac_for_pct(pct: f32, start_finish: f32, reverse: bool) -> f32 {
+    let d = (pct - start_finish).rem_euclid(1.0);
+    if reverse {
+        (1.0 - d).rem_euclid(1.0)
+    } else {
+        d
+    }
 }
 
-/// Loop arc fraction where the start/finish line sits (Python `_sf_loop_frac`).
-fn sf_loop_frac(start_finish: f32) -> f32 {
-    (-start_finish).rem_euclid(1.0)
+/// Loop arc fraction where lap pct 0 (S/F) sits.
+fn sf_loop_frac(start_finish: f32, reverse: bool) -> f32 {
+    loop_frac_for_pct(0.0, start_finish, reverse)
+}
+
+/// Choose `start_finish` so live `telem` maps to `loop_frac` (click-to-calibrate).
+fn sf_for_player_at(telem: f32, loop_frac: f32, reverse: bool) -> f32 {
+    if reverse {
+        (loop_frac + telem).rem_euclid(1.0)
+    } else {
+        (telem - loop_frac).rem_euclid(1.0)
+    }
+}
+
+fn map_reverse(ctx: &WidgetCtx<'_>) -> bool {
+    ctx.cfg.bool_key(SECTION, "reverse_path", false)
 }
 
 fn hypot2(a: (f32, f32), b: (f32, f32)) -> f32 {
@@ -869,7 +990,7 @@ fn car_model_xy(
     let on_pit = car.on_pit;
     let on_route = car_on_route(ctx, car);
     let sf = ctx.map.cached_start_finish;
-    let track = track_path::point_at(racing, loop_frac_for_pct(pct, sf));
+    let track = track_path::point_at(racing, loop_frac_for_pct(pct, sf, map_reverse(ctx)));
     if !on_route && !on_pit {
         return track;
     }
@@ -992,42 +1113,38 @@ fn draw_car_number_label(
     is_player: bool,
     is_pace: bool,
     text_scale: f32,
+    dot_fill: Color32,
 ) {
     if text.is_empty() {
         return;
     }
-    let base = if is_player { 9.0 } else { 7.5 };
-    let size = (base * text_scale).max(6.0);
+    let base = if is_player { 10.0 } else { 8.5 };
+    let size = (base * text_scale).max(7.0);
     let font = FontId::new(size, FontFamily::Proportional);
-    let fill = Color32::WHITE;
-    let stroke = if is_pace {
-        Color32::from_rgba_unmultiplied(0, 0, 0, 160)
+    // Always pick high-contrast ink for the dot fill (white on blue/black/purple).
+    let fill = crate::chrome::contrast_text(dot_fill);
+    let stroke = if fill == Color32::WHITE {
+        Color32::from_rgba_unmultiplied(0, 0, 0, 230)
     } else {
-        Color32::from_rgba_unmultiplied(0, 0, 0, 220)
+        Color32::from_rgba_unmultiplied(255, 255, 255, 220)
     };
-    let stroke_w = if is_player { 1.2_f32 } else { 1.0 };
+    let stroke_w = if is_player || is_pace {
+        1.35_f32
+    } else {
+        1.15
+    };
     // Use the same subpixel center as the eased dot (no pixel-snap lag).
     let pos = c;
-    let rich = is_player || is_pace;
-    let offsets: &[(f32, f32)] = if rich {
-        &[
-            (-stroke_w, -stroke_w),
-            (-stroke_w, stroke_w),
-            (stroke_w, -stroke_w),
-            (stroke_w, stroke_w),
-            (-stroke_w, 0.0),
-            (stroke_w, 0.0),
-            (0.0, -stroke_w),
-            (0.0, stroke_w),
-        ]
-    } else {
-        &[
-            (-stroke_w, 0.0),
-            (stroke_w, 0.0),
-            (0.0, -stroke_w),
-            (0.0, stroke_w),
-        ]
-    };
+    let offsets: &[(f32, f32)] = &[
+        (-stroke_w, -stroke_w),
+        (-stroke_w, stroke_w),
+        (stroke_w, -stroke_w),
+        (stroke_w, stroke_w),
+        (-stroke_w, 0.0),
+        (stroke_w, 0.0),
+        (0.0, -stroke_w),
+        (0.0, stroke_w),
+    ];
     let painter = ui.painter();
     for &(ox, oy) in offsets {
         painter.text(
@@ -1051,24 +1168,24 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Dead-reckon each car's lap-% between discrete iRacing samples.
+/// Smooth lap-% for map dots (motion rev 23).
 ///
-/// Pure coast: `pct += vel * dt` every tick. Telem may update `vel` (EMA) and
-/// snap on huge error — never soft-blend pct toward a shared telem snapshot
-/// (that stopped the whole field together). Near-zero telem deltas are ignored
-/// so EMA cannot collapse coast to a stop.
+/// Rev 22: presents matched host fps (~70) but cars still stuttered — coast +
+/// `TELEM_CORRECT` yank (ahead then pull back each sample). Rev 15-style predict
+/// also froze when `age` used `SessionTime` (held between SDK ticks → age=0).
+/// Rev 23: `predict = last_telem + vel * wall_age`, ease toward predict; update
+/// anchor/vel only on meaningful telem Δ; no hard blend. Present ~30 Hz (Python).
 fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap<i32, f32> {
-    let mut seen = HashMap::new();
     let mut out = HashMap::new();
-
     let telem_clock = wall_secs;
-    let lap_est = if ctx.frame.lap_est_time > 40.0 && ctx.frame.lap_est_time < 200.0 {
-        ctx.frame.lap_est_time
+    let session_now = ctx.frame.session_time;
+    let player_pct = ctx.frame.player_lap_dist_pct;
+    let lap_est = ctx.frame.lap_est_time;
+    let vel_cap = if lap_est > 10.0 {
+        1.08 / lap_est
     } else {
-        90.0
+        0.045
     };
-    let coast_vel = (1.0 / lap_est).clamp(0.005, 0.035);
-    let vel_floor = coast_vel * 0.6;
 
     for car in &ctx.frame.cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
@@ -1077,74 +1194,133 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
         if car.lap_dist_pct < 0.0 {
             continue;
         }
-        seen.insert(car.car_idx, ());
-        let telem = car.lap_dist_pct.rem_euclid(1.0);
-        let mut st =
-            ctx.map
-                .car_anim
-                .get(&car.car_idx)
-                .copied()
-                .unwrap_or(crate::state::CarPctAnim {
-                    pct: telem,
-                    vel: coast_vel,
-                    last_telem: telem,
-                    last_telem_secs: telem_clock,
-                });
-        if (telem_clock - st.last_telem_secs).abs() > 2.0 {
-            st.last_telem_secs = telem_clock;
-        }
+        let telem = if car.is_player && player_pct >= 0.0 && player_pct.is_finite() {
+            player_pct.rem_euclid(1.0)
+        } else {
+            car.lap_dist_pct.rem_euclid(1.0)
+        };
 
-        if car.on_pit {
-            st.pct = telem;
-            st.vel = 0.0;
-            st.last_telem = telem;
-            st.last_telem_secs = telem_clock;
+        let mut st = ctx
+            .map
+            .car_anim
+            .get(&car.car_idx)
+            .copied()
+            .unwrap_or_else(|| fresh_pct_anim(telem, telem_clock, session_now));
+        st.last_seen_secs = telem_clock;
+
+        let pin = car.on_pit || ctx.demo;
+        if pin {
+            st = fresh_pct_anim(telem, telem_clock, session_now);
+            st.last_seen_secs = telem_clock;
             ctx.map.car_anim.insert(car.car_idx, st);
             out.insert(car.car_idx, telem);
             continue;
         }
 
+        if dt <= 0.0 {
+            ctx.map.car_anim.insert(car.car_idx, st);
+            out.insert(car.car_idx, st.pct);
+            continue;
+        }
+
         let d_telem = wrap_lap_delta(telem, st.last_telem);
-        let telem_changed = d_telem.abs() > 1e-5;
-        if telem_changed {
-            let telem_dt = (telem_clock - st.last_telem_secs) as f32;
-            // Only trust velocity from a real move over a real interval.
-            // Tiny d / large dt → raw_vel≈0 and used to kill the whole field.
-            if telem_dt >= 0.012 && telem_dt < 2.5 {
-                let raw_vel = (d_telem / telem_dt).clamp(PCT_VEL_MIN, PCT_VEL_MAX);
-                if raw_vel >= vel_floor * 0.35 || raw_vel <= -0.02 {
-                    st.vel = st.vel + (raw_vel - st.vel) * PCT_VEL_EMA;
-                }
+        if d_telem.abs() > TELEM_EPS {
+            let sess_dt = session_now - st.last_telem_session;
+            let wall_dt = telem_clock - st.last_telem_secs;
+            let sample_dt = if st.last_telem_session > 0.0
+                && sess_dt > VEL_DT_MIN
+                && sess_dt < VEL_DT_MAX
+            {
+                sess_dt
+            } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX {
+                wall_dt
+            } else {
+                0.0
+            };
+            if sample_dt > 0.0 {
+                let inst = d_telem / sample_dt as f32;
+                st.vel += (inst - st.vel) * VEL_EMA;
+                st.vel = st.vel.clamp(-vel_cap, vel_cap);
             }
             st.last_telem = telem;
             st.last_telem_secs = telem_clock;
-
-            // Teleport / tow: snap position, keep coasting speed.
-            let err = wrap_lap_delta(telem, st.pct);
-            if err.abs() > PCT_SNAP_ERR {
-                st.pct = telem;
+            st.last_telem_session = session_now;
+        } else {
+            let quiet = telem_clock - st.last_telem_secs;
+            if quiet > QUIET_DECAY_SECS {
+                st.vel = 0.0;
             }
         }
 
-        if dt > 0.0 {
-            st.pct = (st.pct + st.vel * dt).rem_euclid(1.0);
-        }
-
-        // Never park on-track cars between samples.
-        if (car.on_track || car.position > 0 || car.is_player) && st.vel < vel_floor {
-            st.vel = coast_vel;
+        // Wall-clock age — SessionTime is flat between SDK ticks, so using it
+        // for predict age freezes the target (looks like move/stop stutter).
+        let age = ((telem_clock - st.last_telem_secs) as f32)
+            .max(0.0)
+            .min(PREDICT_AGE_MAX);
+        let predict = (st.last_telem + st.vel * age).rem_euclid(1.0);
+        let err = wrap_lap_delta(predict, st.pct);
+        if err.abs() > PCT_SNAP_ERR {
+            st.pct = telem;
+            st.vel = 0.0;
+            st.last_telem = telem;
+            st.last_telem_secs = telem_clock;
+            st.last_telem_session = session_now;
+        } else {
+            let a = 1.0 - (-dt / PCT_FOLLOW_TAU).exp();
+            st.pct = (st.pct + err * a).rem_euclid(1.0);
         }
 
         ctx.map.car_anim.insert(car.car_idx, st);
         out.insert(car.car_idx, st.pct);
     }
-    ctx.map.car_anim.retain(|k, _| seen.contains_key(k));
+
+    ctx.map
+        .car_anim
+        .retain(|_, st| (telem_clock - st.last_seen_secs) < PCT_SEEN_GRACE_SECS);
     out
 }
 
-/// Advance map car coast on the host clock. Idempotent within the same
-/// `mono_secs` tick (dt≈0). Call every frame so prediction never freezes
-/// when composite/present is skipped. Returns the dt used this tick.
+/// True while any racing-line car still has predict/ease error or coast vel.
+fn cars_pct_animating(ctx: &WidgetCtx<'_>) -> bool {
+    if ctx.demo {
+        return false;
+    }
+    let wall = ctx.mono_secs;
+    for car in &ctx.frame.cars {
+        if car.on_pit || car.lap_dist_pct < 0.0 {
+            continue;
+        }
+        let Some(st) = ctx.map.car_anim.get(&car.car_idx) else {
+            continue;
+        };
+        if st.vel.abs() > PCT_MOVING_EPS {
+            return true;
+        }
+        let age = ((wall - st.last_telem_secs) as f32)
+            .max(0.0)
+            .min(PREDICT_AGE_MAX);
+        let predict = (st.last_telem + st.vel * age).rem_euclid(1.0);
+        if wrap_lap_delta(predict, st.pct).abs() > PCT_MOVING_EPS {
+            return true;
+        }
+    }
+    false
+}
+
+fn fresh_pct_anim(telem: f32, wall_secs: f64, session_now: f64) -> crate::state::CarPctAnim {
+    crate::state::CarPctAnim {
+        pct: telem,
+        vel: 0.0,
+        last_telem: telem,
+        last_telem_secs: wall_secs,
+        last_telem_session: session_now,
+        last_seen_secs: wall_secs,
+    }
+}
+
+/// Advance map car positions on the host clock. Idempotent within the same
+/// `mono_secs` tick (`dt≈0` keeps eased pct). Call every host frame.
+/// Returns the dt used this tick (0 on re-entry).
 pub fn tick_car_motion(ctx: &mut WidgetCtx<'_>) -> f32 {
     // Resolve track JSON even when GL paint is skipped (CPU-composite hot path).
     ensure_path_cached(ctx);
@@ -1154,6 +1330,11 @@ pub fn tick_car_motion(ctx: &mut WidgetCtx<'_>) -> f32 {
     } else {
         1.0 / 60.0
     };
+    // Already advanced this mono instant — do not bump the clock again.
+    if dt <= 1e-6 && ctx.map.last_paint_secs > 0.0 {
+        let _ = advance_car_pcts(ctx, 0.0, wall_secs);
+        return 0.0;
+    }
     ctx.map.last_paint_secs = wall_secs;
     let _ = advance_car_pcts(ctx, dt, wall_secs);
     dt
@@ -1169,6 +1350,11 @@ fn is_on_pit_key(key: u8) -> bool {
     key & 4 != 0
 }
 
+fn is_pct_mode_key(key: u8) -> bool {
+    // mode nibble 0 = racing-line pct (Python key[0] == "pct")
+    (key & 1) == 0
+}
+
 /// Python `_smooth_marker_point`.
 fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) {
     let dx = tgt.x - cur.x;
@@ -1182,14 +1368,19 @@ fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) 
     (Pos2::new(nx, ny), moving)
 }
 
-/// Screen-space ease toward pct-derived targets (smooths low present rates).
+/// Place car dots like Python `_build_smooth_car_screen_points`:
+/// - **pct** mode: use target from eased lap-% (no second screen ease)
+/// - **route** mode: screen-space ease toward route targets
+/// - **pit**: snap to target
+/// Returns `(points, still_animating)`.
 fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
     targets: &HashMap<i32, (Pos2, u8)>,
     dt: f32,
-) -> HashMap<i32, Pos2> {
+) -> (HashMap<i32, Pos2>, bool) {
     let mut pts = HashMap::new();
     let mut seen = std::collections::HashSet::new();
+    let mut animating = false;
     for (&idx, &(target, key)) in targets {
         seen.insert(idx);
         let prev = ctx.map.car_screen.get(&idx).copied();
@@ -1198,14 +1389,17 @@ fn smooth_car_screen_pts(
             None => target,
         };
         let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
-        let pt = if key_changed && start == target {
-            target
-        } else if is_on_pit_key(key) {
-            // Pit road: follow telem tightly (slow motion; ease overshoots).
-            target
+        let (pt, moving) = if key_changed && start == target {
+            (target, false)
+        } else if is_on_pit_key(key) || is_pct_mode_key(key) {
+            // Pct / pit: position already from eased % or telem — no XY lag.
+            (target, false)
         } else {
-            smooth_marker_point(start, target, dt, SCREEN_EASE_TAU).0
+            smooth_marker_point(start, target, dt, SCREEN_EASE_TAU)
         };
+        if moving {
+            animating = true;
+        }
         ctx.map.car_screen.insert(
             idx,
             crate::state::CarScreenAnim {
@@ -1217,7 +1411,7 @@ fn smooth_car_screen_pts(
         pts.insert(idx, pt);
     }
     ctx.map.car_screen.retain(|k, _| seen.contains(k));
-    pts
+    (pts, animating)
 }
 
 fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
@@ -1282,6 +1476,7 @@ fn draw_traffic_markers(
     asphalt_w: f32,
     text_scale: f32,
     start_finish: f32,
+    reverse: bool,
 ) {
     let sz = (10.0 * text_scale).max(8.0);
     let icon_off = asphalt_w * 1.2 + sz + 10.0;
@@ -1291,7 +1486,7 @@ fn draw_traffic_markers(
             continue;
         };
         let car_pt = car_pts.get(&m.idx).copied().unwrap_or_else(|| {
-            let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(m.pct, start_finish));
+            let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(m.pct, start_finish, reverse));
             let (mx, my) = model_point(nx, ny, mirror, rot);
             xform.map(mx, my)
         });
@@ -1419,6 +1614,7 @@ fn draw_zones(
     width: f32,
     color: Color32,
     start_finish: f32,
+    reverse: bool,
 ) {
     if path.len() < 2 || zones.is_empty() {
         return;
@@ -1432,7 +1628,8 @@ fn draw_zones(
         let mut pts = Vec::with_capacity(steps + 1);
         for i in 0..=steps {
             let pct = (lo + span * (i as f32 / steps as f32)).rem_euclid(1.0);
-            let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(pct, start_finish));
+            let (nx, ny) =
+                track_path::point_at(path, loop_frac_for_pct(pct, start_finish, reverse));
             let (mx, my) = model_point(nx, ny, mirror, rot);
             pts.push(xform.map(mx, my));
         }
@@ -1765,15 +1962,20 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let zone_w = (asphalt_w * 1.35).max(4.0);
     let sf = ctx.map.cached_start_finish;
+    let reverse = map_reverse(ctx);
     if ctx.cfg.bool_key(SECTION, "show_drs_zones", false) && !ctx.map.cached_drs_zones.is_empty() {
         let col = ctx.cfg.color(SECTION, "drs_zone", "#46df7a88");
         let zones = ctx.map.cached_drs_zones.clone();
-        draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf);
+        draw_zones(
+            ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf, reverse,
+        );
     }
     if ctx.cfg.bool_key(SECTION, "show_p2p_zones", false) && !ctx.map.cached_p2p_zones.is_empty() {
         let col = ctx.cfg.color(SECTION, "p2p_zone", "#3aa0ff88");
         let zones = ctx.map.cached_p2p_zones.clone();
-        draw_zones(ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf);
+        draw_zones(
+            ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf, reverse,
+        );
     }
     // Active sector wash (Python `_draw_active_sector`).
     // Skip on static bg capture (changes often).
@@ -1794,12 +1996,23 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             starts[(idx + 1) % n] as f32
         };
         let col = ctx.cfg.color(SECTION, "active_sector", "#ffd23a66");
-        draw_zones(ui, &path, &xform, mirror, rot, &[(lo, hi)], zone_w, col, sf);
+        draw_zones(
+            ui,
+            &path,
+            &xform,
+            mirror,
+            rot,
+            &[(lo, hi)],
+            zone_w,
+            col,
+            sf,
+            reverse,
+        );
     }
 
     if show_sf && !modeled.is_empty() {
         // Transform tangent via model: evaluate on modeled path.
-        draw_start_finish(ui, &modeled, &xform, sf_loop_frac(sf));
+        draw_start_finish(ui, &modeled, &xform, sf_loop_frac(sf, reverse));
     }
 
     let screen_centroid = if screen.is_empty() {
@@ -1864,15 +2077,17 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 3.0);
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
 
-    let dt = tick_car_motion(ctx);
+    // Pct coast (idempotent if host already ticked). Screen ease uses its own clock
+    // so a same-mono re-entry does not freeze dots at dt=0.
+    let _ = tick_car_motion(ctx);
+    let screen_dt = anim_dt(ctx.mono_secs, &mut ctx.map.last_screen_secs);
     let eased: HashMap<i32, f32> = ctx
         .map
         .car_anim
         .iter()
         .map(|(&idx, st)| (idx, st.pct))
         .collect();
-    // Screen-ease uses the same wall-clock dt as pct coast (not a fixed 1/60).
-
+    // Screen-ease uses an independent wall clock (host may already have ticked pct).
     let markers = if show_markers {
         map_markers::resolve_traffic_markers(
             &mut ctx.map.marker_hold,
@@ -1912,8 +2127,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
         }
-        // OnPitRoad: raw telem (prediction overshoots slow pit_path mapping).
-        let pct = if car.on_pit {
+        // OnPitRoad / demo: raw telem (coast is for sparse live SDK samples).
+        let pct = if ctx.demo || car.on_pit {
             car.lap_dist_pct.rem_euclid(1.0)
         } else {
             eased.get(&car.car_idx).copied().unwrap_or(car.lap_dist_pct)
@@ -1928,7 +2143,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let key = car_motion_key(on_route, car.on_pit);
         targets.insert(car.car_idx, (p, key));
     }
-    let car_pts = smooth_car_screen_pts(ctx, &targets, dt);
+    let (car_pts, screen_animating) = smooth_car_screen_pts(ctx, &targets, screen_dt);
+    if screen_animating || cars_pct_animating(ctx) {
+        *ctx.panel_animating = true;
+    }
 
     for car in &cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
@@ -1981,6 +2199,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 car.is_player,
                 car.is_pace_car,
                 map_text_scale,
+                fill,
             );
         }
     }
@@ -1999,6 +2218,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             asphalt_w,
             map_text_scale,
             ctx.map.cached_start_finish,
+            map_reverse(ctx),
         );
     }
 
@@ -2108,17 +2328,42 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 let (mx, my) = xform.unmap(pos);
                 let (rx, ry) = inverse_model(mx, my, mirror, rot);
                 if path.len() >= 2 {
-                    // Click is loop frac; store lap-% so sf_loop_frac draws there.
                     let loop_frac = track_path::nearest_pct_on_loop(&path, rx, ry);
-                    ctx.map.cached_start_finish = (-loop_frac).rem_euclid(1.0);
+                    let reverse = map_reverse(ctx);
+                    // If driving: click means "I am here" (calibrate offset).
+                    // Otherwise place S/F so lap pct 0 sits on the click.
+                    let player_telem = ctx
+                        .frame
+                        .cars
+                        .iter()
+                        .find(|c| c.is_player && c.lap_dist_pct >= 0.0)
+                        .map(|c| {
+                            if ctx.frame.player_lap_dist_pct >= 0.0 {
+                                ctx.frame.player_lap_dist_pct.rem_euclid(1.0)
+                            } else {
+                                c.lap_dist_pct.rem_euclid(1.0)
+                            }
+                        });
+                    ctx.map.cached_start_finish = if let Some(telem) = player_telem {
+                        sf_for_player_at(telem, loop_frac, reverse)
+                    } else {
+                        // lap pct 0 → loop_frac
+                        sf_for_player_at(0.0, loop_frac, reverse)
+                    };
                 }
             }
         }
+        let hint = if ctx.frame.cars.iter().any(|c| c.is_player && c.lap_dist_pct >= 0.0)
+        {
+            "S/F EDIT — click where YOU are"
+        } else {
+            "S/F EDIT — click S/F on map"
+        };
         label(
             ui,
             Pos2::new(plot.left() + 6.0, plot.top() + 6.0),
             Align2::LEFT_TOP,
-            "S/F EDIT",
+            hint,
             12.0,
             accent,
             true,
@@ -2138,6 +2383,8 @@ pub fn bg_fingerprint(
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     w.hash(&mut hasher);
     h.hash(&mut hasher);
+    // Bust static BG when path sampling / alignment semantics change.
+    11u32.hash(&mut hasher);
     map.cached_track_id.hash(&mut hasher);
     map.path_status.hash(&mut hasher);
     map.cached_path.len().hash(&mut hasher);
@@ -2149,7 +2396,8 @@ pub fn bg_fingerprint(
     map.pit_edit_pan.0.to_bits().hash(&mut hasher);
     map.pit_edit_pan.1.to_bits().hash(&mut hasher);
     cfg.bool_key(SECTION, "show_panel", false).hash(&mut hasher);
-    cfg.bool_key(SECTION, "show_infield", true).hash(&mut hasher);
+    cfg.bool_key(SECTION, "show_infield", true)
+        .hash(&mut hasher);
     cfg.bool_key(SECTION, "show_start_finish", true)
         .hash(&mut hasher);
     cfg.bool_key(SECTION, "mirror", false).hash(&mut hasher);
@@ -2169,10 +2417,12 @@ pub fn bg_fingerprint(
         .hash(&mut hasher);
     cfg.bool_key(SECTION, "show_sector_boundaries", true)
         .hash(&mut hasher);
-    cfg.bool_key(SECTION, "show_corners", true).hash(&mut hasher);
+    cfg.bool_key(SECTION, "show_corners", true)
+        .hash(&mut hasher);
     cfg.str_key(SECTION, "asphalt", "#333a42").hash(&mut hasher);
     cfg.str_key(SECTION, "outline", "#8b93a1").hash(&mut hasher);
-    cfg.str_key(SECTION, "infield", "#0f1216c8").hash(&mut hasher);
+    cfg.str_key(SECTION, "infield", "#0f1216c8")
+        .hash(&mut hasher);
     // Caution changes pit-exit mark visibility on the static layer.
     is_caution_flag(frame.flag.as_deref()).hash(&mut hasher);
     hasher.finish()
@@ -2197,41 +2447,72 @@ pub fn build_car_sprites(
     let ppp = pixels_per_point.max(0.5);
     let rect = Rect::from_min_size(
         Pos2::ZERO,
-        Vec2::new(
-            (panel_w_px / ppp).max(1.0),
-            (panel_h_px / ppp).max(1.0),
-        ),
+        Vec2::new((panel_w_px / ppp).max(1.0), (panel_h_px / ppp).max(1.0)),
     );
     let asphalt_w = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
     let mirror = ctx.cfg.bool_key(SECTION, "mirror", false);
     let rot = ctx.cfg.f64_key(SECTION, "rotation", 0.0) as i32;
     let text_scale = ctx.cfg.text_scale(SECTION);
     let pad_px = layout_pad(ctx.cfg, asphalt_w, text_scale);
-    let path = ctx.map.cached_path.clone();
-    let mut modeled: Vec<(f32, f32)> = path
-        .iter()
-        .map(|&(x, y)| model_point(x, y, mirror, rot))
-        .collect();
-    if ctx.cfg.bool_key(SECTION, "show_pit", true) {
-        for lane in [&ctx.map.cached_pit, &ctx.map.cached_pit2] {
-            for &(x, y) in &lane.all_points() {
-                modeled.push(model_point(x, y, mirror, rot));
+    let show_pit = ctx.cfg.bool_key(SECTION, "show_pit", true);
+
+    let fit_key = {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        panel_w_px.to_bits().hash(&mut h);
+        panel_h_px.to_bits().hash(&mut h);
+        ppp.to_bits().hash(&mut h);
+        mirror.hash(&mut h);
+        rot.hash(&mut h);
+        pad_px.to_bits().hash(&mut h);
+        show_pit.hash(&mut h);
+        ctx.map.cached_track_id.hash(&mut h);
+        ctx.map.cached_path.len().hash(&mut h);
+        ctx.map.pit_edit.hash(&mut h);
+        ctx.map.pit_edit_zoom.to_bits().hash(&mut h);
+        ctx.map.pit_edit_pan.0.to_bits().hash(&mut h);
+        ctx.map.pit_edit_pan.1.to_bits().hash(&mut h);
+        h.finish()
+    };
+    let xform = match (ctx.map.sprite_fit_key == fit_key, ctx.map.sprite_fit) {
+        (true, Some((ox, oy, scale, min_x, min_y))) => PlotXform {
+            origin: Pos2::new(ox, oy),
+            scale,
+            min: (min_x, min_y),
+        },
+        _ => {
+            let mut modeled: Vec<(f32, f32)> = ctx
+                .map
+                .cached_path
+                .iter()
+                .map(|&(x, y)| model_point(x, y, mirror, rot))
+                .collect();
+            if show_pit {
+                for lane in [&ctx.map.cached_pit, &ctx.map.cached_pit2] {
+                    for &(x, y) in &lane.all_points() {
+                        modeled.push(model_point(x, y, mirror, rot));
+                    }
+                }
             }
+            let base = PlotXform::fit(rect, &modeled, pad_px);
+            let x = if ctx.map.pit_edit {
+                base.with_view(ctx.map.pit_edit_zoom, ctx.map.pit_edit_pan)
+            } else {
+                base
+            };
+            ctx.map.sprite_fit_key = fit_key;
+            ctx.map.sprite_fit = Some((x.origin.x, x.origin.y, x.scale, x.min.0, x.min.1));
+            x
         }
-    }
-    let base_xform = PlotXform::fit(rect, &modeled, pad_px);
-    let xform = if ctx.map.pit_edit {
-        base_xform.with_view(ctx.map.pit_edit_zoom, ctx.map.pit_edit_pan)
-    } else {
-        base_xform
     };
 
     let player_scale = dot_scale(ctx.cfg.f64_key(SECTION, "dot_radius_frac", 0.05));
     let other_scale = dot_scale(ctx.cfg.f64_key(SECTION, "other_dot_radius_frac", 0.05));
     let pit_opacity = ctx.cfg.f64_key(SECTION, "pit_dot_opacity", 0.45) as f32;
-    let car_label_mode = ctx.cfg.str_key(SECTION, "car_label", "number");
 
+    // Host may already have ticked pct this mono frame (idempotent).
     tick_car_motion(ctx);
+    let screen_dt = anim_dt(ctx.mono_secs, &mut ctx.map.last_screen_secs);
     let eased: HashMap<i32, f32> = ctx
         .map
         .car_anim
@@ -2242,8 +2523,6 @@ pub fn build_car_sprites(
     let mut cars: Vec<&CarRow> = ctx.frame.cars.iter().collect();
     cars.sort_by_key(|c| (c.is_speaking, c.is_player));
     let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
-    let pit_lane = ctx.map.cached_pit.clone();
-    let pit_lane2 = ctx.map.cached_pit2.clone();
     update_pit_route_latches(ctx, &cars);
 
     let mut targets: HashMap<i32, (Pos2, u8)> = HashMap::new();
@@ -2251,7 +2530,7 @@ pub fn build_car_sprites(
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
         }
-        let pct = if car.on_pit {
+        let pct = if ctx.demo || car.on_pit {
             car.lap_dist_pct.rem_euclid(1.0)
         } else {
             eased.get(&car.car_idx).copied().unwrap_or(car.lap_dist_pct)
@@ -2260,28 +2539,25 @@ pub fn build_car_sprites(
             continue;
         }
         let on_route = car_on_route(ctx, car);
-        let (nx, ny) = car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
+        let (nx, ny) = car_model_xy(
+            ctx,
+            car,
+            pct,
+            &ctx.map.cached_path,
+            &ctx.map.cached_pit,
+            &ctx.map.cached_pit2,
+            show_blends,
+        );
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
         let key = car_motion_key(on_route, car.on_pit);
         targets.insert(car.car_idx, (p, key));
     }
-    let car_pts = {
-        // Composite path: no screen-space ease — pct coast is already continuous.
-        let mut pts = HashMap::new();
-        for (&idx, &(target, key)) in &targets {
-            ctx.map.car_screen.insert(
-                idx,
-                crate::state::CarScreenAnim {
-                    x: target.x,
-                    y: target.y,
-                    key,
-                },
-            );
-            pts.insert(idx, target);
-        }
-        pts
-    };
+    // Python parity: racing-line dots use eased % only (no second XY lag).
+    let (car_pts, screen_animating) = smooth_car_screen_pts(ctx, &targets, screen_dt);
+    if screen_animating || cars_pct_animating(ctx) {
+        *ctx.panel_animating = true;
+    }
 
     // Build candidates, then keep only the best-placed car when dots stack.
     // Player is always kept (clears anyone stacked on them).
@@ -2313,11 +2589,8 @@ pub fn build_car_sprites(
             r *= 1.15;
         }
         let fill = car_fill(ctx.cfg, car, pit_opacity, on_route);
-        let label = car_label_text(car, &car_label_mode)
-            .chars()
-            .filter(|c| c.is_ascii_digit())
-            .take(3)
-            .collect();
+        // Hot composite: no number labels (font atlas blit dominated ULW cost).
+        let label = String::new();
         let place = if car.position > 0 {
             car.position
         } else if car.class_position > 0 {
@@ -2406,7 +2679,8 @@ fn draw_sector_boundaries(
     starts.dedup_by(|a, b| (*a - *b).abs() < 1e-5);
 
     let sf = ctx.map.cached_start_finish;
-    let sf_frac = sf_loop_frac(sf);
+    let reverse = map_reverse(ctx);
+    let sf_frac = sf_loop_frac(sf, reverse);
     let line = ctx.cfg.color(SECTION, "sector_line", "#a78bfa");
     let text_col = ctx.cfg.color(SECTION, "sector_text", "#c4b5fd");
     let asph = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
@@ -2416,7 +2690,7 @@ fn draw_sector_boundaries(
     let mut label_num = 2_i32;
 
     for start in starts {
-        let frac = loop_frac_for_pct(start, sf);
+        let frac = loop_frac_for_pct(start, sf, reverse);
         // Skip start/finish (Python: near 0 or sf_frac).
         if frac.abs() < 1e-4 || (frac - sf_frac).abs() < 0.01 {
             continue;
@@ -2463,7 +2737,7 @@ fn draw_corners(
     let sf = ctx.map.cached_start_finish;
     let corners = ctx.map.cached_corners.clone();
     for (idx, c) in corners.iter().enumerate() {
-        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf));
+        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf, map_reverse(ctx)));
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
         let dx = s.x - centroid.x;
@@ -2785,7 +3059,7 @@ fn handle_corner_edit(
     let sf = ctx.map.cached_start_finish;
     let corners = ctx.map.cached_corners.clone();
     for (idx, c) in corners.iter().enumerate() {
-        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf));
+        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf, map_reverse(ctx)));
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
         let dx = s.x - centroid.x;
@@ -2821,7 +3095,12 @@ fn handle_corner_edit(
             if path.len() >= 2 {
                 let loop_frac = track_path::nearest_pct_on_loop(path, rx, ry);
                 // Store lap % so display via loop_frac_for_pct matches the click.
-                let pct = (loop_frac + sf).rem_euclid(1.0);
+                let reverse = map_reverse(ctx);
+                let pct = if reverse {
+                    (sf - loop_frac).rem_euclid(1.0)
+                } else {
+                    (loop_frac + sf).rem_euclid(1.0)
+                };
                 let label = (ctx.map.cached_corners.len() + 1).to_string();
                 ctx.map.cached_corners.push(track_path::CornerMark {
                     pct,
@@ -2846,4 +3125,41 @@ fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
         x = -x;
     }
     (x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::earcut_triangles;
+    use egui::Pos2;
+
+    #[test]
+    fn earcut_concave_quad_stays_inside() {
+        // Arrowhead: concave at (1, 0.5). Centroid fan would spill outside.
+        let pts = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(2.0, 0.0),
+            Pos2::new(1.0, 0.5),
+            Pos2::new(2.0, 1.0),
+            Pos2::new(0.0, 1.0),
+        ];
+        let tris = earcut_triangles(&pts);
+        assert_eq!(tris.len(), pts.len() - 2);
+        // Every triangle vertex must be one of the polygon indices.
+        for [a, b, c] in &tris {
+            assert!((*a as usize) < pts.len());
+            assert!((*b as usize) < pts.len());
+            assert!((*c as usize) < pts.len());
+        }
+    }
+
+    #[test]
+    fn earcut_square() {
+        let pts = [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(1.0, 1.0),
+            Pos2::new(0.0, 1.0),
+        ];
+        assert_eq!(earcut_triangles(&pts).len(), 2);
+    }
 }

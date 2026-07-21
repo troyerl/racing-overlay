@@ -14,8 +14,8 @@ mod driver_groups;
 mod host;
 mod icons;
 mod ipc;
-mod irating;
 mod iracing_results;
+mod irating;
 mod layered;
 mod map_markers;
 mod paths;
@@ -37,6 +37,44 @@ use gridglance_ipc::DEFAULT_IPC_PORT;
 use host::OverlayApp;
 
 const WINDOW_TITLE: &str = "GridGlance Overlay";
+
+#[cfg(windows)]
+fn attach_console() {
+    use windows::Win32::System::Console::{AllocConsole, AttachConsole, ATTACH_PARENT_PROCESS};
+    unsafe {
+        // Prefer the PowerShell/terminal that launched us so --perf logs show there.
+        if AttachConsole(ATTACH_PARENT_PROCESS).is_err() {
+            let _ = AllocConsole();
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_console() {}
+
+#[cfg(windows)]
+fn notify_already_running() {
+    use windows::core::w;
+    use windows::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONINFORMATION, MB_OK};
+    eprintln!(
+        "[gridglance] already running (tray). Quit it fully, then launch again to test a new build."
+    );
+    unsafe {
+        let _ = MessageBoxW(
+            None,
+            w!("GridGlance is already running (tray). Quit it fully, then launch again to test a new build."),
+            w!("GridGlance"),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn notify_already_running() {
+    eprintln!(
+        "[gridglance] already running — close the existing instance before testing a new build"
+    );
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "gridglance-overlay", about = "GridGlance race overlay (egui)")]
@@ -81,6 +119,10 @@ struct Args {
     #[arg(long)]
     perf: bool,
 
+    /// Download the full cloud track library into the local cache and exit.
+    #[arg(long)]
+    sync_tracks: bool,
+
     /// Import members HTML/SVG to track JSON and exit (replaces tools/svg_layers_to_track_v2.py).
     #[arg(long, value_name = "FILE")]
     import_track: Option<std::path::PathBuf>,
@@ -115,11 +157,9 @@ struct Args {
 }
 
 fn run_import_track(args: &Args) -> Result<()> {
-    let path = args
-        .import_track
-        .as_ref()
-        .expect("import_track set");
-    let mut doc = tracks::import_track_source(path, args.samples, args.corners, args.start_finish_pct)?;
+    let path = args.import_track.as_ref().expect("import_track set");
+    let mut doc =
+        tracks::import_track_source(path, args.samples, args.corners, args.start_finish_pct)?;
     if let Some(ref tid) = args.track_id {
         doc.track_id = Some(
             tid.parse::<i64>()
@@ -129,20 +169,14 @@ fn run_import_track(args: &Args) -> Result<()> {
     if let Some(ref name) = args.name {
         doc.name = name.clone();
     }
-    let tid = doc
-        .track_id
-        .ok_or_else(|| anyhow::anyhow!("No TrackID — pass --track-id or use HTML with track-map-N"))?;
-    let out_dir = args
-        .out_dir
-        .clone()
-        .unwrap_or_else(paths::tracks_dir);
+    let tid = doc.track_id.ok_or_else(|| {
+        anyhow::anyhow!("No TrackID — pass --track-id or use HTML with track-map-N")
+    })?;
+    let out_dir = args.out_dir.clone().unwrap_or_else(paths::tracks_dir);
     std::fs::create_dir_all(&out_dir)?;
     let out_path = out_dir.join(format!("{tid}.json"));
     if out_path.exists() && !args.force {
-        anyhow::bail!(
-            "Refusing to overwrite {} (use --force)",
-            out_path.display()
-        );
+        anyhow::bail!("Refusing to overwrite {} (use --force)", out_path.display());
     }
     let mut json = doc.to_json();
     if let Some(obj) = json.as_object_mut() {
@@ -164,6 +198,23 @@ fn main() -> Result<()> {
     app_icon::set_windows_app_user_model_id();
 
     let args = Args::parse();
+    // Release builds have no console; --perf / --sync-tracks need one for logs.
+    if args.perf || args.sync_tracks {
+        attach_console();
+    }
+    if args.sync_tracks {
+        let dir = paths::tracks_dir();
+        match cloud::sync_library(&dir) {
+            Ok(n) => {
+                eprintln!("[gridglance] synced {n} tracks into {}", dir.display());
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[gridglance] sync-tracks failed: {e}");
+                return Err(e);
+            }
+        }
+    }
     if args.import_track.is_some() {
         return run_import_track(&args);
     }
@@ -176,7 +227,8 @@ fn main() -> Result<()> {
     }) {
         Some(g) => g,
         None => {
-            // Peer activated — exit quietly.
+            // Peer activated — exit. MessageBox because release has no console.
+            notify_already_running();
             return Ok(());
         }
     };

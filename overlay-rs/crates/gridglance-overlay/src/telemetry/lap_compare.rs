@@ -122,9 +122,10 @@ impl LapCompareState {
 
     fn ref_curve<'a>(&'a self, mode: &str) -> &'a [(f32, f64, f32, f32)] {
         if (mode.eq_ignore_ascii_case("last_lap") || mode.eq_ignore_ascii_case("last"))
-            && !self.last.is_empty() {
-                return &self.last;
-            }
+            && !self.last.is_empty()
+        {
+            return &self.last;
+        }
         &self.best
     }
 

@@ -34,9 +34,7 @@ pub fn split_for_subsession(subsession_id: i32) -> Option<(i32, i32)> {
         .ok()?
         .into_json()
         .ok()?;
-    if auth.get("authcode").is_none() {
-        return None;
-    }
+    auth.get("authcode")?;
 
     let payload: Value = agent
         .get(RESULTS_URL)

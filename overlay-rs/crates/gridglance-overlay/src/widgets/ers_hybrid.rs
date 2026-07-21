@@ -2,9 +2,7 @@
 //! Ports `overlay/widgets/ers_hybrid.py`.
 
 use super::WidgetCtx;
-use crate::chrome::{
-    draw_dark_cell, full_rect, label, panel_card, panel_content_pad, panel_title,
-};
+use crate::chrome::{draw_dark_cell, full_rect, label, panel_card, panel_content_pad, panel_title};
 use egui::{Align2, CornerRadius, Pos2, Rect, Ui, Vec2};
 
 const SECTION: &str = "ers_hybrid";
@@ -95,10 +93,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let mut y = card.top() + pad;
     if elegant {
         if ctx.cfg.bool_key(SECTION, "show_title", true) {
-            let muted = crate::chrome::color_with_alpha(
-                ctx.cfg.color(SECTION, "muted", "#8b93a1"),
-                200,
-            );
+            let muted =
+                crate::chrome::color_with_alpha(ctx.cfg.color(SECTION, "muted", "#8b93a1"), 200);
             label(
                 ui,
                 Pos2::new(card.left() + pad, y + 6.0),
@@ -141,14 +137,18 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         } else {
             draw_dark_cell(ui, ctx.cfg, SECTION, bar, cell_radius(bar_h));
         }
-        let inner = if elegant { bar.shrink(8.0) } else { bar.shrink(6.0) };
+        let inner = if elegant {
+            bar.shrink(8.0)
+        } else {
+            bar.shrink(6.0)
+        };
         ui.painter().rect_filled(
             inner,
             CornerRadius::same(if elegant { 8 } else { 4 }),
             ctx.cfg.color(SECTION, "gauge_bg", "#ffffff18"),
         );
         if let Some(p) = pct {
-            let target = (p as f32 / 100.0).clamp(0.0, 1.0);
+            let target = (p / 100.0).clamp(0.0, 1.0);
             let id = egui::Id::new("ers_battery_anim");
             let mut st = ui
                 .ctx()
@@ -210,11 +210,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         y += bar_h + if elegant { 6.0 } else { pad * 0.4 };
     }
 
-    let chip_h = if elegant {
-        20.0
-    } else {
-        (h * 0.12).max(18.0)
-    };
+    let chip_h = if elegant { 20.0 } else { (h * 0.12).max(18.0) };
     let chip_w = (card.width() - 2.0 * pad - pad * 0.5) / 2.0;
     let mut x = card.left() + pad;
     if ctx.cfg.bool_key(SECTION, "show_boost", true) {

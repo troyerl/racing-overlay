@@ -1,7 +1,7 @@
 //! Lap compare — live delta, sparkline, turn losses.
 
 use super::WidgetCtx;
-use crate::chrome::{panel_card, draw_dark_cell, full_rect, label, panel_pad};
+use crate::chrome::{draw_dark_cell, full_rect, label, panel_card, panel_pad};
 use egui::{Align2, Pos2, Rect, Shape, Stroke, Ui};
 
 const SECTION: &str = "lap_compare";

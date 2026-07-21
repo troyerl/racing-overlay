@@ -1,9 +1,7 @@
 //! Radio tower — current team-radio speaker (Python parity).
 
 use super::WidgetCtx;
-use crate::chrome::{
-    color_with_alpha, full_rect, panel_card, panel_content_pad, panel_title,
-};
+use crate::chrome::{color_with_alpha, full_rect, panel_card, panel_content_pad, panel_title};
 use crate::config::parse_color_str;
 use crate::icons;
 use crate::telemetry::RadioSpeaker;
@@ -87,9 +85,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     .max(18.0);
 
     let content_w = card.width() - 2.0 * pad;
-    let text_size = row_h
-        * (if elegant { 0.42 } else { 0.46 })
-        * ctx.cfg.text_scale(SECTION);
+    let text_size = row_h * (if elegant { 0.42 } else { 0.46 }) * ctx.cfg.text_scale(SECTION);
     let x0 = card.left() + pad;
     let row_y = y;
     let row_rect = Rect::from_min_size(Pos2::new(x0, row_y), Vec2::new(content_w, row_h - 2.0));

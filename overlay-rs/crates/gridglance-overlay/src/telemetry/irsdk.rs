@@ -272,17 +272,23 @@ mod win {
         let pit_repairs_used = read_i32_opt(session, "FastRepairUsed");
 
         let fps = read_f32_opt(session, "FrameRate").map(|v| v.round() as i32);
-        let chan_quality = read_f32_opt(session, "ChanQuality").or_else(|| {
-            read_f32_opt(session, "ConnectionQuality")
-        });
-        let session_time_of_day = read_f32_opt(session, "SessionTimeOfDay").filter(|v| v.is_finite());
+        let chan_quality = read_f32_opt(session, "ChanQuality")
+            .or_else(|| read_f32_opt(session, "ConnectionQuality"));
+        let session_time_of_day =
+            read_f32_opt(session, "SessionTimeOfDay").filter(|v| v.is_finite());
         let session_num = read_i32(session, "SessionNum").max(0) as usize;
         let session_type = cache
             .session_types
             .get(session_num)
             .cloned()
             .filter(|s| !s.is_empty())
-            .or_else(|| cache.session_types.last().cloned().filter(|s| !s.is_empty()))
+            .or_else(|| {
+                cache
+                    .session_types
+                    .last()
+                    .cloned()
+                    .filter(|s| !s.is_empty())
+            })
             .map(format_session_type);
         let race_split = cache.race_split;
         let race_split_total = cache.race_split_total;
@@ -370,11 +376,11 @@ mod win {
         };
         let session_laps_remain_sdk = {
             let v = read_f32(session, "SessionLapsRemainEx");
-            if v.is_finite() && v >= 0.0 && v < 32000.0 {
+            if v.is_finite() && (0.0..32000.0).contains(&v) {
                 Some(v)
             } else {
                 let v2 = read_f32(session, "SessionLapsRemain");
-                if v2.is_finite() && v2 >= 0.0 && v2 < 32000.0 {
+                if v2.is_finite() && (0.0..32000.0).contains(&v2) {
                     Some(v2)
                 } else {
                     None
@@ -383,7 +389,7 @@ mod win {
         };
         let session_time_remain = {
             let v = read_f32(session, "SessionTimeRemain");
-            if v.is_finite() && v >= 0.0 && v < 48.0 * 3600.0 {
+            if v.is_finite() && (0.0..48.0 * 3600.0).contains(&v) {
                 Some(v)
             } else {
                 None
@@ -552,10 +558,7 @@ mod win {
         let (name, car_number) = if let Some(d) = cache.drivers.get(&radio_idx) {
             (d.name.clone(), d.car_number.clone())
         } else {
-            (
-                format!("Car {radio_idx}"),
-                format!("{radio_idx}"),
-            )
+            (format!("Car {radio_idx}"), format!("{radio_idx}"))
         };
         let position = int_arr(session, "CarIdxPosition")
             .and_then(|a| a.get(radio_idx as usize).copied())
@@ -999,10 +1002,10 @@ mod win {
             // haven't joined (NOT_IN_WORLD / invalid LapDistPct).
             let has_driver = di.is_some();
             let joined = on_track || in_pit || pit;
-            if !pct.is_finite() || pct < 0.0 {
-                if !has_driver || (pos <= 0 && !joined && i as i32 != player_idx) {
-                    continue;
-                }
+            if (!pct.is_finite() || pct < 0.0)
+                && (!has_driver || (pos <= 0 && !joined && i as i32 != player_idx))
+            {
+                continue;
             }
             if pct == 0.0 && i as i32 != player_idx && pos <= 0 && !has_driver && !joined {
                 continue;
@@ -1048,7 +1051,7 @@ mod win {
             let car_flag = map_session_flag_label(flags);
             let gap = fmt_car_gap(pos, if f2_t.is_finite() { f2_t } else { 0.0 });
             let lap_dist_pct = if pct.is_finite() && pct >= 0.0 {
-                pct.fract().abs()
+                pct.rem_euclid(1.0)
             } else {
                 -1.0
             };
@@ -1550,10 +1553,8 @@ mod win {
             }
         }
         flush_cur(&mut current, &mut cur_idx, &mut cur);
-        if !current.is_empty() {
-            if block_is_race || best.is_empty() {
-                best = current;
-            }
+        if !current.is_empty() && (block_is_race || best.is_empty()) {
+            best = current;
         }
         best
     }

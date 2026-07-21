@@ -78,7 +78,15 @@ pub fn nav_item(
         p.rect_stroke(
             pill,
             10.0,
-            Stroke::new(1.3_f32, Color32::from_rgba_unmultiplied(accent.r(), accent.g(), accent.b(), (255.0 * t) as u8)),
+            Stroke::new(
+                1.3_f32,
+                Color32::from_rgba_unmultiplied(
+                    accent.r(),
+                    accent.g(),
+                    accent.b(),
+                    (255.0 * t) as u8,
+                ),
+            ),
             StrokeKind::Inside,
         );
         let bar = Rect::from_min_max(pill.min, Pos2::new(pill.left() + 3.0, pill.bottom()));
@@ -754,14 +762,21 @@ pub fn accordion<R>(
         .animate_bool_with_time(id.with("open_t"), open, 0.16);
     let fill = Color32::from_rgba_unmultiplied(20, 23, 29, 217);
     let stroke_t = ((t - 0.0) / 0.15).clamp(0.0, 1.0);
-    let stroke_base = if resp.hovered() { ACCENT_DIM } else { CARD_BORDER };
+    let stroke_base = if resp.hovered() {
+        ACCENT_DIM
+    } else {
+        CARD_BORDER
+    };
     let stroke_col = Color32::from_rgb(
-        (stroke_base.r() as f32 + (ACCENT_DIM.r() as f32 - stroke_base.r() as f32) * stroke_t) as u8,
-        (stroke_base.g() as f32 + (ACCENT_DIM.g() as f32 - stroke_base.g() as f32) * stroke_t) as u8,
-        (stroke_base.b() as f32 + (ACCENT_DIM.b() as f32 - stroke_base.b() as f32) * stroke_t) as u8,
+        (stroke_base.r() as f32 + (ACCENT_DIM.r() as f32 - stroke_base.r() as f32) * stroke_t)
+            as u8,
+        (stroke_base.g() as f32 + (ACCENT_DIM.g() as f32 - stroke_base.g() as f32) * stroke_t)
+            as u8,
+        (stroke_base.b() as f32 + (ACCENT_DIM.b() as f32 - stroke_base.b() as f32) * stroke_t)
+            as u8,
     );
     // Soften bottom corners as the body opens (no hard pop at 0.15).
-    let open_corner = ((1.0 - t) * theme::ACCORDION_RADIUS as f32).round() as u8;
+    let open_corner = ((1.0 - t) * theme::ACCORDION_RADIUS).round() as u8;
     let header_radius = CornerRadius {
         nw: theme::ACCORDION_RADIUS as u8,
         ne: theme::ACCORDION_RADIUS as u8,
@@ -822,7 +837,12 @@ pub fn accordion<R>(
         };
         let border = Color32::from_rgb(0x20, 0x24, 0x2c);
         let inner = egui::Frame::new()
-            .fill(Color32::from_rgba_unmultiplied(13, 16, 20, (140.0 * t) as u8))
+            .fill(Color32::from_rgba_unmultiplied(
+                13,
+                16,
+                20,
+                (140.0 * t) as u8,
+            ))
             .stroke(Stroke::NONE)
             .corner_radius(bottom_only)
             .inner_margin(egui::Margin {
@@ -844,21 +864,30 @@ pub fn accordion<R>(
                 Pos2::new(r.left(), r.top()),
                 Pos2::new(r.left(), r.bottom()),
             ],
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba)),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba),
+            ),
         );
         p.line_segment(
             [
                 Pos2::new(r.right(), r.top()),
                 Pos2::new(r.right(), r.bottom()),
             ],
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba)),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba),
+            ),
         );
         p.line_segment(
             [
                 Pos2::new(r.left(), r.bottom()),
                 Pos2::new(r.right(), r.bottom()),
             ],
-            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba)),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(border.r(), border.g(), border.b(), ba),
+            ),
         );
         p.rect_filled(
             Rect::from_min_max(r.min, Pos2::new(r.left() + 2.0, r.bottom())),

@@ -20,7 +20,7 @@ pub struct TableRow {
     pub class_color: String,
     /// Signed gap seconds for relative (ahead > 0). Standings leaves None.
     pub gap_secs: Option<f32>,
-    /// Preformatted gap for standings (e.g. "+1.2", "—", "-1L").
+    /// Preformatted gap for standings (e.g. "+1.2", "--", "-1L").
     pub gap_text: String,
     pub last_lap: String,
     pub best_lap: String,
@@ -35,14 +35,14 @@ pub struct TableRow {
     pub strat_tag: Option<String>,
     pub class_position: i32,
     pub status_kind: Option<String>,
-    /// Session flag label (blue / meatball / black / …) for the `car_flag` column.
+    /// Session flag label (blue / meatball / black / ...) for the `car_flag` column.
     #[serde(default)]
     pub car_flag: Option<String>,
     pub closing: Option<f32>,
     pub team: String,
     pub nickname: String,
     pub laps: i32,
-    /// Pit column history text from `pit_mode` (empty → paint as "—"; in-pit still "PIT").
+    /// Pit column history text from `pit_mode` (empty -> paint as "--"; in-pit still "PIT").
     #[serde(default)]
     pub pit_text: String,
     /// Cloud professional-driver list match.
@@ -140,12 +140,15 @@ fn parse_license(s: &str) -> (String, String) {
 }
 
 impl TableRow {
-    pub fn from_car(c: &CarRow, gap_secs: Option<f32>, gap_text: String, inactive: bool) -> Self {
+    pub fn from_car(
+        c: &CarRow,
+        gap_secs: Option<f32>,
+        gap_text: String,
+        inactive: bool,
+        app: &serde_json::Value,
+    ) -> Self {
         let (lic_class, sr) = parse_license(&c.license);
-        let app = crate::cloud::load_app_settings_cache().unwrap_or(serde_json::json!({}));
-        let is_pro = crate::cloud::is_pro_driver(&c.name, &app);
-        // Driver groups come from live config; filled in finalize via cfg below —
-        // here we only have CarRow. Callers that have cfg should use from_car_cfg.
+        let is_pro = crate::cloud::is_pro_driver(&c.name, app);
         Self {
             key: c.car_idx.to_string(),
             empty: false,
@@ -183,16 +186,11 @@ impl TableRow {
         }
     }
 
-    pub fn apply_driver_group(&mut self, cfg: &OverlayConfig) {
+    pub fn apply_driver_group(&mut self, groups: &serde_json::Value) {
         if self.is_pro || self.name.is_empty() {
             return;
         }
-        let groups = cfg
-            .cfg
-            .get("driver_groups")
-            .cloned()
-            .unwrap_or(serde_json::json!([]));
-        if let Some(g) = crate::driver_groups::driver_group_for_name(&self.name, &groups) {
+        if let Some(g) = crate::driver_groups::driver_group_for_name(&self.name, groups) {
             self.group_icon = g.icon;
             self.group_color = g.color;
         }
@@ -217,9 +215,7 @@ fn sticky_sort_by_delta(items: &mut Vec<(f32, &CarRow)>, prev: &[i32], ascending
         let cmp_delta = if ascending {
             da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
         } else {
-            (-da)
-                .partial_cmp(&-db)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            (-da).partial_cmp(&-db).unwrap_or(std::cmp::Ordering::Equal)
         };
         if (da - db).abs() < REL_ORDER_MARGIN_S {
             let ia = prev.iter().position(|&x| x == a.1.car_idx);
@@ -233,7 +229,7 @@ fn sticky_sort_by_delta(items: &mut Vec<(f32, &CarRow)>, prev: &[i32], ascending
     });
 }
 
-/// Mark exactly one table focus: camera car → seated player → race leader.
+/// Mark exactly one table focus: camera car -> seated player -> race leader.
 /// Mutates only the cloned slice used for Relative/Standings.
 fn apply_table_focus(cars: &mut [CarRow], camera_car_idx: Option<i32>) {
     let focus = camera_car_idx
@@ -285,7 +281,7 @@ fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32) {
                 // Focus is one lap ahead; slower car is just ahead.
                 -1 => relative_secs > 0.0 && relative_secs <= 5.0,
                 // Other car is one lap ahead and just behind the focus.
-                1 => relative_secs < 0.0 && relative_secs >= -5.0,
+                1 => (-5.0..0.0).contains(&relative_secs),
                 _ => false,
             };
         car.lapping = lap_diff.abs() >= 2 || one_lap_close;
@@ -300,6 +296,8 @@ pub fn build_relative(
     lap_est_hint: f32,
     sticky: Option<&mut RelativeOrderHysteresis>,
     session_state: i32,
+    app: &serde_json::Value,
+    groups: &serde_json::Value,
 ) -> Vec<TableRow> {
     let n_ahead = cfg.f64_key("relative", "rows_ahead", 3.0).max(0.0) as usize;
     let n_behind = cfg.f64_key("relative", "rows_behind", 3.0).max(0.0) as usize;
@@ -322,7 +320,9 @@ pub fn build_relative(
     // Pre-green / warmup: order by qualify/grid position (EstTime is empty
     // for cars that haven't joined yet).
     if use_grid_relative(session_state, cars) {
-        return build_relative_by_position(cars, player, n_ahead, n_behind, center, cfg, sticky);
+        return build_relative_by_position(
+            cars, player, n_ahead, n_behind, center, sticky, app, groups,
+        );
     }
 
     let me = player.est_time;
@@ -378,15 +378,23 @@ pub fn build_relative(
             Some(*delta),
             format!("{:.1}", delta.abs()),
             c.inactive,
+            app,
         ));
     }
-    rows.push(TableRow::from_car(player, Some(0.0), "0.0".into(), player.inactive));
+    rows.push(TableRow::from_car(
+        player,
+        Some(0.0),
+        "0.0".into(),
+        player.inactive,
+        app,
+    ));
     for (delta, c) in &behind {
         rows.push(TableRow::from_car(
             c,
             Some(*delta),
             format!("{:.1}", delta.abs()),
             c.inactive,
+            app,
         ));
     }
     if center {
@@ -396,7 +404,7 @@ pub fn build_relative(
     }
 
     for row in &mut rows {
-        row.apply_driver_group(cfg);
+        row.apply_driver_group(groups);
     }
     rows
 }
@@ -427,8 +435,9 @@ fn build_relative_by_position(
     n_ahead: usize,
     n_behind: usize,
     center: bool,
-    cfg: &OverlayConfig,
     sticky: Option<&mut RelativeOrderHysteresis>,
+    app: &serde_json::Value,
+    groups: &serde_json::Value,
 ) -> Vec<TableRow> {
     if let Some(s) = sticky {
         s.ahead_idxs.clear();
@@ -440,31 +449,20 @@ fn build_relative_by_position(
         .collect();
     ranked.sort_by_key(|c| c.position);
     let Some(pidx) = ranked.iter().position(|c| c.car_idx == player.car_idx) else {
-        // Player not on grid yet — still show top of qualify order.
+        // Player not on grid yet -- still show top of qualify order.
         let mut rows: Vec<TableRow> = ranked
             .iter()
             .take(n_ahead + 1 + n_behind)
-            .map(|c| {
-                TableRow::from_car(c, None, "—".into(), c.inactive)
-            })
+            .map(|c| TableRow::from_car(c, None, "--".into(), c.inactive, app))
             .collect();
         for row in &mut rows {
-            row.apply_driver_group(cfg);
+            row.apply_driver_group(groups);
         }
         return rows;
     };
 
-    let ahead_cars: Vec<&CarRow> = ranked[..pidx]
-        .iter()
-        .rev()
-        .take(n_ahead)
-        .copied()
-        .collect();
-    let behind_cars: Vec<&CarRow> = ranked[pidx + 1..]
-        .iter()
-        .take(n_behind)
-        .copied()
-        .collect();
+    let ahead_cars: Vec<&CarRow> = ranked[..pidx].iter().rev().take(n_ahead).copied().collect();
+    let behind_cars: Vec<&CarRow> = ranked[pidx + 1..].iter().take(n_behind).copied().collect();
 
     let mut rows = Vec::new();
     if center {
@@ -473,11 +471,17 @@ fn build_relative_by_position(
         }
     }
     for c in ahead_cars.iter().rev() {
-        rows.push(TableRow::from_car(c, None, "—".into(), c.inactive));
+        rows.push(TableRow::from_car(c, None, "--".into(), c.inactive, app));
     }
-    rows.push(TableRow::from_car(player, Some(0.0), "0.0".into(), player.inactive));
+    rows.push(TableRow::from_car(
+        player,
+        Some(0.0),
+        "0.0".into(),
+        player.inactive,
+        app,
+    ));
     for c in &behind_cars {
-        rows.push(TableRow::from_car(c, None, "—".into(), c.inactive));
+        rows.push(TableRow::from_car(c, None, "--".into(), c.inactive, app));
     }
     if center {
         for k in 0..(n_behind.saturating_sub(behind_cars.len())) {
@@ -485,7 +489,7 @@ fn build_relative_by_position(
         }
     }
     for row in &mut rows {
-        row.apply_driver_group(cfg);
+        row.apply_driver_group(groups);
     }
     rows
 }
@@ -525,32 +529,37 @@ fn estimate_lap_est(cars: &[CarRow]) -> f32 {
 }
 
 /// Standings windowing (Python `standings_row_list`).
-pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
+///
+/// When `in_car` is false (spectating / garage), always show from P1 rather than
+/// a window around the camera focus. Seated in-car keeps `center_on_player`.
+pub fn build_standings(
+    cars: &[CarRow],
+    cfg: &OverlayConfig,
+    app: &serde_json::Value,
+    groups: &serde_json::Value,
+    in_car: bool,
+) -> Vec<TableRow> {
     let mut ranked: Vec<&CarRow> = cars
         .iter()
         .filter(|c| !c.is_pace_car && c.position > 0)
         .collect();
     ranked.sort_by_key(|c| c.position);
 
-    let center = cfg.bool_key("standings", "center_on_player", true);
+    let center = in_car && cfg.bool_key("standings", "center_on_player", true);
     let pin_podium = cfg.bool_key("standings", "pin_podium", false);
     let rows_ahead = cfg.f64_key("standings", "rows_ahead", 4.0).max(0.0) as usize;
     let rows_behind = cfg.f64_key("standings", "rows_behind", 5.0).max(0.0) as usize;
     let rows_n = cfg
-        .f64_key(
-            "standings",
-            "rows",
-            (rows_ahead + rows_behind) as f64,
-        )
+        .f64_key("standings", "rows", (rows_ahead + rows_behind) as f64)
         .max(0.0) as usize;
     // When centered, ahead/behind are authoritative. Do not re-derive behind
-    // from `rows` (that zeroed rows_behind when an old preset had rows≈ahead).
+    // from `rows` (that zeroed rows_behind when an old preset had rows~=ahead).
 
     let leader_f2 = ranked.first().map(|c| c.f2_time).unwrap_or(0.0);
 
     let build = |c: &CarRow| -> TableRow {
         let gap_text = if c.position <= 1 {
-            "—".into()
+            "--".into()
         } else if leader_f2 > 0.0 && c.f2_time > 0.0 {
             let g = c.f2_time - leader_f2;
             if g > 0.0 {
@@ -561,9 +570,9 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
         } else {
             c.gap.clone()
         };
-        let inactive = c.inactive
-            || (!c.on_track && !c.in_pit && !c.on_pit && c.lap_dist_pct < 0.0);
-        TableRow::from_car(c, None, gap_text, inactive)
+        let inactive =
+            c.inactive || (!c.on_track && !c.in_pit && !c.on_pit && c.lap_dist_pct < 0.0);
+        TableRow::from_car(c, None, gap_text, inactive, app)
     };
 
     let idxs: Vec<usize> = (0..ranked.len()).collect();
@@ -617,7 +626,11 @@ pub fn build_standings(cars: &[CarRow], cfg: &OverlayConfig) -> Vec<TableRow> {
     };
 
     for row in &mut out {
-        row.apply_driver_group(cfg);
+        row.apply_driver_group(groups);
+        if !in_car {
+            row.lapping = false;
+            row.lap_ahead = false;
+        }
     }
     out
 }
@@ -715,15 +728,16 @@ pub fn finalize_frame(
     cfg: &OverlayConfig,
     rel_sticky: &mut RelativeOrderHysteresis,
 ) {
+    let app = crate::cloud::load_app_settings_cache().unwrap_or_else(|| serde_json::json!({}));
+    let groups = cfg
+        .cfg
+        .get("driver_groups")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!([]));
+
     if let Some(radio) = frame.radio.as_mut() {
-        let app = crate::cloud::load_app_settings_cache().unwrap_or(serde_json::json!({}));
         radio.is_pro = crate::cloud::is_pro_driver(&radio.name, &app);
         if !radio.is_pro {
-            let groups = cfg
-                .cfg
-                .get("driver_groups")
-                .cloned()
-                .unwrap_or(serde_json::json!([]));
             if let Some(g) = crate::driver_groups::driver_group_for_name(&radio.name, &groups) {
                 radio.group_icon = g.icon;
                 radio.group_color = g.color;
@@ -752,7 +766,7 @@ pub fn finalize_frame(
     };
     frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 
-    // Timing tables center on camera → seated player → race leader. Keep
+    // Timing tables center on camera -> seated player -> race leader. Keep
     // `frame.cars.is_player` unchanged so map/fuel/radar/dashboard still use
     // the user's actual car. Always mark exactly one focus so Relative isn't empty.
     let mut focused_cars = frame.cars.clone();
@@ -765,11 +779,13 @@ pub fn finalize_frame(
         frame.lap_est_time,
         Some(rel_sticky),
         frame.session_state,
+        &app,
+        &groups,
     );
     if super::strategy_hints::strategy_window_active(&frame.fuel, frame.fuel_pct, cfg) {
         super::strategy_hints::apply_strategy_hints(&mut rel, cfg);
     }
-    let std = build_standings(&focused_cars, cfg);
+    let std = build_standings(&focused_cars, cfg, &app, &groups, frame.in_car);
     frame.relative_slots = build_table_slots(frame, cfg, "relative", &rel);
     frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
     frame.relative_cars = rel;
@@ -862,7 +878,7 @@ fn resolve_delta_mode(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
 
 fn parse_lap_clock(s: &str) -> Option<f64> {
     let s = s.trim();
-    if s.is_empty() || s == "—" || s == "--" {
+    if s.is_empty() || s == "--" || s == "--" {
         return None;
     }
     // "1:23.456" or "83.456"
@@ -906,7 +922,7 @@ fn apply_flag_config(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
 
     if frame.flag.as_deref() == Some("blue") {
         if !cfg.bool_key("flags", "show_blue_detail", true) {
-            frame.flag_context = Some("Faster car approaching — let them pass".into());
+            frame.flag_context = Some("Faster car approaching -- let them pass".into());
         } else {
             // Prefer "#N +Xs" from nearest ahead relative row when available.
             let mut best: Option<(f32, String)> = None;
@@ -924,7 +940,7 @@ fn apply_flag_config(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
             if let Some((g, num)) = best {
                 frame.flag_context = Some(format!("Car #{num} +{g:.1}s"));
             } else if frame.flag_context.is_none() {
-                frame.flag_context = Some("Faster car approaching — let them pass".into());
+                frame.flag_context = Some("Faster car approaching -- let them pass".into());
             }
         }
     }
@@ -939,7 +955,7 @@ fn apply_flag_config(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
     {
         let ctx = frame.flag_context.as_deref().unwrap_or("");
         if !ctx.contains("P") {
-            frame.flag_context = Some(format!("Session complete — P{}", frame.position));
+            frame.flag_context = Some(format!("Session complete -- P{}", frame.position));
         }
     }
 
@@ -1140,10 +1156,10 @@ fn format_slot_value(
                 if p.position > 0 && total > 0 {
                     format!("{}/{}", p.position, total)
                 } else {
-                    "—".into()
+                    "--".into()
                 }
             } else {
-                "—".into()
+                "--".into()
             }
         }
         "class_position" => {
@@ -1156,10 +1172,10 @@ fn format_slot_value(
                 if p.class_position > 0 && class_total > 0 {
                     format!("{}/{}", p.class_position, class_total)
                 } else {
-                    "—".into()
+                    "--".into()
                 }
             } else {
-                "—".into()
+                "--".into()
             }
         }
         "session_time" => {
@@ -1168,7 +1184,7 @@ fn format_slot_value(
                     return fmt_clock(rem as f64);
                 }
             }
-            "—".into()
+            "--".into()
         }
         "race_time" => {
             let el = if frame.session_time >= 0.0 {
@@ -1178,7 +1194,7 @@ fn format_slot_value(
             };
             match el {
                 Some(el) => fmt_clock(el),
-                None => "—".into(),
+                None => "--".into(),
             }
         }
         "lap" => {
@@ -1191,46 +1207,46 @@ fn format_slot_value(
             } else if lap > 0 {
                 format!("{lap}")
             } else {
-                "—".into()
+                "--".into()
             }
         }
         "incidents" => format!("{}x", frame.incidents),
-        "track_name" => frame.track_name.clone().unwrap_or_else(|| "—".into()),
+        "track_name" => frame.track_name.clone().unwrap_or_else(|| "--".into()),
         "track_temp" => {
             if let Some(t) = frame.track_temp {
                 format!("{:.0}{}", cfg.conv_temp(t), cfg.temp_unit())
             } else {
-                "—".into()
+                "--".into()
             }
         }
         "air_temp" => {
             if let Some(t) = frame.air_temp {
                 format!("{:.0}{}", cfg.conv_temp(t), cfg.temp_unit())
             } else {
-                "—".into()
+                "--".into()
             }
         }
         "best_lap" => frame
             .best_lap_s
-            .map(|s| format::fmt_laptime(s, "—"))
-            .unwrap_or_else(|| "—".into()),
+            .map(|s| format::fmt_laptime(s, "--"))
+            .unwrap_or_else(|| "--".into()),
         "my_session_best" => player
             .map(|p| {
                 if p.best_lap.is_empty() {
-                    "—".into()
+                    "--".into()
                 } else {
                     p.best_lap.clone()
                 }
             })
-            .unwrap_or_else(|| "—".into()),
+            .unwrap_or_else(|| "--".into()),
         "session_best" => {
             let best = frame
                 .cars
                 .iter()
-                .filter(|c| !c.best_lap.is_empty() && c.best_lap != "—")
+                .filter(|c| !c.best_lap.is_empty() && c.best_lap != "--")
                 .map(|c| c.best_lap.as_str())
                 .min();
-            best.unwrap_or("—").to_string()
+            best.unwrap_or("--").to_string()
         }
         "local_time" => {
             use chrono::{Local, Timelike};
@@ -1250,7 +1266,7 @@ fn format_slot_value(
         "sim_time" => frame
             .session_time_of_day
             .map(format::fmt_tod)
-            .unwrap_or_else(|| "—".into()),
+            .unwrap_or_else(|| "--".into()),
         "incident_limit" => {
             if frame.incidents_limit > 0 {
                 format!("{}/{}x", frame.incidents, frame.incidents_limit)
@@ -1264,33 +1280,35 @@ fn format_slot_value(
                 if total > 0 {
                     format!("{used}/{total}")
                 } else {
-                    "—".into()
+                    "--".into()
                 }
             }
             (_, Some(avail)) if avail > 0 => format!("{avail}"),
             (Some(used), _) if used > 0 => format!("{used}"),
-            _ => "—".into(),
+            _ => "--".into(),
         },
         "session_type" => frame
             .session_type
             .clone()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "—".into()),
+            .unwrap_or_else(|| "--".into()),
         "race_split" => frame
             .race_split
             .filter(|n| *n > 0)
-            .map(|n| match frame.race_split_total.filter(|total| *total > 0) {
-                Some(total) => format!("{n}/{total}"),
-                None => n.to_string(),
-            })
-            .unwrap_or_else(|| "—".into()),
-        "cpu" => frame.cpu.clone().unwrap_or_else(|| "—".into()),
-        "mem" => frame.mem.clone().unwrap_or_else(|| "—".into()),
-        "gpu" => frame.gpu.clone().unwrap_or_else(|| "—".into()),
+            .map(
+                |n| match frame.race_split_total.filter(|total| *total > 0) {
+                    Some(total) => format!("{n}/{total}"),
+                    None => n.to_string(),
+                },
+            )
+            .unwrap_or_else(|| "--".into()),
+        "cpu" => frame.cpu.clone().unwrap_or_else(|| "--".into()),
+        "mem" => frame.mem.clone().unwrap_or_else(|| "--".into()),
+        "gpu" => frame.gpu.clone().unwrap_or_else(|| "--".into()),
         "laps_remain" => frame
             .session_laps_remain
             .map(|v| format!("{v:.0}"))
-            .unwrap_or_else(|| "—".into()),
+            .unwrap_or_else(|| "--".into()),
         "weather" => {
             let mut parts = Vec::new();
             if let Some(s) = &frame.skies {
@@ -1300,7 +1318,7 @@ fn format_slot_value(
                 parts.push(format!("{h:.0}%"));
             }
             if parts.is_empty() {
-                "—".into()
+                "--".into()
             } else {
                 parts.join(" ")
             }
@@ -1308,14 +1326,14 @@ fn format_slot_value(
         "track_wetness" => frame
             .track_wetness
             .map(|w| format!("{w:.0}%"))
-            .unwrap_or_else(|| "—".into()),
+            .unwrap_or_else(|| "--".into()),
         "title" => cfg.str_key(section, "title", "Standings"),
         "order_pill" => "ORDER".into(),
         "count" => {
             let shown = rows.iter().filter(|r| !r.empty).count();
             format!("{shown}/{total}")
         }
-        _ => "—".into(),
+        _ => "--".into(),
     }
 }
 
@@ -1469,7 +1487,15 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_relative(&cars, &cfg, 90.0, None, 4);
+        let rows = build_relative(
+            &cars,
+            &cfg,
+            90.0,
+            None,
+            4,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+        );
         let player_i = rows.iter().position(|r| r.is_player).unwrap();
         // With 3 ahead / 3 behind and centering, player is in the middle slot.
         assert_eq!(player_i, 3);
@@ -1492,7 +1518,7 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg);
+        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert!(live.iter().any(|r| r.is_player));
         let max_pos = live.iter().map(|r| r.position).max().unwrap_or(0);
@@ -1501,6 +1527,67 @@ mod tests {
             "expected cars behind P5 in the window, got max P{max_pos} from {} rows",
             live.len()
         );
+    }
+
+    #[test]
+    fn standings_spectating_clears_lap_tints() {
+        let mut cars = Vec::new();
+        for i in 0..8 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 0,
+                on_track: true,
+                lapping: i == 2 || i == 3,
+                lap_ahead: i == 3,
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let rows =
+            build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), false);
+        assert!(
+            rows.iter().all(|r| !r.lapping && !r.lap_ahead),
+            "spectating standings must not keep lapper tints"
+        );
+        let seated =
+            build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
+        assert!(seated.iter().any(|r| r.lapping));
+    }
+
+    #[test]
+    fn standings_while_spectating_starts_at_leader() {
+        let mut cars = Vec::new();
+        for i in 0..12 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 7, // midfield camera focus
+                on_track: true,
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), false);
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert_eq!(live.first().map(|r| r.position), Some(1));
+        assert_eq!(
+            live.first().map(|r| r.is_player),
+            Some(false),
+            "spectating must list from the leader, not a midfield window"
+        );
+        let seated = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
+        let seated_live: Vec<_> = seated.iter().filter(|r| !r.empty).collect();
+        assert!(
+            seated_live.first().map(|r| r.position) != Some(1)
+                || seated_live.iter().any(|r| r.is_player && r.position == 8),
+            "in-car should window around the focus car"
+        );
+        assert!(seated_live.iter().any(|r| r.is_player));
     }
 
     #[test]
@@ -1519,7 +1606,7 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg);
+        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
         assert!(rows.iter().any(|r| r.is_player));
         assert!(!rows.is_empty());
     }
@@ -1542,14 +1629,25 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_relative(&cars, &cfg, 90.0, None, 2); // Warmup
+        let rows = build_relative(
+            &cars,
+            &cfg,
+            90.0,
+            None,
+            2,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+        ); // Warmup
         let keys: Vec<_> = rows
             .iter()
             .filter(|r| !r.empty)
             .map(|r| r.key.as_str())
             .collect();
         assert!(keys.contains(&"2"), "player present");
-        assert!(keys.contains(&"0") || keys.contains(&"1"), "cars ahead on grid");
+        assert!(
+            keys.contains(&"0") || keys.contains(&"1"),
+            "cars ahead on grid"
+        );
         assert!(
             keys.iter().any(|k| *k == "3" || *k == "4" || *k == "5"),
             "garage cars behind on grid still listed: {keys:?}"
@@ -1586,7 +1684,7 @@ mod tests {
             },
         ];
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg);
+        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert_eq!(live.len(), 3);
         assert!(live.iter().any(|r| r.inactive && r.name == "AlsoGarage"));

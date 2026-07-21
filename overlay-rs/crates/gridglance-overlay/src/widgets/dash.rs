@@ -429,7 +429,8 @@ fn draw_shift(
 
     let lit_id = egui::Id::new("dash_shift_lit");
     let mut lit_st = ui.ctx().data_mut(|d| {
-        d.get_temp::<(f32, f64)>(lit_id).unwrap_or((lit_target, 0.0))
+        d.get_temp::<(f32, f64)>(lit_id)
+            .unwrap_or((lit_target, 0.0))
     });
     let dt = crate::chrome::anim_dt(mono_secs, &mut lit_st.1);
     lit_st.0 = crate::chrome::ease(lit_st.0, lit_target, dt, 0.08);

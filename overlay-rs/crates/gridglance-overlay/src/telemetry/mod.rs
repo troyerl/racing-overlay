@@ -772,11 +772,19 @@ pub mod demo {
             let f0 = feed.tick_at(0.0);
             let f1 = feed.tick_at(2.1);
             let keys = |cars: &[super::super::CarRow]| -> Vec<String> {
-                build_relative(cars, &cfg, 90.0, None, 4)
-                    .into_iter()
-                    .filter(|r| !r.empty)
-                    .map(|r| r.key)
-                    .collect()
+                build_relative(
+                    cars,
+                    &cfg,
+                    90.0,
+                    None,
+                    4,
+                    &serde_json::json!({}),
+                    &serde_json::json!([]),
+                )
+                .into_iter()
+                .filter(|r| !r.empty)
+                .map(|r| r.key)
+                .collect()
             };
             let k0 = keys(&f0.cars);
             let k1 = keys(&f1.cars);

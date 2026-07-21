@@ -5,6 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.3 - 2026-07-21
+
+- **Security: no credentials in git.** Cloud read URI is no longer hardcoded in
+  source. Release builds bake a read-only URI from the GitHub Actions secret
+  `GRIDGLANCE_MONGODB_READ_URI` so installers sync tracks with no `.env`.
+  Local override / write access still use env or `.env` (see `.env.example`).
+  **Rotate the former Atlas read user** that was committed in older builds.
+- **Security: IPC token.** Mutating localhost JSON-RPC methods require a
+  `token` matching `%LOCALAPPDATA%\GridGlance\ipc_token` (protocol v2).
+- **Installer:** desktop/Start Menu shortcuts no longer force `--settings`;
+  launch respects `start_overlay_on_launch`.
+- **CI:** PR workflow runs `fmt` / `clippy` / `test`; release builds run tests
+  before packaging. Retired the `feature/rust` prerelease workflow.
+
 ## 1.69.2 - 2026-07-20
 
 - **Fix: tray menu actions.** Right-click tray items (Settings, Track Scan,
