@@ -722,19 +722,39 @@ impl SharedState {
         self.save_layout();
     }
 
+    /// Persist live widget settings + layout for the profile currently on screen
+    /// before reloading another garage/on-track context from disk.
+    pub fn persist_active_profile(&mut self) {
+        let context = self.effective_context();
+        let layout = self.layout_doc();
+        let cfg = Arc::make_mut(&mut self.config);
+        cfg.store_active_layout_doc(context, layout);
+        if let Err(e) = cfg.save_for_context(context) {
+            eprintln!("persist_active_profile({context:?}): {e:#}");
+        }
+        self.save_layout();
+    }
+
     pub fn effective_context(&self) -> ConfigContext {
         self.preview_context.unwrap_or(self.config_context)
     }
 
     pub fn set_preview_context(&mut self, context: Option<ConfigContext>) {
         if self.preview_context != context {
-            self.save_layout_to_preset();
+            self.persist_active_profile();
         }
         self.preview_context = context;
         self.apply_effective_context();
     }
 
     pub fn set_config_context(&mut self, context: ConfigContext) {
+        let changing = self.config_context != context
+            || self.preview_context.is_some_and(|p| p != context);
+        if changing {
+            // Save the profile that matches live CFG (preview or telemetry).
+            // Layout-only saves used to drop unsaved widget toggles on garage↔track.
+            self.persist_active_profile();
+        }
         self.config_context = context;
         if self.preview_context.is_some() && self.preview_context != Some(context) {
             self.preview_context = None;

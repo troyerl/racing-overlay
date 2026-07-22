@@ -5,6 +5,13 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.5 - 2026-07-22
+
+- **Inputs smoothness.** Scrolling trace and pedal bars stay at ~60 Hz (no more
+  staircase when pedals are held steady).
+- **Garage ↔ track settings.** Widget toggles are saved with the outgoing
+  profile before context reload (not layout-only).
+
 ## 1.69.4 - 2026-07-22
 
 - **Repo layout.** Rust workspace lives at the repo root (`crates/`,

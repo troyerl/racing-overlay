@@ -2225,7 +2225,7 @@ dependencies = [
 
 [[package]]
 name = "gridglance-ipc"
-version = "1.69.4"
+version = "1.69.5"
 dependencies = [
  "serde",
  "serde_json",
@@ -2234,7 +2234,7 @@ dependencies = [
 
 [[package]]
 name = "gridglance-overlay"
-version = "1.69.4"
+version = "1.69.5"
 dependencies = [
  "anyhow",
  "approx",

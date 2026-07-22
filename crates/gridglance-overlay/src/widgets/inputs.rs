@@ -1,25 +1,18 @@
 //! Scrolling input telemetry (Python `inputs.py` parity).
 
 use super::WidgetCtx;
-use crate::chrome::{anim_dt, ease, full_rect, label, panel_card, still_easing};
+use crate::chrome::{full_rect, label, panel_card};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use std::time::Instant;
 
 const SECTION: &str = "inputs";
-const BAR_EASE_TAU: f32 = 0.07;
+/// Sample cadence for the scrolling trace (~present rate).
+const SAMPLE_HZ: f64 = 60.0;
 
 /// (t, thr, brk, clt, steer, abs, gear)
 type Sample = (f64, f32, f32, f32, f32, f32, i32);
-
-#[derive(Clone, Default)]
-struct BarAnim {
-    thr: f32,
-    brk: f32,
-    clt: f32,
-    last_secs: f64,
-}
 
 struct Hist {
     clock: Instant,
@@ -65,7 +58,7 @@ fn push_sample(ctx: &WidgetCtx<'_>) {
     // Always append on a short cadence so the graph scrolls smoothly even when
     // pedals are held steady (otherwise the trace freezes then jumps).
     let force = match h.samples.back() {
-        Some(last) => t - last.0 >= 1.0 / 30.0,
+        Some(last) => t - last.0 >= 1.0 / SAMPLE_HZ,
         None => true,
     };
     if let Some(last) = h.samples.back() {
@@ -88,6 +81,10 @@ fn push_sample(ctx: &WidgetCtx<'_>) {
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    // Trace scrolls on wall-clock; keep presents hot or it staircase-stutters.
+    if ctx.frame.connected || ctx.cfg.bool_key(SECTION, "show_graph", true) {
+        *ctx.panel_animating = true;
+    }
     push_sample(ctx);
     let rect = full_rect(ui);
     panel_card(ui, ctx.cfg, SECTION, rect);
@@ -329,25 +326,8 @@ fn draw_bars(
     drop(h);
     let abs_on = latest.5 > 0.5;
     let thr = brake_threshold(ctx);
-
-    let id = egui::Id::new("inputs_bar_anim");
-    let mut anim = ui
-        .ctx()
-        .data_mut(|d| d.get_temp::<BarAnim>(id).unwrap_or_default());
-    let dt = anim_dt(ctx.mono_secs, &mut anim.last_secs);
-    anim.thr = ease(anim.thr, latest.1, dt, BAR_EASE_TAU);
-    anim.brk = ease(anim.brk, latest.2, dt, BAR_EASE_TAU);
-    anim.clt = ease(anim.clt, latest.3, dt, BAR_EASE_TAU);
-    let animating = still_easing(anim.thr, latest.1, 0.005)
-        || still_easing(anim.brk, latest.2, 0.005)
-        || still_easing(anim.clt, latest.3, 0.005);
-    if animating {
-        *ctx.panel_animating = true;
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(1));
-    }
-    let eased = (anim.thr, anim.brk, anim.clt);
-    ui.ctx().data_mut(|d| d.insert_temp(id, anim));
+    // Raw pedal values — easing + sparse presents made bars/graph feel laggy.
+    let eased = (latest.1, latest.2, latest.3);
 
     let label_h = (rect.height() * 0.16).max(10.0);
     let track_top = rect.top() + label_h;

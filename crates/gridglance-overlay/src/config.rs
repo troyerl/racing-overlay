@@ -1913,6 +1913,28 @@ mod tests {
     }
 
     #[test]
+    fn garage_widget_overrides_survive_race_reload() {
+        let mut oc = OverlayConfig::default();
+        oc.apply_context(ConfigContext::Garage);
+        // Live edit while in garage (as Settings apply_cfg_patch would).
+        if let Some(dash) = oc.cfg.get_mut("dash").and_then(|v| v.as_object_mut()) {
+            dash.insert("show".into(), json!(false));
+            dash.insert("show_clutch".into(), json!(true));
+        }
+        oc.sync_active_preset_for_context(ConfigContext::Garage);
+        // Simulate leaving garage: reload race, then come back.
+        oc.apply_context(ConfigContext::Race);
+        assert_ne!(
+            oc.cfg["dash"]["show_clutch"],
+            json!(true),
+            "race profile should not keep garage-only clutch"
+        );
+        oc.apply_context(ConfigContext::Garage);
+        assert_eq!(oc.cfg["dash"]["show"], false);
+        assert_eq!(oc.cfg["dash"]["show_clutch"], true);
+    }
+
+    #[test]
     fn default_preset_is_unique() {
         let mut oc = OverlayConfig::default();
         oc.create_preset("Alt").unwrap();

@@ -644,7 +644,7 @@ impl OverlayApp {
                 }
             }
         }
-        {
+        let switched = {
             let mut st = self.state.write();
             // On track only while seated in-car. Spectating / garage / menus use
             // the In garage profile (and Settings profile combo follows this).
@@ -653,10 +653,10 @@ impl OverlayApp {
             } else {
                 ConfigContext::Race
             };
-            if st.config_context != next_context {
-                // Persist in-memory geometry to the outgoing profile before reload,
-                // otherwise garage↔track swaps discard unsaved / mid-session sizes.
-                st.save_layout_to_preset();
+            let switched = st.config_context != next_context;
+            if switched {
+                // Persist widget settings + geometry for the outgoing profile before
+                // reload (layout-only used to drop unsaved CFG on garage↔track).
                 st.set_config_context(next_context);
             }
             // Keep HTML-imported authoring TrackID across demo/live ticks.
@@ -668,6 +668,11 @@ impl OverlayApp {
             }
             st.mono_secs = mono;
             st.frame = Arc::new(frame);
+            switched
+        };
+        if switched {
+            self.settings_dirty = false;
+            self.settings_autosave_at = None;
         }
     }
 }
@@ -916,9 +921,9 @@ impl eframe::App for OverlayApp {
                 } else {
                     MAP_READBACK_MS
                 }
-            } else if was_animating || key == "dash" {
+            } else if was_animating || key == "dash" || key == "inputs" {
                 // Tables, radar, delta, dash blink, etc. need ~60 Hz presents.
-                // Dash is always hot while connected (gear / pedals / RPM).
+                // Dash / inputs stay hot (gear, pedals, scrolling input trace).
                 PANEL_ANIM_READBACK_MS
             } else if key == "relative" || key == "standings" || key == "radio_tower" {
                 // Idle tables refresh often enough to catch reorder starts
