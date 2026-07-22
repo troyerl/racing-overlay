@@ -1044,7 +1044,6 @@ fn paint_widget_section(
                 .filter(|k| {
                     *k != "show"
                         && !is_skipped(section, k)
-                        && grouped.contains_key(k)
                         && matches_search(section, k, &ui_state.search)
                 })
                 .collect();
@@ -1062,6 +1061,19 @@ fn paint_widget_section(
                         used.insert(key);
                         if let Some(val) = grouped.get(key) {
                             paint_value(ui, state, section, key, val, dirty, accent, ui_state);
+                        } else {
+                            // Schema key missing from sparse preset — still show a control.
+                            let fallback = schema_fallback_value(section, key);
+                            paint_value(
+                                ui,
+                                state,
+                                section,
+                                key,
+                                &fallback,
+                                dirty,
+                                accent,
+                                ui_state,
+                            );
                         }
                     }
                 },
@@ -1106,8 +1118,13 @@ fn cached_section_values(
     section: &str,
     ui_state: &mut SettingsUi,
 ) -> std::sync::Arc<std::collections::HashMap<String, Value>> {
-    if ui_state.section_cache_id != section || ui_state.section_cache.is_none() {
-        ui_state.section_cache_id = section.to_string();
+    let (gen, ctx) = {
+        let st = state.read();
+        (st.config.generation, st.effective_context())
+    };
+    let cache_id = format!("{section}|{ctx:?}|{gen}");
+    if ui_state.section_cache_id != cache_id || ui_state.section_cache.is_none() {
+        ui_state.section_cache_id = cache_id;
         ui_state.section_cache = Some(std::sync::Arc::new(section_values(state, section)));
     }
     std::sync::Arc::clone(
@@ -1123,6 +1140,19 @@ fn section_values(state: &StateHandle, section: &str) -> HashMap<String, Value> 
     match st.config.section(section) {
         Value::Object(map) => map.clone().into_iter().collect(),
         _ => HashMap::new(),
+    }
+}
+
+/// Default control value when a schema key is absent from the live section map.
+fn schema_fallback_value(section: &str, key: &str) -> Value {
+    match key {
+        "show_icons" => Value::Bool(false),
+        "title" => Value::String(section.to_uppercase().replace('_', " ")),
+        "panel_style" => Value::String("data".into()),
+        "row_height_px" => json!(36.0),
+        "corner_radius_frac" => json!(0.0),
+        k if k.starts_with("show_") => Value::Bool(true),
+        _ => Value::Bool(true),
     }
 }
 

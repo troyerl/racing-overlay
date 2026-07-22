@@ -9,12 +9,11 @@ Living notes for map widget work. **Update this file whenever you change map mot
 3. With `--perf`, look for `map_motion_rev=N` in the perf line. If that number did not bump, you are not running the new binary.
 
 ```powershell
-cd overlay-rs
 # Quit tray instance first, then:
 cargo run --release -p gridglance-overlay -- --settings --perf
 ```
 
-Agent/sandbox note: Cursor agent shells may set `CARGO_TARGET_DIR` to a temp path. Builds intended for the user must write to `overlay-rs/target/release/`.
+Agent/sandbox note: Cursor agent shells may set `CARGO_TARGET_DIR` to a temp path. Builds intended for the user must write to `target/release/`.
 
 ---
 

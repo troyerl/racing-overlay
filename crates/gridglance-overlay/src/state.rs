@@ -553,11 +553,15 @@ fn layout_from_value(value: &Value) -> HashMap<String, PanelLayout> {
             }
         }
     }
-    ensure_default_layouts(&mut layout);
     layout
 }
 
 /// Merge legacy `overlay_layout.json` into a race layout (not garage).
+///
+/// Preset `layout` is the source of truth. The legacy file only fills keys that
+/// are still missing (one-time migration). Never overwrite saved preset geometry —
+/// drag/resize writes the preset but historically did not update this file, so
+/// overwriting here made moves vanish after restart.
 fn merge_overlay_layout_json(layout: &mut HashMap<String, PanelLayout>) {
     let Ok(text) = fs::read_to_string(paths::layout_path()) else {
         return;
@@ -566,28 +570,29 @@ fn merge_overlay_layout_json(layout: &mut HashMap<String, PanelLayout>) {
         return;
     };
     for (k, v) in map {
-        if let Some(arr) = v.as_array() {
+        let parsed = if let Some(arr) = v.as_array() {
             if arr.len() >= 4 {
-                layout.insert(
-                    k,
-                    PanelLayout {
-                        x: arr[0].as_i64().unwrap_or(0) as i32,
-                        y: arr[1].as_i64().unwrap_or(0) as i32,
-                        w: arr[2].as_i64().unwrap_or(280) as i32,
-                        h: arr[3].as_i64().unwrap_or(160) as i32,
-                    },
-                );
+                Some(PanelLayout {
+                    x: arr[0].as_i64().unwrap_or(0) as i32,
+                    y: arr[1].as_i64().unwrap_or(0) as i32,
+                    w: arr[2].as_i64().unwrap_or(280) as i32,
+                    h: arr[3].as_i64().unwrap_or(160) as i32,
+                })
+            } else {
+                None
             }
         } else if let Some(obj) = v.as_object() {
-            layout.insert(
-                k,
-                PanelLayout {
-                    x: obj.get("x").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
-                    y: obj.get("y").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
-                    w: obj.get("w").and_then(|x| x.as_i64()).unwrap_or(280) as i32,
-                    h: obj.get("h").and_then(|x| x.as_i64()).unwrap_or(160) as i32,
-                },
-            );
+            Some(PanelLayout {
+                x: obj.get("x").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                y: obj.get("y").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
+                w: obj.get("w").and_then(|x| x.as_i64()).unwrap_or(280) as i32,
+                h: obj.get("h").and_then(|x| x.as_i64()).unwrap_or(160) as i32,
+            })
+        } else {
+            None
+        };
+        if let Some(geom) = parsed {
+            layout.entry(k).or_insert(geom);
         }
     }
 }
@@ -622,6 +627,16 @@ pub fn fit_panel_size(layout: &mut HashMap<String, PanelLayout>, key: &str, w: i
     });
     lay.w = w.max(80);
     lay.h = h.max(32);
+}
+
+/// Expand a panel to at least `(w, h)` without shrinking user geometry.
+pub fn grow_panel_size(layout: &mut HashMap<String, PanelLayout>, key: &str, w: i32, h: i32) {
+    let lay = layout.entry(key.to_string()).or_insert_with(|| {
+        let (x, y, _, _) = default_geom(key);
+        PanelLayout { x, y, w, h }
+    });
+    lay.w = lay.w.max(w).max(80);
+    lay.h = lay.h.max(h).max(32);
 }
 
 pub struct SharedState {
@@ -703,6 +718,8 @@ impl SharedState {
         let cfg = Arc::make_mut(&mut self.config);
         cfg.store_active_layout_doc(context, layout);
         let _ = cfg.save_doc();
+        // Keep legacy overlay_layout.json in sync so migration merges stay current.
+        self.save_layout();
     }
 
     pub fn effective_context(&self) -> ConfigContext {
@@ -710,6 +727,9 @@ impl SharedState {
     }
 
     pub fn set_preview_context(&mut self, context: Option<ConfigContext>) {
+        if self.preview_context != context {
+            self.save_layout_to_preset();
+        }
         self.preview_context = context;
         self.apply_effective_context();
     }

@@ -14,9 +14,9 @@ pub fn load_dotenv() {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join(".env"));
-            // repo root when running from target/debug
+            // repo root when running from target/debug or target/release
+            candidates.push(dir.join("../../.env"));
             candidates.push(dir.join("../../../.env"));
-            candidates.push(dir.join("../../../../.env"));
         }
     }
     // Walk up from CWD looking for repo `.env`.

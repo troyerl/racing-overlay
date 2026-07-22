@@ -39,8 +39,8 @@ fn search_roots() -> Vec<PathBuf> {
             roots.push(dir.to_path_buf());
             // Installed layout may ship assets/ under the app dir.
             roots.push(dir.join("assets"));
-            // Dev: overlay-rs/target/{debug,release} → repo root is ../../../
-            roots.push(dir.join("..").join("..").join(".."));
+            // Dev: target/{debug,release} → repo root is ../..
+            roots.push(dir.join("..").join(".."));
         }
     }
     if let Ok(cwd) = std::env::current_dir() {
@@ -49,9 +49,9 @@ fn search_roots() -> Vec<PathBuf> {
             roots.push(anc.to_path_buf());
         }
     }
-    // Crate dir → repo root (overlay-rs/crates/gridglance-overlay → ../../../)
+    // Crate dir → repo root (crates/gridglance-overlay → ../..)
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    roots.push(manifest.join("..").join("..").join(".."));
+    roots.push(manifest.join("..").join(".."));
     roots
 }
 

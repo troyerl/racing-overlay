@@ -11,6 +11,8 @@ mod laptime_log;
 mod leaderboard_strip;
 mod map;
 pub use map::{bg_fingerprint, build_car_sprites, tick_car_motion, MAP_MOTION_REV};
+mod pace_caution;
+pub use pace_caution::should_display as pace_caution_should_display;
 mod pit_advisor;
 mod pit_board;
 mod radar;
@@ -58,6 +60,7 @@ pub fn paint(ui: &mut Ui, key: &str, ctx: &mut WidgetCtx<'_>) {
     match key {
         "flags" => flags::paint(ui, ctx),
         "system_panel" => system_panel::paint(ui, ctx),
+        "pace_caution" => pace_caution::paint(ui, ctx),
         "weather_panel" => weather_panel::paint(ui, ctx),
         "delta_bar" => delta_bar::paint(ui, ctx),
         "inputs" => inputs::paint(ui, ctx),

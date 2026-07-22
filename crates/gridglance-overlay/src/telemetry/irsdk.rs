@@ -84,6 +84,14 @@ mod win {
         race_split: Option<i32>,
         race_split_total: Option<i32>,
         subsession_id: i32,
+        /// WeekendInfo / telemetry pit road limit (m/s).
+        pit_speed_limit_mps: Option<f32>,
+        /// WeekendInfo `TrackLength` (meters) for pace-car speed estimate.
+        track_length_m: Option<f32>,
+        /// Last pace-car sample: (session_time, lap_dist_pct).
+        pace_speed_prev: Option<(f64, f32)>,
+        /// Smoothed pace-car speed from lap% Δ (CarIdxSpeed is not in the SDK).
+        pace_speed_mps: f32,
         drivers: HashMap<i32, DriverInfo>,
         /// From SessionInfo ResultsPositions (race session when present).
         results: HashMap<i32, ResultPosEntry>,
@@ -171,7 +179,7 @@ mod win {
                 });
             }
 
-            build_frame(session, &self.cache)
+            build_frame(session, &mut self.cache)
         }
     }
 
@@ -183,7 +191,7 @@ mod win {
         }
     }
 
-    unsafe fn build_frame(session: &Session, cache: &SessionCache) -> TelemetryFrame {
+    unsafe fn build_frame(session: &Session, cache: &mut SessionCache) -> TelemetryFrame {
         let speed = read_f32(session, "Speed");
         let rpm = read_f32(session, "RPM");
         let gear = read_i32(session, "Gear");
@@ -191,6 +199,19 @@ mod win {
         let brake = read_f32(session, "Brake");
         let clutch = read_f32(session, "Clutch");
         let steering = read_f32(session, "SteeringWheelAngle");
+        let ffb_pct = read_f32_opt(session, "SteeringWheelPctTorque").map(|v| {
+            // SDK unit is %; some builds return 0–1 — normalize to percent display units.
+            if v.is_finite() && v.abs() <= 2.0 {
+                v.abs() * 100.0
+            } else {
+                v.abs()
+            }
+        });
+        let pace_mode = read_i32(session, "PaceMode").max(0);
+        let pit_speed_limit_mps = read_f32_opt(session, "TrackPitSpeedLimit")
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .map(normalize_pit_speed_limit)
+            .or(cache.pit_speed_limit_mps);
         let fuel_l = read_f32(session, "FuelLevel");
         let fuel_pct = read_f32(session, "FuelLevelPct");
         let lap = read_i32(session, "Lap").max(0);
@@ -330,13 +351,21 @@ mod win {
                 None
             }
         };
-        let cars = car_rows(
+        let mut cars = car_rows(
             session,
             cache,
             radio_idx,
             session_state,
             session_type.as_deref().unwrap_or(""),
         );
+        update_pace_car_speed(cache, session_time, &cars);
+        if cache.pace_speed_mps > 0.05 {
+            for c in &mut cars {
+                if c.is_pace_car && c.speed_mps <= 0.05 {
+                    c.speed_mps = cache.pace_speed_mps;
+                }
+            }
+        }
         // Prefer resolved grid/qual position over raw CarIdxPosition (often 0 pre-green).
         let position = cars
             .iter()
@@ -398,10 +427,10 @@ mod win {
 
         let laps_total = {
             let t = read_i32(session, "SessionLapsTotal");
-            if t > 0 && t < 100_000 {
-                t
+            if let Some(n) = crate::telemetry::finite_laps_total(t) {
+                n
             } else {
-                cache.laps_total
+                crate::telemetry::finite_laps_total(cache.laps_total).unwrap_or(0)
             }
         };
         // Lap-limited races: remaining follows the lead lap, not the player.
@@ -513,12 +542,55 @@ mod win {
             ers_p2p_active,
             fps,
             chan_quality,
+            ffb_pct,
+            pace_mode,
+            pit_speed_limit_mps,
             session_time_of_day,
             session_type,
             race_split,
             race_split_total,
             ..Default::default()
         }
+    }
+
+    /// Estimate pace-car ground speed from lap% Δ × TrackLength.
+    /// `CarIdxSpeed` is not an official SDK var (often missing).
+    fn update_pace_car_speed(cache: &mut SessionCache, session_time: f64, cars: &[CarRow]) {
+        let Some(pace) = cars.iter().find(|c| c.is_pace_car) else {
+            cache.pace_speed_prev = None;
+            return;
+        };
+        let pct = pace.lap_dist_pct;
+        if !pct.is_finite() || pct < 0.0 {
+            return;
+        }
+        let track_len = cache.track_length_m.unwrap_or(0.0);
+        if track_len <= 100.0 {
+            return;
+        }
+        if let Some((t0, p0)) = cache.pace_speed_prev {
+            let dt = (session_time - t0) as f32;
+            if dt > 0.04 && dt < 2.0 {
+                let mut dp = pct - p0;
+                if dp < -0.5 {
+                    dp += 1.0;
+                } else if dp > 0.5 {
+                    dp -= 1.0;
+                }
+                if dp >= 0.0 {
+                    let inst = (dp * track_len / dt).clamp(0.0, 80.0);
+                    if inst > 0.5 {
+                        let a = 0.35_f32;
+                        cache.pace_speed_mps = if cache.pace_speed_mps > 0.5 {
+                            cache.pace_speed_mps * (1.0 - a) + inst * a
+                        } else {
+                            inst
+                        };
+                    }
+                }
+            }
+        }
+        cache.pace_speed_prev = Some((session_time, pct));
     }
 
     fn map_car_status_kind(surface: i32, on_pit: bool, car_flags: i32) -> Option<String> {
@@ -934,9 +1006,7 @@ mod win {
         let mut seen = std::collections::HashSet::new();
         for (i, &pct) in pcts.iter().enumerate() {
             let di = cache.drivers.get(&(i as i32));
-            if di.map(|d| d.is_pace_car).unwrap_or(false) {
-                // Still include pace car marked so builders can skip.
-            }
+            let is_pace_early = di.map(|d| d.is_pace_car).unwrap_or(false);
             let live_pos = positions
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
@@ -1002,16 +1072,19 @@ mod win {
             // haven't joined (NOT_IN_WORLD / invalid LapDistPct).
             let has_driver = di.is_some();
             let joined = on_track || in_pit || pit;
-            if (!pct.is_finite() || pct < 0.0)
-                && (!has_driver || (pos <= 0 && !joined && i as i32 != player_idx))
-            {
-                continue;
-            }
-            if pct == 0.0 && i as i32 != player_idx && pos <= 0 && !has_driver && !joined {
-                continue;
-            }
-            if !has_driver && pos <= 0 && !joined && i as i32 != player_idx {
-                continue;
+            // Always keep the pace car so caution speed can be derived.
+            if !is_pace_early {
+                if (!pct.is_finite() || pct < 0.0)
+                    && (!has_driver || (pos <= 0 && !joined && i as i32 != player_idx))
+                {
+                    continue;
+                }
+                if pct == 0.0 && i as i32 != player_idx && pos <= 0 && !has_driver && !joined {
+                    continue;
+                }
+                if !has_driver && pos <= 0 && !joined && i as i32 != player_idx {
+                    continue;
+                }
             }
 
             let (name, number, ir, lic, class_color, class_id, is_pace) = if let Some(d) = di {
@@ -1444,14 +1517,25 @@ mod win {
         {
             cache.track_name = Some(n.trim_matches('"').to_string());
         }
+        if let Some(v) = yaml_f32(yaml, "TrackPitSpeedLimit") {
+            if v.is_finite() && v > 0.0 {
+                // WeekendInfo documents this as kph.
+                cache.pit_speed_limit_mps = Some(v / 3.6);
+            }
+        }
+        if let Some(v) = yaml_f32(yaml, "TrackLength") {
+            if v.is_finite() && v > 100.0 {
+                cache.track_length_m = Some(v);
+            }
+        }
         if let Some(v) = yaml_f32(yaml, "DriverCarRedLine") {
             if v > 100.0 {
                 cache.redline = v;
             }
         }
         if let Some(v) = yaml_i32(yaml, "SessionLaps") {
-            if v > 0 && v < 100_000 {
-                cache.laps_total = v;
+            if let Some(n) = crate::telemetry::finite_laps_total(v) {
+                cache.laps_total = n;
             }
         }
         if let Some(v) = yaml_i32(yaml, "IncidentLimit") {
@@ -1710,7 +1794,12 @@ mod win {
         for line in yaml.lines() {
             let t = line.trim();
             if let Some(rest) = t.strip_prefix(&needle) {
-                if let Ok(v) = rest.trim().parse::<f32>() {
+                let rest = rest.trim().trim_matches('"');
+                // Accept `80`, `80.0`, `80.0 km/h` — take the leading float token.
+                let token = rest
+                    .split(|c: char| c.is_whitespace() || c == ',')
+                    .find(|s| !s.is_empty())?;
+                if let Ok(v) = token.parse::<f32>() {
                     return Some(v);
                 }
             }
@@ -1740,6 +1829,15 @@ mod win {
             Value::Double(v) => Some(v as f32),
             Value::Int(v) => Some(v as f32),
             _ => session.value::<f32>(&var).ok(),
+        }
+    }
+
+    /// Telemetry `TrackPitSpeedLimit` is m/s; some dumps / YAML use kph.
+    fn normalize_pit_speed_limit(v: f32) -> f32 {
+        if v > 40.0 {
+            v / 3.6
+        } else {
+            v
         }
     }
 

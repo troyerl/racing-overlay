@@ -251,13 +251,19 @@ fn apply_table_focus(cars: &mut [CarRow], camera_car_idx: Option<i32>) {
 
 /// Apply lapped-traffic tint relative to the marked focus car.
 ///
+/// Only applied in race sessions — practice/qualifying ignore lap-down
+/// blue/red row coloring.
+///
 /// For a one-lap difference, tint only when the faster car is within five
 /// seconds behind and approaching the slower car. A difference of two or more
 /// completed laps is always tinted.
-fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32) {
+fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32, session_type: Option<&str>) {
     for car in cars.iter_mut() {
         car.lapping = false;
         car.lap_ahead = false;
+    }
+    if !is_race_session(session_type) {
+        return;
     }
     let Some(focus_idx) = cars.iter().position(|c| c.is_player) else {
         return;
@@ -289,6 +295,13 @@ fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32) {
     }
 }
 
+fn is_race_session(session_type: Option<&str>) -> bool {
+    session_type
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .contains("race")
+}
+
 /// Build relative rows centered on the player (Python `_update_relative`).
 pub fn build_relative(
     cars: &[CarRow],
@@ -296,6 +309,7 @@ pub fn build_relative(
     lap_est_hint: f32,
     sticky: Option<&mut RelativeOrderHysteresis>,
     session_state: i32,
+    session_type: Option<&str>,
     app: &serde_json::Value,
     groups: &serde_json::Value,
 ) -> Vec<TableRow> {
@@ -308,6 +322,7 @@ pub fn build_relative(
     let n_ahead = n_ahead.min(total);
     let n_behind = total.saturating_sub(n_ahead);
     let center = cfg.bool_key("relative", "center_on_player", true);
+    let _ = session_type;
 
     let Some(player) = cars.iter().find(|c| c.is_player) else {
         if let Some(s) = sticky {
@@ -445,7 +460,12 @@ fn build_relative_by_position(
     }
     let mut ranked: Vec<&CarRow> = cars
         .iter()
-        .filter(|c| !c.is_pace_car && c.position > 0)
+        .filter(|c| {
+            if c.is_pace_car || c.position <= 0 {
+                return false;
+            }
+            c.car_idx == player.car_idx || relative_include(c, player)
+        })
         .collect();
     ranked.sort_by_key(|c| c.position);
     let Some(pidx) = ranked.iter().position(|c| c.car_idx == player.car_idx) else {
@@ -498,12 +518,13 @@ fn relative_include(c: &CarRow, player: &CarRow) -> bool {
     if c.is_pace_car {
         return false;
     }
-    // On track / pit always.
-    if c.on_track || c.in_pit || c.on_pit {
+    // On the racing surface.
+    if c.on_track {
         return true;
     }
-    // Pre-race / grid: include anyone with a position (garage drivers too).
-    if c.position > 0 && player.position > 0 {
+    // Pitting cars only if ahead of the player by race position.
+    let in_pits = c.in_pit || c.on_pit;
+    if in_pits && c.position > 0 && player.position > 0 && c.position < player.position {
         return true;
     }
     false
@@ -748,7 +769,7 @@ pub fn finalize_frame(
     resolve_delta_mode(frame, cfg);
     apply_flag_config(frame, cfg);
     let lap_est = frame.lap_est_time;
-    apply_lap_tints(&mut frame.cars, lap_est);
+    apply_lap_tints(&mut frame.cars, lap_est, frame.session_type.as_deref());
 
     // Rebuild fuel first so relative undercut/cover tags can use the pit window.
     let inp = crate::telemetry::FuelInputs {
@@ -771,7 +792,11 @@ pub fn finalize_frame(
     // the user's actual car. Always mark exactly one focus so Relative isn't empty.
     let mut focused_cars = frame.cars.clone();
     apply_table_focus(&mut focused_cars, frame.camera_car_idx);
-    apply_lap_tints(&mut focused_cars, frame.lap_est_time);
+    apply_lap_tints(
+        &mut focused_cars,
+        frame.lap_est_time,
+        frame.session_type.as_deref(),
+    );
 
     let mut rel = build_relative(
         &focused_cars,
@@ -779,6 +804,7 @@ pub fn finalize_frame(
         frame.lap_est_time,
         Some(rel_sticky),
         frame.session_state,
+        frame.session_type.as_deref(),
         &app,
         &groups,
     );
@@ -1202,8 +1228,8 @@ fn format_slot_value(
                 .map(|p| p.lap)
                 .filter(|l| *l > 0)
                 .unwrap_or(frame.lap);
-            if frame.laps_total > 0 {
-                format!("{}/{}", lap, frame.laps_total)
+            if let Some(total) = crate::telemetry::finite_laps_total(frame.laps_total) {
+                format!("{}/{}", lap, total)
             } else if lap > 0 {
                 format!("{lap}")
             } else {
@@ -1307,6 +1333,7 @@ fn format_slot_value(
         "gpu" => frame.gpu.clone().unwrap_or_else(|| "--".into()),
         "laps_remain" => frame
             .session_laps_remain
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v < 32_000.0)
             .map(|v| format!("{v:.0}"))
             .unwrap_or_else(|| "--".into()),
         "weather" => {
@@ -1493,6 +1520,7 @@ mod tests {
             90.0,
             None,
             4,
+            Some("Race"),
             &serde_json::json!({}),
             &serde_json::json!([]),
         );
@@ -1612,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn pre_race_relative_uses_grid_including_garage() {
+    fn pre_race_relative_hides_garage_keeps_on_track() {
         let mut cars = Vec::new();
         for i in 0..6 {
             cars.push(CarRow {
@@ -1635,6 +1663,7 @@ mod tests {
             90.0,
             None,
             2,
+            Some("Race"),
             &serde_json::json!({}),
             &serde_json::json!([]),
         ); // Warmup
@@ -1646,13 +1675,119 @@ mod tests {
         assert!(keys.contains(&"2"), "player present");
         assert!(
             keys.contains(&"0") || keys.contains(&"1"),
-            "cars ahead on grid"
+            "cars ahead on track"
         );
         assert!(
-            keys.iter().any(|k| *k == "3" || *k == "4" || *k == "5"),
-            "garage cars behind on grid still listed: {keys:?}"
+            !keys.iter().any(|k| *k == "3" || *k == "4" || *k == "5"),
+            "garage cars must be hidden: {keys:?}"
         );
-        assert!(rows.iter().any(|r| r.inactive), "garage rows dimmed");
+    }
+
+    #[test]
+    fn relative_includes_ahead_pit_excludes_behind_pit_and_garage() {
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                position: 1,
+                name: "AheadPit".into(),
+                car_number: "1".into(),
+                est_time: 12.0,
+                on_track: false,
+                on_pit: true,
+                in_pit: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                position: 2,
+                name: "OnTrack".into(),
+                car_number: "2".into(),
+                est_time: 14.0,
+                on_track: true,
+                is_player: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                name: "BehindPit".into(),
+                car_number: "3".into(),
+                est_time: 16.0,
+                on_track: false,
+                on_pit: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 3,
+                position: 4,
+                name: "Garage".into(),
+                car_number: "4".into(),
+                est_time: 18.0,
+                inactive: true,
+                on_track: false,
+                lap_dist_pct: -1.0,
+                ..Default::default()
+            },
+        ];
+        let cfg = OverlayConfig::default();
+        let rows = build_relative(
+            &cars,
+            &cfg,
+            90.0,
+            None,
+            4,
+            Some("Race"),
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+        );
+        let keys: Vec<_> = rows
+            .iter()
+            .filter(|r| !r.empty)
+            .map(|r| r.key.as_str())
+            .collect();
+        assert!(keys.contains(&"1"), "player present");
+        assert!(keys.contains(&"0"), "ahead pit car included");
+        assert!(!keys.contains(&"2"), "behind pit car excluded: {keys:?}");
+        assert!(!keys.contains(&"3"), "garage excluded: {keys:?}");
+    }
+
+    #[test]
+    fn practice_relative_hides_garage_cars() {
+        let mut cars = Vec::new();
+        for i in 0..6 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                est_time: 10.0 + i as f32 * 2.0,
+                is_player: i == 2,
+                inactive: i >= 3,
+                on_track: i < 3,
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let rows = build_relative(
+            &cars,
+            &cfg,
+            90.0,
+            None,
+            4,
+            Some("Practice"),
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+        );
+        let keys: Vec<_> = rows
+            .iter()
+            .filter(|r| !r.empty)
+            .map(|r| r.key.as_str())
+            .collect();
+        assert!(keys.contains(&"2"), "player present");
+        assert!(
+            !keys.iter().any(|k| *k == "3" || *k == "4" || *k == "5"),
+            "garage cars must be hidden in practice: {keys:?}"
+        );
     }
 
     #[test]
@@ -1740,7 +1875,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        apply_lap_tints(&mut cars, 90.0);
+        apply_lap_tints(&mut cars, 90.0, Some("Race"));
 
         assert!(cars[1].lapping && !cars[1].lap_ahead);
         assert!(!cars[2].lapping);
@@ -1748,6 +1883,35 @@ mod tests {
         assert!(!cars[4].lapping);
         assert!(cars[5].lapping && !cars[5].lap_ahead);
         assert!(cars[6].lapping && cars[6].lap_ahead);
+    }
+
+    #[test]
+    fn lap_tints_disabled_outside_race() {
+        let mut cars = vec![
+            CarRow {
+                car_idx: 0,
+                is_player: true,
+                lap: 10,
+                est_time: 20.0,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                lap: 8,
+                est_time: 24.0,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                lap: 12,
+                est_time: 16.0,
+                ..Default::default()
+            },
+        ];
+        apply_lap_tints(&mut cars, 90.0, Some("Practice"));
+        assert!(cars.iter().all(|c| !c.lapping && !c.lap_ahead));
+        apply_lap_tints(&mut cars, 90.0, Some("Qualifying"));
+        assert!(cars.iter().all(|c| !c.lapping && !c.lap_ahead));
     }
 
     #[test]

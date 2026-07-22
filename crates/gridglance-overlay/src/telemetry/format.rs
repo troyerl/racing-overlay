@@ -19,6 +19,19 @@ pub fn fmt_laptime(secs: f64, empty: &str) -> String {
     format!("{m}:{s:06.3}")
 }
 
+/// Display car number with a leading `#` (idempotent if already prefixed).
+pub fn format_car_number(num: &str) -> String {
+    let t = num.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    if t.starts_with('#') {
+        t.to_string()
+    } else {
+        format!("#{t}")
+    }
+}
+
 /// Format lap time for the laptime log widget (zero-padded minutes).
 pub fn fmt_laptime_log(secs: f64) -> String {
     if secs <= 0.0 {
@@ -50,6 +63,15 @@ pub fn format_session_type(raw: String) -> String {
         "Practice".into()
     } else {
         raw.replace('_', " ")
+    }
+}
+
+/// iRacing uses ~32767 for unlimited / time-only sessions. Treat those as no lap total.
+pub fn finite_laps_total(n: i32) -> Option<i32> {
+    if n > 0 && n < 32_000 {
+        Some(n)
+    } else {
+        None
     }
 }
 
@@ -189,6 +211,14 @@ mod tests {
         assert_eq!(format_session_type("open".into()), "Practice");
         assert_eq!(format_session_type("qualifying".into()), "Qualifying");
         assert_eq!(format_session_type("race".into()), "Race");
+    }
+
+    #[test]
+    fn finite_laps_total_rejects_iracing_unlimited() {
+        assert_eq!(finite_laps_total(50), Some(50));
+        assert_eq!(finite_laps_total(0), None);
+        assert_eq!(finite_laps_total(32_767), None);
+        assert_eq!(finite_laps_total(100_000), None);
     }
 
     #[test]

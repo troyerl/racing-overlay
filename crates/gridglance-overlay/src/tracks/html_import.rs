@@ -216,8 +216,7 @@ mod tests {
 
     fn fixture(name: &str) -> String {
         let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        // crate is overlay-rs/crates/gridglance-overlay → repo root is ../../..
-        p.pop();
+        // crate is crates/gridglance-overlay → repo root is ../..
         p.pop();
         p.pop();
         p.push("tests");

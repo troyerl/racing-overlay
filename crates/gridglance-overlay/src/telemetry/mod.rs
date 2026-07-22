@@ -14,6 +14,7 @@ mod sector_timer;
 mod strategy_hints;
 mod tables;
 
+pub use format::{finite_laps_total, format_car_number};
 pub use fuel::{build_fuel_snapshot, FuelBurnTracker, FuelCalcState, FuelInputs, FuelScenario};
 pub use irsdk::IrsdkReader;
 pub use lap_compare::{CompareMarker, LapCompareState, LapCompareView, MarkerKind};
@@ -151,6 +152,15 @@ pub struct TelemetryFrame {
     pub gpu: Option<String>,
     pub fps: Option<i32>,
     pub chan_quality: Option<f32>,
+    /// Steering wheel FFB torque as % of max (`SteeringWheelPctTorque`); may exceed 100.
+    #[serde(default)]
+    pub ffb_pct: Option<f32>,
+    /// `PaceMode` from SDK (`0..3` pacing start/restart, `4` = not pacing).
+    #[serde(default)]
+    pub pace_mode: i32,
+    /// Track pit-road speed limit (m/s) from `TrackPitSpeedLimit`.
+    #[serde(default)]
+    pub pit_speed_limit_mps: Option<f32>,
     pub ers_pct: Option<f32>,
     pub ers_mode: Option<String>,
     pub have_hybrid: bool,
@@ -541,6 +551,7 @@ pub mod demo {
                 .find(|c| c.is_player)
                 .map(|c| c.lap_dist_pct)
                 .unwrap_or(0.0);
+
             let mut radar = RadarState {
                 left: (t * 0.4).sin() > 0.55,
                 right: (t * 0.37).cos() > 0.55,
@@ -601,6 +612,46 @@ pub mod demo {
             }
 
             let (flag, flag_context, incident_warn) = demo_flag(t);
+            let pace_mode = if matches!(flag.as_deref(), Some("yellow") | Some("caution")) {
+                2 // single-file restart while under demo yellow
+            } else {
+                4 // irsdk_PaceModeNotPacing
+            };
+            if pace_mode != 4 {
+                cars.push(CarRow {
+                    car_idx: 63,
+                    position: 0,
+                    class_position: 0,
+                    car_number: "0".into(),
+                    name: "Pace Car".into(),
+                    gap: String::new(),
+                    last_lap: String::new(),
+                    best_lap: String::new(),
+                    irating: 0,
+                    irating_delta: None,
+                    class_id: 0,
+                    license: String::new(),
+                    class_color: "#ffd23a".into(),
+                    on_pit: false,
+                    in_pit: false,
+                    on_track: true,
+                    approaching_pits: false,
+                    is_player: false,
+                    is_speaking: false,
+                    is_pace_car: true,
+                    lapping: false,
+                    lap_ahead: false,
+                    inactive: false,
+                    lap_dist_pct: (player_pct + 0.08) % 1.0,
+                    est_time: 0.0,
+                    f2_time: 0.0,
+                    lap: 0,
+                    laps_completed: 0,
+                    speed_mps: 24.5 + 1.2 * (t as f32 * 0.5).sin(),
+                    status_kind: None,
+                    car_flag: None,
+                });
+            }
             let secondary = if incident_warn {
                 Some("Incidents 13/17".into())
             } else if (t as i32 % 14) < 2 {
@@ -690,6 +741,9 @@ pub mod demo {
                 gpu: Some("41%".into()),
                 fps: Some(144),
                 chan_quality: Some(92.0),
+                ffb_pct: Some(55.0 + 60.0 * (t * 1.7).sin().abs() as f32),
+                pace_mode,
+                pit_speed_limit_mps: Some(22.0),
                 ers_pct: Some(ers_pct),
                 ers_mode: Some("Balanced".into()),
                 have_hybrid: true,
@@ -778,6 +832,7 @@ pub mod demo {
                     90.0,
                     None,
                     4,
+                    Some("Race"),
                     &serde_json::json!({}),
                     &serde_json::json!([]),
                 )

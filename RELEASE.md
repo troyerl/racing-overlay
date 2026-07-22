@@ -5,6 +5,26 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.4 - 2026-07-22
+
+- **Repo layout.** Rust workspace lives at the repo root (`crates/`,
+  `Cargo.toml`) — no nested `overlay-rs/` folder.
+- **Pace / caution panel.** New widget shows pace-car speed, your speed, pit
+  limit, and optional deltas under yellow (editable anytime in layout mode).
+  Pace speed is derived from lap progress × track length (`CarIdxSpeed` is not
+  in the SDK).
+- **Dash responsiveness.** Gear, RPM, and pedal arcs track live telemetry
+  without ease/lag glitches.
+- **Radio tower.** Faster present cadence and a short hold so speakers appear
+  promptly.
+- **System panel.** Toggle CPU / Memory / GPU / FPS / Network / FFB (and icons)
+  in Settings → Metrics; FFB warns above 100%.
+- **Relative & standings.** Relative includes on-track/pit cars ahead of you;
+  car numbers use consistent `#` formatting; lap blue/red tints only in races;
+  unlimited-session lap totals no longer show as 32767.
+- **Layout.** Garage↔track and Elegant→Data no longer wipe saved panel sizes;
+  pace panel no longer balloons under yellow via elegant auto-grow.
+
 ## 1.69.3 - 2026-07-21
 
 - **Security: no credentials in git.** Cloud read URI is no longer hardcoded in

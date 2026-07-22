@@ -32,6 +32,7 @@ pub const WIDGET_NAV_GROUPS: &[(&str, &[&str])] = &[
         &[
             "flags",
             "weather_panel",
+            "pace_caution",
             "pit_board",
             "radio_tower",
             "ers_hybrid",
@@ -409,18 +410,33 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
         "system_panel" => vec![
             (
                 "Content",
+                &["panel_style", "show_title", "title", "show_icons"],
+            ),
+            (
+                "Metrics",
                 &[
-                    "panel_style",
-                    "show_title",
-                    "title",
                     "show_cpu",
                     "show_mem",
                     "show_gpu",
                     "show_fps",
                     "show_network",
+                    "show_ffb",
                 ],
             ),
             ("Row layout", &["row_height_px"]),
+            ("Layout", &["corner_radius_frac"]),
+            ("Colors", &["colors"]),
+        ],
+        "pace_caution" => vec![
+            (
+                "Content",
+                &[
+                    "panel_style",
+                    "show_title",
+                    "title",
+                    "show_delta",
+                ],
+            ),
             ("Layout", &["corner_radius_frac"]),
             ("Colors", &["colors"]),
         ],
@@ -540,6 +556,7 @@ pub fn tab_color(section: &str) -> &'static str {
         "tire_panel" => "#ff9416",
         "pit_board" => "#ffd23a",
         "weather_panel" => "#5aa9ff",
+        "pace_caution" => "#ffd23a",
         "leaderboard_strip" => "#a98bff",
         "radio_tower" => "#9aa3b2",
         "ers_hybrid" => "#46df7a",
@@ -629,6 +646,7 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
             "data_font_bold",
             "text_scale",
         ],
+        "pace_caution" => &["row_dividers", "data_font_bold", "text_scale"],
         "leaderboard_strip" => &[
             "show_class_color",
             "data_font_bold",
@@ -637,13 +655,7 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
         ],
         "radio_tower" => &["row_dividers", "max_row_height_frac", "data_font_bold"],
         "ers_hybrid" => &["row_dividers", "data_font_bold", "text_scale"],
-        "system_panel" => &[
-            "show_icons",
-            "text_scale",
-            "max_row_height_frac",
-            "row_dividers",
-            "data_font_bold",
-        ],
+        "system_panel" => &["text_scale", "max_row_height_frac", "row_dividers", "data_font_bold"],
         "pit_advisor" => &[
             "row_dividers",
             "race_tire_sets_total",
@@ -701,6 +713,16 @@ pub fn nav_for_tab(tab: TopTab) -> Vec<(String, String, String)> {
 }
 
 pub fn pretty_key(key: &str) -> String {
+    match key {
+        "show_cpu" => return "CPU".into(),
+        "show_mem" => return "Memory".into(),
+        "show_gpu" => return "GPU".into(),
+        "show_fps" => return "FPS".into(),
+        "show_network" => return "Network".into(),
+        "show_ffb" => return "FFB".into(),
+        "show_icons" => return "Icons".into(),
+        _ => {}
+    }
     key.split('_')
         .map(|w| {
             let mut c = w.chars();
@@ -834,6 +856,16 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
             Some("Cars behind you. Rows ahead + rows behind must equal total rows.")
         }
         (_, "center_on_player") => Some("Keep your row centered in the table."),
+        ("pace_caution", "show_delta") => {
+            Some("Show You−Pace (ΔP) and You−Pit limit (ΔL) columns.")
+        }
+        ("system_panel", "show_cpu") => Some("Show CPU usage."),
+        ("system_panel", "show_mem") => Some("Show memory usage."),
+        ("system_panel", "show_gpu") => Some("Show GPU usage."),
+        ("system_panel", "show_fps") => Some("Show iRacing FPS."),
+        ("system_panel", "show_network") => Some("Show connection / channel quality."),
+        ("system_panel", "show_ffb") => Some("Show force-feedback torque (%). Warns above 100%."),
+        ("system_panel", "show_icons") => Some("Use icons instead of text labels for each metric."),
         _ => None,
     }
 }

@@ -312,11 +312,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         }
 
         if show_num {
-            let num = row.car_number.trim();
+            let num = crate::telemetry::format_car_number(row.car_number.trim());
             if !num.is_empty() {
                 let num_rect =
                     Rect::from_min_size(Pos2::new(x_num, row_top), Vec2::new(num_w, row_h - 2.0));
-                super::scoreboard_digits::draw_scoreboard_text(ui, num_rect, num, num_fill, 2);
+                super::scoreboard_digits::draw_scoreboard_text(ui, num_rect, &num, num_fill, 2);
             }
         }
 

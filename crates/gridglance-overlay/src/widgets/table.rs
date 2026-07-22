@@ -613,11 +613,12 @@ fn paint_row_cols(
                 );
             }
             "car_number" => {
+                let num = crate::telemetry::format_car_number(&row.car_number);
                 label(
                     ui,
                     Pos2::new(cx + cw * 0.5, cy),
                     Align2::CENTER_CENTER,
-                    &row.car_number,
+                    &num,
                     fs,
                     if dim { dim_text } else { text },
                     true,

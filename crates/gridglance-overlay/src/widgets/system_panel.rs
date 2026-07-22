@@ -14,22 +14,26 @@ const ROW_SPECS: &[(&str, &str, &str)] = &[
     ("show_gpu", "GPU", "gpu"),
     ("show_fps", "FPS", "fps"),
     ("show_network", "NET", "network"),
+    ("show_ffb", "FFB", "ffb"),
 ];
 
-fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String)> {
+fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String, bool)> {
     let f = ctx.frame;
     let mut rows = Vec::new();
     for &(cfg_key, text_label, icon_key) in ROW_SPECS {
         if !ctx.cfg.bool_key(SECTION, cfg_key, true) {
             continue;
         }
-        let value = match cfg_key {
-            "show_cpu" => f.cpu.clone().unwrap_or_else(|| "—".into()),
-            "show_mem" => f.mem.clone().unwrap_or_else(|| "—".into()),
-            "show_gpu" => f.gpu.clone().unwrap_or_else(|| "—".into()),
-            "show_fps" => f.fps.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+        let (value, warn) = match cfg_key {
+            "show_cpu" => (f.cpu.clone().unwrap_or_else(|| "—".into()), false),
+            "show_mem" => (f.mem.clone().unwrap_or_else(|| "—".into()), false),
+            "show_gpu" => (f.gpu.clone().unwrap_or_else(|| "—".into()), false),
+            "show_fps" => (
+                f.fps.map(|v| v.to_string()).unwrap_or_else(|| "—".into()),
+                false,
+            ),
             "show_network" => {
-                if let Some(q) = f.chan_quality {
+                let v = if let Some(q) = f.chan_quality {
                     if q > 0.0 {
                         format!("{:.0}%", q)
                     } else {
@@ -37,11 +41,19 @@ fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String)
                     }
                 } else {
                     "—".into()
+                };
+                (v, false)
+            }
+            "show_ffb" => {
+                if let Some(p) = f.ffb_pct.filter(|v| v.is_finite()) {
+                    (format!("{:.0}%", p), p > 100.0)
+                } else {
+                    ("—".into(), false)
                 }
             }
-            _ => "—".into(),
+            _ => ("—".into(), false),
         };
-        rows.push((text_label, icon_key, value));
+        rows.push((text_label, icon_key, value, warn));
     }
     rows
 }
@@ -69,7 +81,8 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
     let header = ctx.cfg.color(SECTION, "header", "#9aa3b2");
-    for (text_label, icon_key, value) in rows {
+    let warn = ctx.cfg.color(SECTION, "warn", "#ff5b5b");
+    for (text_label, icon_key, value, is_warn) in rows {
         let row = egui::Rect::from_min_size(
             Pos2::new(card.left() + pad, y),
             egui::vec2(card.width() - 2.0 * pad, rh),
@@ -101,7 +114,7 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Align2::RIGHT_CENTER,
             &value,
             rh * 0.42,
-            text,
+            if is_warn { warn } else { text },
             true,
         );
         y += rh;
@@ -143,10 +156,12 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let avail = (card.bottom() - pad_y - y).max(rows.len() as f32 * 18.0);
     let row_h = (avail / rows.len() as f32).clamp(16.0, 22.0);
+    let warn_c = ctx.cfg.color(SECTION, "warn", "#ff5b5b");
 
-    for (text_label, icon_key, value) in rows {
+    for (text_label, icon_key, value, is_warn) in rows {
         let cy = y + row_h * 0.5;
         let icon_sz = 12.0;
+        let value_c = if is_warn { warn_c } else { text };
         if let Some(g) = icons::glyph(icon_key) {
             ui.painter().text(
                 Pos2::new(left, cy),
@@ -181,7 +196,7 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Align2::RIGHT_CENTER,
             &value,
             12.0,
-            text,
+            value_c,
             true,
         );
         y += row_h;

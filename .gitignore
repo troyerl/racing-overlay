@@ -23,4 +23,5 @@ tracks-html/
 # Rust
 .cargo/
 .rustup/
+/target/
 overlay-rs/target/

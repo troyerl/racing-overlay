@@ -20,12 +20,8 @@ fn gear_str(g: i32) -> String {
 }
 
 fn speed_value(cfg: &OverlayConfig, ms: f32) -> String {
-    let v = if cfg.imperial_units() {
-        ms * 2.236_936_3
-    } else {
-        ms * 3.6
-    };
-    format!("{:.0}", v)
+    let unit = if cfg.imperial_units() { "mph" } else { "kph" };
+    format!("{:.0} {unit}", cfg.conv_speed(ms))
 }
 
 fn fuel_amount(cfg: &OverlayConfig, litres: f32) -> String {
@@ -65,12 +61,12 @@ fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
             if f.car_number.is_empty() {
                 "--".into()
             } else {
-                f.car_number.clone()
+                crate::telemetry::format_car_number(&f.car_number)
             }
         }
         "lap_count" => {
-            if f.laps_total > 0 {
-                format!("{}/{}", f.lap, f.laps_total)
+            if let Some(total) = crate::telemetry::finite_laps_total(f.laps_total) {
+                format!("{}/{}", f.lap, total)
             } else if f.lap > 0 {
                 format!("{}", f.lap)
             } else {
@@ -78,9 +74,12 @@ fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
             }
         }
         "laps_left" => {
-            if f.laps_total > 0 {
+            if let Some(total) = crate::telemetry::finite_laps_total(f.laps_total) {
                 let lead = if f.lead_lap > 0 { f.lead_lap } else { f.lap };
-                format!("{}", (f.laps_total - lead).max(0))
+                format!("{}", (total - lead).max(0))
+            } else if let Some(rem) = f.session_laps_remain.filter(|v| v.is_finite() && *v < 32_000.0)
+            {
+                format!("{:.0}", rem)
             } else {
                 "--".into()
             }
@@ -181,6 +180,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let cfg = ctx.cfg;
     let f = ctx.frame;
+    // Gear / RPM / pedals must track live SDK ticks — not the idle ~10 Hz present path.
+    if f.connected {
+        *ctx.panel_animating = true;
+    }
     let w = rect.width();
     let h = rect.height();
     let text_scale = cfg.text_scale(SECTION);
@@ -252,8 +255,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let ring_d = total * 0.80;
     let ring_half = ring_d * 0.5;
     let bpad = bot_rect.height() * 0.14;
-    let base_pad = h * 0.035;
-    let gap_r = ring_cx + ring_half + base_pad;
+    // Clearance between the center ring and left/right metric columns.
+    let ring_gap = (h * 0.09).max(ring_d * 0.10);
+    let gap_l = ring_cx - ring_half - ring_gap;
+    let gap_r = ring_cx + ring_half + ring_gap;
 
     let ipad = top_rect.height() * 0.22;
     if cfg.bool_key(SECTION, "show_shift_bar", true) {
@@ -266,7 +271,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                     top_rect.center().y - top_rect.height() * 0.20,
                 ),
                 Pos2::new(
-                    (ring_cx - ring_half - base_pad).max(top_rect.left() + ipad + 40.0),
+                    gap_l.max(top_rect.left() + ipad + 40.0),
                     top_rect.center().y + top_rect.height() * 0.20,
                 ),
             ),
@@ -291,7 +296,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let primary = Rect::from_min_max(
             Pos2::new(bot_rect.left() + bpad, bot_rect.top() + bpad),
             Pos2::new(
-                (ring_cx - ring_half - base_pad).max(bot_rect.left() + bpad + 10.0),
+                gap_l.max(bot_rect.left() + bpad + 10.0),
                 bot_rect.bottom() - bpad,
             ),
         );
@@ -327,10 +332,36 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 
     if cfg.bool_key(SECTION, "show_ring", true) {
+        // Raw pedals — easing lagged gear/RPM via sparse presents and glitched bars.
+        let thr = f.throttle.clamp(0.0, 1.0);
+        let brk = f.brake.clamp(0.0, 1.0);
+        let clt = f.clutch.clamp(0.0, 1.0);
         if cfg.str_key(SECTION, "center_mode", "ring") == "pedals" {
-            draw_pedals(ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale);
+            draw_pedals(
+                ui,
+                cfg,
+                ring_cx,
+                ring_cy,
+                ring_d,
+                f,
+                text_scale,
+                thr,
+                brk,
+                clt,
+            );
         } else {
-            draw_ring(ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale);
+            draw_ring(
+                ui,
+                cfg,
+                ring_cx,
+                ring_cy,
+                ring_d,
+                f,
+                text_scale,
+                thr,
+                brk,
+                clt,
+            );
         }
     }
 
@@ -527,7 +558,7 @@ fn draw_status(
         .as_ref()
         .map(|g| text_w(ui, &ic_font, g))
         .unwrap_or(0.0);
-    let mut gap = h * 0.14;
+    let mut gap = h * 0.18;
     let mut vw = text_w(ui, &val_font, &val);
     let mut total = iw + if glyph.is_some() { gap } else { 0.0 } + vw;
     if total > rect.width() && total > 0.0 {
@@ -584,7 +615,14 @@ fn draw_primary(
     }
     let both = show_l && show_r;
     let cols = if both { 2 } else { 1 };
-    let cell_w = rect.width() / cols as f32;
+    // Keep lap / speed (etc.) from colliding when both columns are short.
+    let col_gap = if both {
+        (h * 0.45).clamp(16.0, 36.0)
+    } else {
+        0.0
+    };
+    let usable = (rect.width() - col_gap).max(1.0);
+    let cell_w = usable / cols as f32;
     let keys: Vec<&str> = match (show_l, show_r) {
         (true, true) => vec![left_key, right_key],
         (true, false) => vec![left_key],
@@ -593,13 +631,13 @@ fn draw_primary(
     };
     for (i, key) in keys.into_iter().enumerate() {
         let cell = Rect::from_min_size(
-            Pos2::new(rect.left() + i as f32 * cell_w, rect.top()),
+            Pos2::new(rect.left() + i as f32 * (cell_w + col_gap), rect.top()),
             Vec2::new(cell_w, h),
         );
         let val = metric_str(cfg, f, key);
         let mut ic_px = h * 0.30 * text_scale;
         let mut val_px = h * 0.58 * text_scale;
-        let mut gap = h * 0.10;
+        let mut gap = h * 0.18;
         let g = icons::glyph(key);
         let mut iw = g
             .as_ref()
@@ -619,9 +657,14 @@ fn draw_primary(
             vw = text_w(ui, &FontId::proportional(val_px), &val);
             total = iw + if g.is_some() { gap } else { 0.0 } + vw;
         }
-        // Two columns: right-align each metric in its half. Single: center in strip.
+        // Two columns: left metric left-aligned, right metric right-aligned
+        // (toward the ring) so a shared gap stays between them.
         let mut x = if both {
-            cell.right() - total
+            if i == 0 {
+                cell.left()
+            } else {
+                cell.right() - total
+            }
         } else {
             cell.left() + (cell.width() - total).max(0.0) * 0.5
         };
@@ -656,17 +699,43 @@ fn draw_stats(
     f: &TelemetryFrame,
     text_scale: f32,
 ) {
-    let half = rect.width() * 0.5;
-    for (i, key) in [left_key, right_key].into_iter().enumerate() {
-        if key == "none" {
-            continue;
-        }
+    let show_l = left_key != "none";
+    let show_r = right_key != "none";
+    if !show_l && !show_r {
+        return;
+    }
+    let both = show_l && show_r;
+    let cols = if both { 2 } else { 1 };
+    let col_gap = if both {
+        (rect.height() * 0.45).clamp(16.0, 36.0)
+    } else {
+        0.0
+    };
+    let usable = (rect.width() - col_gap).max(1.0);
+    let cell_w = usable / cols as f32;
+    let keys: Vec<(usize, &str)> = match (show_l, show_r) {
+        (true, true) => vec![(0, left_key), (1, right_key)],
+        (true, false) => vec![(0, left_key)],
+        (false, true) => vec![(0, right_key)],
+        _ => return,
+    };
+    for (i, key) in keys {
         let cell = Rect::from_min_size(
-            Pos2::new(rect.left() + i as f32 * half, rect.top()),
-            Vec2::new(half - 4.0, rect.height()),
+            Pos2::new(rect.left() + i as f32 * (cell_w + col_gap), rect.top()),
+            Vec2::new(cell_w, rect.height()),
         );
         if key == "irating" {
-            draw_irating_pair(ui, cfg, cell, f, cell.height() * 0.24 * text_scale);
+            let pair_h = cell.height() * 0.24 * text_scale;
+            let pair_w = irating_pair_width(ui, cfg, f, pair_h, cell.height());
+            let pair_rect = if both && i == 1 {
+                Rect::from_min_size(
+                    Pos2::new(cell.right() - pair_w, cell.top()),
+                    Vec2::new(pair_w.min(cell.width()), cell.height()),
+                )
+            } else {
+                cell
+            };
+            draw_irating_pair(ui, cfg, pair_rect, f, pair_h);
             continue;
         }
         let lines = metric_lines(cfg, f, key);
@@ -674,12 +743,12 @@ fn draw_stats(
         let mut ic_px = h * 0.40 * text_scale;
         let mut lbl_px = h * 0.20 * text_scale;
         let mut val_px = h * 0.24 * text_scale;
-        let mut icon_gap = h * 0.12;
-        let mut lbl_gap = h * 0.08;
+        let mut icon_gap = h * 0.18;
+        let mut lbl_gap = h * 0.12;
         let g = icons::glyph(key);
-        let iw = g
+        let mut iw = g
             .as_ref()
-            .map(|gg| text_w(ui, &icons::font_id(ic_px), gg) + icon_gap)
+            .map(|gg| text_w(ui, &icons::font_id(ic_px), gg))
             .unwrap_or(0.0);
         let mut widest = 0.0_f32;
         for (lbl, val) in &lines {
@@ -690,17 +759,35 @@ fn draw_stats(
             };
             widest = widest.max(lw + text_w(ui, &FontId::proportional(val_px), val));
         }
-        let mut need = iw + widest + h * 0.08;
-        if need > cell.width() && need > 0.0 {
-            let s = cell.width() / need;
+        let mut total = iw + if g.is_some() { icon_gap } else { 0.0 } + widest;
+        if total > cell.width() && total > 0.0 {
+            let s = cell.width() / total;
             ic_px *= s;
             lbl_px *= s;
             val_px *= s;
             icon_gap *= s;
             lbl_gap *= s;
-            need = cell.width();
+            iw = g
+                .as_ref()
+                .map(|gg| text_w(ui, &icons::font_id(ic_px), gg))
+                .unwrap_or(0.0);
+            widest = 0.0;
+            for (lbl, val) in &lines {
+                let lw = if lbl.is_empty() {
+                    0.0
+                } else {
+                    text_w(ui, &FontId::proportional(lbl_px), lbl) + lbl_gap
+                };
+                widest = widest.max(lw + text_w(ui, &FontId::proportional(val_px), val));
+            }
+            total = iw + if g.is_some() { icon_gap } else { 0.0 } + widest;
         }
-        let mut x = cell.left();
+        // Mirror primary: left column left-aligned, right column toward the outer edge.
+        let mut x = if both && i == 1 {
+            cell.right() - total
+        } else {
+            cell.left()
+        };
         if let Some(ref gg) = g {
             icon_paint(
                 ui,
@@ -744,7 +831,6 @@ fn draw_stats(
                 true,
             );
         }
-        let _ = need;
     }
 }
 
@@ -907,16 +993,22 @@ fn draw_irating_pair(
     }
 }
 
-fn selected_inputs(cfg: &OverlayConfig, f: &TelemetryFrame) -> Vec<(f32, &'static str, bool)> {
+fn selected_inputs(
+    cfg: &OverlayConfig,
+    f: &TelemetryFrame,
+    thr: f32,
+    brk: f32,
+    clt: f32,
+) -> Vec<(f32, &'static str, bool)> {
     let mut out = Vec::new();
     if cfg.bool_key(SECTION, "show_throttle", true) {
-        out.push((f.throttle, "throttle", false));
+        out.push((thr, "throttle", false));
     }
     if cfg.bool_key(SECTION, "show_brake", true) {
-        out.push((f.brake, "brake", f.abs_active));
+        out.push((brk, "brake", f.abs_active));
     }
     if cfg.bool_key(SECTION, "show_clutch", false) {
-        out.push((f.clutch, "clutch", false));
+        out.push((clt, "clutch", false));
     }
     out
 }
@@ -929,6 +1021,9 @@ fn draw_ring(
     ring_d: f32,
     f: &TelemetryFrame,
     text_scale: f32,
+    thr: f32,
+    brk: f32,
+    clt: f32,
 ) {
     let mr = ring_d * 0.5 + ring_d * 0.06;
     let mut border = cfg.color(SECTION, "cell_border", "#ffffff20");
@@ -944,7 +1039,7 @@ fn draw_ring(
         Stroke::new((ring_d * 0.022).max(1.5), border),
     );
 
-    let inputs = selected_inputs(cfg, f);
+    let inputs = selected_inputs(cfg, f, thr, brk, clt);
     let n = inputs.len();
     let gear_px = if n <= 1 {
         ring_d * 0.50
@@ -1037,6 +1132,9 @@ fn draw_pedals(
     ring_d: f32,
     f: &TelemetryFrame,
     text_scale: f32,
+    thr: f32,
+    brk: f32,
+    clt: f32,
 ) {
     let mr = ring_d * 0.5 + ring_d * 0.06;
     let mut border = cfg.color(SECTION, "cell_border", "#ffffff20");
@@ -1052,7 +1150,7 @@ fn draw_pedals(
         Stroke::new((ring_d * 0.022).max(1.5), border),
     );
 
-    let bars = selected_inputs(cfg, f);
+    let bars = selected_inputs(cfg, f, thr, brk, clt);
     if bars.is_empty() {
         label(
             ui,

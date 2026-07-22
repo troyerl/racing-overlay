@@ -55,6 +55,7 @@ pub const WIDGET_KEYS: &[&str] = &[
     "ers_hybrid",
     "system_panel",
     "pit_advisor",
+    "pace_caution",
 ];
 
 /// Default geometries (x, y, w, h) for **Data** panel style.
@@ -80,6 +81,7 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "ers_hybrid" => (920, 780, 220, 140),
         "system_panel" => (1160, 940, 220, 180),
         "pit_advisor" => (660, 1080, 320, 160),
+        "pace_caution" => (920, 940, 420, 88),
         _ => (100, 100, 280, 160),
     }
 }
@@ -143,6 +145,7 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
                 "show_gpu",
                 "show_fps",
                 "show_network",
+                "show_ffb",
             ] {
                 if cfg.bool_key(key, k, true) {
                     n += 1;
@@ -154,6 +157,20 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
                 0
             };
             (200, 14 + title + n.max(1) * 20)
+        }
+        "pace_caution" => {
+            let mut h = 12;
+            if cfg.bool_key(key, "show_title", true) {
+                h += 14;
+            }
+            h += 44; // label + value row
+            let n = 3 + if cfg.bool_key(key, "show_delta", true) {
+                2
+            } else {
+                0
+            };
+            // Compact: avoid elegant auto-grow ballooning under yellow.
+            ((n * 56).min(320), h.max(56))
         }
         "pit_board" => {
             // Typical 3 services + title; grows with live list via host fit slack.
@@ -820,6 +837,19 @@ impl OverlayConfig {
             }
             ConfigContext::Garage => {
                 let race = obj.get("layout").cloned().unwrap_or_else(|| json!({}));
+                // First-time placements often happen while In garage. Promote any
+                // keys missing from the on-track layout so Race inherits them.
+                let mut race_map = match race {
+                    Value::Object(m) => m,
+                    _ => Map::new(),
+                };
+                if let Some(cur) = layout.as_object() {
+                    for (k, v) in cur {
+                        race_map.entry(k.clone()).or_insert_with(|| v.clone());
+                    }
+                }
+                let race = Value::Object(race_map);
+                obj.insert("layout".into(), race.clone());
                 obj.insert("layout_garage".into(), sparse_diff(&race, &layout));
             }
         }
@@ -1360,6 +1390,7 @@ fn default_show(key: &str) -> bool {
             | "ers_hybrid"
             | "system_panel"
             | "pit_advisor"
+            | "pace_caution"
     )
 }
 
@@ -1700,6 +1731,26 @@ fn default_cfg() -> Value {
             section.insert("show_temps".into(), Value::Bool(true));
             section.insert("show_wind".into(), Value::Bool(true));
         }
+        if *key == "system_panel" {
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("SYSTEM".into()));
+            section.insert("show_cpu".into(), Value::Bool(true));
+            section.insert("show_mem".into(), Value::Bool(true));
+            section.insert("show_gpu".into(), Value::Bool(true));
+            section.insert("show_fps".into(), Value::Bool(true));
+            section.insert("show_network".into(), Value::Bool(true));
+            section.insert("show_ffb".into(), Value::Bool(true));
+            section.insert("show_icons".into(), Value::Bool(false));
+        }
+        if *key == "pace_caution" {
+            section.insert("panel_style".into(), Value::String("data".into()));
+            section.insert("show_title".into(), Value::Bool(true));
+            section.insert("title".into(), Value::String("PACE".into()));
+            section.insert("show_delta".into(), Value::Bool(true));
+            if let Some(Value::Object(colors)) = section.get_mut("colors") {
+                colors.insert("warn".into(), Value::String("#ffd23a".into()));
+            }
+        }
         if *key == "ers_hybrid" {
             section.insert("show_title".into(), Value::Bool(true));
             section.insert("title".into(), Value::String("HYBRID".into()));
@@ -1898,5 +1949,29 @@ mod tests {
             oc.active_layout_doc(ConfigContext::Garage)["dash"],
             json!([9, 2, 3, 4])
         );
+    }
+
+    #[test]
+    fn garage_layout_promotes_missing_race_keys() {
+        let mut oc = OverlayConfig::default();
+        oc.store_active_layout_doc(
+            ConfigContext::Race,
+            json!({"dash": [1, 2, 3, 4]}),
+        );
+        oc.store_active_layout_doc(
+            ConfigContext::Garage,
+            json!({
+                "dash": [1, 2, 3, 4],
+                "pace_caution": [10, 20, 400, 90]
+            }),
+        );
+        assert_eq!(
+            oc.doc["presets"]["Default"]["layout"]["pace_caution"],
+            json!([10, 20, 400, 90])
+        );
+        // No garage delta for a key that matches the promoted race entry.
+        assert!(oc.doc["presets"]["Default"]["layout_garage"]
+            .get("pace_caution")
+            .is_none());
     }
 }

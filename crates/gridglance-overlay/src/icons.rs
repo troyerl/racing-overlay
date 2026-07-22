@@ -10,9 +10,9 @@ pub const FAMILY: &str = "fa-solid";
 /// Named family for bold HUD text (`chrome::label` when bold).
 pub const BOLD_FAMILY: &str = "Bold";
 
-const FA_TTF: &[u8] = include_bytes!("../../../../assets/fonts/fa-solid-900.ttf");
-const NOTO_REGULAR: &[u8] = include_bytes!("../../../../assets/fonts/NotoSans-Regular.ttf");
-const NOTO_BOLD: &[u8] = include_bytes!("../../../../assets/fonts/NotoSans-Bold.ttf");
+const FA_TTF: &[u8] = include_bytes!("../../../assets/fonts/fa-solid-900.ttf");
+const NOTO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/NotoSans-Regular.ttf");
+const NOTO_BOLD: &[u8] = include_bytes!("../../../assets/fonts/NotoSans-Bold.ttf");
 
 /// Metric / label name → Font Awesome 6 Free Solid codepoint.
 /// Keep in sync with `overlay/widgets/icons.py` `_CODEPOINTS`.
@@ -91,6 +91,7 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("gpu", 0xF390),     // display
     ("fps", 0xF624),     // gauge
     ("network", 0xF1EB), // wifi
+    ("ffb", 0xF1DE),     // sliders (force feedback)
     // radio / map traffic
     ("speaking", 0xF028),   // volume-high
     ("radio", 0xF130),      // microphone

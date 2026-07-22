@@ -4,7 +4,7 @@ use crate::chrome::color_with_alpha;
 use crate::config::{ConfigContext, WIDGET_KEYS};
 use crate::layered;
 use crate::settings;
-use crate::state::{fit_panel_size, PanelLayout, StateHandle};
+use crate::state::{fit_panel_size, grow_panel_size, PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
     demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
@@ -141,6 +141,9 @@ pub struct OverlayApp {
     last_frame_ms: f64,
     /// Last panel_style string per widget — detect Elegant/Data switches for content fit.
     last_panel_style: HashMap<String, String>,
+    /// Config context (Race/Garage) last used to seed `last_panel_style`.
+    /// Profile switches must reseat styles without fit+save (that corrupted on-track layouts).
+    last_fit_context: Option<ConfigContext>,
     /// Full-res static map BGRA cache (no cars) for CPU composite presents.
     map_bg: Option<(i32, i32, Vec<u8>)>,
     /// Half-res downsample of `map_bg` (kept for capture; hot ULW uses full + dirty).
@@ -213,6 +216,7 @@ impl OverlayApp {
             last_table_focus: None,
             last_frame_ms: 0.0,
             last_panel_style: HashMap::new(),
+            last_fit_context: None,
             map_bg: None,
             map_bg_half: None,
             map_bg_fp: 0,
@@ -650,6 +654,9 @@ impl OverlayApp {
                 ConfigContext::Race
             };
             if st.config_context != next_context {
+                // Persist in-memory geometry to the outgoing profile before reload,
+                // otherwise garage↔track swaps discard unsaved / mid-session sizes.
+                st.save_layout_to_preset();
                 st.set_config_context(next_context);
             }
             // Keep HTML-imported authoring TrackID across demo/live ticks.
@@ -679,40 +686,64 @@ impl eframe::App for OverlayApp {
         self.state.write().mono_secs = mono;
 
         // Snap panel geometry to content size when panel_style changes (Elegant hugs content).
+        // Do NOT treat Race↔Garage profile swaps as style toggles — that force-fit Data panels
+        // to default_geom and saved the result into the active profile (garage/in-car corruption).
         {
             let mut st = self.state.write();
-            let mut changed = false;
-            for key in WIDGET_KEYS {
-                let style = match st.config.panel_style(key) {
-                    crate::config::PanelStyle::Elegant => "elegant",
-                    crate::config::PanelStyle::Data => "data",
-                };
-                let prev = self.last_panel_style.get(*key).map(String::as_str);
-                let style_changed = prev != Some(style);
-                if style_changed {
-                    // Fit on Elegant first-sight (migrate oversized Data layouts) and on
-                    // any later style toggle. Leave untouched Data layouts alone on first see.
-                    let should_fit = style == "elegant" || prev.is_some();
-                    if should_fit {
-                        let (w, h) = crate::config::preferred_panel_size(st.config.as_ref(), key);
-                        fit_panel_size(&mut st.layout, key, w, h);
-                        changed = true;
-                    }
+            let ctx_now = st.effective_context();
+            if self.last_fit_context != Some(ctx_now) {
+                self.last_panel_style.clear();
+                for key in WIDGET_KEYS {
+                    let style = match st.config.panel_style(key) {
+                        crate::config::PanelStyle::Elegant => "elegant",
+                        crate::config::PanelStyle::Data => "data",
+                    };
                     self.last_panel_style
                         .insert((*key).to_string(), style.to_string());
-                } else if style == "elegant" {
-                    // Grow if content preferred size increased (avoids clipped/overlapping text).
-                    let (pw, ph) = crate::config::preferred_panel_size(st.config.as_ref(), key);
-                    let lay = st.layout.get(*key);
-                    let too_small = lay.map(|l| l.h + 8 < ph || l.w + 8 < pw).unwrap_or(true);
-                    if too_small {
-                        fit_panel_size(&mut st.layout, key, pw, ph);
-                        changed = true;
+                }
+                self.last_fit_context = Some(ctx_now);
+            } else {
+                let mut changed = false;
+                for key in WIDGET_KEYS {
+                    let style = match st.config.panel_style(key) {
+                        crate::config::PanelStyle::Elegant => "elegant",
+                        crate::config::PanelStyle::Data => "data",
+                    };
+                    let prev = self.last_panel_style.get(*key).map(String::as_str);
+                    let style_changed = prev != Some(style);
+                    if style_changed {
+                        // Only snap when entering Elegant (content-hug). Leaving Elegant
+                        // for Data must NOT reset to default_geom — that wiped saved sizes
+                        // (and looked like garage↔track corruption when styles differed).
+                        let switching_to_elegant =
+                            style == "elegant" && prev != Some("elegant");
+                        if switching_to_elegant {
+                            let (w, h) =
+                                crate::config::preferred_panel_size(st.config.as_ref(), key);
+                            fit_panel_size(&mut st.layout, key, w, h);
+                            changed = true;
+                        }
+                        self.last_panel_style
+                            .insert((*key).to_string(), style.to_string());
+                    } else if style == "elegant" && *key != "pace_caution" {
+                        // Grow if content preferred size increased (avoids clipped text).
+                        // Never shrink below the user's saved geometry.
+                        // pace_caution: preferred width scales with columns and would
+                        // balloon the panel the moment yellow comes out.
+                        let (pw, ph) =
+                            crate::config::preferred_panel_size(st.config.as_ref(), key);
+                        let lay = st.layout.get(*key);
+                        let too_small =
+                            lay.map(|l| l.h + 8 < ph || l.w + 8 < pw).unwrap_or(true);
+                        if too_small {
+                            grow_panel_size(&mut st.layout, key, pw, ph);
+                            changed = true;
+                        }
                     }
                 }
-            }
-            if changed {
-                st.save_layout_to_preset();
+                if changed {
+                    st.save_layout_to_preset();
+                }
             }
         }
 
@@ -725,6 +756,11 @@ impl eframe::App for OverlayApp {
             if st.running && live {
                 for key in WIDGET_KEYS {
                     if !st.config.widget_shown(key) {
+                        continue;
+                    }
+                    if *key == "pace_caution"
+                        && !widgets::pace_caution_should_display(st.frame.as_ref(), st.edit_mode)
+                    {
                         continue;
                     }
                     let lay = st
@@ -880,12 +916,13 @@ impl eframe::App for OverlayApp {
                 } else {
                     MAP_READBACK_MS
                 }
-            } else if was_animating {
+            } else if was_animating || key == "dash" {
                 // Tables, radar, delta, dash blink, etc. need ~60 Hz presents.
+                // Dash is always hot while connected (gear / pedals / RPM).
                 PANEL_ANIM_READBACK_MS
-            } else if key == "relative" || key == "standings" {
+            } else if key == "relative" || key == "standings" || key == "radio_tower" {
                 // Idle tables refresh often enough to catch reorder starts
-                // without staircasey first frames.
+                // without staircasey first frames. Radio needs quick appear.
                 33
             } else if map_hot {
                 NON_MAP_WHEN_MAP_HOT_MS

@@ -55,11 +55,47 @@ fn row_text(row: &RadioSpeaker, show_position: bool, show_name: bool, show_num: 
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
-    let row = match &ctx.frame.radio {
-        Some(r) => r.clone(),
-        None if ctx.edit_mode => preview_row(),
-        None => return, // silent: paint nothing (transparent)
+    #[derive(Clone, Default)]
+    struct RadioHold {
+        row: RadioSpeaker,
+        until: f64,
+    }
+
+    const HOLD_SECS: f64 = 0.45;
+    let id = egui::Id::new("radio_tower_hold");
+    let now = ctx.mono_secs;
+    let mut hold = ui.ctx().data(|d| d.get_temp::<RadioHold>(id));
+
+    let row = if let Some(r) = &ctx.frame.radio {
+        hold = Some(RadioHold {
+            row: r.clone(),
+            until: now + HOLD_SECS,
+        });
+        Some(r.clone())
+    } else if ctx.edit_mode {
+        Some(preview_row())
+    } else {
+        hold.as_ref()
+            .filter(|h| now <= h.until)
+            .map(|h| h.row.clone())
     };
+
+    match &hold {
+        Some(h) if ctx.frame.radio.is_some() || now <= h.until => {
+            ui.ctx().data_mut(|d| d.insert_temp(id, h.clone()));
+        }
+        _ => {
+            ui.ctx().data_mut(|d| {
+                d.remove_temp::<RadioHold>(id);
+            });
+        }
+    }
+
+    let Some(row) = row else {
+        let _ = full_rect(ui);
+        return; // silent: paint nothing (transparent)
+    };
+    *ctx.panel_animating = true;
 
     let rect = full_rect(ui);
     let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);

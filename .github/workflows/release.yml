@@ -62,17 +62,15 @@ jobs:
               next
             }
             { print }
-          ' overlay-rs/Cargo.toml > overlay-rs/Cargo.toml.tmp
-          mv overlay-rs/Cargo.toml.tmp overlay-rs/Cargo.toml
-          grep -A2 '\[workspace\.package\]' overlay-rs/Cargo.toml
+          ' Cargo.toml > Cargo.toml.tmp
+          mv Cargo.toml.tmp Cargo.toml
+          grep -A2 '\[workspace\.package\]' Cargo.toml
           echo "Stamped workspace version = $APP_VERSION"
 
       - name: Test workspace
-        working-directory: overlay-rs
         run: cargo test --workspace
 
       - name: Build gridglance-overlay (release)
-        working-directory: overlay-rs
         env:
           GRIDGLANCE_GITHUB_REPO: ${{ github.repository }}
           # Read-only Atlas URI baked into the binary (installers need no .env).

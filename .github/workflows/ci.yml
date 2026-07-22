@@ -13,9 +13,6 @@ concurrency:
 jobs:
   check:
     runs-on: windows-latest
-    defaults:
-      run:
-        working-directory: overlay-rs
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,8 +24,6 @@ jobs:
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: overlay-rs -> target
 
       - name: fmt
         run: cargo fmt --all -- --check
