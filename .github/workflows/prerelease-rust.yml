@@ -1,18 +1,18 @@
-name: Build & Release
+name: Rust Prerelease
 
-# Build a Windows installer, tag the commit, and publish a GitHub Release on
-# every push to main / master. feature/rust uses prerelease-rust.yml instead.
-# Skip with "[skip ci]" in the commit message.
+# Build a Windows installer from feature/rust and publish it as a GitHub
+# *prerelease* under tag v<version>-rust. Does not touch the stable
+# v<version> release from main / master.
 on:
   push:
-    branches: [main, master]
+    branches: [feature/rust]
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  prerelease:
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -31,20 +31,30 @@ jobs:
             echo "No '## <version>' section found in RELEASE.md" >&2
             exit 1
           fi
-          # Body = lines after the top ## until the next ##
-          awk -v ver="$version" '
-            BEGIN { p=0 }
-            /^## / {
-              if (p) exit
-              if ($0 ~ "^## " ver) { p=1; next }
-            }
-            p { print }
-          ' RELEASE.md | sed -e 's/[[:space:]]*$//' | awk 'NF{p=1} p' | awk 'NF{last=NR} {a[NR]=$0} END{for(i=1;i<=last;i++) print a[i]}' > RELEASE_NOTES.md
+          preview="${version}-rust"
+          sha="${GITHUB_SHA:0:7}"
+          {
+            echo "Rust overlay preview build from \`feature/rust\` (\`${sha}\`)."
+            echo
+            echo "This is a **prerelease** — it does not replace the stable \`v${version}\` release."
+            echo
+            # Body = lines after the top ## until the next ##
+            awk -v ver="$version" '
+              BEGIN { p=0 }
+              /^## / {
+                if (p) exit
+                if ($0 ~ "^## " ver) { p=1; next }
+              }
+              p { print }
+            ' RELEASE.md | sed -e 's/[[:space:]]*$//' | awk 'NF{p=1} p' | awk 'NF{last=NR} {a[NR]=$0} END{for(i=1;i<=last;i++) print a[i]}'
+          } > RELEASE_NOTES.md
           {
             echo "version=$version"
-            echo "tag=v$version"
+            echo "preview=$preview"
+            echo "tag=v$preview"
           } >> "$GITHUB_OUTPUT"
-          echo "version: $version"
+          echo "stable version: $version"
+          echo "preview tag: v$preview"
           cat RELEASE_NOTES.md
 
       - name: Stamp Cargo workspace version
@@ -53,7 +63,6 @@ jobs:
           APP_VERSION: ${{ steps.ver.outputs.version }}
         run: |
           set -euo pipefail
-          # Replace version under [workspace.package] only.
           awk -v v="$APP_VERSION" '
             BEGIN { in_pkg=0 }
             /^\[workspace\.package\]/ { in_pkg=1; print; next }
@@ -74,8 +83,6 @@ jobs:
       - name: Build gridglance-overlay (release)
         env:
           GRIDGLANCE_GITHUB_REPO: ${{ github.repository }}
-          # Read-only Atlas URI baked into the binary (installers need no .env).
-          # Repo secret; leave unset to ship without cloud track sync.
           GRIDGLANCE_MONGODB_READ_URI: ${{ secrets.GRIDGLANCE_MONGODB_READ_URI }}
         run: cargo build --release -p gridglance-overlay
 
@@ -86,13 +93,15 @@ jobs:
         shell: pwsh
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
-            "/DMyAppVersion=${{ steps.ver.outputs.version }}" `
+            "/DMyAppVersion=${{ steps.ver.outputs.preview }}" `
             "installer\gridglance.iss"
 
-      - name: Publish release (creates the tag)
+      - name: Publish prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
-          name: GridGlance ${{ steps.ver.outputs.version }}
+          name: GridGlance ${{ steps.ver.outputs.preview }} (Rust preview)
           body_path: RELEASE_NOTES.md
           files: installer_output/*.exe
+          prerelease: true
+          make_latest: false
