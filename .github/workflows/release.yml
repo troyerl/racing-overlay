@@ -1,10 +1,11 @@
 name: Build & Release
 
 # Build a Windows installer, tag the commit, and publish a GitHub Release on
-# every push to the main branch. Skip with "[skip ci]" in the commit message.
+# every push to main / master / feature/rust. Skip with "[skip ci]" in the
+# commit message.
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, feature/rust]
   workflow_dispatch:
 
 permissions:
