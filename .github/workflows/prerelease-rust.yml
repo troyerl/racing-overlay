@@ -21,6 +21,12 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: windows-msvc
+          cache-targets: true
+
       - name: Read version & notes from RELEASE.md
         id: ver
         shell: bash
@@ -86,13 +92,35 @@ jobs:
           GRIDGLANCE_MONGODB_READ_URI: ${{ secrets.GRIDGLANCE_MONGODB_READ_URI }}
         run: cargo build --release -p gridglance-overlay
 
+      - name: Cache Inno Setup
+        id: cache-innosetup
+        uses: actions/cache@v4
+        with:
+          path: C:\InnoSetup
+          key: innosetup-6.7.3-windows
+
       - name: Install Inno Setup
-        run: choco install innosetup -y --no-progress
+        if: steps.cache-innosetup.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe"
+          $setup = Join-Path $env:RUNNER_TEMP "innosetup-6.7.3.exe"
+          Invoke-WebRequest -Uri $url -OutFile $setup -UseBasicParsing
+          Start-Process -Wait -FilePath $setup -ArgumentList @(
+            "/VERYSILENT",
+            "/SUPPRESSMSGBOXES",
+            "/NORESTART",
+            "/SP-",
+            "/DIR=C:\InnoSetup"
+          )
+          if (-not (Test-Path "C:\InnoSetup\ISCC.exe")) {
+            throw "ISCC.exe missing after Inno Setup install"
+          }
 
       - name: Build the installer
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+          & "C:\InnoSetup\ISCC.exe" `
             "/DMyAppVersion=${{ steps.ver.outputs.preview }}" `
             "installer\gridglance.iss"
 

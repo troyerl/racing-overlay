@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.8 - 2026-07-30
+
+- **CI / release speed.** Packaging workflows cache Cargo and a pinned Inno
+  Setup install; main release no longer re-runs tests (CI already gates);
+  installer uses faster non-solid LZMA compression.
+
 ## 1.69.7 - 2026-07-30
 
 - **Taskbar.** GridGlance stays on the Windows taskbar; clicking the icon opens
