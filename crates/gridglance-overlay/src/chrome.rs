@@ -107,8 +107,14 @@ pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) ->
     let h = rect.height();
     // Python: max(8, h * frac) — floor stays 8 even when frac is 0.
     let radius = (h * cfg.f64_key(section, "corner_radius_frac", 0.0) as f32).max(8.0);
-    let top = cfg.color(section, "bg_top", "#1b1f26f2");
-    let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
+    let mut top = cfg.color(section, "bg_top", "#1b1f26f2");
+    let mut bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
+    // `panel_opacity` 1.0 = fully solid (not the default translucent theme alphas).
+    if let Some(o) = panel_fill_opacity(cfg, section) {
+        let a = (o * 255.0).round().clamp(0.0, 255.0) as u8;
+        top = color_with_alpha(top, a);
+        bottom = color_with_alpha(bottom, a);
+    }
 
     fill_vertical_gradient(ui, rect, radius, top, bottom);
     // Outer frame omitted — panels are fill-only (dash ring keeps its own stroke).
@@ -127,8 +133,19 @@ pub fn draw_elegant_card(
     let h = rect.height();
     let frac = cfg.f64_key(section, "corner_radius_frac", 0.0) as f32;
     let radius = (h * frac.max(0.10)).min(h * 0.22).max(4.0).min(h * 0.5);
-    let top = color_with_alpha(cfg.color(section, "bg_top", "#1b1f26f2"), 108);
-    let bottom = color_with_alpha(cfg.color(section, "bg_bottom", "#0f1216f2"), 88);
+    let (top, bottom) = if let Some(o) = panel_fill_opacity(cfg, section) {
+        // Slider drives fill alpha; 1.0 is fully opaque.
+        let a = (o * 255.0).round().clamp(0.0, 255.0) as u8;
+        (
+            color_with_alpha(cfg.color(section, "bg_top", "#1b1f26f2"), a),
+            color_with_alpha(cfg.color(section, "bg_bottom", "#0f1216f2"), a),
+        )
+    } else {
+        (
+            color_with_alpha(cfg.color(section, "bg_top", "#1b1f26f2"), 108),
+            color_with_alpha(cfg.color(section, "bg_bottom", "#0f1216f2"), 88),
+        )
+    };
     let fill = lerp_color(top, bottom, 0.55);
     let ru = radius
         .min(rect.height() * 0.5)
@@ -321,12 +338,13 @@ pub fn still_easing(cur: f32, target: f32, eps: f32) -> bool {
     (cur - target).abs() > eps
 }
 
-/// Apply `panel_opacity` (0–1) to subsequent painting in this UI.
-pub fn apply_panel_opacity(ui: &mut Ui, cfg: &OverlayConfig, section: &str) {
-    let o = (cfg.f64_key(section, "panel_opacity", 1.0) as f32).clamp(0.0, 1.0);
-    if o < 0.999 {
-        ui.set_opacity(o);
-    }
+/// `panel_opacity` when configured for this section (Radio / System).
+/// `1.0` means a fully opaque card fill.
+fn panel_fill_opacity(cfg: &OverlayConfig, section: &str) -> Option<f32> {
+    cfg.section(section)
+        .get("panel_opacity")
+        .and_then(|v| v.as_f64())
+        .map(|v| (v as f32).clamp(0.0, 1.0))
 }
 
 /// Rebuild a color with a new alpha. egui `Color32` stores premultiplied RGB;

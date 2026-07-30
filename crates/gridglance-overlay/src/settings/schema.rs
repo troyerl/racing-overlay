@@ -877,7 +877,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("system_panel", "show_network") => Some("Show connection / channel quality."),
         ("system_panel", "show_ffb") => Some("Show force-feedback torque (%). Warns above 100%."),
         ("system_panel", "show_icons") => Some("Use icons instead of text labels for each metric."),
-        (_, "panel_opacity") => Some("Overall panel transparency (0 = invisible, 1 = solid)."),
+        (_, "panel_opacity") => {
+            Some("Panel background opacity. 1.0 (100%) is fully solid; lower values fade the fill.")
+        }
         _ => None,
     }
 }
