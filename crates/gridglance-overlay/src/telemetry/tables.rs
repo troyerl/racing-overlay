@@ -31,6 +31,9 @@ pub struct TableRow {
     pub lap_ahead: bool,
     pub inactive: bool,
     pub is_speaking: bool,
+    /// Holds the session-fastest best lap (purple time + trophy badge).
+    #[serde(default)]
+    pub session_best: bool,
     /// Relative strategy cue: `"undercut"` | `"cover"` when fuel window is open.
     pub strat_tag: Option<String>,
     pub class_position: i32,
@@ -171,6 +174,7 @@ impl TableRow {
             lap_ahead: c.lap_ahead,
             inactive,
             is_speaking: c.is_speaking,
+            session_best: false,
             strat_tag: None,
             class_position: c.class_position,
             status_kind: c.status_kind.clone(),
@@ -811,7 +815,10 @@ pub fn finalize_frame(
     if super::strategy_hints::strategy_window_active(&frame.fuel, frame.fuel_pct, cfg) {
         super::strategy_hints::apply_strategy_hints(&mut rel, cfg);
     }
-    let std = build_standings(&focused_cars, cfg, &app, &groups, frame.in_car);
+    let mut std = build_standings(&focused_cars, cfg, &app, &groups, frame.in_car);
+    let fl_idx = session_best_car_idx(&focused_cars);
+    mark_session_best(&mut rel, fl_idx);
+    mark_session_best(&mut std, fl_idx);
     frame.relative_slots = build_table_slots(frame, cfg, "relative", &rel);
     frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
     frame.relative_cars = rel;
@@ -904,7 +911,7 @@ fn resolve_delta_mode(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
 
 fn parse_lap_clock(s: &str) -> Option<f64> {
     let s = s.trim();
-    if s.is_empty() || s == "--" || s == "--" {
+    if s.is_empty() || s == "--" || s == "—" {
         return None;
     }
     // "1:23.456" or "83.456"
@@ -914,6 +921,36 @@ fn parse_lap_clock(s: &str) -> Option<f64> {
         return Some(mins * 60.0 + secs);
     }
     s.parse().ok()
+}
+
+/// CarIdx with the fastest valid best-lap in the field (pace car excluded).
+fn session_best_car_idx(cars: &[CarRow]) -> Option<i32> {
+    let mut best: Option<(f64, i32)> = None;
+    for c in cars {
+        if c.is_pace_car || c.inactive {
+            continue;
+        }
+        let Some(t) = parse_lap_clock(&c.best_lap).filter(|t| *t > 5.0) else {
+            continue;
+        };
+        match best {
+            Some((bt, _)) if t >= bt - 1e-4 => {}
+            _ => best = Some((t, c.car_idx)),
+        }
+    }
+    best.map(|(_, idx)| idx)
+}
+
+fn mark_session_best(rows: &mut [TableRow], fl_idx: Option<i32>) {
+    let Some(idx) = fl_idx else {
+        return;
+    };
+    let key = idx.to_string();
+    for row in rows.iter_mut() {
+        if !row.empty && row.key == key {
+            row.session_best = true;
+        }
+    }
 }
 
 /// Honor flags widget toggles after IRSDK/demo fill the frame.

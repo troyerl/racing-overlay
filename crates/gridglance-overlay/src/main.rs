@@ -297,15 +297,17 @@ fn main() -> Result<()> {
         }
     };
 
-    // Tiny hidden root — panels are separate immediate viewports.
+    // Tiny off-screen root kept on the taskbar so users can reopen Settings.
+    // Panels are separate immediate viewports; host minimizes this after boot.
     let mut root_viewport = egui::ViewportBuilder::default()
         .with_title(WINDOW_TITLE)
         .with_inner_size([1.0, 1.0])
         .with_position(egui::pos2(-32000.0, -32000.0))
         .with_decorations(false)
         .with_transparent(true)
-        .with_taskbar(false)
-        .with_visible(false);
+        .with_active(false)
+        .with_taskbar(true)
+        .with_visible(true);
     if let Some(icon) = app_icon::egui_icon() {
         root_viewport = root_viewport.with_icon(icon);
     }

@@ -165,6 +165,12 @@ pub struct OverlayApp {
     map_prev_sprites: Vec<crate::layered::MapCarSprite>,
     /// Per-car dirty rects for next map present (empty = full frame).
     map_ulw_dirty: Vec<(i32, i32, i32, i32)>,
+    /// Root HWND was minimized after first frame (taskbar anchor).
+    root_taskbar_ready: bool,
+    /// Previous root focus — rising edge = taskbar click.
+    root_was_focused: bool,
+    /// Focus Settings once after opening from the taskbar.
+    settings_focus_pending: bool,
 }
 
 impl OverlayApp {
@@ -234,7 +240,34 @@ impl OverlayApp {
             last_edit_mode: false,
             map_prev_sprites: Vec::new(),
             map_ulw_dirty: Vec::new(),
+            root_taskbar_ready: false,
+            root_was_focused: false,
+            settings_focus_pending: false,
         }
+    }
+
+    /// Keep a minimized root window on the taskbar; click opens Settings.
+    fn handle_taskbar_activate(&mut self, ctx: &egui::Context) {
+        let focused = ctx.input(|i| i.focused);
+        if !self.root_taskbar_ready {
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+            self.root_taskbar_ready = true;
+            self.root_was_focused = focused;
+            return;
+        }
+        if focused && !self.root_was_focused {
+            if let Some(mut st) = self.state.try_write() {
+                st.settings_open = true;
+                if st.settings_section == "__scan__" {
+                    st.settings_section = "__general__".into();
+                }
+            }
+            self.settings_ui.top_tab = settings::TopTab::Settings;
+            self.settings_focus_pending = true;
+            // Stay a taskbar-only anchor; Settings is the real window.
+            ctx.send_viewport_cmd(ViewportCommand::Minimized(true));
+        }
+        self.root_was_focused = focused;
     }
 
     fn clear_map_bg(&mut self) {
@@ -450,11 +483,18 @@ impl OverlayApp {
         let mut dirty = self.settings_dirty;
         let mut ui_state = self.settings_ui.clone();
 
+        let focus_settings = self.settings_focus_pending;
+        self.settings_focus_pending = false;
         ctx.show_viewport_immediate(vid, builder, |vp_ctx, _class| {
             settings::apply_viewport_theme(vp_ctx);
             egui::CentralPanel::default().show(vp_ctx, |ui| {
                 settings::paint(ui, &state, &mut ui_state, &mut section, &mut dirty);
             });
+            if focus_settings {
+                vp_ctx.send_viewport_cmd(ViewportCommand::Minimized(false));
+                vp_ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                vp_ctx.send_viewport_cmd(ViewportCommand::Focus);
+            }
             if vp_ctx.input(|i| i.viewport().close_requested()) {
                 if let Some(mut st) = state.try_write() {
                     st.settings_open = false;
@@ -708,6 +748,7 @@ impl eframe::App for OverlayApp {
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_shell_commands();
+        self.handle_taskbar_activate(ctx);
         self.tick_telemetry();
         let frame_start = Instant::now();
         // Keep mono clock fresh between telem ticks for map prediction.

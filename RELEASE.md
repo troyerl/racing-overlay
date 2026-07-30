@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.7 - 2026-07-30
+
+- **Taskbar.** GridGlance stays on the Windows taskbar; clicking the icon opens
+  Settings. The branded `app.ico` is embedded in the EXE so Explorer/taskbar
+  show the green R gauge (not the generic Windows icon).
+- **Session best.** Relative and Standings highlight the field’s fastest best
+  lap in purple, with a trophy badge.
+
 ## 1.69.6 - 2026-07-30
 
 - **Race smoothness.** Dash/inputs use async present (no blocking GPU readback

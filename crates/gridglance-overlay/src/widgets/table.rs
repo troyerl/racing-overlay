@@ -631,14 +631,29 @@ fn paint_row_cols(
                     &row.best_lap
                 };
                 let s = if v.is_empty() { "—" } else { v.as_str() };
+                // Purple session-best: best column for the FL holder; last column
+                // when that lap matches their best (just set purple).
+                let fl = !dim
+                    && !v.is_empty()
+                    && v != "—"
+                    && v != "--"
+                    && row.session_best
+                    && (col == "best_lap" || row.last_lap == row.best_lap);
+                let tcol = if dim {
+                    dim_text
+                } else if fl {
+                    cfg.color(section, "session_best", "#c084fc")
+                } else {
+                    text
+                };
                 label(
                     ui,
                     Pos2::new(cx + cw * 0.5, cy),
                     Align2::CENTER_CENTER,
                     s,
                     fs * 0.92,
-                    if dim { dim_text } else { text },
-                    false,
+                    tcol,
+                    fl,
                 );
             }
             "pit" => {
@@ -1002,6 +1017,10 @@ fn paint_badge(
         paint_speaker_badge(ui, cfg, section, box_r);
         return;
     }
+    if row.session_best {
+        paint_session_best_badge(ui, cfg, section, box_r, size);
+        return;
+    }
     if row.is_pro {
         ui.painter().circle_filled(
             Pos2::new(cx, cy),
@@ -1109,6 +1128,43 @@ fn paint_badge(
             cfg.color(section, "badge_empty_border", "#ffffff28"),
         ),
     );
+}
+
+fn paint_session_best_badge(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    section: &str,
+    box_r: Rect,
+    size: f32,
+) {
+    let bg = cfg.color(section, "badge_session_best", "#7638c4");
+    let fg = cfg.color(section, "badge_session_best_text", "#ffffff");
+    ui.painter()
+        .circle_filled(box_r.center(), box_r.width() * 0.5, bg);
+    let glyph = icons::glyph("trophy")
+        .or_else(|| icons::glyph("best_lap"))
+        .or_else(|| icons::glyph("session_best"));
+    if let Some(g) = glyph {
+        label(
+            ui,
+            box_r.center(),
+            Align2::CENTER_CENTER,
+            &g,
+            size * 0.48,
+            fg,
+            true,
+        );
+    } else {
+        label(
+            ui,
+            box_r.center(),
+            Align2::CENTER_CENTER,
+            "FL",
+            size * 0.40,
+            fg,
+            true,
+        );
+    }
 }
 
 fn paint_speaker_badge(ui: &mut Ui, cfg: &OverlayConfig, section: &str, box_r: Rect) {
