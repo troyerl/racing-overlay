@@ -3,7 +3,7 @@
 use super::WidgetCtx;
 use crate::chrome::{full_rect, label};
 use crate::telemetry::CarRow;
-use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Stroke, Ui, Vec2};
+use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, Ui, Vec2};
 
 const SECTION: &str = "leaderboard_strip";
 
@@ -139,13 +139,6 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         rows = preview_rows();
     }
     if rows.is_empty() {
-        let border = ctx.cfg.color(SECTION, "panel_border", "#ffffff10");
-        ui.painter().rect_stroke(
-            rect.shrink(0.5),
-            0.0,
-            Stroke::new(1.0_f32, border),
-            egui::StrokeKind::Inside,
-        );
         return;
     }
 
@@ -378,12 +371,4 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
         y += row_h;
     }
-
-    let border = ctx.cfg.color(SECTION, "panel_border", "#ffffff10");
-    ui.painter().rect_stroke(
-        rect.shrink(0.5),
-        0.0,
-        Stroke::new(1.0_f32, border),
-        egui::StrokeKind::Inside,
-    );
 }

@@ -223,8 +223,12 @@ mod win {
         let session_time = read_f64(session, "SessionTime");
         let session_state = read_i32(session, "SessionState");
         let camera_car_idx = read_i32_opt(session, "CamCarIdx").filter(|idx| *idx >= 0);
-        // Seated in the car (driving). Spectators / garage / menus are false.
-        let in_car = read_bool(session, "IsOnTrackCar");
+        // Garage UI / garage physics — wins over on-track when both are set.
+        let in_garage = read_bool(session, "IsInGarage") || read_bool(session, "IsGarageVisible");
+        // Player seated in the car with physics (not replay / garage / menus).
+        // Do NOT use IsOnTrackCar alone — it stays true while the car is in the
+        // world even after you leave to the garage.
+        let in_car = read_bool(session, "IsOnTrack") && !in_garage;
         let lf = read_f32(session, "LFwearM");
         let rf = read_f32(session, "RFwearM");
         let lr = read_f32(session, "LRwearM");
@@ -462,7 +466,7 @@ mod win {
             connected: true,
             camera_car_idx,
             in_car,
-            in_garage: read_bool(session, "IsInGarage") || read_bool(session, "IsGarageVisible"),
+            in_garage,
             session_time,
             session_state,
             flag,
@@ -690,6 +694,16 @@ mod win {
         if sf & FLAG_CROSSED != 0 {
             return Some("crossed".into());
         }
+        // Formation start lights (before green).
+        if sf & FLAG_START_GO != 0 {
+            return Some("start_go".into());
+        }
+        if sf & FLAG_START_SET != 0 {
+            return Some("start_set".into());
+        }
+        if sf & FLAG_START_READY != 0 {
+            return Some("start_ready".into());
+        }
         if sf & (FLAG_GREEN | FLAG_GREEN_HELD) != 0 {
             return Some("green".into());
         }
@@ -720,18 +734,12 @@ mod win {
         position: i32,
     ) -> Option<String> {
         if flag.is_none() {
-            if sf & FLAG_START_GO != 0 {
-                return Some("Green light — go".into());
-            }
-            if sf & FLAG_START_SET != 0 {
-                return Some("Start lights set".into());
-            }
-            if sf & FLAG_START_READY != 0 {
-                return Some("Get ready — start imminent".into());
-            }
             return None;
         }
         match flag {
+            Some("start_go") => Some("Green light — go".into()),
+            Some("start_set") => Some("Start lights set".into()),
+            Some("start_ready") => Some("Get ready — start imminent".into()),
             Some("yellow") | Some("caution") => {
                 let base = if sf & FLAG_ONE_LAP_GREEN != 0 {
                     "1 lap to green".to_string()

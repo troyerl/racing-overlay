@@ -232,7 +232,15 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "show_clutch",
                 ],
             ),
-            ("Flags", &["show_flags"]),
+            (
+                "Flags",
+                &[
+                    "show_flags",
+                    "start_go_text",
+                    "start_set_text",
+                    "start_ready_text",
+                ],
+            ),
             ("Delta bar", &["show_delta_bar", "delta_bar_range"]),
             (
                 "Metrics & slots",
@@ -859,6 +867,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("pace_caution", "show_delta") => {
             Some("Show You−Pace (ΔP) and You−Pit limit (ΔL) columns.")
         }
+        ("dash", "start_go_text") => Some("Title on the dash flag bar for StartGo (green light)."),
+        ("dash", "start_set_text") => Some("Title on the dash flag bar for StartSet."),
+        ("dash", "start_ready_text") => Some("Title on the dash flag bar for StartReady."),
         ("system_panel", "show_cpu") => Some("Show CPU usage."),
         ("system_panel", "show_mem") => Some("Show memory usage."),
         ("system_panel", "show_gpu") => Some("Show GPU usage."),

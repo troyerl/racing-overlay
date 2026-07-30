@@ -82,8 +82,8 @@ pub struct TelemetryFrame {
     /// this car while spectating, without changing player telemetry semantics.
     #[serde(default)]
     pub camera_car_idx: Option<i32>,
-    /// Player is seated in their car (`IsOnTrackCar`). False while spectating,
-    /// in menus, or in the garage — drives the On track / In garage profile.
+    /// Player is seated in their car with physics (`IsOnTrack`). False while
+    /// spectating, in menus, garage, or replay — drives On track / In garage.
     #[serde(default)]
     pub in_car: bool,
     /// Player in garage or garage UI visible (`IsInGarage` / `IsGarageVisible`).

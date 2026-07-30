@@ -83,7 +83,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         return;
     }
     if under_caution(ctx.frame) {
-        *ctx.panel_animating = true;
+        // Speeds update slowly — do not force the 60 Hz present path.
     }
 
     let rect = full_rect(ui);

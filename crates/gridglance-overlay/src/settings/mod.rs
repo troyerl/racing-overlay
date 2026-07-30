@@ -437,8 +437,25 @@ fn paint_profile_row(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi
                 ConfigContext::Race
             };
             if let Some(mut st) = state.try_write() {
-                st.set_preview_context(Some(context));
-                ui_state.flash(format!("Editing {}", context.label()));
+                let live = if st.frame.connected && (st.frame.in_garage || !st.frame.in_car)
+                {
+                    ConfigContext::Garage
+                } else {
+                    ConfigContext::Race
+                };
+                if context == live {
+                    // Selecting the live sim profile clears the pin and follows telemetry.
+                    st.set_preview_context(None);
+                    if st.config_context != live {
+                        st.set_config_context(live);
+                    } else {
+                        st.apply_effective_context();
+                    }
+                    ui_state.flash(format!("Following {}", live.label()));
+                } else {
+                    st.set_preview_context(Some(context));
+                    ui_state.flash(format!("Editing {}", context.label()));
+                }
             }
         }
     });

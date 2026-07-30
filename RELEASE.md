@@ -5,6 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.6 - 2026-07-30
+
+- **Race smoothness.** Dash/inputs use async present (no blocking GPU readback
+  stall); relative headers keep updating while driving; map load no longer
+  freezes sibling panels.
+- **Garage ↔ car profiles.** Auto-switch follows `IsOnTrack` / garage UI (not
+  `IsOnTrackCar`); Settings preview pins clear on sim context change; no more
+  black/ghost layered windows after profile swaps.
+- **Caution panel.** Compact size under yellow (no elegant auto-balloon).
+- **Chrome.** Outer gray frames removed from widgets; dash keeps the input
+  circle stroke only.
+- **Release builds.** Thin LTO so packaged installs match local `--release`
+  responsiveness.
+
 ## 1.69.5 - 2026-07-22
 
 - **Inputs smoothness.** Scrolling trace and pedal bars stay at ~60 Hz (no more

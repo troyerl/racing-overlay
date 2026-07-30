@@ -1,7 +1,9 @@
 //! Dash — one-to-one port of Python `overlay/widgets/dash.py` paint path.
 
 use super::WidgetCtx;
-use crate::chrome::{color_with_alpha, draw_dark_cell, draw_panel_rect, full_rect, label};
+use crate::chrome::{
+    color_with_alpha, draw_dark_cell, draw_panel_rect, full_rect, label, soften_color,
+};
 use crate::config::OverlayConfig;
 use crate::icons;
 use crate::telemetry::TelemetryFrame;
@@ -382,15 +384,6 @@ fn draw_position(
 ) {
     draw_panel_rect(ui, cfg, SECTION, box_r);
     let orange = cfg.color(SECTION, "orange", "#ff9416");
-    let radius = (box_r.width().min(box_r.height())
-        * cfg.f64_key(SECTION, "corner_radius_frac", 0.08) as f32)
-        .max(4.0);
-    ui.painter().rect_stroke(
-        box_r,
-        egui::CornerRadius::same(radius as u8),
-        Stroke::new((box_r.height() * 0.022).max(1.6), orange),
-        StrokeKind::Inside,
-    );
     let text = if f.position > 0 {
         format!("P{}", f.position)
     } else {
@@ -1102,15 +1095,22 @@ fn draw_ring_arc(
     let lit = frac * n as f32;
     let off = cfg.color(SECTION, "ring_track", "#333a42");
 
-    // Solid segments only (no glow pass — keeps edges crisp).
+    // Solid segments (no glow). Partial-light the leading segment so pedal
+    // motion isn't staircased to 1/N jumps (default ring_segments=16).
     for i in 0..n {
-        let on = (i as f32) < lit;
-        let col = if on { on_color } else { off };
+        let amount = (lit - i as f32).clamp(0.0, 1.0);
+        let col = if amount <= 0.001 {
+            off
+        } else if amount >= 0.999 {
+            on_color
+        } else {
+            soften_color(on_color, off, 1.0 - amount)
+        };
         // Python: ang = 90 + (i+0.5)*seg_deg, sweep -span
         let mid = std::f32::consts::FRAC_PI_2 + (i as f32 + 0.5) * seg;
         let a0 = mid + span * 0.5;
         let a1 = mid - span * 0.5;
-        let steps = 8;
+        let steps = 4;
         let mut prev = Pos2::new(cx + r * a0.cos(), cy - r * a0.sin());
         for s in 1..=steps {
             let t = s as f32 / steps as f32;
@@ -1213,6 +1213,39 @@ fn draw_pedals(
     }
 }
 
+fn flag_bar_style(cfg: &OverlayConfig, flag: &str) -> Option<(String, &'static str, &'static str)> {
+    Some(match flag {
+        "yellow" => ("CAUTION".into(), "flag_yellow", "flag_yellow_text"),
+        "black" => ("BLACK FLAG".into(), "flag_black", "flag_black_text"),
+        "green" => ("GREEN".into(), "flag_green", "flag_green_text"),
+        "white" => ("LAST LAP".into(), "flag_white_bg", "flag_white_text"),
+        "red" => ("RED FLAG".into(), "flag_red", "flag_red_text"),
+        "blue" => ("LET BY".into(), "flag_blue", "flag_blue_text"),
+        "checkered" => ("FINISH".into(), "flag_checker_bg", "flag_checker_text"),
+        "meatball" => ("MEATBALL".into(), "flag_meatball", "flag_meatball_text"),
+        "furled" => ("WARNING".into(), "flag_furled", "flag_furled_text"),
+        "dq" => ("DISQUALIFIED".into(), "flag_dq", "flag_dq_text"),
+        "debris" => ("DEBRIS".into(), "flag_debris", "flag_debris_text"),
+        "crossed" => ("HALFWAY".into(), "flag_crossed", "flag_crossed_text"),
+        "start_go" => (
+            cfg.str_key(SECTION, "start_go_text", "GO"),
+            "flag_green",
+            "flag_green_text",
+        ),
+        "start_set" => (
+            cfg.str_key(SECTION, "start_set_text", "SET"),
+            "flag_green",
+            "flag_green_text",
+        ),
+        "start_ready" => (
+            cfg.str_key(SECTION, "start_ready_text", "READY"),
+            "flag_green",
+            "flag_green_text",
+        ),
+        _ => return None,
+    })
+}
+
 fn draw_flag(
     ui: &mut Ui,
     cfg: &OverlayConfig,
@@ -1224,20 +1257,8 @@ fn draw_flag(
     let Some(flag) = f.flag.as_deref() else {
         return;
     };
-    let (title, bgk, fgk) = match flag {
-        "yellow" => ("CAUTION", "flag_yellow", "flag_yellow_text"),
-        "black" => ("BLACK FLAG", "flag_black", "flag_black_text"),
-        "green" => ("GREEN", "flag_green", "flag_green_text"),
-        "white" => ("LAST LAP", "flag_white_bg", "flag_white_text"),
-        "red" => ("RED FLAG", "flag_red", "flag_red_text"),
-        "blue" => ("LET BY", "flag_blue", "flag_blue_text"),
-        "checkered" => ("FINISH", "flag_checker_bg", "flag_checker_text"),
-        "meatball" => ("MEATBALL", "flag_meatball", "flag_meatball_text"),
-        "furled" => ("WARNING", "flag_furled", "flag_furled_text"),
-        "dq" => ("DISQUALIFIED", "flag_dq", "flag_dq_text"),
-        "debris" => ("DEBRIS", "flag_debris", "flag_debris_text"),
-        "crossed" => ("HALFWAY", "flag_crossed", "flag_crossed_text"),
-        _ => return,
+    let Some((title, bgk, fgk)) = flag_bar_style(cfg, flag) else {
+        return;
     };
     let bg = cfg.color(SECTION, bgk, "#ebeef0");
     let fg = cfg.color(SECTION, fgk, "#141414");
@@ -1300,7 +1321,7 @@ fn draw_flag(
     if !context.is_empty() {
         let title_px = rect.height() * 0.36 * text_scale;
         let sub_px = rect.height() * 0.24 * text_scale;
-        let tw = text_w(ui, &FontId::proportional(title_px), title).max(text_w(
+        let tw = text_w(ui, &FontId::proportional(title_px), &title).max(text_w(
             ui,
             &FontId::proportional(sub_px),
             context,
@@ -1319,7 +1340,7 @@ fn draw_flag(
             ui,
             Pos2::new(center_x, rect.center().y - rect.height() * 0.26),
             Align2::CENTER_CENTER,
-            title,
+            &title,
             title_px,
             fg,
             true,
@@ -1336,7 +1357,7 @@ fn draw_flag(
         );
     } else {
         let title_px = rect.height() * 0.52 * text_scale;
-        let tw = text_w(ui, &FontId::proportional(title_px), title);
+        let tw = text_w(ui, &FontId::proportional(title_px), &title);
         let pad = rect.height() * 0.32;
         let gap = Rect::from_center_size(
             Pos2::new(center_x, rect.center().y),
@@ -1351,7 +1372,7 @@ fn draw_flag(
             ui,
             rect.center(),
             Align2::CENTER_CENTER,
-            title,
+            &title,
             title_px,
             fg,
             true,

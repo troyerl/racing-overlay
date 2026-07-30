@@ -81,7 +81,7 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "ers_hybrid" => (920, 780, 220, 140),
         "system_panel" => (1160, 940, 220, 180),
         "pit_advisor" => (660, 1080, 320, 160),
-        "pace_caution" => (920, 940, 420, 88),
+        "pace_caution" => (40, 40, 320, 72),
         _ => (100, 100, 280, 160),
     }
 }
@@ -163,14 +163,14 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
             if cfg.bool_key(key, "show_title", true) {
                 h += 14;
             }
-            h += 44; // label + value row
+            h += 40; // label + value row
             let n = 3 + if cfg.bool_key(key, "show_delta", true) {
                 2
             } else {
                 0
             };
-            // Compact: avoid elegant auto-grow ballooning under yellow.
-            ((n * 56).min(320), h.max(56))
+            // Hard cap — never auto-expand into a huge caution banner.
+            ((n * 52).min(300), h.min(72).max(52))
         }
         "pit_board" => {
             // Typical 3 services + title; grows with live list via host fit slack.
@@ -665,6 +665,10 @@ impl OverlayConfig {
     pub fn sync_active_preset_config(&mut self) {
         let defaults = default_cfg();
         let mut sparse = sparse_diff(&defaults, &self.cfg);
+        // Always keep an object so we can re-attach garage overrides.
+        if !sparse.is_object() {
+            sparse = json!({});
+        }
         // Preserve garage overrides already on the preset if present.
         if let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) {
             if let Some(preset) = presets.get(&self.active_preset) {
@@ -1420,6 +1424,9 @@ fn default_cfg() -> Value {
         section.insert("show_ring".into(), Value::Bool(true));
         section.insert("show_position".into(), Value::Bool(true));
         section.insert("show_flags".into(), Value::Bool(true));
+        section.insert("start_go_text".into(), Value::String("GO".into()));
+        section.insert("start_set_text".into(), Value::String("SET".into()));
+        section.insert("start_ready_text".into(), Value::String("READY".into()));
         section.insert("show_delta_bar".into(), Value::Bool(false));
         section.insert("show_throttle".into(), Value::Bool(true));
         section.insert("show_brake".into(), Value::Bool(true));

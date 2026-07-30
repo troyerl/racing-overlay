@@ -109,19 +109,13 @@ pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) ->
     let radius = (h * cfg.f64_key(section, "corner_radius_frac", 0.0) as f32).max(8.0);
     let top = cfg.color(section, "bg_top", "#1b1f26f2");
     let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
-    let border = cfg.color(section, "border", "#ffffff28");
 
     fill_vertical_gradient(ui, rect, radius, top, bottom);
-    ui.painter().rect_stroke(
-        rect,
-        CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8),
-        Stroke::new(1.0_f32, border),
-        egui::StrokeKind::Inside,
-    );
+    // Outer frame omitted — panels are fill-only (dash ring keeps its own stroke).
     (rect, radius)
 }
 
-/// Soft / minimal card for Elegant panel styles — quieter fill, modest radius, hairline border.
+/// Soft / minimal card for Elegant panel styles — quieter fill, modest radius, no outer border.
 pub fn draw_elegant_card(
     ui: &mut Ui,
     cfg: &OverlayConfig,
@@ -133,15 +127,8 @@ pub fn draw_elegant_card(
     let radius = (h * frac.max(0.10)).min(h * 0.22).max(4.0).min(h * 0.5);
     let top = color_with_alpha(cfg.color(section, "bg_top", "#1b1f26f2"), 108);
     let bottom = color_with_alpha(cfg.color(section, "bg_bottom", "#0f1216f2"), 88);
-    let border = color_with_alpha(cfg.color(section, "border", "#ffffff28"), 36);
 
     fill_vertical_gradient(ui, rect, radius, top, bottom);
-    ui.painter().rect_stroke(
-        rect,
-        CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8),
-        Stroke::new(1.0_f32, border),
-        egui::StrokeKind::Inside,
-    );
     (rect, radius)
 }
 
@@ -271,7 +258,7 @@ pub fn draw_dark_cell(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rec
     );
 }
 
-/// Nested panel (top/bottom containers). Defaults match Python alpha chrome.
+/// Nested panel (top/bottom containers). Fill only — no outer frame.
 pub fn draw_panel_rect(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) -> f32 {
     let frac = cfg.f64_key(section, "corner_radius_frac", 0.0) as f32;
     // Python: min(w,h) * frac — frac 0 yields sharp corners.
@@ -279,12 +266,6 @@ pub fn draw_panel_rect(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Re
     let top = cfg.color(section, "bg_top", "#1b1f26f2");
     let bottom = cfg.color(section, "bg_bottom", "#0f1216f2");
     fill_vertical_gradient(ui, rect, radius, top, bottom);
-    ui.painter().rect_stroke(
-        rect,
-        CornerRadius::same(radius.round().clamp(0.0, 255.0) as u8),
-        Stroke::new(1.0_f32, cfg.color(section, "border", "#ffffff28")),
-        egui::StrokeKind::Inside,
-    );
     radius
 }
 

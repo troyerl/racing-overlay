@@ -100,6 +100,8 @@ pub struct OverlayApp {
     readback: HashMap<String, crate::layered::ReadbackScratch>,
     /// Map-only pipelined readback (avoids sync glReadPixels on the hot path).
     map_pipe: crate::layered::MapReadbackPipe,
+    /// Async PBO pipes for dash/inputs (same idea as map — sync Slice stalls pedals).
+    live_pipes: HashMap<String, crate::layered::MapReadbackPipe>,
     /// Cached GDI DIB surfaces per HWND.
     present_cache: crate::layered::PresentCache,
     /// Last presented buffer hash per HWND — skip unchanged UpdateLayeredWindow.
@@ -144,6 +146,10 @@ pub struct OverlayApp {
     /// Config context (Race/Garage) last used to seed `last_panel_style`.
     /// Profile switches must reseat styles without fit+save (that corrupted on-track layouts).
     last_fit_context: Option<ConfigContext>,
+    /// Last applied effective context (telemetry or Settings preview).
+    last_effective_context: Option<ConfigContext>,
+    /// One-shot: hide absent panels immediately after a profile switch (no debounce).
+    force_hide_stale: bool,
     /// Full-res static map BGRA cache (no cars) for CPU composite presents.
     map_bg: Option<(i32, i32, Vec<u8>)>,
     /// Half-res downsample of `map_bg` (kept for capture; hot ULW uses full + dirty).
@@ -188,6 +194,7 @@ impl OverlayApp {
             last_geom: HashMap::new(),
             readback: HashMap::new(),
             map_pipe: crate::layered::MapReadbackPipe::default(),
+            live_pipes: HashMap::new(),
             present_cache: crate::layered::PresentCache::default(),
             last_present_hash: HashMap::new(),
             last_readback: HashMap::new(),
@@ -217,6 +224,8 @@ impl OverlayApp {
             last_frame_ms: 0.0,
             last_panel_style: HashMap::new(),
             last_fit_context: None,
+            last_effective_context: None,
+            force_hide_stale: false,
             map_bg: None,
             map_bg_half: None,
             map_bg_fp: 0,
@@ -646,9 +655,12 @@ impl OverlayApp {
         }
         let switched = {
             let mut st = self.state.write();
-            // On track only while seated in-car. Spectating / garage / menus use
-            // the In garage profile (and Settings profile combo follows this).
-            let next_context = if frame.connected && (frame.in_garage || !frame.in_car) {
+            // On track only while seated in-car (`IsOnTrack`). Garage UI,
+            // spectating, menus, and replay use the In garage profile.
+            let next_context = if !frame.connected {
+                // Don't thrash Race↔Garage while the SDK drops between sessions.
+                st.config_context
+            } else if frame.in_garage || !frame.in_car {
                 ConfigContext::Garage
             } else {
                 ConfigContext::Race
@@ -656,7 +668,7 @@ impl OverlayApp {
             let switched = st.config_context != next_context;
             if switched {
                 // Persist widget settings + geometry for the outgoing profile before
-                // reload (layout-only used to drop unsaved CFG on garage↔track).
+                // reload. Clears any Settings preview pin so the live sim wins.
                 st.set_config_context(next_context);
             }
             // Keep HTML-imported authoring TrackID across demo/live ticks.
@@ -675,6 +687,18 @@ impl OverlayApp {
             self.settings_autosave_at = None;
         }
     }
+
+    /// Drop present/geom caches so garage↔track (telemetry or Settings preview)
+    /// cannot leave ghost layered HWNDs at the previous profile's positions.
+    fn invalidate_on_profile_switch(&mut self) {
+        self.live_pipes.clear();
+        self.last_present_hash.clear();
+        self.last_readback.clear();
+        self.last_geom.clear();
+        self.map_ulw_dirty.clear();
+        self.last_fit_context = None;
+        self.force_hide_stale = true;
+    }
 }
 
 impl eframe::App for OverlayApp {
@@ -689,6 +713,20 @@ impl eframe::App for OverlayApp {
         // Keep mono clock fresh between telem ticks for map prediction.
         let mono = self.clock_start.elapsed().as_secs_f64();
         self.state.write().mono_secs = mono;
+
+        // Settings Profile combo and telemetry both change effective_context.
+        // Catch either here so ghost HWNDs from the previous profile are torn down.
+        {
+            let eff = self.state.read().effective_context();
+            match self.last_effective_context {
+                None => self.last_effective_context = Some(eff),
+                Some(prev) if prev != eff => {
+                    self.last_effective_context = Some(eff);
+                    self.invalidate_on_profile_switch();
+                }
+                Some(_) => {}
+            }
+        }
 
         // Snap panel geometry to content size when panel_style changes (Elegant hugs content).
         // Do NOT treat Race↔Garage profile swaps as style toggles — that force-fit Data panels
@@ -720,9 +758,10 @@ impl eframe::App for OverlayApp {
                         // Only snap when entering Elegant (content-hug). Leaving Elegant
                         // for Data must NOT reset to default_geom — that wiped saved sizes
                         // (and looked like garage↔track corruption when styles differed).
+                        // pace_caution: never auto-fit — preferred width balloons under yellow.
                         let switching_to_elegant =
                             style == "elegant" && prev != Some("elegant");
-                        if switching_to_elegant {
+                        if switching_to_elegant && *key != "pace_caution" {
                             let (w, h) =
                                 crate::config::preferred_panel_size(st.config.as_ref(), key);
                             fit_panel_size(&mut st.layout, key, w, h);
@@ -744,6 +783,14 @@ impl eframe::App for OverlayApp {
                             grow_panel_size(&mut st.layout, key, pw, ph);
                             changed = true;
                         }
+                    }
+                }
+                // Repair oversized caution layouts from older auto-fit bugs.
+                if let Some(lay) = st.layout.get_mut("pace_caution") {
+                    if lay.w > 300 || lay.h > 80 {
+                        lay.w = lay.w.min(300).max(180);
+                        lay.h = lay.h.min(80).max(52);
+                        changed = true;
                     }
                 }
                 if changed {
@@ -768,11 +815,16 @@ impl eframe::App for OverlayApp {
                     {
                         continue;
                     }
-                    let lay = st
+                    // Clamp oversized caution layouts left over from earlier auto-fit bugs.
+                    let mut lay = st
                         .layout
                         .get(*key)
                         .cloned()
                         .unwrap_or(PanelLayout::default());
+                    if *key == "pace_caution" && (lay.w > 300 || lay.h > 80) {
+                        lay.w = lay.w.min(300).max(180);
+                        lay.h = lay.h.min(80).max(52);
+                    }
                     items.push(((*key).to_string(), lay));
                 }
             }
@@ -784,7 +836,15 @@ impl eframe::App for OverlayApp {
             )
         };
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        let want_fast_dash = keys_layout
+            .iter()
+            .any(|(k, _)| k == "dash" || k == "inputs");
+        // Dash pedals need a tight host loop; 16 ms post-frame wait only yields ~35 FPS.
+        ctx.request_repaint_after(std::time::Duration::from_millis(if want_fast_dash {
+            1
+        } else {
+            16
+        }));
 
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(egui::Color32::TRANSPARENT))
@@ -810,7 +870,6 @@ impl eframe::App for OverlayApp {
         }
 
         let panel_count = keys_layout.len() as u32;
-        let map_open = keys_layout.iter().any(|(k, _)| k == "map");
         let demo_only = self.demo_only;
         let mut still_open = HashSet::new();
         let passthrough = click_through && !edit_mode;
@@ -849,6 +908,14 @@ impl eframe::App for OverlayApp {
             .unwrap_or_else(|e| e.into_inner())
             .as_ref()
             .map(|r| r.key.clone());
+        // Paint/present dash+inputs first so pedal ULW isn't stuck behind map/tables.
+        let mut keys_layout = keys_layout;
+        keys_layout.sort_by_key(|(k, _)| match k.as_str() {
+            "dash" => 0,
+            "inputs" => 1,
+            "map" => 2,
+            _ => 3,
+        });
         for (key, lay) in keys_layout {
             still_open.insert(key.clone());
             let vid = ViewportId::from_hash_of(&key);
@@ -915,19 +982,34 @@ impl eframe::App for OverlayApp {
                 MapPaintMode::Full
             };
 
+            // Dash/inputs + relative/standings need continuous presents while
+            // driving (headers: time/lap/gaps). Do not let map/heavy starve them.
+            let live_hot = key == "dash" || key == "inputs";
+            let live_table = key == "relative" || key == "standings";
             let min_ms = if map_panel {
                 if map_hot {
                     MAP_HOT_PRESENT_MS
                 } else {
                     MAP_READBACK_MS
                 }
-            } else if was_animating || key == "dash" || key == "inputs" {
-                // Tables, radar, delta, dash blink, etc. need ~60 Hz presents.
-                // Dash / inputs stay hot (gear, pedals, scrolling input trace).
+            } else if live_hot {
+                // Async PBO target — sync Slice readback stalls the whole host.
                 PANEL_ANIM_READBACK_MS
-            } else if key == "relative" || key == "standings" || key == "radio_tower" {
-                // Idle tables refresh often enough to catch reorder starts
-                // without staircasey first frames. Radio needs quick appear.
+            } else if live_table {
+                // Headers tick every second; gaps reorder continuously.
+                if map_hot {
+                    66
+                } else {
+                    33
+                }
+            } else if was_animating {
+                // Short-lived easing / blink — keep snappy off the map hot path.
+                if map_hot {
+                    33
+                } else {
+                    PANEL_ANIM_READBACK_MS
+                }
+            } else if key == "radio_tower" {
                 33
             } else if map_hot {
                 NON_MAP_WHEN_MAP_HOT_MS
@@ -941,29 +1023,44 @@ impl eframe::App for OverlayApp {
                 .unwrap_or(true);
             let live_connected = self.state.read().frame.connected;
             let heavy = self.last_frame_ms > HEAVY_FRAME_MS;
-            // Yield to map only when map is open in this layout. Absent
-            // last_readback["map"] must not starve siblings (black Relative).
-            let map_due_now = map_open
-                && self
-                    .last_readback
-                    .get("map")
-                    .map(|t| t.elapsed().as_millis() >= MAP_READBACK_MS)
-                    .unwrap_or(false);
+            // Floor so heavy frames only slow tables, never freeze them.
+            let heavy_floor_due = self
+                .last_readback
+                .get(&key)
+                .map(|t| t.elapsed().as_millis() >= 120)
+                .unwrap_or(true);
             let readback_now = if map_panel {
                 // Hot composite: ~60 Hz ULW after cheaper labels (rev 15).
-                due || is_dragging || is_resizing
-            } else if is_dragging || is_resizing || was_animating {
-                due || is_dragging || is_resizing
+                due || is_dragging || is_resizing || geom_changed
+            } else if is_dragging || is_resizing || geom_changed {
+                // Geometry change must re-ULW or Windows leaves a black layered HWND.
+                true
+            } else if live_hot {
+                // Never starve dash/inputs — pedals must stay at target cadence.
+                due
+            } else if live_table {
+                if heavy {
+                    heavy_floor_due
+                } else {
+                    due
+                }
+            } else if was_animating {
+                if heavy {
+                    heavy_floor_due
+                } else {
+                    due
+                }
             } else if map_hot && live_connected && !edit_mode {
-                // Protect map ULW budget; refresh siblings ~4 Hz.
+                // Protect map ULW budget for cold panels.
                 due && !heavy
-            } else if heavy || (live_connected && !edit_mode && map_due_now) {
+            } else if heavy {
                 false
             } else {
                 due
             };
-            // Hot composite: skip GL paint; cold capture / edit / classic still paint.
-            let paint_now = if map_hot {
+            // Map hot path composites CPU-side (no GL paint). Other panels must
+            // still paint occasionally or they freeze (dash ring stuck).
+            let paint_now = if map_panel && map_hot {
                 false
             } else {
                 edit_mode || readback_now
@@ -1008,9 +1105,18 @@ impl eframe::App for OverlayApp {
 
             // Immediate viewports must be shown every tick or eframe closes them.
             // Skip expensive widget paint when present is not due.
+            let force_geom = geom_changed && !is_dragging && !is_resizing;
+            let geom_pos = egui::pos2(lay.x as f32, lay.y as f32);
+            let geom_size = egui::vec2(lay.w as f32, lay.h as f32);
             ctx.show_viewport_immediate(vid, builder, move |vp_ctx, _class| {
                 // Undo sticky Visible(false) from a prior hide/flicker.
                 vp_ctx.send_viewport_cmd(ViewportCommand::Visible(true));
+                if force_geom {
+                    // Builder geom is unreliable on already-open viewports after
+                    // garage↔track swaps — push OS position/size explicitly.
+                    vp_ctx.send_viewport_cmd(ViewportCommand::OuterPosition(geom_pos));
+                    vp_ctx.send_viewport_cmd(ViewportCommand::InnerSize(geom_size));
+                }
                 if !do_paint {
                     return;
                 }
@@ -1232,7 +1338,7 @@ impl eframe::App for OverlayApp {
             // the next eframe make_current on Windows).
             if let Some(hwnd) = win_click::find_overlay_hwnd(&title) {
                 let ppp = ctx.pixels_per_point();
-                if map_hot && readback_now {
+                if map_panel && map_hot && readback_now {
                     // Hot path: full-res composite + dirty-rect ULW (rev 20).
                     // Half-res scaled ULW still uploaded a full HWND (rev 19 miss).
                     let dims = self.map_bg.as_ref().map(|(bw, bh, _)| (*bw, *bh));
@@ -1428,6 +1534,69 @@ impl eframe::App for OverlayApp {
                                 self.perf_acc.rb_map_ms +=
                                     rb_start.elapsed().as_secs_f64() * 1000.0;
                             }
+                        } else if live_hot {
+                            // Async PBO: sync Slice glReadPixels stalls pedals/gear.
+                            // Never present a PBO whose size doesn't match the HWND —
+                            // garage↔track resize left black scaled garbage before.
+                            let mut presented = false;
+                            if geom_changed {
+                                self.live_pipes.remove(&key);
+                            }
+                            let taken_owned = {
+                                let pipe = self.live_pipes.entry(key.clone()).or_default();
+                                let scratch = self.readback.entry(key.clone()).or_default();
+                                layered::map_take_ready_bgra(gl, pipe, scratch)
+                                    .map(|s| s.to_vec())
+                            };
+                            if let Some(bgra) = taken_owned {
+                                let (sw, sh) = self
+                                    .live_pipes
+                                    .get(&key)
+                                    .and_then(|p| p.last_taken_dims)
+                                    .unwrap_or((w, h));
+                                if sw == w && sh == h {
+                                    let scratch = self.readback.entry(key.clone()).or_default();
+                                    *scratch.bgra_mut() = bgra;
+                                    let hash = layered::hash_bgra(scratch.bgra());
+                                    // Always ULW after geom change (hash may collide).
+                                    if geom_changed
+                                        || self.last_present_hash.get(&hwnd) != Some(&hash)
+                                    {
+                                        pending_presents
+                                            .push((hwnd, w, h, w, h, key.clone(), hash));
+                                    }
+                                    presented = true;
+                                } else {
+                                    // Stale size from prior layout — drop pipe and resync.
+                                    self.live_pipes.remove(&key);
+                                }
+                            }
+                            let kicked = {
+                                let pipe = self.live_pipes.entry(key.clone()).or_default();
+                                layered::map_kick_readback(gl, w, h, pipe)
+                            };
+                            if presented || kicked {
+                                self.last_readback.insert(key.clone(), Instant::now());
+                            }
+                            // First frames / PBO miss / size mismatch: sync present.
+                            if !presented {
+                                let scratch = self.readback.entry(key.clone()).or_default();
+                                if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
+                                    let hash = layered::hash_bgra(bgra);
+                                    if geom_changed
+                                        || self.last_present_hash.get(&hwnd) != Some(&hash)
+                                    {
+                                        pending_presents
+                                            .push((hwnd, w, h, w, h, key.clone(), hash));
+                                    }
+                                    self.last_readback.insert(key.clone(), Instant::now());
+                                }
+                            }
+                            if self.perf {
+                                self.perf_acc.readbacks += 1;
+                                self.perf_acc.rb_other_ms +=
+                                    rb_start.elapsed().as_secs_f64() * 1000.0;
+                            }
                         } else {
                             let scratch = self.readback.entry(key.clone()).or_default();
                             if let Some(bgra) = layered::read_gl_to_bgra(gl, w, h, scratch) {
@@ -1438,7 +1607,9 @@ impl eframe::App for OverlayApp {
                                 }
                                 self.last_readback.insert(key.clone(), Instant::now());
                                 let hash = layered::hash_bgra(bgra);
-                                if self.last_present_hash.get(&hwnd) != Some(&hash) {
+                                if geom_changed
+                                    || self.last_present_hash.get(&hwnd) != Some(&hash)
+                                {
                                     pending_presents.push((hwnd, w, h, w, h, key.clone(), hash));
                                 }
                             }
@@ -1458,6 +1629,13 @@ impl eframe::App for OverlayApp {
             self.open_viewports.insert(key);
         }
 
+        // Dash/inputs first so pedal pixels hit the screen before map/table ULWs.
+        pending_presents.sort_by_key(|(_, _, _, _, _, key, _)| match key.as_str() {
+            "dash" => 0,
+            "inputs" => 1,
+            "map" => 2,
+            _ => 3,
+        });
         for (hwnd, dst_w, dst_h, src_w, src_h, key, hash) in pending_presents {
             if let Some(scratch) = self.readback.get(&key) {
                 let ulw_start = Instant::now();
@@ -1508,6 +1686,7 @@ impl eframe::App for OverlayApp {
         self.readback.retain(|k, _| still_open.contains(k));
         self.last_readback.retain(|k, _| still_open.contains(k));
         self.panel_animating.retain(|k, _| still_open.contains(k));
+        self.live_pipes.retain(|k, _| still_open.contains(k));
         let mut open_hwnds = HashSet::new();
         for key in &still_open {
             let title = win_click::panel_title(key);
@@ -1532,11 +1711,19 @@ impl eframe::App for OverlayApp {
         // Drop missing counters for keys no longer tracked as open.
         self.missing_frames
             .retain(|k, _| self.open_viewports.contains(k) || candidates.contains(k));
+        let force_hide = self.force_hide_stale;
+        self.force_hide_stale = false;
         for key in candidates {
-            let n = self.missing_frames.entry(key.clone()).or_insert(0);
-            *n = n.saturating_add(1);
-            if *n >= HIDE_DEBOUNCE_FRAMES {
+            if force_hide {
+                // Profile switch: tear down immediately (debounce left ghosts).
+                self.missing_frames.remove(&key);
                 self.queue_hide(key);
+            } else {
+                let n = self.missing_frames.entry(key.clone()).or_insert(0);
+                *n = n.saturating_add(1);
+                if *n >= HIDE_DEBOUNCE_FRAMES {
+                    self.queue_hide(key);
+                }
             }
         }
         self.open_viewports = still_open;

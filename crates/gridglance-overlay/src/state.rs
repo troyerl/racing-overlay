@@ -722,17 +722,21 @@ impl SharedState {
         self.save_layout();
     }
 
-    /// Persist live widget settings + layout for the profile currently on screen
-    /// before reloading another garage/on-track context from disk.
-    pub fn persist_active_profile(&mut self) {
-        let context = self.effective_context();
+    /// Persist live widget settings + layout for a specific profile before
+    /// reloading another garage/on-track context from disk.
+    pub fn persist_profile(&mut self, context: ConfigContext) {
         let layout = self.layout_doc();
         let cfg = Arc::make_mut(&mut self.config);
         cfg.store_active_layout_doc(context, layout);
         if let Err(e) = cfg.save_for_context(context) {
-            eprintln!("persist_active_profile({context:?}): {e:#}");
+            eprintln!("persist_profile({context:?}): {e:#}");
         }
         self.save_layout();
+    }
+
+    /// Persist the profile currently on screen (`effective_context`).
+    pub fn persist_active_profile(&mut self) {
+        self.persist_profile(self.effective_context());
     }
 
     pub fn effective_context(&self) -> ConfigContext {
@@ -748,17 +752,14 @@ impl SharedState {
     }
 
     pub fn set_config_context(&mut self, context: ConfigContext) {
-        let changing = self.config_context != context
-            || self.preview_context.is_some_and(|p| p != context);
-        if changing {
-            // Save the profile that matches live CFG (preview or telemetry).
-            // Layout-only saves used to drop unsaved widget toggles on garage↔track.
-            self.persist_active_profile();
+        let outgoing = self.effective_context();
+        if outgoing != context {
+            // Save the profile that matches what's on screen (preview or live).
+            self.persist_profile(outgoing);
         }
         self.config_context = context;
-        if self.preview_context.is_some() && self.preview_context != Some(context) {
-            self.preview_context = None;
-        }
+        // Sim-driven apply always drops a Settings preview pin.
+        self.preview_context = None;
         self.apply_effective_context();
     }
 
