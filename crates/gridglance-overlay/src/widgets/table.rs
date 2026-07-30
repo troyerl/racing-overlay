@@ -537,15 +537,60 @@ fn paint_row_cols(
             "name" => {
                 let colc = if dim { dim_text } else { text };
                 let bold = cfg.bool_key(section, "name_font_bold", true);
-                label(
-                    ui,
-                    Pos2::new(cx + 4.0, cy),
-                    Align2::LEFT_CENTER,
-                    &row.name,
-                    fs,
-                    colc,
-                    bold,
-                );
+                let mut text_x = cx + 4.0;
+                // Driver-group / league icons sit beside the name — not in the
+                // status badge (trophy groups were colliding with session-best).
+                if !row.is_pro && !row.group_icon.is_empty() {
+                    if let Some(g) = icons::glyph(&row.group_icon) {
+                        let ic_px = (rh * 0.42).clamp(10.0, fs * 1.15);
+                        let gap = (rh * 0.08).max(3.0);
+                        let icon_col = if row.group_color.is_empty() {
+                            parse_color_str("#5bb8ff")
+                        } else {
+                            parse_color_str(&row.group_color)
+                        };
+                        let font = icons::font_id(ic_px);
+                        let gw = ui
+                            .fonts(|f| {
+                                f.layout_no_wrap(g.clone(), font.clone(), Color32::WHITE)
+                            })
+                            .size()
+                            .x;
+                        ui.painter().text(
+                            Pos2::new(text_x, cy),
+                            Align2::LEFT_CENTER,
+                            g,
+                            font,
+                            if dim {
+                                color_with_alpha(icon_col, 140)
+                            } else {
+                                icon_col
+                            },
+                        );
+                        text_x += gw + gap;
+                    }
+                }
+                let name_right = cx + cw - 2.0;
+                if text_x < name_right {
+                    let prev_clip = ui.clip_rect();
+                    ui.set_clip_rect(
+                        Rect::from_min_max(
+                            Pos2::new(text_x, rect.top()),
+                            Pos2::new(name_right, rect.bottom()),
+                        )
+                        .intersect(prev_clip),
+                    );
+                    label(
+                        ui,
+                        Pos2::new(text_x, cy),
+                        Align2::LEFT_CENTER,
+                        &row.name,
+                        fs,
+                        colc,
+                        bold,
+                    );
+                    ui.set_clip_rect(prev_clip);
+                }
             }
             "license" => {
                 let letter = row
@@ -1038,27 +1083,7 @@ fn paint_badge(
         );
         return;
     }
-    if !row.group_icon.is_empty() {
-        let bg = crate::config::parse_color_str(if row.group_color.is_empty() {
-            "#5bb8ff"
-        } else {
-            &row.group_color
-        });
-        ui.painter()
-            .circle_filled(Pos2::new(cx, cy), size * 0.5, bg);
-        if let Some(g) = crate::icons::glyph(&row.group_icon) {
-            label(
-                ui,
-                Pos2::new(cx, cy),
-                Align2::CENTER_CENTER,
-                &g,
-                size * 0.45,
-                Color32::WHITE,
-                true,
-            );
-        }
-        return;
-    }
+    // Driver-group icons render beside the name, not here.
     if row.is_player {
         ui.painter().circle_filled(
             Pos2::new(cx, cy),
@@ -1087,20 +1112,17 @@ fn paint_badge(
         );
         return;
     }
-    if row.lapping {
-        ui.painter().rect_filled(
-            box_r,
-            CornerRadius::same(3),
-            cfg.color(section, "badge_lap", "#7638c4"),
-        );
-        paint_clock(ui, box_r);
-        return;
-    }
+    // Lapped traffic uses row tint only — no clock badge (looked like
+    // multiple "fast lap" icons). Strategy U/C only when the tag is known.
     if let Some(tag) = row.strat_tag.as_deref() {
         let (bg, letter) = match tag {
             "undercut" => (cfg.color(section, "badge_undercut", "#3aa0ff"), "U"),
             "cover" => (cfg.color(section, "badge_cover", "#ff9416"), "C"),
-            _ => (cfg.color(section, "badge_empty_fill", "#00000078"), "?"),
+            _ => {
+                // Unknown tag: fall through to the empty status dot.
+                paint_empty_badge(ui, cfg, section, cx, cy, size);
+                return;
+            }
         };
         ui.painter().rect_filled(box_r, CornerRadius::same(3), bg);
         label(
@@ -1115,6 +1137,17 @@ fn paint_badge(
         return;
     }
 
+    paint_empty_badge(ui, cfg, section, cx, cy, size);
+}
+
+fn paint_empty_badge(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    section: &str,
+    cx: f32,
+    cy: f32,
+    size: f32,
+) {
     ui.painter().circle_filled(
         Pos2::new(cx, cy),
         size * 0.5,
@@ -1135,36 +1168,36 @@ fn paint_session_best_badge(
     cfg: &OverlayConfig,
     section: &str,
     box_r: Rect,
-    size: f32,
+    _size: f32,
 ) {
-    let bg = cfg.color(section, "badge_session_best", "#7638c4");
-    let fg = cfg.color(section, "badge_session_best_text", "#ffffff");
-    ui.painter()
-        .circle_filled(box_r.center(), box_r.width() * 0.5, bg);
-    let glyph = icons::glyph("trophy")
-        .or_else(|| icons::glyph("best_lap"))
-        .or_else(|| icons::glyph("session_best"));
-    if let Some(g) = glyph {
-        label(
-            ui,
-            box_r.center(),
-            Align2::CENTER_CENTER,
-            &g,
-            size * 0.48,
-            fg,
-            true,
-        );
-    } else {
-        label(
-            ui,
-            box_r.center(),
-            Align2::CENTER_CENTER,
-            "FL",
-            size * 0.40,
-            fg,
-            true,
-        );
-    }
+    // Purple clock = session fastest lap (one per table). Lapped traffic is
+    // row tint only — no badge icon.
+    ui.painter().rect_filled(
+        box_r,
+        CornerRadius::same(3),
+        cfg.color(section, "badge_session_best", "#7638c4"),
+    );
+    paint_clock(ui, box_r);
+}
+
+fn paint_clock(ui: &mut Ui, box_r: Rect) {
+    let stroke_w = (box_r.width() * 0.08).max(1.0);
+    let white = Color32::from_rgb(255, 255, 255);
+    let inner = box_r.shrink2(Vec2::new(box_r.width() * 0.22, box_r.height() * 0.22));
+    ui.painter().circle_stroke(
+        inner.center(),
+        inner.width() * 0.5,
+        Stroke::new(stroke_w, white),
+    );
+    let c = inner.center();
+    ui.painter().line_segment(
+        [c, Pos2::new(c.x, c.y - inner.height() * 0.32)],
+        Stroke::new(stroke_w, white),
+    );
+    ui.painter().line_segment(
+        [c, Pos2::new(c.x + inner.width() * 0.26, c.y)],
+        Stroke::new(stroke_w, white),
+    );
 }
 
 fn paint_speaker_badge(ui: &mut Ui, cfg: &OverlayConfig, section: &str, box_r: Rect) {
@@ -1189,26 +1222,6 @@ fn paint_speaker_badge(ui: &mut Ui, cfg: &OverlayConfig, section: &str, box_r: R
         g,
         icons::font_id(pill.height() * 0.58),
         fg,
-    );
-}
-
-fn paint_clock(ui: &mut Ui, box_r: Rect) {
-    let stroke_w = (box_r.width() * 0.08).max(1.0);
-    let white = Color32::from_rgb(255, 255, 255);
-    let inner = box_r.shrink2(Vec2::new(box_r.width() * 0.22, box_r.height() * 0.22));
-    ui.painter().circle_stroke(
-        inner.center(),
-        inner.width() * 0.5,
-        Stroke::new(stroke_w, white),
-    );
-    let c = inner.center();
-    ui.painter().line_segment(
-        [c, Pos2::new(c.x, c.y - inner.height() * 0.32)],
-        Stroke::new(stroke_w, white),
-    );
-    ui.painter().line_segment(
-        [c, Pos2::new(c.x + inner.width() * 0.26, c.y)],
-        Stroke::new(stroke_w, white),
     );
 }
 

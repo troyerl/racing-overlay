@@ -412,7 +412,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 ],
             ),
             ("Row layout", &["row_height_px"]),
-            ("Layout", &["corner_radius_frac"]),
+            ("Layout", &["corner_radius_frac", "panel_opacity"]),
             ("Colors", &["colors"]),
         ],
         "system_panel" => vec![
@@ -432,7 +432,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 ],
             ),
             ("Row layout", &["row_height_px"]),
-            ("Layout", &["corner_radius_frac"]),
+            ("Layout", &["corner_radius_frac", "panel_opacity"]),
             ("Colors", &["colors"]),
         ],
         "pace_caution" => vec![
@@ -877,6 +877,7 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("system_panel", "show_network") => Some("Show connection / channel quality."),
         ("system_panel", "show_ffb") => Some("Show force-feedback torque (%). Warns above 100%."),
         ("system_panel", "show_icons") => Some("Use icons instead of text labels for each metric."),
+        (_, "panel_opacity") => Some("Overall panel transparency (0 = invisible, 1 = solid)."),
         _ => None,
     }
 }

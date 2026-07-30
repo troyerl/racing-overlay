@@ -1,6 +1,7 @@
 use super::WidgetCtx;
 use crate::chrome::{
-    color_with_alpha, full_rect, is_elegant, label, panel_card, panel_content_pad, panel_title,
+    apply_panel_opacity, color_with_alpha, full_rect, is_elegant, label, panel_card,
+    panel_content_pad, panel_title,
 };
 use crate::icons;
 use egui::{Align2, Pos2, Ui};
@@ -59,6 +60,7 @@ fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String,
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    apply_panel_opacity(ui, ctx.cfg, SECTION);
     if is_elegant(ctx.cfg, SECTION) {
         paint_elegant(ui, ctx);
     } else {

@@ -1168,6 +1168,7 @@ fn schema_fallback_value(section: &str, key: &str) -> Value {
         "panel_style" => Value::String("data".into()),
         "row_height_px" => json!(36.0),
         "corner_radius_frac" => json!(0.0),
+        "panel_opacity" => json!(1.0),
         k if k.starts_with("show_") => Value::Bool(true),
         _ => Value::Bool(true),
     }

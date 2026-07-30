@@ -100,7 +100,7 @@ pub struct OverlayApp {
     readback: HashMap<String, crate::layered::ReadbackScratch>,
     /// Map-only pipelined readback (avoids sync glReadPixels on the hot path).
     map_pipe: crate::layered::MapReadbackPipe,
-    /// Async PBO pipes for dash/inputs (same idea as map — sync Slice stalls pedals).
+    /// Async PBO pipes for dash/inputs/tables (sync Slice stalls pedals + row slides).
     live_pipes: HashMap<String, crate::layered::MapReadbackPipe>,
     /// Cached GDI DIB surfaces per HWND.
     present_cache: crate::layered::PresentCache,
@@ -877,11 +877,12 @@ impl eframe::App for OverlayApp {
             )
         };
 
-        let want_fast_dash = keys_layout
-            .iter()
-            .any(|(k, _)| k == "dash" || k == "inputs");
-        // Dash pedals need a tight host loop; 16 ms post-frame wait only yields ~35 FPS.
-        ctx.request_repaint_after(std::time::Duration::from_millis(if want_fast_dash {
+        let want_fast_live = keys_layout.iter().any(|(k, _)| {
+            k == "dash" || k == "inputs" || k == "relative" || k == "standings"
+        });
+        // Dash pedals + table row slides need a tight host loop; 16 ms post-frame
+        // wait only yields ~35 FPS and makes reorders look laggy.
+        ctx.request_repaint_after(std::time::Duration::from_millis(if want_fast_live {
             1
         } else {
             16
@@ -954,8 +955,9 @@ impl eframe::App for OverlayApp {
         keys_layout.sort_by_key(|(k, _)| match k.as_str() {
             "dash" => 0,
             "inputs" => 1,
-            "map" => 2,
-            _ => 3,
+            "relative" | "standings" => 2,
+            "map" => 3,
+            _ => 4,
         });
         for (key, lay) in keys_layout {
             still_open.insert(key.clone());
@@ -1024,25 +1026,19 @@ impl eframe::App for OverlayApp {
             };
 
             // Dash/inputs + relative/standings need continuous presents while
-            // driving (headers: time/lap/gaps). Do not let map/heavy starve them.
-            let live_hot = key == "dash" || key == "inputs";
-            let live_table = key == "relative" || key == "standings";
+            // driving (pedals / row slides / gaps). Do not let map/heavy starve them.
+            // Async PBO path — sync Slice glReadPixels stalls the host and made
+            // table row slides look like low FPS even when egui painted often.
+            let use_live_pbo =
+                key == "dash" || key == "inputs" || key == "relative" || key == "standings";
             let min_ms = if map_panel {
                 if map_hot {
                     MAP_HOT_PRESENT_MS
                 } else {
                     MAP_READBACK_MS
                 }
-            } else if live_hot {
-                // Async PBO target — sync Slice readback stalls the whole host.
+            } else if use_live_pbo {
                 PANEL_ANIM_READBACK_MS
-            } else if live_table {
-                // Headers tick every second; gaps reorder continuously.
-                if map_hot {
-                    66
-                } else {
-                    33
-                }
             } else if was_animating {
                 // Short-lived easing / blink — keep snappy off the map hot path.
                 if map_hot {
@@ -1064,7 +1060,7 @@ impl eframe::App for OverlayApp {
                 .unwrap_or(true);
             let live_connected = self.state.read().frame.connected;
             let heavy = self.last_frame_ms > HEAVY_FRAME_MS;
-            // Floor so heavy frames only slow tables, never freeze them.
+            // Floor so heavy frames only slow cold panels, never freeze them.
             let heavy_floor_due = self
                 .last_readback
                 .get(&key)
@@ -1076,15 +1072,9 @@ impl eframe::App for OverlayApp {
             } else if is_dragging || is_resizing || geom_changed {
                 // Geometry change must re-ULW or Windows leaves a black layered HWND.
                 true
-            } else if live_hot {
-                // Never starve dash/inputs — pedals must stay at target cadence.
+            } else if use_live_pbo {
+                // Never starve dash/inputs/tables — row slides need target cadence.
                 due
-            } else if live_table {
-                if heavy {
-                    heavy_floor_due
-                } else {
-                    due
-                }
             } else if was_animating {
                 if heavy {
                     heavy_floor_due
@@ -1575,8 +1565,8 @@ impl eframe::App for OverlayApp {
                                 self.perf_acc.rb_map_ms +=
                                     rb_start.elapsed().as_secs_f64() * 1000.0;
                             }
-                        } else if live_hot {
-                            // Async PBO: sync Slice glReadPixels stalls pedals/gear.
+                        } else if use_live_pbo {
+                            // Async PBO: sync Slice glReadPixels stalls pedals/row slides.
                             // Never present a PBO whose size doesn't match the HWND —
                             // garage↔track resize left black scaled garbage before.
                             let mut presented = false;
@@ -1670,12 +1660,13 @@ impl eframe::App for OverlayApp {
             self.open_viewports.insert(key);
         }
 
-        // Dash/inputs first so pedal pixels hit the screen before map/table ULWs.
+        // Live panels first so pedals / row slides hit the screen before map ULWs.
         pending_presents.sort_by_key(|(_, _, _, _, _, key, _)| match key.as_str() {
             "dash" => 0,
             "inputs" => 1,
-            "map" => 2,
-            _ => 3,
+            "relative" | "standings" => 2,
+            "map" => 3,
+            _ => 4,
         });
         for (hwnd, dst_w, dst_h, src_w, src_h, key, hash) in pending_presents {
             if let Some(scratch) = self.readback.get(&key) {

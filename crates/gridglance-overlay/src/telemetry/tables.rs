@@ -924,6 +924,7 @@ fn parse_lap_clock(s: &str) -> Option<f64> {
 }
 
 /// CarIdx with the fastest valid best-lap in the field (pace car excluded).
+/// Ties keep the lowest car_idx so only one session-best badge is marked.
 fn session_best_car_idx(cars: &[CarRow]) -> Option<i32> {
     let mut best: Option<(f64, i32)> = None;
     for c in cars {
@@ -934,6 +935,11 @@ fn session_best_car_idx(cars: &[CarRow]) -> Option<i32> {
             continue;
         };
         match best {
+            Some((bt, bi)) if (t - bt).abs() <= 1e-4 => {
+                if c.car_idx < bi {
+                    best = Some((t, c.car_idx));
+                }
+            }
             Some((bt, _)) if t >= bt - 1e-4 => {}
             _ => best = Some((t, c.car_idx)),
         }
@@ -942,14 +948,15 @@ fn session_best_car_idx(cars: &[CarRow]) -> Option<i32> {
 }
 
 fn mark_session_best(rows: &mut [TableRow], fl_idx: Option<i32>) {
+    for row in rows.iter_mut() {
+        row.session_best = false;
+    }
     let Some(idx) = fl_idx else {
         return;
     };
     let key = idx.to_string();
-    for row in rows.iter_mut() {
-        if !row.empty && row.key == key {
-            row.session_best = true;
-        }
+    if let Some(row) = rows.iter_mut().find(|r| !r.empty && r.key == key) {
+        row.session_best = true;
     }
 }
 

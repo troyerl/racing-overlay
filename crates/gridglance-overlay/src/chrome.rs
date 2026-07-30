@@ -116,6 +116,8 @@ pub fn draw_card(ui: &mut Ui, cfg: &OverlayConfig, section: &str, rect: Rect) ->
 }
 
 /// Soft / minimal card for Elegant panel styles — quieter fill, modest radius, no outer border.
+/// Uses a single fill (no banded gradient): semi-transparent bands double-blend at seams and
+/// read as horizontal lines on short panels like Radio / System.
 pub fn draw_elegant_card(
     ui: &mut Ui,
     cfg: &OverlayConfig,
@@ -127,8 +129,15 @@ pub fn draw_elegant_card(
     let radius = (h * frac.max(0.10)).min(h * 0.22).max(4.0).min(h * 0.5);
     let top = color_with_alpha(cfg.color(section, "bg_top", "#1b1f26f2"), 108);
     let bottom = color_with_alpha(cfg.color(section, "bg_bottom", "#0f1216f2"), 88);
-
-    fill_vertical_gradient(ui, rect, radius, top, bottom);
+    let fill = lerp_color(top, bottom, 0.55);
+    let ru = radius
+        .min(rect.height() * 0.5)
+        .min(rect.width() * 0.5)
+        .max(0.0)
+        .round()
+        .clamp(0.0, 255.0) as u8;
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(ru), fill);
     (rect, radius)
 }
 
@@ -310,6 +319,14 @@ pub fn anim_dt(now: f64, last: &mut f64) -> f32 {
 /// True when `cur` is still meaningfully away from `target`.
 pub fn still_easing(cur: f32, target: f32, eps: f32) -> bool {
     (cur - target).abs() > eps
+}
+
+/// Apply `panel_opacity` (0–1) to subsequent painting in this UI.
+pub fn apply_panel_opacity(ui: &mut Ui, cfg: &OverlayConfig, section: &str) {
+    let o = (cfg.f64_key(section, "panel_opacity", 1.0) as f32).clamp(0.0, 1.0);
+    if o < 0.999 {
+        ui.set_opacity(o);
+    }
 }
 
 /// Rebuild a color with a new alpha. egui `Color32` stores premultiplied RGB;

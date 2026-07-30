@@ -1647,6 +1647,7 @@ fn default_cfg() -> Value {
             section.insert("show_name".into(), Value::Bool(true));
             section.insert("highlight_player".into(), Value::Bool(true));
             section.insert("row_height_px".into(), json!(0));
+            section.insert("panel_opacity".into(), json!(1.0));
         }
         if *key == "fuel_calc" {
             section.insert("title".into(), Value::String("FUEL CALCULATOR".into()));
@@ -1751,6 +1752,7 @@ fn default_cfg() -> Value {
             section.insert("show_network".into(), Value::Bool(true));
             section.insert("show_ffb".into(), Value::Bool(true));
             section.insert("show_icons".into(), Value::Bool(false));
+            section.insert("panel_opacity".into(), json!(1.0));
         }
         if *key == "pace_caution" {
             section.insert("panel_style".into(), Value::String("data".into()));

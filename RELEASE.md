@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.9 - 2026-07-30
+
+- **Relative / Standings row slides.** Tables use the same async present path as
+  dash/inputs so position swaps stay smooth instead of looking low-FPS.
+- **Session best badge.** One purple clock marks the field’s fastest best lap;
+  lapped traffic stays blue/red row tint only (no clock/question badges).
+- **Driver groups.** League / saved-group icons sit beside the name, not in the
+  status badge column.
+- **Radio & System opacity.** New **Panel opacity** slider under Layout for both
+  widgets.
+
 ## 1.69.8 - 2026-07-30
 
 - **CI / release speed.** Packaging workflows cache Cargo and a pinned Inno
