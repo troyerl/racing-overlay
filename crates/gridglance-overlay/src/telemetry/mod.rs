@@ -57,7 +57,7 @@ pub struct CarRow {
     pub lap_ahead: bool,
     pub inactive: bool,
     pub lap_dist_pct: f32,
-    /// CarIdxEstTime (seconds into estimated lap).
+    /// CarIdxEstTime (estimated time to current location; Relative gap fallback).
     pub est_time: f32,
     /// CarIdxF2Time (gap-to-leader style clock).
     pub f2_time: f32,
@@ -461,8 +461,8 @@ pub mod demo {
             let lap_est = 90.0_f32;
             let player_i = 3i32;
             let field_size = 12i32;
-            // Field order drives Relative est_time (list slides). Map pct stays
-            // continuous by car_idx so dots don't teleport every phase.
+            // Field order packs cars on track (Relative neighbors) and still
+            // nudges continuously with time so map dots don't stutter in-phase.
             let order = demo_field_order(t, field_size as usize, player_i as usize);
             let player_rank = order
                 .iter()
@@ -475,18 +475,17 @@ pub mod demo {
                     .iter()
                     .position(|&c| c == i as usize)
                     .unwrap_or(i as usize);
-                // Map: smooth continuous spacing (pre–Relative-churn formula).
-                let pct = ((t * 0.03 + i as f64 * 0.08).rem_euclid(1.0)) as f32;
-                // Relative: pack by race rank so list reorders when field churns.
-                // Positive delta vs player ⇒ ahead (build_relative).
+                // Positive EstTime delta vs player ⇒ ahead (legacy / gap fallback).
                 let est = PLAYER_EST + (player_rank as f32 - rank as f32) * 1.5;
+                // Track % from the same pack + slow cruise (Relative uses LapDistPct).
+                let pct = ((est / lap_est) as f64 + t * 0.03).rem_euclid(1.0) as f32;
                 let pos = demo_position(i, t, field_size, player_i);
                 let f2 = (pos - 1) as f32 * 0.85;
                 let licenses = ["A 4.12", "B 3.80", "A 2.99", "A 3.50", "C 2.10", "B 4.00"];
                 let last_s = 88.0 + (i as f64) * 0.11;
                 // Car 8 visits the demo pit once per lap: OnPitRoad only on the
                 // lane span (not entry/exit blends), matching Python demo.
-                let visit_pit = i == 8 && ((t * 0.03 + i as f64 * 0.08) as i32) % 3 == 0;
+                let visit_pit = i == 8 && ((est / lap_est) as f64 + t * 0.03).rem_euclid(1.0) as i32 % 3 == 0;
                 let on_pit_lane = visit_pit && crate::track_path::pct_in_demo_pit_lane(pct);
                 cars.push(CarRow {
                     car_idx: i,

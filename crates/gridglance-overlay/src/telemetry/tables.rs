@@ -201,15 +201,15 @@ impl TableRow {
     }
 }
 
-/// Sticky Relative neighbor order so noisy `CarIdxEstTime` does not reshuffle
-/// every SDK tick (which restarts row slides and looks like low FPS).
+/// Sticky Relative neighbor order so noisy gaps do not reshuffle every SDK
+/// tick (which restarts row slides and looks like low FPS).
 #[derive(Debug, Clone, Default)]
 pub struct RelativeOrderHysteresis {
     ahead_idxs: Vec<i32>,
     behind_idxs: Vec<i32>,
 }
 
-/// Seconds of wrapped EstTime required to overturn the previous Relative order.
+/// Seconds of gap required to overturn the previous Relative order.
 const REL_ORDER_MARGIN_S: f32 = 0.25;
 
 fn sticky_sort_by_delta(items: &mut Vec<(f32, &CarRow)>, prev: &[i32], ascending: bool) {
@@ -307,6 +307,10 @@ fn is_race_session(session_type: Option<&str>) -> bool {
 }
 
 /// Build relative rows centered on the player (Python `_update_relative`).
+///
+/// Live order is by track position (`LapDistPct`) so the list shows who is
+/// physically ahead/behind on track. Gaps are seconds ≈ Δpct × lap estimate
+/// (EstTime when both cars have a valid sample).
 pub fn build_relative(
     cars: &[CarRow],
     cfg: &OverlayConfig,
@@ -319,12 +323,9 @@ pub fn build_relative(
 ) -> Vec<TableRow> {
     let n_ahead = cfg.f64_key("relative", "rows_ahead", 3.0).max(0.0) as usize;
     let n_behind = cfg.f64_key("relative", "rows_behind", 3.0).max(0.0) as usize;
-    let total = cfg
-        .f64_key("relative", "rows", (n_ahead + n_behind) as f64)
-        .max(0.0) as usize;
-    // Keep ahead/behind summing to total rows.
-    let n_ahead = n_ahead.min(total);
-    let n_behind = total.saturating_sub(n_ahead);
+    // Ahead/behind are authoritative. Do not re-derive behind from `rows`
+    // (that zeroed rows_behind when an old preset had rows ~= ahead).
+    let _ = cfg.f64_key("relative", "rows", (n_ahead + n_behind) as f64);
     let center = cfg.bool_key("relative", "center_on_player", true);
     let _ = session_type;
 
@@ -336,15 +337,14 @@ pub fn build_relative(
         return Vec::new();
     };
 
-    // Pre-green / warmup: order by qualify/grid position (EstTime is empty
-    // for cars that haven't joined yet).
-    if use_grid_relative(session_state, cars) {
+    // Pre-green / warmup: order by qualify/grid position when the focus car
+    // is not yet on a usable track percentage.
+    if use_grid_relative(session_state, cars, player) {
         return build_relative_by_position(
             cars, player, n_ahead, n_behind, center, sticky, app, groups,
         );
     }
 
-    let me = player.est_time;
     let lap_est = if lap_est_hint > 10.0 {
         lap_est_hint
     } else {
@@ -359,7 +359,9 @@ pub fn build_relative(
         if !relative_include(c, player) {
             continue;
         }
-        let delta = wrap_est_delta(c.est_time - me, lap_est);
+        let Some(delta) = relative_gap_secs(c, player, lap_est) else {
+            continue;
+        };
         rels.push((delta, c));
     }
 
@@ -428,9 +430,30 @@ pub fn build_relative(
     rows
 }
 
-/// Pre-race: SessionState < 4 (GetInCar / Warmup / Parade), or live EstTime
-/// is mostly missing while grid positions are populated.
-fn use_grid_relative(session_state: i32, cars: &[CarRow]) -> bool {
+/// Signed gap in seconds: positive = ahead on track, negative = behind.
+/// Prefer LapDistPct (physical neighbors); fall back to EstTime.
+fn relative_gap_secs(car: &CarRow, player: &CarRow, lap_est: f32) -> Option<f32> {
+    let le = if lap_est > 10.0 { lap_est } else { 90.0 };
+    let pct_ok = car.lap_dist_pct >= 0.0
+        && player.lap_dist_pct >= 0.0
+        && (car.on_track || car.in_pit || car.on_pit);
+    if pct_ok {
+        return Some(wrap_lap_delta(car.lap_dist_pct, player.lap_dist_pct) * le);
+    }
+    if car.est_time > 1.0 && player.est_time > 1.0 {
+        return Some(wrap_est_delta(car.est_time - player.est_time, le));
+    }
+    None
+}
+
+/// Pre-race: SessionState < 4 (GetInCar / Warmup / Parade) when the focus
+/// car is not on a usable lap %, or live timing is mostly missing while grid
+/// positions are populated.
+fn use_grid_relative(session_state: i32, cars: &[CarRow], player: &CarRow) -> bool {
+    // Once the focus car has a track percentage, order by on-track neighbors.
+    if player.lap_dist_pct >= 0.0 && (player.on_track || player.in_pit || player.on_pit) {
+        return false;
+    }
     if session_state > 0 && session_state < 4 {
         return true;
     }
@@ -445,7 +468,11 @@ fn use_grid_relative(session_state: i32, cars: &[CarRow]) -> bool {
         .iter()
         .filter(|c| !c.is_pace_car && c.position > 0 && c.est_time > 1.0)
         .count();
-    with_est * 2 < ranked
+    let with_pct = cars
+        .iter()
+        .filter(|c| !c.is_pace_car && c.position > 0 && c.lap_dist_pct >= 0.0 && c.on_track)
+        .count();
+    with_pct < 2 && with_est * 2 < ranked
 }
 
 fn build_relative_by_position(
@@ -1552,6 +1579,8 @@ mod tests {
                 name: format!("D{i}"),
                 car_number: format!("{i}"),
                 est_time: 10.0 + i as f32 * 2.0,
+                // Distinct track positions: higher pct = ahead of player (i=3 @ 0.50).
+                lap_dist_pct: 0.35 + i as f32 * 0.05,
                 is_player: i == 3,
                 on_track: true,
                 ..Default::default()
@@ -1572,6 +1601,8 @@ mod tests {
         // With 3 ahead / 3 behind and centering, player is in the middle slot.
         assert_eq!(player_i, 3);
         assert_eq!(rows.len(), 7);
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).map(|r| r.key.as_str()).collect();
+        assert_eq!(live, vec!["6", "5", "4", "3", "2", "1", "0"]);
     }
 
     #[test]
@@ -1696,7 +1727,11 @@ mod tests {
                 // Nobody has EstTime yet; half are still in garage.
                 inactive: i >= 3,
                 on_track: i < 3,
-                lap_dist_pct: if i < 3 { 0.1 } else { -1.0 },
+                lap_dist_pct: if i < 3 {
+                    0.10 + i as f32 * 0.05
+                } else {
+                    -1.0
+                },
                 ..Default::default()
             });
         }
@@ -1719,7 +1754,7 @@ mod tests {
         assert!(keys.contains(&"2"), "player present");
         assert!(
             keys.contains(&"0") || keys.contains(&"1"),
-            "cars ahead on track"
+            "cars near player on track"
         );
         assert!(
             !keys.iter().any(|k| *k == "3" || *k == "4" || *k == "5"),
@@ -1736,6 +1771,7 @@ mod tests {
                 name: "AheadPit".into(),
                 car_number: "1".into(),
                 est_time: 12.0,
+                lap_dist_pct: 0.62,
                 on_track: false,
                 on_pit: true,
                 in_pit: true,
@@ -1747,6 +1783,7 @@ mod tests {
                 name: "OnTrack".into(),
                 car_number: "2".into(),
                 est_time: 14.0,
+                lap_dist_pct: 0.50,
                 on_track: true,
                 is_player: true,
                 ..Default::default()
@@ -1757,6 +1794,7 @@ mod tests {
                 name: "BehindPit".into(),
                 car_number: "3".into(),
                 est_time: 16.0,
+                lap_dist_pct: 0.40,
                 on_track: false,
                 on_pit: true,
                 ..Default::default()
@@ -1805,6 +1843,11 @@ mod tests {
                 name: format!("D{i}"),
                 car_number: format!("{i}"),
                 est_time: 10.0 + i as f32 * 2.0,
+                lap_dist_pct: if i < 3 {
+                    0.10 + i as f32 * 0.05
+                } else {
+                    -1.0
+                },
                 is_player: i == 2,
                 inactive: i >= 3,
                 on_track: i < 3,
