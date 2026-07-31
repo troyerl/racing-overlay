@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.13 - 2026-07-30
+
+- **Relative / Standings row slides.** Rows use a fixed-duration ease-in-out so
+  single and multi-row reorders move and settle together without mid-flight snaps
+  or paint-gap stutter.
+
 ## 1.69.12 - 2026-07-30
 
 - **Radio under caution.** Pace-car / Race Control transmissions show as

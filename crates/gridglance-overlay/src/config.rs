@@ -1470,7 +1470,7 @@ fn default_cfg() -> Value {
             section.insert("rows".into(), json!(if *key == "relative" { 6 } else { 9 }));
             section.insert("center_on_player".into(), Value::Bool(true));
             section.insert("show_footer".into(), Value::Bool(true));
-            section.insert("row_ease_tau".into(), json!(0.16));
+            section.insert("row_ease_tau".into(), json!(0.24));
             section.insert("fade_ease_tau".into(), json!(0.12));
             section.insert("header_font_scale".into(), json!(1.0));
             section.insert("footer_font_scale".into(), json!(1.0));

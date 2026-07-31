@@ -13,16 +13,23 @@ use std::collections::HashMap;
 const ROW_SNAP_SLOTS: f32 = 6.0;
 const DENSE_ROW_COUNT: usize = 20;
 const DENSE_ROW_SNAP_SLOTS: f32 = 5.0;
-const DENSE_ROW_EASE_TAU: f32 = 0.10;
 /// Relative passes skip the player row (|Δidx|≈2); use a high threshold so
 /// those slides ease instead of teleporting. Larger window jumps still snap.
 const RELATIVE_ROW_SNAP_SLOTS: f32 = 8.0;
-/// Second reorder within this window snaps instead of stacking mid-flight slides.
-const ORDER_STABLE_S: f64 = 0.120;
+/// Default slide length (seconds). Same duration for every row so multi-row
+/// reorders finish together instead of each chasing with its own exponential.
+const DEFAULT_ROW_SLIDE_S: f32 = 0.24;
 
 #[derive(Clone, Default)]
 struct RowAnimState {
+    /// Current visual slot (may be mid-slide).
     idx: f32,
+    /// Slide start visual index.
+    from: f32,
+    /// Slide destination slot.
+    to: f32,
+    /// Host mono time when this slide started.
+    t0: f64,
     opacity: f32,
 }
 
@@ -30,9 +37,19 @@ struct RowAnimState {
 struct TableAnim {
     /// key -> visual slot + fade
     slots: HashMap<String, RowAnimState>,
-    last_paint_secs: f64,
     last_order: Vec<String>,
-    order_stable_after: f64,
+    last_paint_secs: f64,
+}
+
+/// Smooth ease-in-out so batches of rows accelerate/decelerate together.
+fn ease_in_out_cubic(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        let u = -2.0 * t + 2.0;
+        1.0 - (u * u * u) * 0.5
+    }
 }
 
 /// Vertical scroll (in row slots) so the focus car stays visible with behind rows.
@@ -133,32 +150,26 @@ pub fn paint_table(
         card.bottom() - pad
     };
 
-    // Row motion: ease when order is stable; snap on rapid reorders / big jumps.
-    // dt comes from the host wall clock (mono_secs), not per-viewport paint
-    // time — batch paint gaps jitter and made slides move-stutter-move.
+    // Row motion: fixed-duration ease-in-out keyed to wall clock so irregular
+    // paint gaps don't stutter, and every row in a multi-swap finishes together.
     let id = egui::Id::new(("table_anim", section));
     let now = mono_secs;
     let animating = {
         let mut anim = ui
             .ctx()
             .data_mut(|d| d.get_temp::<TableAnim>(id).unwrap_or_default());
-        let dt = if anim.last_paint_secs > 0.0 {
-            ((now - anim.last_paint_secs) as f32).clamp(0.0, 0.1)
-        } else {
-            1.0 / 60.0
-        };
-        anim.last_paint_secs = now;
 
-        let mut tau = cfg.f64_key(section, "row_ease_tau", 0.16) as f32;
+        // `row_ease_tau` is the slide duration in seconds (legacy name).
+        let mut slide_s = cfg.f64_key(section, "row_ease_tau", DEFAULT_ROW_SLIDE_S as f64) as f32;
         let mut fade_tau = cfg.f64_key(section, "fade_ease_tau", 0.12) as f32;
-        // tau<=0 makes ease() snap instantly → one-frame teleports that look
-        // like low-FPS lag. Floor so the settings slider can't kill slides.
-        if !(tau.is_finite() && tau > 1e-3) {
-            tau = 0.16;
+        if !(slide_s.is_finite() && slide_s > 0.05) {
+            slide_s = DEFAULT_ROW_SLIDE_S;
         }
         if !(fade_tau.is_finite() && fade_tau > 1e-3) {
             fade_tau = 0.12;
         }
+        // Dense fields: keep the same duration (don't rush) so big reshuffles
+        // stay readable instead of snapping past each other.
         let dense = rows.len() >= DENSE_ROW_COUNT;
         let snap = if section == "relative" {
             RELATIVE_ROW_SNAP_SLOTS
@@ -167,33 +178,25 @@ pub fn paint_table(
         } else {
             ROW_SNAP_SLOTS
         };
-        if dense {
-            tau = tau.min(DENSE_ROW_EASE_TAU);
-        }
 
         let order: Vec<String> = rows
             .iter()
             .filter(|r| !r.empty)
             .map(|r| r.key.clone())
             .collect();
-        let mut force_snap = false;
         if order != anim.last_order {
-            // Rapid follow-up while the prior slide window is open → snap.
-            // Initial populate (empty → first order) does not open the window.
-            // Relative reorders every telem tick (gap sort), so force-snap would
-            // kill every pass slide — only standings uses the debounce.
-            if !anim.last_order.is_empty() && now < anim.order_stable_after && section != "relative"
-            {
-                force_snap = true;
-            }
-            if !anim.last_order.is_empty() {
-                anim.order_stable_after = now + ORDER_STABLE_S;
-            }
             anim.last_order = order.clone();
         }
 
         let active: std::collections::HashSet<String> = order.into_iter().collect();
         anim.slots.retain(|k, _| active.contains(k));
+
+        let fade_dt = if anim.last_paint_secs > 0.0 {
+            ((now - anim.last_paint_secs) as f32).clamp(0.0, 0.1)
+        } else {
+            1.0 / 60.0
+        };
+        anim.last_paint_secs = now;
 
         let mut still = false;
         for (i, row) in rows.iter().enumerate() {
@@ -203,16 +206,41 @@ pub fn paint_table(
             let target = i as f32;
             let st = anim.slots.entry(row.key.clone()).or_insert(RowAnimState {
                 idx: target,
+                from: target,
+                to: target,
+                t0: now,
                 opacity: 0.0,
             });
-            let delta = (st.idx - target).abs();
-            if force_snap || delta > snap {
-                st.idx = target;
-            } else {
-                st.idx = ease(st.idx, target, dt, tau);
+
+            // Retarget: restart a timed slide from the current visual position.
+            // Mid-flight retargets keep moving (no snap) so multi-row cascades
+            // stay smooth instead of teleporting on the next telem tick.
+            if (st.to - target).abs() > 0.01 {
+                let jump = (st.idx - target).abs();
+                if jump > snap {
+                    st.idx = target;
+                    st.from = target;
+                    st.to = target;
+                    st.t0 = now;
+                } else {
+                    st.from = st.idx;
+                    st.to = target;
+                    st.t0 = now;
+                }
             }
-            st.opacity = ease(st.opacity, 1.0, dt, fade_tau);
-            if (st.idx - target).abs() > 0.02 || (st.opacity - 1.0).abs() > 0.01 {
+
+            let t = if slide_s <= 1e-4 {
+                1.0
+            } else {
+                ((now - st.t0) as f32 / slide_s).clamp(0.0, 1.0)
+            };
+            if t >= 1.0 {
+                st.idx = st.to;
+            } else {
+                st.idx = st.from + (st.to - st.from) * ease_in_out_cubic(t);
+            }
+            st.opacity = ease(st.opacity, 1.0, fade_dt, fade_tau);
+            if t < 1.0 - 1e-3 || (st.opacity - 1.0).abs() > 0.01 {
                 still = true;
             }
         }
