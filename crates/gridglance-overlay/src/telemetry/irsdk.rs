@@ -615,6 +615,7 @@ mod win {
 
     /// Build radio tower row from transmit index + session info (Python
     /// `_update_radio_tower`). Does not require the car to be in `car_rows`.
+    /// Pace-car / Race Control transmissions are shown (common under caution).
     unsafe fn build_radio_speaker(
         session: &Session,
         cache: &SessionCache,
@@ -623,29 +624,33 @@ mod win {
         if radio_idx < 0 {
             return None;
         }
-        if cache
+        let is_pace = cache
             .drivers
             .get(&radio_idx)
             .map(|d| d.is_pace_car)
-            .unwrap_or(false)
-        {
-            return None;
-        }
-        let (name, car_number) = if let Some(d) = cache.drivers.get(&radio_idx) {
+            .unwrap_or(false);
+        let (name, car_number) = if is_pace {
+            // Pace car is driven by Race Control — show that under yellow.
+            ("Race Control".into(), String::new())
+        } else if let Some(d) = cache.drivers.get(&radio_idx) {
             (d.name.clone(), d.car_number.clone())
         } else {
             (format!("Car {radio_idx}"), format!("{radio_idx}"))
         };
-        let position = int_arr(session, "CarIdxPosition")
-            .and_then(|a| a.get(radio_idx as usize).copied())
-            .filter(|&p| p > 0)
-            .unwrap_or(0);
+        let position = if is_pace {
+            0
+        } else {
+            int_arr(session, "CarIdxPosition")
+                .and_then(|a| a.get(radio_idx as usize).copied())
+                .filter(|&p| p > 0)
+                .unwrap_or(0)
+        };
         Some(RadioSpeaker {
             position,
             car_number,
             name,
             active: true,
-            is_player: radio_idx == cache.player_idx,
+            is_player: !is_pace && radio_idx == cache.player_idx,
             is_pro: false,
             group_icon: String::new(),
             group_color: String::new(),
@@ -1222,51 +1227,60 @@ mod win {
         if let Some(idx) = radio_idx {
             if idx >= 0 && !out.iter().any(|c| c.car_idx == idx) {
                 let di = cache.drivers.get(&idx);
-                if !di.map(|d| d.is_pace_car).unwrap_or(false) {
-                    let (name, number, ir, lic, class_color, class_id) = if let Some(d) = di {
-                        (
-                            d.name.clone(),
-                            d.car_number.clone(),
-                            d.irating,
-                            d.license.clone(),
-                            d.class_color.clone(),
-                            d.class_id,
-                        )
-                    } else {
-                        (
-                            format!("Car {idx}"),
-                            format!("{idx}"),
-                            0,
-                            String::new(),
-                            String::new(),
-                            0,
-                        )
-                    };
-                    let live_pos = positions
-                        .as_ref()
-                        .and_then(|a| a.get(idx as usize).copied())
-                        .unwrap_or(0)
-                        .max(0);
-                    let (pos, cpos) = resolved_pos_for(idx, live_pos, live_pos, &resolved);
-                    out.push(CarRow {
-                        car_idx: idx,
-                        position: pos,
-                        class_position: cpos,
-                        car_number: number,
-                        name,
-                        gap: "—".into(),
-                        irating: ir,
-                        class_id,
-                        license: lic,
-                        class_color,
-                        is_player: idx == player_idx,
-                        is_speaking: true,
-                        inactive: true,
-                        lap_dist_pct: -1.0,
-                        status_kind: Some("garage".into()),
-                        ..Default::default()
-                    });
-                }
+                let (name, number, ir, lic, class_color, class_id, is_pace) = if let Some(d) = di {
+                    (
+                        if d.is_pace_car {
+                            "Race Control".into()
+                        } else {
+                            d.name.clone()
+                        },
+                        if d.is_pace_car {
+                            String::new()
+                        } else {
+                            d.car_number.clone()
+                        },
+                        d.irating,
+                        d.license.clone(),
+                        d.class_color.clone(),
+                        d.class_id,
+                        d.is_pace_car,
+                    )
+                } else {
+                    (
+                        format!("Car {idx}"),
+                        format!("{idx}"),
+                        0,
+                        String::new(),
+                        String::new(),
+                        0,
+                        false,
+                    )
+                };
+                let live_pos = positions
+                    .as_ref()
+                    .and_then(|a| a.get(idx as usize).copied())
+                    .unwrap_or(0)
+                    .max(0);
+                let (pos, cpos) = resolved_pos_for(idx, live_pos, live_pos, &resolved);
+                out.push(CarRow {
+                    car_idx: idx,
+                    position: if is_pace { 0 } else { pos },
+                    class_position: if is_pace { 0 } else { cpos },
+                    car_number: number,
+                    name,
+                    gap: "—".into(),
+                    irating: ir,
+                    class_id,
+                    license: lic,
+                    class_color,
+                    is_player: !is_pace && idx == player_idx,
+                    is_speaking: true,
+                    is_pace_car: is_pace,
+                    inactive: !is_pace,
+                    lap_dist_pct: -1.0,
+                    status_kind: Some(if is_pace { "pace".into() } else { "garage".into() }),
+                    ..Default::default()
+                });
             }
         }
         out
@@ -1531,9 +1545,9 @@ mod win {
                 cache.pit_speed_limit_mps = Some(v / 3.6);
             }
         }
-        if let Some(v) = yaml_f32(yaml, "TrackLength") {
-            if v.is_finite() && v > 100.0 {
-                cache.track_length_m = Some(v);
+        if let Some(raw) = yaml_str(yaml, "TrackLength") {
+            if let Some(m) = parse_track_length_m(&raw) {
+                cache.track_length_m = Some(m);
             }
         }
         if let Some(v) = yaml_f32(yaml, "DriverCarRedLine") {
@@ -1813,6 +1827,30 @@ mod win {
             }
         }
         None
+    }
+
+    /// WeekendInfo `TrackLength` is usually `"0.75 mi"` / `"4.02 km"`, not meters.
+    fn parse_track_length_m(raw: &str) -> Option<f32> {
+        let t = raw.trim().trim_matches('"');
+        let mut parts = t.split_whitespace();
+        let n: f32 = parts.next()?.parse().ok()?;
+        if !n.is_finite() || n <= 0.0 {
+            return None;
+        }
+        let unit = parts.next().unwrap_or("").to_ascii_lowercase();
+        let meters = if unit.starts_with("mi") {
+            n * 1609.344
+        } else if unit.starts_with("km") {
+            n * 1000.0
+        } else if unit.starts_with('m') && !unit.starts_with("mi") {
+            n
+        } else if n < 50.0 {
+            // Bare small number → miles (iRacing WeekendInfo convention).
+            n * 1609.344
+        } else {
+            n
+        };
+        (meters > 100.0).then_some(meters)
     }
 
     fn yaml_str(yaml: &str, key: &str) -> Option<String> {

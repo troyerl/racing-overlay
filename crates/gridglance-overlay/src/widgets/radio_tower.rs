@@ -64,14 +64,23 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 
     const HOLD_SECS: f64 = 0.45;
+    const HOLD_CAUTION_SECS: f64 = 2.0;
     let id = egui::Id::new("radio_tower_hold");
     let now = ctx.mono_secs;
     let mut hold = ui.ctx().data(|d| d.get_temp::<RadioHold>(id));
+    let hold_secs = if matches!(
+        ctx.frame.flag.as_deref(),
+        Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
+    ) {
+        HOLD_CAUTION_SECS
+    } else {
+        HOLD_SECS
+    };
 
     let row = if let Some(r) = &ctx.frame.radio {
         hold = Some(RadioHold {
             row: r.clone(),
-            until: now + HOLD_SECS,
+            until: now + hold_secs,
         });
         Some(r.clone())
     } else if ctx.edit_mode {

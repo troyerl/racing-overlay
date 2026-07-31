@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.12 - 2026-07-30
+
+- **Radio under caution.** Pace-car / Race Control transmissions show as
+  “Race Control” instead of hiding the radio tower; hold lasts longer under yellow.
+- **Pace caution panel.** Clamps oversized layouts, parses track length with
+  mi/km units so Pace isn’t stuck on —, and hides silly ΔP/ΔL values when you’re
+  nearly stopped (e.g. in stall).
+
 ## 1.69.11 - 2026-07-30
 
 - **Relative order.** Neighbors are ranked by on-track position (`LapDistPct`)

@@ -7,7 +7,7 @@ members = [
 default-members = ["crates/gridglance-overlay"]
 
 [workspace.package]
-version = "1.69.11"
+version = "1.69.12"
 edition = "2021"
 license = "MIT"
 

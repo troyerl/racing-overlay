@@ -828,13 +828,25 @@ impl eframe::App for OverlayApp {
                 }
                 // Repair oversized caution layouts from older auto-fit bugs.
                 if let Some(lay) = st.layout.get_mut("pace_caution") {
-                    if lay.w > 300 || lay.h > 80 {
-                        lay.w = lay.w.min(300).max(180);
-                        lay.h = lay.h.min(80).max(52);
+                    if lay.w > widgets::PACE_CAUTION_MAX_W || lay.h > widgets::PACE_CAUTION_MAX_H {
+                        lay.w = lay.w.min(widgets::PACE_CAUTION_MAX_W).max(180);
+                        lay.h = lay.h.min(widgets::PACE_CAUTION_MAX_H).max(52);
                         changed = true;
                     }
                 }
                 if changed {
+                    st.save_layout_to_preset();
+                }
+            }
+        }
+
+        // Always shrink oversized caution layouts (do not wait for a style change).
+        {
+            let mut st = self.state.write();
+            if let Some(lay) = st.layout.get_mut("pace_caution") {
+                if lay.w > widgets::PACE_CAUTION_MAX_W || lay.h > widgets::PACE_CAUTION_MAX_H {
+                    lay.w = lay.w.min(widgets::PACE_CAUTION_MAX_W).max(180);
+                    lay.h = lay.h.min(widgets::PACE_CAUTION_MAX_H).max(52);
                     st.save_layout_to_preset();
                 }
             }
@@ -862,9 +874,12 @@ impl eframe::App for OverlayApp {
                         .get(*key)
                         .cloned()
                         .unwrap_or(PanelLayout::default());
-                    if *key == "pace_caution" && (lay.w > 300 || lay.h > 80) {
-                        lay.w = lay.w.min(300).max(180);
-                        lay.h = lay.h.min(80).max(52);
+                    if *key == "pace_caution"
+                        && (lay.w > widgets::PACE_CAUTION_MAX_W
+                            || lay.h > widgets::PACE_CAUTION_MAX_H)
+                    {
+                        lay.w = lay.w.min(widgets::PACE_CAUTION_MAX_W).max(180);
+                        lay.h = lay.h.min(widgets::PACE_CAUTION_MAX_H).max(52);
                     }
                     items.push(((*key).to_string(), lay));
                 }

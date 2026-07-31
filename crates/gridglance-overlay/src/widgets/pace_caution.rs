@@ -7,6 +7,9 @@ use crate::telemetry::TelemetryFrame;
 use egui::{Align2, Pos2, Ui};
 
 const SECTION: &str = "pace_caution";
+/// Hard max size so caution never becomes a tall empty banner.
+pub const MAX_W: i32 = 300;
+pub const MAX_H: i32 = 72;
 
 /// Yellow / full-course caution from session flags.
 ///
@@ -82,9 +85,6 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let _ = full_rect(ui);
         return;
     }
-    if under_caution(ctx.frame) {
-        // Speeds update slowly — do not force the 60 Hz present path.
-    }
 
     let rect = full_rect(ui);
     let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
@@ -118,26 +118,28 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let show_delta = ctx.cfg.bool_key(SECTION, "show_delta", true);
     let unit = speed_unit(ctx.cfg);
+    // Stationary / in-stall: delta-to-limit like "-45 MPH" is noise.
+    let moving = you_mps.map(|v| v > 0.5).unwrap_or(false);
 
     let mut cols: Vec<(&str, String, bool)> = Vec::new();
     cols.push((
         "Pace",
         pace_mps
             .map(|ms| format_speed(ctx.cfg, ms))
-            .unwrap_or_else(|| format!("-- {unit}")),
+            .unwrap_or_else(|| format!("— {unit}")),
         false,
     ));
     cols.push((
         "You",
         you_mps
             .map(|ms| format_speed(ctx.cfg, ms))
-            .unwrap_or_else(|| format!("-- {unit}")),
+            .unwrap_or_else(|| format!("— {unit}")),
         false,
     ));
     if show_delta {
         let delta_s = match (pace_mps, you_mps) {
-            (Some(p), Some(y)) => format_delta(ctx.cfg, y, p),
-            _ => format!("-- {unit}"),
+            (Some(p), Some(y)) if moving => format_delta(ctx.cfg, y, p),
+            _ => format!("— {unit}"),
         };
         cols.push(("ΔP", delta_s, true));
     }
@@ -145,13 +147,13 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         "Pit",
         pit_mps
             .map(|ms| format_speed(ctx.cfg, ms))
-            .unwrap_or_else(|| format!("-- {unit}")),
+            .unwrap_or_else(|| format!("— {unit}")),
         false,
     ));
     if show_delta {
         let delta_s = match (pit_mps, you_mps) {
-            (Some(p), Some(y)) => format_delta(ctx.cfg, y, p),
-            _ => format!("-- {unit}"),
+            (Some(p), Some(y)) if moving => format_delta(ctx.cfg, y, p),
+            _ => format!("— {unit}"),
         };
         cols.push(("ΔL", delta_s, true));
     }

@@ -12,7 +12,10 @@ mod leaderboard_strip;
 mod map;
 pub use map::{bg_fingerprint, build_car_sprites, tick_car_motion, MAP_MOTION_REV};
 mod pace_caution;
-pub use pace_caution::should_display as pace_caution_should_display;
+pub use pace_caution::{
+    should_display as pace_caution_should_display, MAX_H as PACE_CAUTION_MAX_H,
+    MAX_W as PACE_CAUTION_MAX_W,
+};
 mod pit_advisor;
 mod pit_board;
 mod radar;
