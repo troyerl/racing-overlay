@@ -1,4 +1,4 @@
-﻿//! In-overlay Settings UI (egui). Schema-driven pages matching Python ConfigEditor.
+//! In-overlay Settings UI (egui). Schema-driven pages matching Python ConfigEditor.
 
 mod scan;
 mod schema;
@@ -437,8 +437,7 @@ fn paint_profile_row(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi
                 ConfigContext::Race
             };
             if let Some(mut st) = state.try_write() {
-                let live = if st.frame.connected && (st.frame.in_garage || !st.frame.in_car)
-                {
+                let live = if st.frame.connected && (st.frame.in_garage || !st.frame.in_car) {
                     ConfigContext::Garage
                 } else {
                     ConfigContext::Race
@@ -1082,14 +1081,7 @@ fn paint_widget_section(
                             // Schema key missing from sparse preset — still show a control.
                             let fallback = schema_fallback_value(section, key);
                             paint_value(
-                                ui,
-                                state,
-                                section,
-                                key,
-                                &fallback,
-                                dirty,
-                                accent,
-                                ui_state,
+                                ui, state, section, key, &fallback, dirty, accent, ui_state,
                             );
                         }
                     }
@@ -1166,7 +1158,7 @@ fn schema_fallback_value(section: &str, key: &str) -> Value {
         "show_icons" => Value::Bool(false),
         "title" => Value::String(section.to_uppercase().replace('_', " ")),
         "panel_style" => Value::String("data".into()),
-        "row_height_px" => json!(36.0),
+        "row_height_px" => json!(28.0),
         "corner_radius_frac" => json!(0.0),
         "panel_opacity" => json!(1.0),
         k if k.starts_with("show_") => Value::Bool(true),

@@ -456,7 +456,9 @@ pub fn write_json_atomic(path: &Path, doc: &Value) -> anyhow::Result<()> {
 /// refreshes files that already exist on disk.
 pub fn sync_library(tracks_dir: &Path) -> anyhow::Result<usize> {
     if !read_available() {
-        anyhow::bail!("no Mongo read URI (set GRIDGLANCE_MONGODB_READ_URI or GRIDGLANCE_MONGODB_URI)");
+        anyhow::bail!(
+            "no Mongo read URI (set GRIDGLANCE_MONGODB_READ_URI or GRIDGLANCE_MONGODB_URI)"
+        );
     }
     fs::create_dir_all(tracks_dir)?;
     block_on(async {
@@ -512,7 +514,9 @@ pub fn sync_down_async(tracks_dir: PathBuf) {
         let local_n = count_local_tracks(&tracks_dir);
         if local_n < 8 {
             match sync_library(&tracks_dir) {
-                Ok(n) => eprintln!("[gridglance] pulled {n} tracks from cloud (local cache was sparse)"),
+                Ok(n) => {
+                    eprintln!("[gridglance] pulled {n} tracks from cloud (local cache was sparse)")
+                }
                 Err(e) => eprintln!("[gridglance] track library sync: {e}"),
             }
         } else {

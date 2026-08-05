@@ -12,7 +12,8 @@ widgets, Settings, Track Scan, Mongo sync, and system tray.
 ## Build & run
 
 ```powershell
-cargo build --release -p gridglance-overlay
+# Local iteration (optimized, incremental-friendly)
+cargo run -p gridglance-overlay --release -- --settings
 
 # Demo telemetry + Settings
 cargo run -p gridglance-overlay -- --demo --settings
@@ -24,11 +25,12 @@ cargo run -p gridglance-overlay -- `
 # Track Scan (requires GRIDGLANCE_MONGODB_URI write credential)
 cargo run -p gridglance-overlay -- --demo --track-scan
 
-# Live iRacing
-cargo run -p gridglance-overlay --release -- --settings
+# Installer / max-opt binary (thin LTO — slow; CI uses this)
+cargo build --profile dist -p gridglance-overlay
 ```
 
-Binary: `target/release/gridglance-overlay.exe`
+Binary (local): `target/release/gridglance-overlay.exe`  
+Binary (dist): `target/dist/gridglance-overlay.exe`
 
 Tray menu: Settings / Track Scan / Start–Stop / Edit layout / Check updates /
 Quit. Second launch activates the existing instance. Release builds run without

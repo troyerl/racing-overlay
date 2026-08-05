@@ -1,9 +1,7 @@
 //! Radio tower — current team-radio speaker (Python parity).
 
 use super::WidgetCtx;
-use crate::chrome::{
-    color_with_alpha, full_rect, panel_card, panel_content_pad, panel_title,
-};
+use crate::chrome::{color_with_alpha, full_rect, panel_card, panel_content_pad, panel_title};
 use crate::config::parse_color_str;
 use crate::icons;
 use crate::telemetry::RadioSpeaker;
@@ -57,30 +55,23 @@ fn row_text(row: &RadioSpeaker, show_position: bool, show_name: bool, show_num: 
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
+    // Host latches TX onto `frame.radio` across telem ticks. Keep a short paint
+    // hold only so a mid-paint drop still shows for one refresh.
     #[derive(Clone, Default)]
     struct RadioHold {
         row: RadioSpeaker,
         until: f64,
     }
 
-    const HOLD_SECS: f64 = 0.45;
-    const HOLD_CAUTION_SECS: f64 = 2.0;
+    const HOLD_SECS: f64 = 0.75;
     let id = egui::Id::new("radio_tower_hold");
     let now = ctx.mono_secs;
     let mut hold = ui.ctx().data(|d| d.get_temp::<RadioHold>(id));
-    let hold_secs = if matches!(
-        ctx.frame.flag.as_deref(),
-        Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
-    ) {
-        HOLD_CAUTION_SECS
-    } else {
-        HOLD_SECS
-    };
 
     let row = if let Some(r) = &ctx.frame.radio {
         hold = Some(RadioHold {
             row: r.clone(),
-            until: now + hold_secs,
+            until: now + HOLD_SECS,
         });
         Some(r.clone())
     } else if ctx.edit_mode {

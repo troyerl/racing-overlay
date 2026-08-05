@@ -9,8 +9,10 @@ mod inputs;
 mod lap_compare;
 mod laptime_log;
 mod leaderboard_strip;
-mod map;
-pub use map::{bg_fingerprint, build_car_sprites, tick_car_motion, MAP_MOTION_REV};
+pub(crate) mod map;
+pub use map::{
+    bg_fingerprint, build_car_sprites, ensure_path_cached, tick_car_motion, MAP_MOTION_REV,
+};
 mod pace_caution;
 pub use pace_caution::{
     should_display as pace_caution_should_display, MAX_H as PACE_CAUTION_MAX_H,
@@ -57,6 +59,8 @@ pub enum MapPaintMode {
     Full,
     /// Track chrome only — captured into the CPU bg cache.
     StaticOnly,
+    /// Cars / markers / wind only, painted over an already-seeded bg cache.
+    DynamicOnly,
 }
 
 pub fn paint(ui: &mut Ui, key: &str, ctx: &mut WidgetCtx<'_>) {

@@ -438,12 +438,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
         "pace_caution" => vec![
             (
                 "Content",
-                &[
-                    "panel_style",
-                    "show_title",
-                    "title",
-                    "show_delta",
-                ],
+                &["panel_style", "show_title", "title", "show_delta"],
             ),
             ("Layout", &["corner_radius_frac"]),
             ("Colors", &["colors"]),
@@ -663,7 +658,12 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
         ],
         "radio_tower" => &["row_dividers", "max_row_height_frac", "data_font_bold"],
         "ers_hybrid" => &["row_dividers", "data_font_bold", "text_scale"],
-        "system_panel" => &["text_scale", "max_row_height_frac", "row_dividers", "data_font_bold"],
+        "system_panel" => &[
+            "text_scale",
+            "max_row_height_frac",
+            "row_dividers",
+            "data_font_bold",
+        ],
         "pit_advisor" => &[
             "row_dividers",
             "race_tire_sets_total",
@@ -855,7 +855,7 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
             Some("Total cars ahead+behind (must equal rows ahead + rows behind).")
         }
         ("standings", "rows") => Some(
-            "Top-N row count when not centered; when centered, equals rows ahead + rows behind.",
+            "Exact number of standings rows to show (pads with empty slots when the field is shorter).",
         ),
         (_, "rows_ahead") => {
             Some("Cars ahead of you. Rows ahead + rows behind must equal total rows.")

@@ -289,8 +289,7 @@ fn draw_car_labels_fonts(
         }
         let size_pts = (car.r / ppp * 0.92).clamp(8.0, 16.0);
         let font_id = egui::FontId::new(size_pts, egui::FontFamily::Proportional);
-        let galley =
-            fonts.layout_no_wrap(text, font_id, egui::Color32::WHITE);
+        let galley = fonts.layout_no_wrap(text, font_id, egui::Color32::WHITE);
         let gw = galley.size().x * ppp;
         let gh = galley.size().y * ppp;
         let origin_x = car.x - gw * 0.5;
@@ -1157,6 +1156,14 @@ impl PresentCache {
             let _ = windows::Win32::Graphics::Gdi::DeleteDC(mem_dc);
             return None;
         }
+        // CreateDIBSection leaves bits uninitialized — zero so a failed/short
+        // present never flashes GPU garbage through UpdateLayeredWindow.
+        let nbytes = (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4);
+        if nbytes > 0 {
+            std::ptr::write_bytes(bits as *mut u8, 0, nbytes);
+        }
         let old_obj = SelectObject(mem_dc, dib.into());
         Some(PresentSurface {
             width,
@@ -1223,9 +1230,6 @@ pub fn present_bgra_dirty(
         return;
     }
     let need = (width as usize) * (height as usize) * 4;
-    if bgra.len() < need {
-        return;
-    }
     ensure_layered(hwnd);
 
     use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
@@ -1258,6 +1262,27 @@ pub fn present_bgra_dirty(
             SourceConstantAlpha: 255,
             AlphaFormat: AC_SRC_ALPHA as u8,
         };
+
+        // Short/empty buffers: still ULW a cleared surface so a brand-new
+        // layered HWND never shows uninitialized DIB noise.
+        if bgra.len() < need {
+            if !surf.bits.is_null() && need > 0 {
+                std::ptr::write_bytes(surf.bits, 0, need);
+            }
+            let _ = UpdateLayeredWindow(
+                hwnd_win,
+                Some(screen_dc),
+                None,
+                Some(&size),
+                Some(surf.mem_dc),
+                Some(&src_pt),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
+            );
+            let _ = ReleaseDC(None, screen_dc);
+            return;
+        }
 
         let mut used_dirty = false;
         if !dirty.is_empty() {

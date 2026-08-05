@@ -75,6 +75,17 @@ pub struct CarRow {
     pub car_flag: Option<String>,
 }
 
+/// Seated-car motion state. iRacing withholds `Lat`/`Lon` in live telemetry, so
+/// this is what `--log-track-path` integrates to reconstruct the driven path.
+/// Velocities are car-local (x forward, y left) in m/s; angles are radians.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct PlayerMotion {
+    pub vx: f32,
+    pub vy: f32,
+    pub yaw: f32,
+    pub yaw_north: f32,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TelemetryFrame {
     pub connected: bool,
@@ -161,6 +172,9 @@ pub struct TelemetryFrame {
     /// Track pit-road speed limit (m/s) from `TrackPitSpeedLimit`.
     #[serde(default)]
     pub pit_speed_limit_mps: Option<f32>,
+    /// Live pace-car ground speed (m/s) for the pace/caution panel.
+    #[serde(default)]
+    pub pace_car_speed_mps: Option<f32>,
     pub ers_pct: Option<f32>,
     pub ers_mode: Option<String>,
     pub have_hybrid: bool,
@@ -174,6 +188,16 @@ pub struct TelemetryFrame {
     pub standings_cars: Vec<TableRow>,
     pub standings_slots: TableSlots,
     pub player_lap_dist_pct: f32,
+    /// Player car world position (`Lat`/`Lon`, degrees). Absent in live iRacing
+    /// telemetry, so `player_motion` is the usable path source in practice.
+    #[serde(default)]
+    pub player_lat: Option<f64>,
+    #[serde(default)]
+    pub player_lon: Option<f64>,
+    /// `None` when the sim exposes no motion vars at all (not merely a car at
+    /// rest), which is what tells the recorder there is nothing to wait for.
+    #[serde(default)]
+    pub player_motion: Option<PlayerMotion>,
     /// Estimated lap duration for EstTime wrap (LapEstTime).
     pub lap_est_time: f32,
     pub track_id: Option<i32>,
@@ -485,7 +509,8 @@ pub mod demo {
                 let last_s = 88.0 + (i as f64) * 0.11;
                 // Car 8 visits the demo pit once per lap: OnPitRoad only on the
                 // lane span (not entry/exit blends), matching Python demo.
-                let visit_pit = i == 8 && ((est / lap_est) as f64 + t * 0.03).rem_euclid(1.0) as i32 % 3 == 0;
+                let visit_pit =
+                    i == 8 && ((est / lap_est) as f64 + t * 0.03).rem_euclid(1.0) as i32 % 3 == 0;
                 let on_pit_lane = visit_pit && crate::track_path::pct_in_demo_pit_lane(pct);
                 cars.push(CarRow {
                     car_idx: i,
@@ -743,6 +768,11 @@ pub mod demo {
                 ffb_pct: Some(55.0 + 60.0 * (t * 1.7).sin().abs() as f32),
                 pace_mode,
                 pit_speed_limit_mps: Some(22.0),
+                pace_car_speed_mps: cars
+                    .iter()
+                    .find(|c| c.is_pace_car)
+                    .map(|c| c.speed_mps)
+                    .filter(|v| *v > 0.5),
                 ers_pct: Some(ers_pct),
                 ers_mode: Some("Balanced".into()),
                 have_hybrid: true,

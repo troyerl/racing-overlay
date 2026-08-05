@@ -68,6 +68,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
 fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let rect = full_rect(ui);
+    if !rect.is_positive() || rect.width() < 8.0 || rect.height() < 8.0 {
+        return;
+    }
     let (card, radius) = panel_card(ui, ctx.cfg, SECTION, rect);
     let pad = panel_content_pad(ctx.cfg, SECTION, card.height());
     let mut y = card.top() + pad;
@@ -76,8 +79,10 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let show_icons = ctx.cfg.bool_key(SECTION, "show_icons", false);
     let rows = collect_rows(ctx);
     let n = rows.len().max(1) as f32;
-    let avail = card.bottom() - pad - y;
-    let rh = (avail / n).min(ctx.cfg.f64_key(SECTION, "row_height_px", 36.0) as f32);
+    let avail = (card.bottom() - pad - y).max(0.0);
+    let rh = (avail / n)
+        .min(ctx.cfg.f64_key(SECTION, "row_height_px", 36.0) as f32)
+        .clamp(12.0, 48.0);
     let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
     let header = ctx.cfg.color(SECTION, "header", "#9aa3b2");
@@ -85,7 +90,7 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     for (text_label, icon_key, value, is_warn) in rows {
         let row = egui::Rect::from_min_size(
             Pos2::new(card.left() + pad, y),
-            egui::vec2(card.width() - 2.0 * pad, rh),
+            egui::vec2((card.width() - 2.0 * pad).max(1.0), rh),
         );
         if show_icons && icons::has(icon_key) {
             if let Some(g) = icons::glyph(icon_key) {
@@ -93,7 +98,7 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                     Pos2::new(row.left() + 8.0, row.center().y),
                     Align2::LEFT_CENTER,
                     g,
-                    icons::font_id(rh * 0.42),
+                    icons::font_id((rh * 0.42).clamp(8.0, 22.0)),
                     header,
                 );
             }
@@ -103,7 +108,7 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 Pos2::new(row.left() + 8.0, row.center().y),
                 Align2::LEFT_CENTER,
                 text_label,
-                rh * 0.38,
+                (rh * 0.38).clamp(8.0, 20.0),
                 muted,
                 false,
             );
@@ -113,7 +118,7 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(row.right() - 8.0, row.center().y),
             Align2::RIGHT_CENTER,
             &value,
-            rh * 0.42,
+            (rh * 0.42).clamp(8.0, 22.0),
             if is_warn { warn } else { text },
             true,
         );

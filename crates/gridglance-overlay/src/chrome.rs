@@ -153,8 +153,7 @@ pub fn draw_elegant_card(
         .max(0.0)
         .round()
         .clamp(0.0, 255.0) as u8;
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(ru), fill);
+    ui.painter().rect_filled(rect, CornerRadius::same(ru), fill);
     (rect, radius)
 }
 

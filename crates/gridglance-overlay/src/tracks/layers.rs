@@ -91,16 +91,74 @@ fn path_bbox_area(pts: &[(f32, f32)]) -> f32 {
     (max_x - min_x) * (max_y - min_y)
 }
 
-/// Paths in the start-finish layer, smallest bbox first (stripe before arrow).
+/// Vertices of every `<rect>` in an SVG fragment, as closed corner loops.
+fn rects_in_svg(svg_text: &str) -> Vec<Vec<(f32, f32)>> {
+    static PAT: OnceLock<Regex> = OnceLock::new();
+    let pat = PAT.get_or_init(|| Regex::new(r"(?is)<rect\b([^>]*)>").expect("rect regex"));
+    let attr = |tag: &str, name: &str| -> Option<f32> {
+        Regex::new(&format!(r#"(?i)\b{name}\s*=\s*["']([^"']+)["']"#))
+            .ok()?
+            .captures(tag)?
+            .get(1)?
+            .as_str()
+            .trim()
+            .parse()
+            .ok()
+    };
+    pat.captures_iter(svg_text)
+        .filter_map(|c| {
+            let tag = c.get(1)?.as_str();
+            let x = attr(tag, "x").unwrap_or(0.0);
+            let y = attr(tag, "y").unwrap_or(0.0);
+            let w = attr(tag, "width")?;
+            let h = attr(tag, "height")?;
+            // Four corners, not five — a repeated closing vertex would bias
+            // the centroid that locates the stripe.
+            Some(vec![(x, y), (x + w, y), (x + w, y + h), (x, y + h)])
+        })
+        .collect()
+}
+
+/// Vertices of every `<polygon>` / `<polyline>` in an SVG fragment.
+fn polys_in_svg(svg_text: &str) -> Vec<Vec<(f32, f32)>> {
+    static PAT: OnceLock<Regex> = OnceLock::new();
+    let pat = PAT.get_or_init(|| {
+        Regex::new(r#"(?is)<poly(?:gon|line)\b[^>]*\bpoints\s*=\s*["']([^"']+)["']"#)
+            .expect("poly regex")
+    });
+    pat.captures_iter(svg_text)
+        .filter_map(|c| {
+            let nums: Vec<f32> = c
+                .get(1)?
+                .as_str()
+                .split(|ch: char| ch.is_whitespace() || ch == ',')
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            let pts: Vec<(f32, f32)> = nums.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+            (pts.len() >= 2).then_some(pts)
+        })
+        .collect()
+}
+
+/// Shapes in the start-finish layer, smallest bbox first (stripe before arrow).
+///
+/// Members exports are not consistent about markup: some draw the stripe and
+/// direction arrow as `<path d>`, others as `<rect>` + `<polygon>`. Missing the
+/// latter used to silently drop both, leaving the loop rotated to whatever
+/// point happened to be bottom-most.
 pub fn sf_paths_sorted(sf_svg: Option<&str>) -> Vec<Vec<(f32, f32)>> {
+    let svg = sf_svg.unwrap_or("");
     let mut paths = Vec::new();
-    for d in paths_d_in_svg(sf_svg.unwrap_or("")) {
+    for d in paths_d_in_svg(svg) {
         if let Ok(pts) = flatten_path_d(&d) {
             if !pts.is_empty() {
                 paths.push(pts);
             }
         }
     }
+    paths.extend(rects_in_svg(svg));
+    paths.extend(polys_in_svg(svg));
     paths.sort_by(|a, b| {
         path_bbox_area(a)
             .partial_cmp(&path_bbox_area(b))
@@ -124,30 +182,33 @@ pub fn sf_anchor_point(sf_svg: Option<&str>) -> Option<(f32, f32)> {
 }
 
 /// Unit vector of the start-finish direction arrow (SVG coords, Y down).
+///
+/// The arrow is a dart: a single tip vertex opposite a cluster of tail/barb
+/// vertices. That cluster drags the vertex mean away from the tip, so the
+/// vertex farthest from the mean *is* the tip and mean → tip is the heading.
+/// (Ranking distance from the stripe instead picks a barb whenever the arrow
+/// sits beside the stripe rather than along it.)
 pub fn sf_arrow_direction(sf_svg: Option<&str>) -> Option<(f32, f32)> {
     let paths = sf_paths_sorted(sf_svg);
     if paths.len() < 2 {
         return None;
     }
     let arrow_pts = paths.last()?;
-    let (sfx, sfy) = sf_stripe_centroid(sf_svg)?;
-    let mut best_near = f32::MAX;
-    let mut best_far = -1.0f32;
-    let mut near_pt = arrow_pts[0];
-    let mut far_pt = arrow_pts[0];
-    for &p in arrow_pts {
-        let d = ((p.0 - sfx).powi(2) + (p.1 - sfy).powi(2)).sqrt();
-        if d < best_near {
-            best_near = d;
-            near_pt = p;
-        }
-        if d > best_far {
-            best_far = d;
-            far_pt = p;
-        }
-    }
-    let dx = far_pt.0 - near_pt.0;
-    let dy = far_pt.1 - near_pt.1;
+    // Closed shapes repeat the first vertex; it would double-weight the mean.
+    let verts: &[(f32, f32)] = match arrow_pts.split_last() {
+        Some((last, head)) if !head.is_empty() && *last == head[0] => head,
+        _ => arrow_pts,
+    };
+    let n = verts.len() as f32;
+    let cx = verts.iter().map(|p| p.0).sum::<f32>() / n;
+    let cy = verts.iter().map(|p| p.1).sum::<f32>() / n;
+    let tip = verts.iter().copied().max_by(|a, b| {
+        let da = (a.0 - cx).powi(2) + (a.1 - cy).powi(2);
+        let db = (b.0 - cx).powi(2) + (b.1 - cy).powi(2);
+        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+    })?;
+    let dx = tip.0 - cx;
+    let dy = tip.1 - cy;
     let ln = (dx * dx + dy * dy).sqrt();
     if ln < 1e-6 {
         return None;
@@ -252,6 +313,18 @@ pub fn align_loop_from_sf(raw: &[(f32, f32)], sf_svg: Option<&str>) -> Vec<(f32,
     loop_pts
 }
 
+/// True for a turn designation — `7`, `12`, `6a`, `7/8` — and false for the
+/// corner *names* some exports put in the same layer ("Coca-Cola Corner",
+/// "Yokohama Bridge"), which would otherwise import as extra turns and inflate
+/// the turn count.
+fn is_turn_label(label: &str) -> bool {
+    static PAT: OnceLock<Regex> = OnceLock::new();
+    let pat = PAT.get_or_init(|| {
+        Regex::new(r"(?i)^\d{1,2}[a-c]?([/&-]\d{1,2}[a-c]?)*$").expect("turn label regex")
+    });
+    pat.is_match(label)
+}
+
 /// Turn labels from members SVG; positions normalized with the track loop.
 pub fn parse_turn_numbers(
     svg_text: &str,
@@ -261,9 +334,11 @@ pub fn parse_turn_numbers(
 ) -> Vec<Value> {
     static PAT: OnceLock<Regex> = OnceLock::new();
     let pat = PAT.get_or_init(|| {
-        Regex::new(r#"(?i)<text[^>]*transform="translate\(([^)]+)\)"[^>]*>([^<]+)</text>"#)
+        Regex::new(r#"(?is)<text[^>]*transform="translate\(([^)]+)\)"[^>]*>(.*?)</text>"#)
             .expect("turn regex")
     });
+    static TAG: OnceLock<Regex> = OnceLock::new();
+    let tag = TAG.get_or_init(|| Regex::new(r"(?s)<[^>]*>").expect("tag regex"));
     let mut corners = Vec::new();
     for m in pat.captures_iter(svg_text) {
         let parts: Vec<&str> = m
@@ -282,10 +357,18 @@ pub fn parse_turn_numbers(
         let Ok(ty) = parts[1].parse::<f32>() else {
             continue;
         };
-        let label = m.get(2).map(|g| g.as_str().trim()).unwrap_or("");
-        if label.is_empty() {
+        // Labels may be split across `<tspan>`s ("11" is often two of them),
+        // so strip the markup and rejoin rather than reading bare text.
+        let raw = m.get(2).map(|g| g.as_str()).unwrap_or("");
+        let label: String = tag
+            .replace_all(raw, "")
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
+        if !is_turn_label(&label) {
             continue;
         }
+        let label = label.as_str();
         let nx = (tx - norm.min_x) / norm.scale;
         let mut ny = (ty - norm.min_y) / norm.scale;
         if flip_y {
@@ -339,6 +422,31 @@ pub fn oval_corners(loop_pts: &[(f32, f32)], n: usize) -> Vec<Value> {
     corners
 }
 
+/// True when numeric corner labels count *down* as lap % increases.
+///
+/// Members oval exports number turns against the direction of travel, so they
+/// need flipping to match iRacing. Road-course exports already agree. Decide
+/// from the parsed labels rather than from turn count, which cannot tell a
+/// 4-turn oval apart from a 4-turn road course.
+pub fn labels_run_backwards(corners: &[Value]) -> bool {
+    let nums: Vec<i64> = corners
+        .iter()
+        .filter_map(|c| c.get("label")?.as_str()?.parse().ok())
+        .collect();
+    if nums.len() < 3 {
+        return false;
+    }
+    let (mut up, mut down) = (0, 0);
+    for w in nums.windows(2) {
+        match w[1].cmp(&w[0]) {
+            std::cmp::Ordering::Greater => up += 1,
+            std::cmp::Ordering::Less => down += 1,
+            std::cmp::Ordering::Equal => {}
+        }
+    }
+    down > up
+}
+
 /// Members SVG ovals label 4,3,2,1 along lap %; iRacing uses 1,2,3,4.
 pub fn iracing_oval_label(label: &str, num_turns: i64) -> String {
     if let Ok(n) = label.parse::<i64>() {
@@ -364,4 +472,66 @@ pub fn apply_iracing_oval_labels(corners: Vec<Value>, num_turns: i64) -> Vec<Val
             Some(out)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Charlotte Roval 2025 markup: stripe as `<rect>`, arrow as `<polygon>`.
+    const SF_RECT_POLY: &str = r#"<svg viewBox="0 0 1920 1080"><g>
+        <polygon points="1021.03677 891.65369 921.03677 871.65369 944.16819 891.65369 921.03677 911.65369 1021.03677 891.65369"/>
+        <rect x="957.99797" y="920.42944" width="10" height="70"/>
+        </g></svg>"#;
+
+    /// Older markup: both shapes as `<path d>`, arrow pointing -X.
+    const SF_PATHS: &str = r#"<svg viewBox="0 0 1920 1080">
+        <path d="M955,900 L965,900 L965,960 L955,960 Z"/>
+        <path d="M1130.3,904.6l-74.3,-17.2l74.3,-17.2l-11.5,17.2Z"/>
+        </svg>"#;
+
+    #[test]
+    fn parses_rect_and_polygon_shapes() {
+        let shapes = sf_paths_sorted(Some(SF_RECT_POLY));
+        assert_eq!(shapes.len(), 2, "rect + polygon must both parse");
+        // Smallest bbox first: the 10x70 stripe, not the 100x40 arrow.
+        let (sx, sy) = sf_stripe_centroid(Some(SF_RECT_POLY)).expect("stripe");
+        assert!((sx - 962.998).abs() < 0.5, "stripe x {sx}");
+        assert!((sy - 955.43).abs() < 0.5, "stripe y {sy}");
+    }
+
+    #[test]
+    fn arrow_tip_gives_heading_for_both_markups() {
+        let (dx, dy) = sf_arrow_direction(Some(SF_RECT_POLY)).expect("polygon arrow");
+        assert!(dx > 0.99, "Charlotte arrow points +X, got ({dx},{dy})");
+
+        let (dx, dy) = sf_arrow_direction(Some(SF_PATHS)).expect("path arrow");
+        assert!(dx < -0.99, "path arrow points -X, got ({dx},{dy})");
+    }
+
+    #[test]
+    fn loop_is_rotated_onto_the_stripe() {
+        // Rectangular loop; the stripe at x≈963 crosses the y=966 bottom edge.
+        let mut raw = Vec::new();
+        for i in 0..100 {
+            raw.push((20.0 + i as f32 * 18.0, 966.0));
+        }
+        for i in 0..100 {
+            raw.push((1820.0, 966.0 - i as f32 * 9.0));
+        }
+        for i in 0..100 {
+            raw.push((1820.0 - i as f32 * 18.0, 66.0));
+        }
+        for i in 0..100 {
+            raw.push((20.0, 66.0 + i as f32 * 9.0));
+        }
+        let out = align_loop_from_sf(&raw, Some(SF_RECT_POLY));
+        assert!(
+            (out[0].0 - 962.998).abs() < 1.0 && (out[0].1 - 966.0).abs() < 1.0,
+            "loop must start on the stripe, got {:?}",
+            out[0]
+        );
+        // Arrow points +X, so the loop must run that way from the stripe.
+        assert!(out[1].0 > out[0].0, "loop must follow the arrow (+X)");
+    }
 }

@@ -39,7 +39,7 @@ pub fn paint_track_scan(
         return;
     }
 
-    let (track_id, track_name, can_author, phase, lane, pit_speed, lane_pct, num_turns, aliases) = {
+    let (track_id, track_name, can_author, phase, lane, pit_speed, lane_pct, aliases) = {
         let st = state.read();
         (
             st.map.cached_track_id.or(st.frame.track_id),
@@ -53,7 +53,6 @@ pub fn paint_track_scan(
             },
             st.map.pit_speed_ms as f32,
             st.map.pit_lane_speed_pct as f32,
-            st.map.num_turns,
             st.map.alias_ids.clone(),
         )
     };
@@ -234,7 +233,10 @@ pub fn paint_track_scan(
                 st.map.pit_lane_speed_pct = (pct / 100.0) as f64;
             }
         }
-        let mut turns = num_turns as f32;
+        // Read live, not from the frame-start snapshot: the import card runs
+        // earlier in this same frame and would otherwise be overwritten with
+        // the previous track's corner count.
+        let mut turns = state.read().map.num_turns as f32;
         if super::widgets::number_row(
             ui,
             "Number of corners",
@@ -275,6 +277,31 @@ pub fn paint_track_scan(
                 }
             }
         });
+        // Fine offset for the residual lead/lag left after SVG alignment: the
+        // outline's arc length is not distributed quite like iRacing's
+        // LapDistPct. Signed percent reads better than the raw 0..1 wrap.
+        let mut nudge = {
+            let sf = state.read().map.cached_start_finish * 100.0;
+            if sf > 50.0 {
+                sf - 100.0
+            } else {
+                sf
+            }
+        };
+        if super::widgets::number_row(
+            ui,
+            "Map position offset (%)",
+            &mut nudge,
+            -50.0..=50.0,
+            0.1,
+            accent,
+            Some("Positive pulls the dots back along the track. Save track after."),
+        ) {
+            if let Some(mut st) = state.try_write() {
+                st.map.cached_start_finish = (nudge / 100.0).rem_euclid(1.0);
+            }
+        }
+
         let mut sf_edit = state.read().map.sf_edit;
         setting_row(
             ui,

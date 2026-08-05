@@ -1,9 +1,12 @@
 //! Track authoring: geometry helpers, save, HTML import.
 
+pub mod calibrate;
 mod geom;
 mod html_import;
 mod layers;
 mod path_sample;
+pub mod probe;
+mod ribbon;
 
 use chrono::Utc;
 use serde_json::{json, Value};

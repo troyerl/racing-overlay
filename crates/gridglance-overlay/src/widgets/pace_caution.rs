@@ -53,11 +53,15 @@ fn format_delta(cfg: &OverlayConfig, you_mps: f32, ref_mps: f32) -> String {
 }
 
 fn pace_car_speed_mps(f: &TelemetryFrame) -> Option<f32> {
-    f.cars
-        .iter()
-        .find(|c| c.is_pace_car)
-        .map(|c| c.speed_mps)
+    f.pace_car_speed_mps
         .filter(|v| v.is_finite() && *v > 0.5)
+        .or_else(|| {
+            f.cars
+                .iter()
+                .find(|c| c.is_pace_car)
+                .map(|c| c.speed_mps)
+                .filter(|v| v.is_finite() && *v > 0.5)
+        })
 }
 
 fn pit_limit_mps(ctx: &WidgetCtx<'_>) -> Option<f32> {

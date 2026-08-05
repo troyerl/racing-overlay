@@ -39,7 +39,10 @@ pub struct CarScreenAnim {
 #[derive(Debug, Clone, Copy)]
 pub struct CarPctAnim {
     pub pct: f32,
+    /// Measured lap-%/s from telem deltas (feed-forward term).
     pub vel: f32,
+    /// Velocity of the displayed dot — integrated by the tracking filter.
+    pub disp_vel: f32,
     pub last_telem: f32,
     pub last_telem_secs: f64,
     /// `TelemetryFrame::session_time` at last meaningful LapDistPct sample.
@@ -71,6 +74,11 @@ pub struct MapAuthoring {
     /// Cached track polyline for map MVP (`None` = try load / oval fallback).
     pub cached_track_id: Option<i32>,
     pub cached_path: Vec<(f32, f32)>,
+    /// Loop passes over itself (bridge layouts) — infield needs a winding fill.
+    pub cached_self_crossing: bool,
+    /// Measured lap-% → loop-arc table (`--log-track-path`). `None` falls back to
+    /// treating lap % as the arc fraction, which is only exact for a to-scale map.
+    pub cached_pct_map: Option<Vec<f32>>,
     /// Live map: loading / ready / missing (oval demo only when `--demo`).
     pub path_status: TrackPathStatus,
     pub cached_track_name: String,
@@ -140,6 +148,8 @@ impl Default for MapAuthoring {
             alias_ids: Vec::new(),
             cached_track_id: None,
             cached_path: Vec::new(),
+            cached_self_crossing: false,
+            cached_pct_map: None,
             path_status: TrackPathStatus::None,
             cached_track_name: String::new(),
             cached_start_finish: 0.0,
@@ -277,6 +287,8 @@ impl MapAuthoring {
     pub fn invalidate_track_cache(&mut self) {
         self.cached_track_id = None;
         self.cached_path.clear();
+        self.cached_self_crossing = false;
+        self.cached_pct_map = None;
         self.path_status = TrackPathStatus::None;
         self.cached_track_name.clear();
         self.cached_start_finish = 0.0;

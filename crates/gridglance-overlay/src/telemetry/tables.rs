@@ -233,8 +233,8 @@ fn sticky_sort_by_delta(items: &mut Vec<(f32, &CarRow)>, prev: &[i32], ascending
     });
 }
 
-/// Mark exactly one table focus: camera car -> seated player -> race leader.
-/// Mutates only the cloned slice used for Relative/Standings.
+/// Mark exactly one table focus for Relative/Standings: camera car if set,
+/// else seated player, else race leader. Same rule while racing or spectating.
 fn apply_table_focus(cars: &mut [CarRow], camera_car_idx: Option<i32>) {
     let focus = camera_car_idx
         .and_then(|idx| cars.iter().position(|c| c.car_idx == idx))
@@ -545,20 +545,17 @@ fn build_relative_by_position(
     rows
 }
 
-fn relative_include(c: &CarRow, player: &CarRow) -> bool {
-    if c.is_pace_car {
+fn relative_include(c: &CarRow, _player: &CarRow) -> bool {
+    if c.is_pace_car || c.inactive {
         return false;
     }
-    // On the racing surface.
-    if c.on_track {
+    // Racing surface, brief off-track, or pit-entry blend. Pit stalls and
+    // garage (NotInWorld / no lap %) stay off the neighbor list.
+    if c.on_track || c.approaching_pits {
         return true;
     }
-    // Pitting cars only if ahead of the player by race position.
-    let in_pits = c.in_pit || c.on_pit;
-    if in_pits && c.position > 0 && player.position > 0 && c.position < player.position {
-        return true;
-    }
-    false
+    // OffTrack (grass/kerb) still has a usable lap % — keep as a neighbor.
+    c.lap_dist_pct >= 0.0 && !c.on_pit && !c.in_pit
 }
 
 fn estimate_lap_est(cars: &[CarRow]) -> f32 {
@@ -580,37 +577,79 @@ fn estimate_lap_est(cars: &[CarRow]) -> f32 {
     }
 }
 
-/// Standings windowing (Python `standings_row_list`).
+/// Standings windowing — same rules while racing or spectating.
 ///
-/// When `in_car` is false (spectating / garage), always show from P1 rather than
-/// a window around the camera focus. Seated in-car keeps `center_on_player`.
+/// Uses live race positions (already on each `CarRow`) and centers on the
+/// table focus car when `center_on_player` is on (camera / seated / leader).
+/// Otherwise lists from P1. Pin-podium is race-only.
+///
+/// Qualifying/practice order by best lap and renumber 1..N. Race sessions keep
+/// live race positions so the table matches iRacing Results. When spectating
+/// another car, the seated player's ghost entry is omitted.
+///
+/// `standings.rows` (Total rows) is the exact number of slots shown.
 pub fn build_standings(
     cars: &[CarRow],
     cfg: &OverlayConfig,
     app: &serde_json::Value,
     groups: &serde_json::Value,
-    in_car: bool,
+    session_type: Option<&str>,
+    camera_car_idx: Option<i32>,
+    seated_car_idx: Option<i32>,
 ) -> Vec<TableRow> {
-    let mut ranked: Vec<&CarRow> = cars
+    let spectating = matches!(
+        (camera_car_idx, seated_car_idx),
+        (Some(cam), Some(seat)) if cam != seat
+    );
+    let field: Vec<&CarRow> = cars
         .iter()
-        .filter(|c| !c.is_pace_car && c.position > 0)
+        .filter(|c| {
+            if c.is_pace_car {
+                return false;
+            }
+            // Spectating: never list the seated player's inactive ghost car.
+            if spectating && Some(c.car_idx) == seated_car_idx {
+                return false;
+            }
+            true
+        })
         .collect();
-    ranked.sort_by_key(|c| c.position);
 
-    let center = in_car && cfg.bool_key("standings", "center_on_player", true);
-    let pin_podium = cfg.bool_key("standings", "pin_podium", false);
+    // Race: always live race order (match iRacing Results). Qual/practice: best lap.
+    // Do NOT use the sparse-position heuristic during race — retired/garage cars
+    // leave holes in CarIdxPosition and that was re-sorting the field by best lap.
+    let timing_order = !is_race_session(session_type);
+    let ordered = standings_field_order(&field, timing_order);
+
+    // Qualifying: always list from P1 (timing board). Race/practice: window
+    // around the focus car when center_on_player is on.
+    let is_qual = session_type
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .contains("qual");
+    let center = !is_qual && cfg.bool_key("standings", "center_on_player", true);
+    let pin_podium =
+        is_race_session(session_type) && cfg.bool_key("standings", "pin_podium", false);
     let rows_ahead = cfg.f64_key("standings", "rows_ahead", 4.0).max(0.0) as usize;
-    let rows_behind = cfg.f64_key("standings", "rows_behind", 5.0).max(0.0) as usize;
-    let rows_n = cfg
-        .f64_key("standings", "rows", (rows_ahead + rows_behind) as f64)
+    let _rows_behind = cfg.f64_key("standings", "rows_behind", 5.0).max(0.0) as usize;
+    let target = cfg
+        .f64_key("standings", "rows", (rows_ahead + _rows_behind) as f64)
         .max(0.0) as usize;
-    // When centered, ahead/behind are authoritative. Do not re-derive behind
-    // from `rows` (that zeroed rows_behind when an old preset had rows~=ahead).
 
-    let leader_f2 = ranked.first().map(|c| c.f2_time).unwrap_or(0.0);
+    let leader_f2 = ordered
+        .iter()
+        .find(|c| c.position == 1)
+        .map(|c| c.f2_time)
+        .or_else(|| ordered.first().map(|c| c.f2_time))
+        .unwrap_or(0.0);
 
-    let build = |c: &CarRow| -> TableRow {
-        let gap_text = if c.position <= 1 {
+    let build_at = |c: &CarRow, ord: usize| -> TableRow {
+        let display_pos = if timing_order || c.position <= 0 {
+            (ord + 1) as i32
+        } else {
+            c.position
+        };
+        let gap_text = if display_pos <= 1 {
             "--".into()
         } else if leader_f2 > 0.0 && c.f2_time > 0.0 {
             let g = c.f2_time - leader_f2;
@@ -624,67 +663,205 @@ pub fn build_standings(
         };
         let inactive =
             c.inactive || (!c.on_track && !c.in_pit && !c.on_pit && c.lap_dist_pct < 0.0);
-        TableRow::from_car(c, None, gap_text, inactive, app)
+        let mut row = TableRow::from_car(c, None, gap_text, inactive, app);
+        row.position = display_pos;
+        row
     };
 
-    let idxs: Vec<usize> = (0..ranked.len()).collect();
-    let mut out: Vec<TableRow> = match (center, ranked.iter().position(|c| c.is_player)) {
-        (true, Some(pidx)) => {
+    let idxs: Vec<usize> = (0..ordered.len()).collect();
+    let mut out: Vec<TableRow> = match (center, ordered.iter().position(|c| c.is_player)) {
+        (true, Some(pidx)) if target > 0 => {
             let player = pidx;
-            let above = rows_ahead;
-            let below = rows_behind;
-            let window = above + 1 + below;
+            let above = rows_ahead.min(target.saturating_sub(1));
+            let below = target.saturating_sub(1 + above);
 
             if pin_podium {
                 let mut podium = Vec::new();
-                for slot in 0..3 {
-                    if slot < ranked.len() {
-                        podium.push(build(ranked[slot]));
+                for slot in 0..3.min(target) {
+                    if slot < ordered.len() {
+                        podium.push(build_at(ordered[slot], slot));
                     } else {
                         podium.push(empty_row(&format!("podium{slot}")));
                     }
                 }
                 let podium_set: std::collections::HashSet<usize> =
-                    (0..ranked.len().min(3)).collect();
+                    (0..ordered.len().min(3)).collect();
                 let on_podium = podium_set.contains(&player);
-                let mut slots = window.saturating_sub(3);
-                if !on_podium {
+                let mut slots = target.saturating_sub(podium.len());
+                if on_podium {
+                    slots = slots.max(below.max(1).min(target.saturating_sub(podium.len())));
+                } else {
                     slots = slots.max(1);
                 }
                 let picked =
                     pick_context_indices(&idxs, pidx, player, &podium_set, slots, above, below);
-                let mut context: Vec<TableRow> = picked.iter().map(|&i| build(ranked[i])).collect();
-                for i in context.len()..slots {
-                    context.push(empty_row(&format!("ctx{i}")));
-                }
+                let context: Vec<TableRow> =
+                    picked.iter().map(|&i| build_at(ordered[i], i)).collect();
                 podium.extend(context);
+                pad_standings_to(&mut podium, target);
                 podium
             } else {
-                // Sliding window clamped into the field. Unused "ahead" slots near
-                // the front are given to cars behind so spectating P5 still shows P6+.
-                // (Empty padding at the top used to push behind rows out of a short panel.)
-                let target = (above + 1 + below).min(ranked.len().max(1));
+                let take = target.min(ordered.len().max(1));
                 let mut start = pidx.saturating_sub(above);
-                if start + target > ranked.len() {
-                    start = ranked.len().saturating_sub(target);
+                if start + take > ordered.len() {
+                    start = ordered.len().saturating_sub(take);
                 }
-                ranked[start..start + target]
+                let mut rows: Vec<TableRow> = ordered[start..start + take]
                     .iter()
-                    .map(|c| build(c))
-                    .collect()
+                    .enumerate()
+                    .map(|(k, c)| build_at(c, start + k))
+                    .collect();
+                pad_standings_to(&mut rows, target);
+                rows
             }
         }
-        _ => ranked.iter().take(rows_n).map(|c| build(c)).collect(),
+        _ if target == 0 => ordered
+            .iter()
+            .enumerate()
+            .map(|(i, c)| build_at(c, i))
+            .collect(),
+        _ => {
+            let mut rows: Vec<TableRow> = ordered
+                .iter()
+                .take(target.max(1))
+                .enumerate()
+                .map(|(i, c)| build_at(c, i))
+                .collect();
+            pad_standings_to(&mut rows, target.max(1));
+            rows
+        }
     };
 
     for row in &mut out {
         row.apply_driver_group(groups);
-        if !in_car {
-            row.lapping = false;
-            row.lap_ahead = false;
-        }
+        row.lapping = false;
+        row.lap_ahead = false;
     }
     out
+}
+
+/// When `by_best_lap`, sort by best lap (fastest first) then car number.
+fn standings_field_order<'a>(cars: &[&'a CarRow], by_best_lap: bool) -> Vec<&'a CarRow> {
+    let mut field: Vec<&CarRow> = cars.to_vec();
+    if by_best_lap {
+        field.sort_by(|a, b| {
+            match (
+                parse_lap_clock(&a.best_lap).filter(|t| *t > 0.0),
+                parse_lap_clock(&b.best_lap).filter(|t| *t > 0.0),
+            ) {
+                (Some(ta), Some(tb)) => ta
+                    .partial_cmp(&tb)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        car_number_sort_key(&a.car_number).cmp(&car_number_sort_key(&b.car_number))
+                    }),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => car_number_sort_key(&a.car_number)
+                    .cmp(&car_number_sort_key(&b.car_number))
+                    .then_with(|| a.car_idx.cmp(&b.car_idx)),
+            }
+        });
+        return field;
+    }
+
+    let mut ranked: Vec<&CarRow> = field.iter().copied().filter(|c| c.position > 0).collect();
+    ranked.sort_by_key(|c| c.position);
+
+    let mut unranked: Vec<&CarRow> = field.iter().copied().filter(|c| c.position <= 0).collect();
+    unranked.sort_by(|a, b| {
+        car_number_sort_key(&a.car_number)
+            .cmp(&car_number_sort_key(&b.car_number))
+            .then_with(|| a.car_idx.cmp(&b.car_idx))
+    });
+    ranked.extend(unranked);
+    ranked
+}
+
+fn car_number_sort_key(num: &str) -> (i32, String) {
+    let digits: String = num.chars().filter(|c| c.is_ascii_digit()).collect();
+    let n = digits.parse::<i32>().unwrap_or(i32::MAX);
+    (n, num.to_ascii_lowercase())
+}
+
+fn pad_standings_to(rows: &mut Vec<TableRow>, target: usize) {
+    if target == 0 {
+        return;
+    }
+    let mut k = 0usize;
+    while rows.len() < target {
+        rows.push(empty_row(&format!("std_pad{k}")));
+        k += 1;
+    }
+    if rows.len() > target {
+        rows.truncate(target);
+    }
+}
+
+/// Align dash `frame.position` (+ car/relative rows) with practice/qual best-lap
+/// order used by standings. Raw IRSDK PlayerCarPosition often lags or counts
+/// garage cars differently, which made dash show e.g. P13 while tables showed 10.
+fn sync_practice_overlay_position(frame: &mut TelemetryFrame) {
+    // Positive check only — missing session_type must not rewrite race order.
+    let st = frame
+        .session_type
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let practice_like = st.contains("practice") || st.contains("qual") || st == "open";
+    if !practice_like {
+        return;
+    }
+    let order_idxs: Vec<i32> = {
+        let refs: Vec<&CarRow> = frame.cars.iter().filter(|c| !c.is_pace_car).collect();
+        if refs.is_empty() {
+            return;
+        }
+        standings_field_order(&refs, true)
+            .iter()
+            .map(|c| c.car_idx)
+            .collect()
+    };
+    let mut rank = std::collections::HashMap::with_capacity(order_idxs.len());
+    for (i, idx) in order_idxs.into_iter().enumerate() {
+        rank.insert(idx, (i + 1) as i32);
+    }
+    for c in &mut frame.cars {
+        if let Some(&p) = rank.get(&c.car_idx) {
+            c.position = p;
+        }
+    }
+    for row in frame
+        .relative_cars
+        .iter_mut()
+        .chain(frame.standings_cars.iter_mut())
+    {
+        if row.empty {
+            continue;
+        }
+        if let Ok(idx) = row.key.parse::<i32>() {
+            if let Some(&p) = rank.get(&idx) {
+                row.position = p;
+            }
+        }
+    }
+    if let Some(pos) = frame
+        .cars
+        .iter()
+        .find(|c| c.is_player)
+        .map(|c| c.position)
+        .filter(|&p| p > 0)
+        .or_else(|| {
+            frame
+                .standings_cars
+                .iter()
+                .chain(frame.relative_cars.iter())
+                .find(|r| r.is_player && !r.empty && r.position > 0)
+                .map(|r| r.position)
+        })
+    {
+        frame.position = pos;
+    }
 }
 
 fn pick_context_indices(
@@ -703,29 +880,20 @@ fn pick_context_indices(
     let on_podium = podium_idxs.contains(&player);
 
     if on_podium {
+        // Focus is already in P1–P3 — fill remaining slots with the next cars
+        // after the podium (P4+). Searching ±offset from the focus only hits
+        // other podium rows first and used to abort with an empty context.
         let mut chosen = Vec::new();
-        let mut off = 1i32;
-        while chosen.len() < limit {
-            let mut added = false;
-            for delta in [-off, off] {
-                let slot = pidx as i32 + delta;
-                if slot >= 0 && (slot as usize) < total {
-                    let idx = ranked[slot as usize];
-                    if !podium_idxs.contains(&idx) && !chosen.contains(&idx) {
-                        chosen.push(idx);
-                        added = true;
-                        if chosen.len() >= limit {
-                            break;
-                        }
-                    }
-                }
-            }
-            if !added {
+        for slot in 0..total {
+            if chosen.len() >= limit {
                 break;
             }
-            off += 1;
+            let idx = ranked[slot];
+            if podium_idxs.contains(&idx) {
+                continue;
+            }
+            chosen.push(idx);
         }
-        chosen.sort_by_key(|i| ranked.iter().position(|x| x == i).unwrap_or(0));
         return chosen;
     }
 
@@ -770,7 +938,7 @@ fn pick_context_indices(
         }
         off += 1;
     }
-    chosen.sort_by_key(|i| ranked.iter().position(|x| x == i).unwrap_or(0));
+    chosen.sort_by_key(|i| ranked.iter().position(|x| x == i).unwrap_or(*i));
     chosen
 }
 
@@ -821,6 +989,7 @@ pub fn finalize_frame(
     // Timing tables center on camera -> seated player -> race leader. Keep
     // `frame.cars.is_player` unchanged so map/fuel/radar/dashboard still use
     // the user's actual car. Always mark exactly one focus so Relative isn't empty.
+    let seated_car_idx = frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
     let mut focused_cars = frame.cars.clone();
     apply_table_focus(&mut focused_cars, frame.camera_car_idx);
     apply_lap_tints(
@@ -842,7 +1011,15 @@ pub fn finalize_frame(
     if super::strategy_hints::strategy_window_active(&frame.fuel, frame.fuel_pct, cfg) {
         super::strategy_hints::apply_strategy_hints(&mut rel, cfg);
     }
-    let mut std = build_standings(&focused_cars, cfg, &app, &groups, frame.in_car);
+    let mut std = build_standings(
+        &focused_cars,
+        cfg,
+        &app,
+        &groups,
+        frame.session_type.as_deref(),
+        frame.camera_car_idx,
+        seated_car_idx,
+    );
     let fl_idx = session_best_car_idx(&focused_cars);
     mark_session_best(&mut rel, fl_idx);
     mark_session_best(&mut std, fl_idx);
@@ -850,6 +1027,9 @@ pub fn finalize_frame(
     frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
     frame.relative_cars = rel;
     frame.standings_cars = std;
+    // Practice/qual: dash POS must match table best-lap ranks (not raw
+    // PlayerCarPosition, which often disagrees by several spots).
+    sync_practice_overlay_position(frame);
 
     // Merge proximity / side-pos from lap % when IRSDK only set L/R bools (or demo).
     let enriched = build_radar(
@@ -1601,7 +1781,11 @@ mod tests {
         // With 3 ahead / 3 behind and centering, player is in the middle slot.
         assert_eq!(player_i, 3);
         assert_eq!(rows.len(), 7);
-        let live: Vec<_> = rows.iter().filter(|r| !r.empty).map(|r| r.key.as_str()).collect();
+        let live: Vec<_> = rows
+            .iter()
+            .filter(|r| !r.empty)
+            .map(|r| r.key.as_str())
+            .collect();
         assert_eq!(live, vec!["6", "5", "4", "3", "2", "1", "0"]);
     }
 
@@ -1621,7 +1805,15 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert!(live.iter().any(|r| r.is_player));
         let max_pos = live.iter().map(|r| r.position).max().unwrap_or(0);
@@ -1633,35 +1825,7 @@ mod tests {
     }
 
     #[test]
-    fn standings_spectating_clears_lap_tints() {
-        let mut cars = Vec::new();
-        for i in 0..8 {
-            cars.push(CarRow {
-                car_idx: i,
-                position: i + 1,
-                name: format!("D{i}"),
-                car_number: format!("{i}"),
-                is_player: i == 0,
-                on_track: true,
-                lapping: i == 2 || i == 3,
-                lap_ahead: i == 3,
-                ..Default::default()
-            });
-        }
-        let cfg = OverlayConfig::default();
-        let rows =
-            build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), false);
-        assert!(
-            rows.iter().all(|r| !r.lapping && !r.lap_ahead),
-            "spectating standings must not keep lapper tints"
-        );
-        let seated =
-            build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
-        assert!(seated.iter().any(|r| r.lapping));
-    }
-
-    #[test]
-    fn standings_while_spectating_starts_at_leader() {
+    fn standings_pin_podium_fills_below_when_focus_on_leader() {
         let mut cars = Vec::new();
         for i in 0..12 {
             cars.push(CarRow {
@@ -1669,28 +1833,428 @@ mod tests {
                 position: i + 1,
                 name: format!("D{i}"),
                 car_number: format!("{i}"),
-                is_player: i == 7, // midfield camera focus
+                is_player: i == 0, // P1 — on the pinned podium
+                on_track: true,
+                ..Default::default()
+            });
+        }
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["pin_podium"] = serde_json::json!(true);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert!(
+            live.len() > 3,
+            "expected P4+ under podium, got {} rows",
+            live.len()
+        );
+        assert_eq!(live[0].position, 1);
+        assert_eq!(live[1].position, 2);
+        assert_eq!(live[2].position, 3);
+        assert!(
+            live.iter().any(|r| r.position == 4),
+            "P4 must appear below the podium separator"
+        );
+    }
+
+    #[test]
+    fn standings_never_shows_lap_tints() {
+        let mut cars = Vec::new();
+        for i in 0..8 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 4,
+                on_track: true,
+                lapping: i == 2 || i == 3,
+                lap_ahead: i == 3,
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        assert!(
+            rows.iter().all(|r| !r.lapping && !r.lap_ahead),
+            "standings must not paint lapped/lapper row colors"
+        );
+    }
+
+    #[test]
+    fn standings_follows_focus_car() {
+        let mut cars = Vec::new();
+        for i in 0..12 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 7, // midfield focus (camera or seated)
                 on_track: true,
                 ..Default::default()
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), false);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert!(
+            live.iter().any(|r| r.is_player && r.position == 8),
+            "standings must window around the focus car, got {:?}",
+            live.iter().map(|r| r.position).collect::<Vec<_>>()
+        );
+        assert_ne!(
+            live.first().map(|r| r.position),
+            Some(1),
+            "midfield focus should not stay locked at P1"
+        );
+    }
+
+    #[test]
+    fn standings_qualifying_lists_from_p1_not_focus() {
+        let mut cars = Vec::new();
+        for i in 0..8 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 5, // P6 — would center in race mode
+                on_track: true,
+                ..Default::default()
+            });
+        }
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
+        cfg.cfg["standings"]["pin_podium"] = serde_json::json!(true);
+        cfg.cfg["standings"]["rows"] = serde_json::json!(5.0);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Qualifying"),
+            None,
+            None,
+        );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert_eq!(live.first().map(|r| r.position), Some(1));
-        assert_eq!(
-            live.first().map(|r| r.is_player),
-            Some(false),
-            "spectating must list from the leader, not a midfield window"
-        );
-        let seated = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
-        let seated_live: Vec<_> = seated.iter().filter(|r| !r.empty).collect();
         assert!(
-            seated_live.first().map(|r| r.position) != Some(1)
-                || seated_live.iter().any(|r| r.is_player && r.position == 8),
-            "in-car should window around the focus car"
+            live.iter().all(|r| r.position <= 5),
+            "qualifying should take from the top, got {:?}",
+            live.iter().map(|r| r.position).collect::<Vec<_>>()
         );
-        assert!(seated_live.iter().any(|r| r.is_player));
+        assert!(
+            !live.iter().any(|r| r.is_player),
+            "qualifying must not center the window on the racer"
+        );
+        assert_eq!(rows.len(), 5, "must fill configured row count");
+    }
+
+    #[test]
+    fn standings_pads_to_configured_row_count() {
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                position: 1,
+                name: "A".into(),
+                is_player: true,
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                position: 2,
+                name: "B".into(),
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                name: "C".into(),
+                on_track: true,
+                ..Default::default()
+            },
+        ];
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        cfg.cfg["standings"]["rows_ahead"] = serde_json::json!(4.0);
+        cfg.cfg["standings"]["rows_behind"] = serde_json::json!(8.0);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        assert_eq!(
+            rows.len(),
+            12,
+            "Total rows must be filled exactly, got {}",
+            rows.len()
+        );
+        assert_eq!(rows.iter().filter(|r| !r.empty).count(), 3);
+        assert!(rows.iter().any(|r| r.empty));
+    }
+
+    #[test]
+    fn standings_fills_with_unranked_cars_to_total_rows() {
+        // 9 cars with positions + 7 without — Total rows 12 should list 3
+        // unranked cars after the last ranked row (not leave blank panel space).
+        let mut cars = Vec::new();
+        for i in 0..9 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("R{i}"),
+                car_number: format!("{}", i + 1),
+                is_player: i == 8,
+                on_track: true,
+                ..Default::default()
+            });
+        }
+        for (k, num) in [
+            (9, "20"),
+            (10, "6"),
+            (11, "14"),
+            (12, "1"),
+            (13, "9"),
+            (14, "18"),
+            (15, "22"),
+        ] {
+            cars.push(CarRow {
+                car_idx: k,
+                position: 0,
+                name: format!("U{k}"),
+                car_number: num.into(),
+                on_track: false,
+                inactive: true,
+                ..Default::default()
+            });
+        }
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(false);
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        // Race session: keep live positions, append unranked by car number.
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        assert_eq!(rows.len(), 12);
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert_eq!(live.len(), 12);
+        assert_eq!(live[8].name, "R8");
+        // Unranked follow by car number: #1, #6, #9, ...
+        assert_eq!(live[9].car_number, "1");
+        assert_eq!(live[10].car_number, "6");
+        assert_eq!(live[11].car_number, "9");
+    }
+
+    #[test]
+    fn standings_qual_orders_by_best_lap_no_position_holes() {
+        // Live positions jump 1..7 then 16 — standings must re-rank by best lap
+        // so the list is sequential and fastest is P1.
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                position: 1,
+                name: "Slow".into(),
+                car_number: "8".into(),
+                best_lap: "0:40.298".into(),
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                position: 2,
+                name: "Fast".into(),
+                car_number: "7".into(),
+                best_lap: "0:39.956".into(),
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 7,
+                name: "Mid".into(),
+                car_number: "12".into(),
+                best_lap: "0:40.327".into(),
+                is_player: true,
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 3,
+                position: 16,
+                name: "NoTime".into(),
+                car_number: "6".into(),
+                best_lap: String::new(),
+                inactive: true,
+                ..Default::default()
+            },
+        ];
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Qualifying"),
+            None,
+            None,
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert_eq!(live[0].name, "Fast");
+        assert_eq!(live[0].position, 1);
+        assert_eq!(live[1].name, "Slow");
+        assert_eq!(live[2].name, "Mid");
+        assert_eq!(live[3].name, "NoTime");
+        assert_eq!(live[3].position, 4, "no-time car must not keep live P16");
+        assert_eq!(rows.len(), 12);
+    }
+
+    #[test]
+    fn standings_hides_spectator_seated_car() {
+        let cars = vec![
+            CarRow {
+                car_idx: 1,
+                position: 1,
+                name: "Leader".into(),
+                best_lap: "0:40.000".into(),
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 5,
+                name: "CameraTarget".into(),
+                best_lap: "0:40.200".into(),
+                on_track: true,
+                is_player: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 99,
+                position: 17,
+                name: "SpectatorGhost".into(),
+                car_number: "12".into(),
+                inactive: true,
+                lap_dist_pct: -1.0,
+                ..Default::default()
+            },
+        ];
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Qualifying"),
+            Some(2),
+            Some(99),
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert!(
+            live.iter().all(|r| r.name != "SpectatorGhost"),
+            "spectating must not list the seated player's ghost"
+        );
+        assert_eq!(live[0].name, "Leader");
+        assert_eq!(live.len(), 2);
+    }
+
+    #[test]
+    fn standings_race_keeps_live_order_even_with_position_gaps() {
+        // Retired/garage cars can leave holes in CarIdxPosition. Race standings
+        // must still follow live race order (match Results), not best lap.
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                position: 1,
+                name: "RaceLeader".into(),
+                best_lap: "0:40.336".into(),
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                position: 2,
+                name: "P2".into(),
+                best_lap: "0:39.956".into(), // faster best lap than leader
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 5,
+                name: "Focus".into(),
+                best_lap: "0:40.110".into(),
+                is_player: true,
+                on_track: true,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 3,
+                position: 14,
+                name: "Back".into(),
+                best_lap: "0:40.378".into(),
+                on_track: true,
+                ..Default::default()
+            },
+        ];
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(false);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert_eq!(live[0].name, "RaceLeader");
+        assert_eq!(live[0].position, 1);
+        assert_eq!(live[1].name, "P2");
+        assert_eq!(live[1].position, 2);
+        assert_eq!(live[2].position, 5);
+        assert_eq!(live[3].position, 14);
     }
 
     #[test]
@@ -1709,7 +2273,15 @@ mod tests {
             });
         }
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
         assert!(rows.iter().any(|r| r.is_player));
         assert!(!rows.is_empty());
     }
@@ -1727,11 +2299,7 @@ mod tests {
                 // Nobody has EstTime yet; half are still in garage.
                 inactive: i >= 3,
                 on_track: i < 3,
-                lap_dist_pct: if i < 3 {
-                    0.10 + i as f32 * 0.05
-                } else {
-                    -1.0
-                },
+                lap_dist_pct: if i < 3 { 0.10 + i as f32 * 0.05 } else { -1.0 },
                 ..Default::default()
             });
         }
@@ -1763,12 +2331,12 @@ mod tests {
     }
 
     #[test]
-    fn relative_includes_ahead_pit_excludes_behind_pit_and_garage() {
+    fn relative_excludes_pit_stall_and_garage_keeps_circuit() {
         let cars = vec![
             CarRow {
                 car_idx: 0,
                 position: 1,
-                name: "AheadPit".into(),
+                name: "AheadPitStall".into(),
                 car_number: "1".into(),
                 est_time: 12.0,
                 lap_dist_pct: 0.62,
@@ -1791,12 +2359,11 @@ mod tests {
             CarRow {
                 car_idx: 2,
                 position: 3,
-                name: "BehindPit".into(),
+                name: "BehindOffTrack".into(),
                 car_number: "3".into(),
                 est_time: 16.0,
                 lap_dist_pct: 0.40,
                 on_track: false,
-                on_pit: true,
                 ..Default::default()
             },
             CarRow {
@@ -1808,6 +2375,18 @@ mod tests {
                 inactive: true,
                 on_track: false,
                 lap_dist_pct: -1.0,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 4,
+                position: 5,
+                name: "EnteringPits".into(),
+                car_number: "5".into(),
+                est_time: 11.0,
+                lap_dist_pct: 0.70,
+                on_track: false,
+                in_pit: true,
+                approaching_pits: true,
                 ..Default::default()
             },
         ];
@@ -1828,9 +2407,44 @@ mod tests {
             .map(|r| r.key.as_str())
             .collect();
         assert!(keys.contains(&"1"), "player present");
-        assert!(keys.contains(&"0"), "ahead pit car included");
-        assert!(!keys.contains(&"2"), "behind pit car excluded: {keys:?}");
+        assert!(!keys.contains(&"0"), "pit stall excluded: {keys:?}");
+        assert!(keys.contains(&"2"), "off-track neighbor kept: {keys:?}");
         assert!(!keys.contains(&"3"), "garage excluded: {keys:?}");
+        assert!(keys.contains(&"4"), "pit-entry neighbor kept: {keys:?}");
+    }
+
+    #[test]
+    fn practice_standings_centers_on_player() {
+        let mut cars = Vec::new();
+        for i in 0..20 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                best_lap: format!("1:{:06.3}", 40.0 + i as f64),
+                is_player: i == 14, // P15 mid-pack
+                on_track: true,
+                ..Default::default()
+            });
+        }
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["rows"] = serde_json::json!(9.0);
+        cfg.cfg["standings"]["rows_ahead"] = serde_json::json!(4.0);
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Practice"),
+            None,
+            None,
+        );
+        assert!(
+            rows.iter().any(|r| r.is_player && !r.empty),
+            "practice standings must keep the player in the window"
+        );
     }
 
     #[test]
@@ -1843,11 +2457,7 @@ mod tests {
                 name: format!("D{i}"),
                 car_number: format!("{i}"),
                 est_time: 10.0 + i as f32 * 2.0,
-                lap_dist_pct: if i < 3 {
-                    0.10 + i as f32 * 0.05
-                } else {
-                    -1.0
-                },
+                lap_dist_pct: if i < 3 { 0.10 + i as f32 * 0.05 } else { -1.0 },
                 is_player: i == 2,
                 inactive: i >= 3,
                 on_track: i < 3,
@@ -1906,7 +2516,15 @@ mod tests {
             },
         ];
         let cfg = OverlayConfig::default();
-        let rows = build_standings(&cars, &cfg, &serde_json::json!({}), &serde_json::json!([]), true);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert_eq!(live.len(), 3);
         assert!(live.iter().any(|r| r.inactive && r.name == "AlsoGarage"));
@@ -2074,5 +2692,49 @@ mod tests {
             format_slot_value("incident_limit", &frame, &cfg, "relative", &rows),
             "3x"
         );
+    }
+
+    #[test]
+    fn practice_dash_position_matches_best_lap_tables() {
+        // SDK live position (13) vs best-lap ordinal among the painted field (10).
+        let mut frame = TelemetryFrame {
+            session_type: Some("Practice".into()),
+            position: 13,
+            cars: (0..12)
+                .map(|i| CarRow {
+                    car_idx: i,
+                    // Sparse / wrong live ranks (player "P13").
+                    position: if i == 9 { 13 } else { i + 1 },
+                    best_lap: if i < 10 {
+                        format!("1:{:06.3}", 40.0 + i as f64)
+                    } else {
+                        String::new()
+                    },
+                    car_number: format!("{}", i + 1),
+                    name: format!("D{i}"),
+                    is_player: i == 9,
+                    on_track: true,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        let mut sticky = RelativeOrderHysteresis::default();
+        finalize_frame(&mut frame, &cfg, &mut sticky);
+        assert_eq!(
+            frame.position, 10,
+            "dash POS should follow practice best-lap order, got {}",
+            frame.position
+        );
+        let player_car = frame.cars.iter().find(|c| c.is_player).unwrap();
+        assert_eq!(player_car.position, 10);
+        let std_player = frame
+            .standings_cars
+            .iter()
+            .find(|r| r.is_player && !r.empty)
+            .expect("player should appear in standings window");
+        assert_eq!(std_player.position, frame.position);
     }
 }

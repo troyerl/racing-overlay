@@ -1,0 +1,590 @@
+//! Skia CPU surface → premul BGRA for UpdateLayeredWindow.
+
+use super::types::{FontSpec, Rect, Rgba};
+use skia_safe::{
+    surfaces, AlphaType, Color, Color4f, ColorType, Font, FontMgr, FontStyle, ImageInfo, Paint,
+    PaintStyle, Point, Surface, TextBlob, TileMode, Typeface,
+};
+
+pub struct Canvas {
+    surface: Surface,
+    width: i32,
+    height: i32,
+    font_mgr: FontMgr,
+    face_regular: Option<Typeface>,
+    face_bold: Option<Typeface>,
+    face_icons: Option<Typeface>,
+}
+
+impl Canvas {
+    pub fn new(width: i32, height: i32) -> Option<Self> {
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let info = ImageInfo::new(
+            (width, height),
+            ColorType::BGRA8888,
+            AlphaType::Premul,
+            None,
+        );
+        let surface = surfaces::raster(&info, None, None)?;
+        let font_mgr = FontMgr::new();
+        let face_regular = font_mgr.new_from_data(crate::icons::noto_regular_bytes(), None);
+        let face_bold = font_mgr.new_from_data(crate::icons::noto_bold_bytes(), None);
+        let face_icons = font_mgr.new_from_data(crate::icons::fa_ttf_bytes(), None);
+        Some(Self {
+            surface,
+            width,
+            height,
+            font_mgr,
+            face_regular,
+            face_bold,
+            face_icons,
+        })
+    }
+
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
+    pub fn clear_transparent(&mut self) {
+        self.surface.canvas().clear(Color::TRANSPARENT);
+    }
+
+    pub fn fill_rect(&mut self, rect: Rect, color: Rgba, radius: f32) {
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Fill);
+        let r = rect.to_skia();
+        if radius > 0.5 {
+            self.surface
+                .canvas()
+                .draw_round_rect(r, radius, radius, &paint);
+        } else {
+            self.surface.canvas().draw_rect(r, &paint);
+        }
+    }
+
+    pub fn fill_vertical_gradient(&mut self, rect: Rect, top: Rgba, bottom: Rgba, radius: f32) {
+        let shader = skia_safe::Shader::linear_gradient(
+            (
+                Point::new(rect.x, rect.y),
+                Point::new(rect.x, rect.bottom()),
+            ),
+            [
+                Color::from_argb(top.a, top.r, top.g, top.b),
+                Color::from_argb(bottom.a, bottom.r, bottom.g, bottom.b),
+            ]
+            .as_ref(),
+            None,
+            TileMode::Clamp,
+            None,
+            None,
+        );
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        if let Some(sh) = shader {
+            paint.set_shader(sh);
+        }
+        let r = rect.to_skia();
+        if radius > 0.5 {
+            self.surface
+                .canvas()
+                .draw_round_rect(r, radius, radius, &paint);
+        } else {
+            self.surface.canvas().draw_rect(r, &paint);
+        }
+    }
+
+    /// Left→right linear gradient. `stops` are `(fraction 0..1, color)`.
+    pub fn fill_horizontal_gradient(&mut self, rect: Rect, stops: &[(f32, Rgba)]) {
+        if stops.len() < 2 {
+            return;
+        }
+        let colors: Vec<Color> = stops
+            .iter()
+            .map(|(_, c)| Color::from_argb(c.a, c.r, c.g, c.b))
+            .collect();
+        let positions: Vec<f32> = stops.iter().map(|(f, _)| f.clamp(0.0, 1.0)).collect();
+        let shader = skia_safe::Shader::linear_gradient(
+            (
+                Point::new(rect.left(), rect.top()),
+                Point::new(rect.right(), rect.top()),
+            ),
+            colors.as_slice(),
+            positions.as_slice(),
+            TileMode::Clamp,
+            None,
+            None,
+        );
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        if let Some(sh) = shader {
+            paint.set_shader(sh);
+        }
+        self.surface.canvas().draw_rect(rect.to_skia(), &paint);
+    }
+
+    pub fn stroke_rect(&mut self, rect: Rect, color: Rgba, radius: f32, width: f32) {
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_stroke_width(width);
+        let r = rect.to_skia();
+        if radius > 0.5 {
+            self.surface
+                .canvas()
+                .draw_round_rect(r, radius, radius, &paint);
+        } else {
+            self.surface.canvas().draw_rect(r, &paint);
+        }
+    }
+
+    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, color: Rgba, width: f32) {
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_stroke_width(width);
+        self.surface
+            .canvas()
+            .draw_line(Point::new(x0, y0), Point::new(x1, y1), &paint);
+    }
+
+    pub fn circle(&mut self, cx: f32, cy: f32, radius: f32, color: Rgba, fill: bool) {
+        self.circle_ex(cx, cy, radius, color, fill, 1.5);
+    }
+
+    pub fn circle_ex(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        color: Rgba,
+        fill: bool,
+        stroke_width: f32,
+    ) {
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(if fill {
+            PaintStyle::Fill
+        } else {
+            PaintStyle::Stroke
+        });
+        if !fill {
+            paint.set_stroke_width(stroke_width);
+        }
+        self.surface
+            .canvas()
+            .draw_circle(Point::new(cx, cy), radius, &paint);
+    }
+
+    /// Stroke an arc from `a0` to `a1` (radians, 0=east, CCW; y-down screen).
+    pub fn stroke_arc(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        r: f32,
+        a0: f32,
+        a1: f32,
+        color: Rgba,
+        width: f32,
+        steps: usize,
+    ) {
+        let steps = steps.max(2);
+        let mut pts = Vec::with_capacity(steps + 1);
+        for s in 0..=steps {
+            let t = s as f32 / steps as f32;
+            let a = a0 + (a1 - a0) * t;
+            pts.push((cx + r * a.cos(), cy - r * a.sin()));
+        }
+        self.polyline(&pts, color, width, false);
+    }
+
+    pub fn polyline(&mut self, pts: &[(f32, f32)], color: Rgba, width: f32, closed: bool) {
+        if pts.len() < 2 {
+            return;
+        }
+        let mut path = skia_safe::Path::new();
+        path.move_to(Point::new(pts[0].0, pts[0].1));
+        for p in &pts[1..] {
+            path.line_to(Point::new(p.0, p.1));
+        }
+        if closed {
+            path.close();
+        }
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Stroke);
+        paint.set_stroke_width(width);
+        paint.set_stroke_join(skia_safe::PaintJoin::Round);
+        paint.set_stroke_cap(skia_safe::PaintCap::Round);
+        self.surface.canvas().draw_path(&path, &paint);
+    }
+
+    /// Fill a closed polygon (Skia winding fill — safe for concave track outlines).
+    pub fn fill_closed_path(&mut self, pts: &[(f32, f32)], color: Rgba) {
+        if pts.len() < 3 {
+            return;
+        }
+        let mut path = skia_safe::Path::new();
+        path.move_to(Point::new(pts[0].0, pts[0].1));
+        for p in &pts[1..] {
+            path.line_to(Point::new(p.0, p.1));
+        }
+        path.close();
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Fill);
+        self.surface.canvas().draw_path(&path, &paint);
+    }
+
+    /// Fill indexed triangles (`verts` + `tris` from earcut).
+    pub fn fill_triangles(&mut self, verts: &[(f32, f32)], tris: &[[u32; 3]], color: Rgba) {
+        if verts.len() < 3 || tris.is_empty() {
+            return;
+        }
+        let mut path = skia_safe::Path::new();
+        for &[a, b, c] in tris {
+            let ia = a as usize;
+            let ib = b as usize;
+            let ic = c as usize;
+            if ia >= verts.len() || ib >= verts.len() || ic >= verts.len() {
+                continue;
+            }
+            let (ax, ay) = verts[ia];
+            let (bx, by) = verts[ib];
+            let (cx, cy) = verts[ic];
+            path.move_to(Point::new(ax, ay));
+            path.line_to(Point::new(bx, by));
+            path.line_to(Point::new(cx, cy));
+            path.close();
+        }
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        paint.set_style(PaintStyle::Fill);
+        self.surface.canvas().draw_path(&path, &paint);
+    }
+
+    /// Dashed open polyline with continuous dash phase across segments.
+    pub fn dashed_polyline(
+        &mut self,
+        pts: &[(f32, f32)],
+        color: Rgba,
+        width: f32,
+        dash: f32,
+        gap: f32,
+    ) {
+        if pts.len() < 2 {
+            return;
+        }
+        let dash = dash.max(1.0);
+        let gap = gap.max(0.5);
+        let pattern = dash + gap;
+        let mut phase = 0.0_f32;
+        for w in pts.windows(2) {
+            let a = w[0];
+            let b = w[1];
+            let dx = b.0 - a.0;
+            let dy = b.1 - a.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            if len < 1e-3 {
+                continue;
+            }
+            let ux = dx / len;
+            let uy = dy / len;
+            let mut consumed = 0.0_f32;
+            while consumed < len {
+                let in_dash = phase < dash;
+                let remain = if in_dash {
+                    dash - phase
+                } else {
+                    pattern - phase
+                };
+                let step = remain.min(len - consumed);
+                if in_dash && step > 1e-4 {
+                    let t0 = consumed;
+                    let t1 = consumed + step;
+                    self.line(
+                        a.0 + ux * t0,
+                        a.1 + uy * t0,
+                        a.0 + ux * t1,
+                        a.1 + uy * t1,
+                        color,
+                        width,
+                    );
+                }
+                consumed += step;
+                phase += step;
+                if phase >= pattern - 1e-6 {
+                    phase = 0.0;
+                }
+            }
+        }
+    }
+
+    fn font(&self, spec: FontSpec) -> Font {
+        let style = if spec.bold {
+            FontStyle::bold()
+        } else {
+            FontStyle::normal()
+        };
+        let typeface = if spec.bold {
+            self.face_bold.clone().or_else(|| self.face_regular.clone())
+        } else {
+            self.face_regular.clone()
+        }
+        .or_else(|| self.font_mgr.match_family_style("Segoe UI", style))
+        .or_else(|| self.font_mgr.match_family_style("Arial", style))
+        .unwrap_or_else(|| {
+            self.font_mgr
+                .legacy_make_typeface(None, style)
+                .expect("default typeface")
+        });
+        let mut font = Font::new(typeface, spec.size);
+        font.set_edging(skia_safe::font::Edging::AntiAlias);
+        font.set_subpixel(true);
+        font
+    }
+
+    fn icon_font(&self, size: f32) -> Option<Font> {
+        let face = self.face_icons.clone()?;
+        let mut font = Font::new(face, size.max(6.0));
+        font.set_edging(skia_safe::font::Edging::AntiAlias);
+        font.set_subpixel(true);
+        Some(font)
+    }
+
+    pub fn measure_text(&self, text: &str, spec: FontSpec) -> f32 {
+        let font = self.font(spec);
+        let (_, rect) = font.measure_str(text, None);
+        rect.width()
+    }
+
+    /// Measure a Font Awesome glyph string (from `crate::icons::glyph`).
+    pub fn measure_icon(&self, glyph: &str, size: f32) -> f32 {
+        let Some(font) = self.icon_font(size) else {
+            return size * 0.7;
+        };
+        let (_, rect) = font.measure_str(glyph, None);
+        rect.width()
+    }
+
+    pub fn text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        spec: FontSpec,
+        color: Rgba,
+        align: TextAlign,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let font = self.font(spec);
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        let blob = TextBlob::from_str(text, &font);
+        let Some(blob) = blob else { return };
+        let width = self.measure_text(text, spec);
+        let draw_x = match align {
+            TextAlign::Left => x,
+            TextAlign::Center => x - width * 0.5,
+            TextAlign::Right => x - width,
+        };
+        // y is baseline; callers pass mid-row → adjust with size*0.35
+        self.surface
+            .canvas()
+            .draw_text_blob(&blob, (draw_x, y), &paint);
+    }
+
+    /// Draw a Font Awesome glyph. `y` is visual mid-line (same as `text_at`).
+    pub fn icon(
+        &mut self,
+        glyph: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: Rgba,
+        align: TextAlign,
+    ) -> f32 {
+        if glyph.is_empty() {
+            return 0.0;
+        }
+        let Some(font) = self.icon_font(size) else {
+            // Fallback: no FA face — skip silently.
+            return 0.0;
+        };
+        let width = self.measure_icon(glyph, size);
+        let draw_x = match align {
+            TextAlign::Left => x,
+            TextAlign::Center => x - width * 0.5,
+            TextAlign::Right => x - width,
+        };
+        let baseline = y + size * 0.35;
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        if let Some(blob) = TextBlob::from_str(glyph, &font) {
+            self.surface
+                .canvas()
+                .draw_text_blob(&blob, (draw_x, baseline), &paint);
+        }
+        width
+    }
+
+    pub fn clip_rect(&mut self, rect: Rect, f: impl FnOnce(&mut Self)) {
+        self.surface.canvas().save();
+        self.surface.canvas().clip_rect(rect.to_skia(), None, true);
+        f(self);
+        self.surface.canvas().restore();
+    }
+
+    /// Overwrite the whole surface with top-down premul BGRA pixels.
+    /// Used to seed the hot map path with its cached static track.
+    pub fn write_bgra(&mut self, bgra: &[u8]) -> bool {
+        let row_bytes = (self.width as usize) * 4;
+        if bgra.len() < row_bytes.saturating_mul(self.height as usize) {
+            return false;
+        }
+        let info = ImageInfo::new(
+            (self.width, self.height),
+            ColorType::BGRA8888,
+            AlphaType::Premul,
+            None,
+        );
+        self.surface
+            .canvas()
+            .write_pixels(&info, bgra, row_bytes, (0, 0))
+    }
+
+    /// Snapshot as top-down premul BGRA (matches `layered::present_bgra`).
+    pub fn to_bgra(&mut self) -> Vec<u8> {
+        let mut buf = Vec::new();
+        self.read_bgra_into(&mut buf);
+        buf
+    }
+
+    /// `to_bgra` that reuses `out`'s allocation (per-frame hot path).
+    pub fn read_bgra_into(&mut self, out: &mut Vec<u8>) {
+        let image = self.surface.image_snapshot();
+        let info = ImageInfo::new(
+            (self.width, self.height),
+            ColorType::BGRA8888,
+            AlphaType::Premul,
+            None,
+        );
+        let row_bytes = (self.width as usize) * 4;
+        let need = row_bytes * self.height as usize;
+        out.clear();
+        out.resize(need, 0);
+        let buf = out;
+        if let Some(pixmap) = image.peek_pixels() {
+            let src = pixmap.bytes().unwrap_or(&[]);
+            let src_rb = pixmap.row_bytes();
+            for y in 0..self.height as usize {
+                let s = y * src_rb;
+                let d = y * row_bytes;
+                let n = row_bytes.min(src.len().saturating_sub(s));
+                if n > 0 {
+                    buf[d..d + n].copy_from_slice(&src[s..s + n]);
+                }
+            }
+        } else {
+            let _ = image.read_pixels(
+                &info,
+                buf,
+                row_bytes,
+                (0, 0),
+                skia_safe::image::CachingHint::Allow,
+            );
+        }
+        // Near-black alpha punch (parity with layered GL path).
+        for px in buf.chunks_exact_mut(4) {
+            if px[0] == 0 && px[1] == 0 && px[2] == 0 && px[3] < 8 {
+                px[3] = 0;
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextAlign {
+    Left,
+    Center,
+    Right,
+}

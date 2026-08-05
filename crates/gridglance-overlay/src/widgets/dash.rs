@@ -79,7 +79,9 @@ fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
             if let Some(total) = crate::telemetry::finite_laps_total(f.laps_total) {
                 let lead = if f.lead_lap > 0 { f.lead_lap } else { f.lap };
                 format!("{}", (total - lead).max(0))
-            } else if let Some(rem) = f.session_laps_remain.filter(|v| v.is_finite() && *v < 32_000.0)
+            } else if let Some(rem) = f
+                .session_laps_remain
+                .filter(|v| v.is_finite() && *v < 32_000.0)
             {
                 format!("{:.0}", rem)
             } else {
@@ -340,29 +342,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let clt = f.clutch.clamp(0.0, 1.0);
         if cfg.str_key(SECTION, "center_mode", "ring") == "pedals" {
             draw_pedals(
-                ui,
-                cfg,
-                ring_cx,
-                ring_cy,
-                ring_d,
-                f,
-                text_scale,
-                thr,
-                brk,
-                clt,
+                ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale, thr, brk, clt,
             );
         } else {
             draw_ring(
-                ui,
-                cfg,
-                ring_cx,
-                ring_cy,
-                ring_d,
-                f,
-                text_scale,
-                thr,
-                brk,
-                clt,
+                ui, cfg, ring_cx, ring_cy, ring_d, f, text_scale, thr, brk, clt,
             );
         }
     }
@@ -382,17 +366,37 @@ fn draw_position(
     f: &TelemetryFrame,
     text_scale: f32,
 ) {
-    draw_panel_rect(ui, cfg, SECTION, box_r);
     let orange = cfg.color(SECTION, "orange", "#ff9416");
+    let frac = cfg.f64_key(SECTION, "corner_radius_frac", 0.0) as f32;
+    // Position badge keeps a pill-like radius even when panels are square.
+    let radius = if frac > 0.0 {
+        box_r.width().min(box_r.height()) * frac
+    } else {
+        box_r.height() * 0.22
+    };
+    let r = radius.round().clamp(0.0, 255.0) as u8;
+    ui.painter().rect_filled(
+        box_r,
+        egui::CornerRadius::same(r),
+        cfg.color(SECTION, "bg_bottom", "#0f1216f2"),
+    );
+    let stroke_w = (box_r.height() * 0.045).max(2.0);
+    ui.painter().rect_stroke(
+        box_r,
+        egui::CornerRadius::same(r),
+        Stroke::new(stroke_w, orange),
+        StrokeKind::Inside,
+    );
+
     let text = if f.position > 0 {
         format!("P{}", f.position)
     } else {
         "--".into()
     };
-    let mut fs = box_r.height() * 0.40 * text_scale;
+    let mut fs = box_r.height() * 0.48 * text_scale;
     let font = FontId::proportional(fs);
     let tw = text_w(ui, &font, &text);
-    let max_w = box_r.width() * 0.74;
+    let max_w = box_r.width() * 0.78;
     if tw > max_w && tw > 0.0 {
         fs *= max_w / tw;
     }

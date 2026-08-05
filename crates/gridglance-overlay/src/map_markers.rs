@@ -40,11 +40,21 @@ pub fn marker_car_valid(car: &CarRow) -> bool {
 
 /// Raw CarIdx targets for ahead / behind / leader (no hold debounce).
 /// Ahead/behind are race-position neighbors; no fallthrough if invalid.
-pub fn select_marker_candidates(cars: &[CarRow]) -> HashMap<&'static str, Option<i32>> {
+///
+/// `focus_idx` is the car the markers are relative to — the spectated car while
+/// spectating, else the seated player. Without it the seated player's ghost car
+/// has no race position while spectating, so every slot came back empty.
+pub fn select_marker_candidates(
+    cars: &[CarRow],
+    focus_idx: Option<i32>,
+) -> HashMap<&'static str, Option<i32>> {
     let mut out: HashMap<&'static str, Option<i32>> =
         MARKER_SLOTS.iter().map(|s| (*s, None)).collect();
 
-    let Some(player) = cars.iter().find(|c| c.is_player) else {
+    let Some(player) = focus_idx
+        .and_then(|idx| cars.iter().find(|c| c.car_idx == idx))
+        .or_else(|| cars.iter().find(|c| c.is_player))
+    else {
         return out;
     };
     if player.lap_dist_pct < 0.0 || player.position < 1 {
@@ -136,8 +146,9 @@ pub fn resolve_traffic_markers(
     cars: &[CarRow],
     now: f64,
     hold_sec: f64,
+    focus_idx: Option<i32>,
 ) -> HashMap<&'static str, Option<TrafficMarker>> {
-    let candidates = select_marker_candidates(cars);
+    let candidates = select_marker_candidates(cars, focus_idx);
     let mut out: HashMap<&'static str, Option<TrafficMarker>> =
         MARKER_SLOTS.iter().map(|s| (*s, None)).collect();
 
@@ -204,10 +215,57 @@ mod tests {
             car(2, 3, true),
             car(3, 4, false),
         ];
-        let c = select_marker_candidates(&cars);
+        let c = select_marker_candidates(&cars, None);
         assert_eq!(c["leader"], Some(0));
         assert_eq!(c["ahead"], Some(1));
         assert_eq!(c["behind"], Some(3));
+    }
+
+    /// Spectating: the seated player's ghost has no position, so markers must
+    /// hang off the camera car instead of collapsing to nothing.
+    #[test]
+    fn markers_follow_the_spectated_car() {
+        let mut cars = vec![
+            car(0, 1, false),
+            car(1, 2, false),
+            car(2, 3, false),
+            car(3, 4, false),
+        ];
+        // Seated player is spectating: on no lap, no race position.
+        cars.push(CarRow {
+            car_idx: 9,
+            position: 0,
+            is_player: true,
+            on_track: false,
+            lap_dist_pct: -1.0,
+            ..Default::default()
+        });
+        assert_eq!(select_marker_candidates(&cars, None)["ahead"], None);
+
+        let c = select_marker_candidates(&cars, Some(2));
+        assert_eq!(
+            c["ahead"],
+            Some(1),
+            "car in P2 is ahead of the spectated P3"
+        );
+        assert_eq!(c["behind"], Some(3));
+        assert_eq!(c["leader"], Some(0));
+    }
+
+    /// Camera on the seated player is the normal racing case and must be
+    /// indistinguishable from passing no focus at all.
+    #[test]
+    fn camera_on_own_car_matches_seated_behaviour() {
+        let cars = vec![
+            car(0, 1, false),
+            car(1, 2, false),
+            car(2, 3, true),
+            car(3, 4, false),
+        ];
+        assert_eq!(
+            select_marker_candidates(&cars, Some(2)),
+            select_marker_candidates(&cars, None)
+        );
     }
 
     #[test]
@@ -215,7 +273,7 @@ mod tests {
         let mut cars = vec![car(0, 1, false), car(1, 2, false), car(2, 3, true)];
         cars[1].on_pit = true;
         cars[1].on_track = false;
-        let c = select_marker_candidates(&cars);
+        let c = select_marker_candidates(&cars, None);
         assert_eq!(c["ahead"], None);
         assert_eq!(c["leader"], Some(0));
     }

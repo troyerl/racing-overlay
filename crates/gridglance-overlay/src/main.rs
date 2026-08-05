@@ -21,6 +21,7 @@ mod map_markers;
 mod paths;
 mod settings;
 mod shell;
+mod skia_ui;
 mod state;
 mod sysstats;
 mod telemetry;
@@ -51,6 +52,20 @@ fn attach_console() {
 
 #[cfg(not(windows))]
 fn attach_console() {}
+
+/// Raise the system timer resolution to 1 ms. Without this the scheduler wakes
+/// on the default ~15.6 ms tick, so a 10 ms repaint request lands at ~16 ms and
+/// overlay presents land at an uneven ~40 Hz (visible as map judder).
+#[cfg(windows)]
+fn request_high_res_timer() {
+    use windows::Win32::Media::timeBeginPeriod;
+    unsafe {
+        let _ = timeBeginPeriod(1);
+    }
+}
+
+#[cfg(not(windows))]
+fn request_high_res_timer() {}
 
 #[cfg(windows)]
 fn notify_already_running() {
@@ -118,6 +133,15 @@ struct Args {
     /// Emit once-per-second frame/readback/present timing to stderr.
     #[arg(long)]
     perf: bool,
+
+    /// Record driven laps of LapDistPct + Lat/Lon to CSV, to check the drawn map
+    /// against where the car really was. Needs to be your own car, not a replay.
+    #[arg(long)]
+    log_track_path: bool,
+
+    /// Rebuild a track's lap-% calibration from a `--log-track-path` CSV and exit.
+    #[arg(long, value_name = "CSV")]
+    calibrate_track_path: Option<std::path::PathBuf>,
 
     /// Download the full cloud track library into the local cache and exit.
     #[arg(long)]
@@ -198,9 +222,21 @@ fn main() -> Result<()> {
     app_icon::set_windows_app_user_model_id();
 
     let args = Args::parse();
-    // Release builds have no console; --perf / --sync-tracks need one for logs.
-    if args.perf || args.sync_tracks {
+    // Release builds have no console; these flags need one for their logs.
+    if args.perf || args.sync_tracks || args.log_track_path || args.calibrate_track_path.is_some() {
         attach_console();
+    }
+    if let Some(csv) = &args.calibrate_track_path {
+        match tracks::probe::calibrate_from_csv(csv) {
+            Ok(msg) => {
+                eprintln!("[gridglance] track-path: {msg}");
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("[gridglance] track-path: calibration failed — {e}");
+                return Err(e);
+            }
+        }
     }
     if args.sync_tracks {
         let dir = paths::tracks_dir();
@@ -283,6 +319,7 @@ fn main() -> Result<()> {
         });
     }
 
+    request_high_res_timer();
     ipc::spawn(state.clone(), args.ipc_port)?;
 
     let tray: Option<shell::TrayHandle> = if args.no_tray {
@@ -320,6 +357,7 @@ fn main() -> Result<()> {
 
     let demo = args.demo;
     let perf = args.perf;
+    let log_track_path = args.log_track_path;
     eframe::run_native(
         WINDOW_TITLE,
         options,
@@ -335,6 +373,7 @@ fn main() -> Result<()> {
                 state,
                 demo,
                 perf,
+                log_track_path,
                 cc.gl.clone(),
                 tray,
                 activate_flag,

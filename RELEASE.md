@@ -66,8 +66,8 @@ Release notes. To cut a release, add a new section to the top and push.
 - **Caution panel.** Compact size under yellow (no elegant auto-balloon).
 - **Chrome.** Outer gray frames removed from widgets; dash keeps the input
   circle stroke only.
-- **Release builds.** Thin LTO so packaged installs match local `--release`
-  responsiveness.
+- **Release builds.** Local `--release` stays incremental-friendly; packaging
+  uses `--profile dist` (thin LTO + single CGU).
 
 ## 1.69.5 - 2026-07-22
 

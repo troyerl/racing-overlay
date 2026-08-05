@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use super::layers::{
-    align_loop_from_sf, apply_iracing_oval_labels, extract_layers_from_html, normalize_loop,
-    oval_corners, parse_turn_numbers,
+    align_loop_from_sf, apply_iracing_oval_labels, extract_layers_from_html, labels_run_backwards,
+    normalize_loop, oval_corners, parse_turn_numbers,
 };
 use super::path_sample::sample_best_subpath;
 
@@ -105,13 +105,19 @@ pub fn import_loop_doc(
     let aligned = align_loop_from_sf(&raw, sf_svg);
     let (normalized, norm) = normalize_loop(&aligned);
 
-    let mut corners = if let Some(ref turns) = layers.turns {
-        parse_turn_numbers(turns, &normalized, norm, false)
-    } else if num_corners > 0 {
-        oval_corners(&normalized, num_corners)
-    } else {
-        vec![]
-    };
+    let labelled = layers
+        .turns
+        .as_deref()
+        .map(|turns| parse_turn_numbers(turns, &normalized, norm, false))
+        .filter(|c| !c.is_empty());
+    let from_turns_layer = labelled.is_some();
+    let mut corners = labelled.unwrap_or_else(|| {
+        if num_corners > 0 {
+            oval_corners(&normalized, num_corners)
+        } else {
+            vec![]
+        }
+    });
 
     let n_turns = if !corners.is_empty() {
         Some(corners.len() as i64)
@@ -122,7 +128,9 @@ pub fn import_loop_doc(
     };
 
     if let Some(n) = n_turns {
-        if n >= 2 {
+        // Synthesized oval corners keep the historical unconditional flip;
+        // real labels are only flipped when they actually count down the lap.
+        if n >= 2 && (!from_turns_layer || labels_run_backwards(&corners)) {
             corners = apply_iracing_oval_labels(corners, n);
         }
     }
@@ -253,6 +261,119 @@ mod tests {
         let doc = import_loop_doc(&html, 80, 4, 0.0).expect("import");
         assert_eq!(doc.track_id, Some(451));
         assert!(doc.points.len() >= 64);
+    }
+
+    /// Charlotte Roval draws S/F as `<rect>` + `<polygon>` and wraps turn
+    /// labels in `<tspan>` — markup that used to be skipped entirely, leaving
+    /// the loop rotated to its bottom-most point and running the wrong way.
+    #[test]
+    fn charlotte_roval_aligns_and_labels() {
+        let html = fixture("charlotte_roval.html");
+        let doc = import_loop_doc(&html, 400, 4, 0.0).expect("import");
+        assert_eq!(doc.track_id, Some(554));
+        assert_eq!(doc.num_turns, Some(15), "all 15 tspan labels must parse");
+
+        // Loop starts on the S/F stripe (svg x≈963 → x_norm≈0.50), not at the
+        // path's own first vertex (x_norm≈0.61).
+        assert!(
+            (doc.points[0].0 - 0.5).abs() < 0.01,
+            "p0 must sit on the stripe, got {:?}",
+            doc.points[0]
+        );
+        // Members arrow points +X, so lap % must advance that way.
+        assert!(doc.points[1].0 > doc.points[0].0, "loop must follow arrow");
+
+        let labels: Vec<i64> = doc
+            .corners
+            .iter()
+            .filter_map(|c| c.get("label")?.as_str()?.parse().ok())
+            .collect();
+        let (up, down) = labels
+            .windows(2)
+            .fold((0, 0), |(u, d), w| match w[1].cmp(&w[0]) {
+                std::cmp::Ordering::Greater => (u + 1, d),
+                std::cmp::Ordering::Less => (u, d + 1),
+                std::cmp::Ordering::Equal => (u, d),
+            });
+        assert!(
+            up > down,
+            "turn numbers must climb with lap %, got {labels:?}"
+        );
+    }
+
+    /// Oran Park GP crosses itself at Yokohama Bridge, so the exporter breaks
+    /// the stroke there. That leaves the config layer as a single out-and-back
+    /// ribbon rather than an annulus, which used to lap the circuit twice.
+    #[test]
+    fn oran_park_bridge_is_folded_to_one_lap() {
+        let html = fixture("oran_park_gp.html");
+        let doc = import_loop_doc(&html, 400, 0, 0.0).expect("import");
+        assert_eq!(doc.track_id, Some(202));
+        let pts = &doc.points;
+        let n = pts.len();
+
+        // Direction comes from the members arrow, which points +X along the
+        // bottom straight here — never from the path's own winding order.
+        assert_eq!(
+            crate::tracks::layers::sf_arrow_direction(
+                crate::tracks::layers::extract_layers_from_html(&html)
+                    .start_finish
+                    .as_deref()
+            )
+            .map(|(x, _)| x > 0.9),
+            Some(true),
+            "fixture arrow must point +X"
+        );
+        assert!(
+            pts[1].0 > pts[0].0 && (pts[1].1 - pts[0].1).abs() < 0.01,
+            "lap must advance the way the arrow points, got {:?} -> {:?}",
+            pts[0],
+            pts[1]
+        );
+
+        // Turn names share the layer with the numbers; only the numbers are turns.
+        let labels: Vec<&str> = doc
+            .corners
+            .iter()
+            .filter_map(|c| c.get("label")?.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
+        );
+
+        // A fold leaves almost every sample with a mirror partner one track
+        // width away on the far side of the lap. A single traversal does not.
+        let paired = (0..n)
+            .filter(|&i| {
+                (0..n).any(|j| {
+                    let step = i.abs_diff(j);
+                    if step.min(n - step) < n / 20 {
+                        return false;
+                    }
+                    let d = ((pts[i].0 - pts[j].0).powi(2) + (pts[i].1 - pts[j].1).powi(2)).sqrt();
+                    d < 0.02
+                })
+            })
+            .count();
+        assert!(
+            paired < n / 4,
+            "loop still folds back on itself: {paired}/{n} samples have a mirror partner"
+        );
+
+        // The bridge means the lap genuinely crosses over — that must survive.
+        let loop_pts: Vec<(f32, f32)> = pts.clone();
+        assert!(
+            crate::track_path::loop_self_crossing(&loop_pts),
+            "Yokohama Bridge crossing must be present in the loop"
+        );
+
+        // No sample-to-sample jump big enough to be a chord across the map.
+        let max_jump = pts
+            .windows(2)
+            .map(|w| ((w[0].0 - w[1].0).powi(2) + (w[0].1 - w[1].1).powi(2)).sqrt())
+            .fold(0.0f32, f32::max);
+        assert!(max_jump < 0.1, "max_jump={max_jump}");
     }
 
     #[test]

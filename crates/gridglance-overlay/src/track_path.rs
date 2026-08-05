@@ -79,6 +79,9 @@ pub struct TrackPath {
     /// Push-to-pass ranges as (lo, hi) lap fractions.
     pub p2p_zones: Vec<(f32, f32)>,
     pub corners: Vec<CornerMark>,
+    /// Measured lap-% → loop-arc table from `--log-track-path`. Absent until a
+    /// track is calibrated, in which case lap % is used as the arc fraction.
+    pub pct_map: Option<Vec<f32>>,
 }
 
 /// Directories to search for track JSON (user data tracks only).
@@ -315,6 +318,7 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         drs_zones,
         p2p_zones,
         corners,
+        pct_map: parse_pct_map(v.get("pct_map")),
     };
     if is_demo && !tp.pit.has_drawable() {
         if let Some(synth) = synthesize_demo_pit(&tp.points) {
@@ -323,6 +327,21 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
         }
     }
     Some(tp)
+}
+
+/// A short or non-finite table would place cars worse than no table at all.
+fn parse_pct_map(v: Option<&Value>) -> Option<Vec<f32>> {
+    let arr = v?.as_array()?;
+    if arr.len() < 16 {
+        return None;
+    }
+    let out: Vec<f32> = arr
+        .iter()
+        .filter_map(|x| x.as_f64())
+        .map(|x| x as f32)
+        .filter(|x| x.is_finite() && (0.0..1.0).contains(x))
+        .collect();
+    (out.len() == arr.len()).then_some(out)
 }
 
 fn parse_corners(v: Option<&Value>) -> Vec<CornerMark> {
@@ -671,6 +690,46 @@ pub fn tangent_at(pts: &[(f32, f32)], pct: f32) -> (f32, f32) {
     let dy = b.1 - a.1;
     let len = (dx * dx + dy * dy).sqrt().max(1e-6);
     (dx / len, dy / len)
+}
+
+/// True when the closed loop passes over itself — bridge and figure-eight
+/// layouts. Ear clipping assumes a simple polygon, so the infield fill has to
+/// fall back to a winding fill for these.
+pub fn loop_self_crossing(pts: &[(f32, f32)]) -> bool {
+    let n = pts.len();
+    if n < 6 {
+        return false;
+    }
+    for i in 0..n {
+        let a = pts[i];
+        let b = pts[(i + 1) % n];
+        for j in (i + 2)..n {
+            // Skip the segment that wraps round to meet `i`.
+            if (j + 1) % n == i {
+                continue;
+            }
+            if segments_cross(a, b, pts[j], pts[(j + 1) % n]) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Proper crossing only — shared endpoints and collinear overlap do not count,
+/// so a duplicated closing vertex cannot trigger it.
+fn segments_cross(a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)) -> bool {
+    let side = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| -> f32 {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    };
+    let d1 = side(c, d, a);
+    let d2 = side(c, d, b);
+    let d3 = side(a, b, c);
+    let d4 = side(a, b, d);
+    if d1 == 0.0 || d2 == 0.0 || d3 == 0.0 || d4 == 0.0 {
+        return false;
+    }
+    (d1 > 0.0) != (d2 > 0.0) && (d3 > 0.0) != (d4 > 0.0)
 }
 
 /// Fallback oval in 0..1 space (same as previous map stub).

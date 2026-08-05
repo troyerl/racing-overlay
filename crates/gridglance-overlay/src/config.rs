@@ -1343,8 +1343,8 @@ fn default_colors() -> Map<String, Value> {
         ("irating_delta_down", "#e23b3b"),
         ("threat", "#ff505060"),
         ("lapped", "#2563eb60"),
-        ("pit_row", "#8b93a118"),
-        ("inactive_row", "#8b93a128"),
+        ("pit_row", "#6b728040"),
+        ("inactive_row", "#6b728048"),
         ("speaking_row", "#22c55e50"),
         ("footer_bg", "#0f1216"),
         ("badge_player", "#ff9416"),
@@ -1419,8 +1419,8 @@ fn default_cfg() -> Value {
         section.insert("idle_text".into(), Value::String("TRACK CLEAR".into()));
         section.insert("range".into(), json!(1.0));
         section.insert("show_value".into(), Value::Bool(true));
-        section.insert("row_height_px".into(), json!(36));
-        section.insert("font_scale".into(), json!(0.40));
+        section.insert("row_height_px".into(), json!(28));
+        section.insert("font_scale".into(), json!(0.48));
         section.insert("show_wind".into(), Value::Bool(true));
         // Dash defaults matching Python CFG.
         section.insert("show_shift_bar".into(), Value::Bool(true));
@@ -1472,6 +1472,8 @@ fn default_cfg() -> Value {
             section.insert("show_footer".into(), Value::Bool(true));
             section.insert("row_ease_tau".into(), json!(0.24));
             section.insert("fade_ease_tau".into(), json!(0.12));
+            section.insert("row_height_px".into(), json!(28));
+            section.insert("font_scale".into(), json!(0.48));
             section.insert("header_font_scale".into(), json!(1.0));
             section.insert("footer_font_scale".into(), json!(1.0));
             section.insert("alt_row_shading".into(), Value::Bool(true));
@@ -1585,6 +1587,7 @@ fn default_cfg() -> Value {
                 colors.insert("marker_ahead".into(), Value::String("#46df7a".into()));
                 colors.insert("marker_behind".into(), Value::String("#ff5050".into()));
                 colors.insert("marker_line".into(), Value::String("#ffffff40".into()));
+                colors.insert("corner_text".into(), Value::String("#d6dce2".into()));
                 colors.insert("speaking_ring".into(), Value::String("#46df7a".into()));
                 colors.insert("speaking_glow".into(), Value::String("#46df7a55".into()));
                 colors.insert("speaking_badge_bg".into(), Value::String("#22c55e".into()));
@@ -1988,10 +1991,7 @@ mod tests {
     #[test]
     fn garage_layout_promotes_missing_race_keys() {
         let mut oc = OverlayConfig::default();
-        oc.store_active_layout_doc(
-            ConfigContext::Race,
-            json!({"dash": [1, 2, 3, 4]}),
-        );
+        oc.store_active_layout_doc(ConfigContext::Race, json!({"dash": [1, 2, 3, 4]}));
         oc.store_active_layout_doc(
             ConfigContext::Garage,
             json!({

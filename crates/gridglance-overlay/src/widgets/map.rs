@@ -19,7 +19,7 @@ use std::f32::consts::{PI, TAU};
 const SECTION: &str = "map";
 /// Bump when changing map car motion; shown in `--perf` as `map_motion_rev=`.
 /// Keep in sync with `docs/map-wiki.md`.
-pub const MAP_MOTION_REV: u32 = 23;
+pub const MAP_MOTION_REV: u32 = 33;
 /// Screen ease for pit-route / non-pct modes only (Python `_smooth_marker_point`).
 const SCREEN_EASE_TAU: f32 = 0.09;
 const SCREEN_EASE_SNAP: f32 = 120.0;
@@ -30,28 +30,29 @@ const PCT_SNAP_ERR: f32 = 0.40;
 /// Ignore micro LapDistPct jitter when measuring vel / refreshing anchor.
 const TELEM_EPS: f32 = 0.00008;
 /// EMA blend for measured lap-%/s.
-const VEL_EMA: f32 = 0.45;
+const VEL_EMA: f32 = 0.25;
 const VEL_DT_MIN: f64 = 0.004;
 const VEL_DT_MAX: f64 = 3.5;
-/// Decay vel only after a long pause (not 2.5s — that matched old stutter).
-const QUIET_DECAY_SECS: f64 = 20.0;
-/// Ease display toward wall-clock predict (Python used 0.09 lag-only).
-const PCT_FOLLOW_TAU: f32 = 0.055;
-/// Cap predict age so a long telem gap does not run away.
-const PREDICT_AGE_MAX: f32 = 1.5;
-/// Still-easing / coasting threshold for `panel_animating`.
-const PCT_MOVING_EPS: f32 = 1e-5;
+/// Natural frequency (rad/s) of the critically damped position tracker.
+/// ~3.2 Hz: filters the 60 Hz LapDistPct staircase, settles in ~0.2 s.
+const TRACK_OMEGA: f32 = 20.0;
+/// Substep so explicit integration stays stable on long frames.
+const TRACK_MAX_STEP: f32 = 0.01;
+/// Grace before a held LapDistPct is treated as "car stopped".
+const VEL_HOLD_SECS: f64 = 0.10;
+/// Time constant for bleeding feed-forward vel while telem is held.
+const VEL_DECAY_TAU: f32 = 0.30;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
 #[derive(Clone, Copy)]
-struct PlotXform {
-    origin: Pos2,
-    scale: f32,
-    min: (f32, f32),
+pub(crate) struct PlotXform {
+    pub(crate) origin: Pos2,
+    pub(crate) scale: f32,
+    pub(crate) min: (f32, f32),
 }
 
 impl PlotXform {
-    fn fit(plot: Rect, pts: &[(f32, f32)], pad_px: f32) -> Self {
+    pub(crate) fn fit(plot: Rect, pts: &[(f32, f32)], pad_px: f32) -> Self {
         let mut min_x = f32::MAX;
         let mut min_y = f32::MAX;
         let mut max_x = f32::MIN;
@@ -81,21 +82,26 @@ impl PlotXform {
         }
     }
 
-    fn map(&self, x: f32, y: f32) -> Pos2 {
+    pub(crate) fn map(&self, x: f32, y: f32) -> Pos2 {
         Pos2::new(
             self.origin.x + (x - self.min.0) * self.scale,
             self.origin.y + (y - self.min.1) * self.scale,
         )
     }
 
-    fn unmap(&self, p: Pos2) -> (f32, f32) {
+    pub(crate) fn map_xy(&self, x: f32, y: f32) -> (f32, f32) {
+        let p = self.map(x, y);
+        (p.x, p.y)
+    }
+
+    pub(crate) fn unmap(&self, p: Pos2) -> (f32, f32) {
         let x = self.min.0 + (p.x - self.origin.x) / self.scale;
         let y = self.min.1 + (p.y - self.origin.y) / self.scale;
         (x, y)
     }
 
     /// Apply pit-edit zoom/pan on top of a fit transform.
-    fn with_view(&self, zoom: f32, pan: (f32, f32)) -> Self {
+    pub(crate) fn with_view(&self, zoom: f32, pan: (f32, f32)) -> Self {
         Self {
             origin: Pos2::new(self.origin.x + pan.0, self.origin.y + pan.1),
             scale: self.scale * zoom.max(1e-6),
@@ -105,7 +111,7 @@ impl PlotXform {
 }
 
 /// Python model-space: mirror then 90° rotation steps.
-fn model_point(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
+pub(crate) fn model_point(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
     let mut x = x;
     if mirror {
         x = -x;
@@ -125,6 +131,8 @@ fn apply_loaded_track(ctx: &mut WidgetCtx<'_>, id: i32, tp: track_path::TrackPat
     ctx.map.cached_start_finish = tp.start_finish;
     ctx.map.cached_pit_out_pct = tp.pit_out_pct;
     ctx.map.cached_path = tp.points;
+    ctx.map.cached_self_crossing = track_path::loop_self_crossing(&ctx.map.cached_path);
+    ctx.map.cached_pct_map = tp.pct_map;
     ctx.map.cached_pit = tp.pit;
     ctx.map.cached_pit2 = tp.pit2;
     ctx.map.cached_drs_zones = tp.drs_zones;
@@ -140,6 +148,8 @@ fn install_oval_demo(ctx: &mut WidgetCtx<'_>) {
     ctx.map.cached_track_id = ctx.frame.track_id;
     ctx.map.path_status = TrackPathStatus::Ready;
     ctx.map.cached_path = track_path::oval_path(64);
+    ctx.map.cached_self_crossing = false;
+    ctx.map.cached_pct_map = None;
     ctx.map.cached_start_finish = 0.0;
     if let Some(synth) = track_path::synthesize_demo_pit(&ctx.map.cached_path) {
         ctx.map.cached_pit_out_pct = synth.out_pct;
@@ -158,7 +168,7 @@ fn live_status_for_miss(id: i32) -> TrackPathStatus {
     }
 }
 
-fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
+pub fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     let tid = ctx.frame.track_id;
     // Background cloud fetch finished — force reload from disk.
     if let Some(id) = tid {
@@ -190,6 +200,8 @@ fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
         }
     }
     ctx.map.cached_path.clear();
+    ctx.map.cached_self_crossing = false;
+    ctx.map.cached_pct_map = None;
     ctx.map.cached_track_name.clear();
     ctx.map.cached_start_finish = 0.0;
     ctx.map.cached_pit_out_pct = None;
@@ -237,8 +249,13 @@ fn paint_path_status(ui: &mut Ui, ctx: &WidgetCtx<'_>, rect: Rect) {
         .text(rect.center(), Align2::CENTER_CENTER, text, font, color);
 }
 
-fn fill_infield(ui: &mut Ui, screen: &[Pos2], fill: Color32) {
+fn fill_infield(ui: &mut Ui, screen: &[Pos2], fill: Color32, self_crossing: bool) {
     if screen.len() < 3 {
+        return;
+    }
+    // egui only draws meshes, and ear clipping needs a simple polygon — no way
+    // to fill a bridge layout correctly here, so leave it untinted.
+    if self_crossing {
         return;
     }
     // Drop duplicate closing vertex if the path repeats the start point.
@@ -276,7 +293,7 @@ fn fill_infield(ui: &mut Ui, screen: &[Pos2], fill: Color32) {
 }
 
 /// Ear-clip a simple polygon into triangles (no holes). Returns index triples.
-fn earcut_triangles(pts: &[Pos2]) -> Vec<[u32; 3]> {
+pub(crate) fn earcut_triangles(pts: &[Pos2]) -> Vec<[u32; 3]> {
     let n = pts.len();
     if n < 3 {
         return Vec::new();
@@ -367,8 +384,36 @@ fn stroke_closed(ui: &mut Ui, screen: &[Pos2], width: f32, color: Color32) {
     )));
 }
 
-fn draw_start_finish(ui: &mut Ui, path: &[(f32, f32)], xform: &PlotXform, pct: f32) {
-    draw_loop_tick(ui, path, xform, pct, 7.0, 3.0, Color32::WHITE, false);
+fn draw_start_finish(ui: &mut Ui, path: &[(f32, f32)], xform: &PlotXform, pct: f32, sf_edit: bool) {
+    let (tick, width) = sf_tick_style(sf_edit);
+    draw_loop_tick(ui, path, xform, pct, tick, width, Color32::WHITE, false);
+}
+
+/// S/F tick grows while calibrating so it is easy to aim at (Qt parity).
+pub(crate) fn sf_tick_style(sf_edit: bool) -> (f32, f32) {
+    if sf_edit {
+        (9.0, 4.0)
+    } else {
+        (7.0, 3.0)
+    }
+}
+
+/// Endpoints of a radial tick on the racing loop (model-space path + xform).
+pub(crate) fn loop_tick_ends(
+    path: &[(f32, f32)],
+    xform: &PlotXform,
+    pct: f32,
+    tick: f32,
+) -> ((f32, f32), (f32, f32)) {
+    let (nx, ny) = track_path::point_at(path, pct);
+    let (tx, ty) = track_path::tangent_at(path, pct);
+    let px = -ty;
+    let py = tx;
+    let c = xform.map(nx, ny);
+    (
+        (c.x + px * tick, c.y + py * tick),
+        (c.x - px * tick, c.y - py * tick),
+    )
 }
 
 /// Radial tick on the racing loop (S/F, pit exit, pace safety).
@@ -382,13 +427,9 @@ fn draw_loop_tick(
     color: Color32,
     dashed: bool,
 ) {
-    let (nx, ny) = track_path::point_at(path, pct);
-    let (tx, ty) = track_path::tangent_at(path, pct);
-    let px = -ty;
-    let py = tx;
-    let c = xform.map(nx, ny);
-    let a = Pos2::new(c.x + px * tick, c.y + py * tick);
-    let b = Pos2::new(c.x - px * tick, c.y - py * tick);
+    let (a, b) = loop_tick_ends(path, xform, pct, tick);
+    let a = Pos2::new(a.0, a.1);
+    let b = Pos2::new(b.0, b.1);
     if dashed {
         let dx = b.x - a.x;
         let dy = b.y - a.y;
@@ -482,14 +523,18 @@ fn stroke_open(ui: &mut Ui, screen: &[Pos2], width: f32, color: Color32) {
     }
 }
 
-fn model_poly(pts: &[(f32, f32)], mirror: bool, rot: i32) -> Vec<(f32, f32)> {
+pub(crate) fn model_poly(pts: &[(f32, f32)], mirror: bool, rot: i32) -> Vec<(f32, f32)> {
     pts.iter()
         .map(|&(x, y)| model_point(x, y, mirror, rot))
         .collect()
 }
 
-fn screen_poly(xform: &PlotXform, modeled: &[(f32, f32)]) -> Vec<Pos2> {
+pub(crate) fn screen_poly(xform: &PlotXform, modeled: &[(f32, f32)]) -> Vec<Pos2> {
     modeled.iter().map(|&(x, y)| xform.map(x, y)).collect()
+}
+
+pub(crate) fn screen_poly_xy(xform: &PlotXform, modeled: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    modeled.iter().map(|&(x, y)| xform.map_xy(x, y)).collect()
 }
 
 fn draw_pit_lane(
@@ -576,8 +621,21 @@ fn pct_in_interval(pct: f32, lo: f32, hi: f32) -> bool {
 
 /// Lap-% → loop fraction along the racing polyline (Python `_loop_frac_for_pct`).
 /// `reverse_path`: SVG driving direction opposite iRacing LapDistPct.
-fn loop_frac_for_pct(pct: f32, start_finish: f32, reverse: bool) -> f32 {
+///
+/// `cal` is the track's measured lap-% → arc table when it has been calibrated.
+/// Without one this assumes the drawing distributes length exactly like the real
+/// track, which imported schematics only approximate — see `tracks::calibrate`.
+pub(crate) fn loop_frac_for_pct(
+    pct: f32,
+    start_finish: f32,
+    reverse: bool,
+    cal: Option<&[f32]>,
+) -> f32 {
     let d = (pct - start_finish).rem_euclid(1.0);
+    let d = match cal {
+        Some(t) => crate::tracks::calibrate::arc_for_pct(t, d),
+        None => d,
+    };
     if reverse {
         (1.0 - d).rem_euclid(1.0)
     } else {
@@ -586,8 +644,8 @@ fn loop_frac_for_pct(pct: f32, start_finish: f32, reverse: bool) -> f32 {
 }
 
 /// Loop arc fraction where lap pct 0 (S/F) sits.
-fn sf_loop_frac(start_finish: f32, reverse: bool) -> f32 {
-    loop_frac_for_pct(0.0, start_finish, reverse)
+pub(crate) fn sf_loop_frac(start_finish: f32, reverse: bool, cal: Option<&[f32]>) -> f32 {
+    loop_frac_for_pct(0.0, start_finish, reverse, cal)
 }
 
 /// Choose `start_finish` so live `telem` maps to `loop_frac` (click-to-calibrate).
@@ -599,7 +657,7 @@ fn sf_for_player_at(telem: f32, loop_frac: f32, reverse: bool) -> f32 {
     }
 }
 
-fn map_reverse(ctx: &WidgetCtx<'_>) -> bool {
+pub(crate) fn map_reverse(ctx: &WidgetCtx<'_>) -> bool {
     ctx.cfg.bool_key(SECTION, "reverse_path", false)
 }
 
@@ -812,7 +870,7 @@ fn authoring_lane_speed(ctx: &WidgetCtx<'_>, lane: &track_path::PitLane) -> f32 
     }
 }
 
-fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
+pub(crate) fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
     let lane = &ctx.map.cached_pit;
     let route_lo = lane
         .in_pct
@@ -856,7 +914,7 @@ fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]) {
     ctx.map.pit_exit_latch.retain(|k, _| seen.contains(k));
 }
 
-fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
+pub(crate) fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
     if car.on_pit
         || ctx
             .map
@@ -867,8 +925,10 @@ fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
     {
         return true;
     }
-    // Python: player ApproachingPits during entry lap-% is on-route.
-    if car.is_player && car.approaching_pits && car.lap_dist_pct >= 0.0 {
+    // Python: player ApproachingPits during entry lap-% is on-route. Follows the
+    // focus car so a spectated car's pit entry blends the same way yours does;
+    // `approaching_pits` comes from CarIdxTrackSurface, so it is per-car anyway.
+    if Some(car.car_idx) == focus_car_idx(ctx) && car.approaching_pits && car.lap_dist_pct >= 0.0 {
         let lane = &ctx.map.cached_pit;
         if lane.has_drawable() {
             let in_pct = lane
@@ -888,7 +948,7 @@ fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
 }
 
 /// Seed latches for cars already on the pit route after a mid-session track load.
-fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
+pub(crate) fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
     if !ctx.map.pit_latch_seed_pending {
         return;
     }
@@ -978,7 +1038,7 @@ fn schematic_route_pos(
 }
 
 /// Python `_resolve_car_point` schematic branch: route + blend weight vs track.
-fn car_model_xy(
+pub(crate) fn car_model_xy(
     ctx: &WidgetCtx<'_>,
     car: &CarRow,
     pct: f32,
@@ -990,7 +1050,8 @@ fn car_model_xy(
     let on_pit = car.on_pit;
     let on_route = car_on_route(ctx, car);
     let sf = ctx.map.cached_start_finish;
-    let track = track_path::point_at(racing, loop_frac_for_pct(pct, sf, map_reverse(ctx)));
+    let cal = ctx.map.cached_pct_map.as_deref();
+    let track = track_path::point_at(racing, loop_frac_for_pct(pct, sf, map_reverse(ctx), cal));
     if !on_route && !on_pit {
         return track;
     }
@@ -1035,7 +1096,7 @@ fn car_model_xy(
     }
 }
 
-fn is_caution_flag(flag: Option<&str>) -> bool {
+pub(crate) fn is_caution_flag(flag: Option<&str>) -> bool {
     matches!(
         flag,
         Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
@@ -1043,7 +1104,7 @@ fn is_caution_flag(flag: Option<&str>) -> bool {
 }
 
 /// Python `_dot_scale`: frac relative to 0.05 default, clamped.
-fn dot_scale(frac: f64) -> f32 {
+pub(crate) fn dot_scale(frac: f64) -> f32 {
     let mut f = if frac <= 0.0 { 0.05 } else { frac };
     if f <= 0.0 {
         f = 0.05;
@@ -1051,17 +1112,51 @@ fn dot_scale(frac: f64) -> f32 {
     ((f / 0.05) as f32).clamp(0.2, 4.0)
 }
 
+/// Car the map presents as "you": the car the iRacing camera is on while
+/// spectating, otherwise the seated player. Drives dot size, player fill, the
+/// centre ring, label weight, draw order, and which car traffic markers are
+/// relative to.
+///
+/// Presentation only. The S/F calibrate click and the high-precision
+/// `player_lap_dist_pct` feed still key off `is_player`, since the seated
+/// player's own telemetry is the only thing either can mean. When the camera is
+/// on your own car — the normal racing case — this resolves to the same car and
+/// nothing changes.
+pub(crate) fn focus_car_idx(ctx: &WidgetCtx<'_>) -> Option<i32> {
+    if let Some(cam) = ctx.frame.camera_car_idx {
+        if ctx
+            .frame
+            .cars
+            .iter()
+            .any(|c| c.car_idx == cam && !c.is_pace_car)
+        {
+            return Some(cam);
+        }
+    }
+    ctx.frame
+        .cars
+        .iter()
+        .find(|c| c.is_player)
+        .map(|c| c.car_idx)
+}
+
 /// Python map colors: player / competitor / lap tint / pit / pace — not class color.
-fn car_fill(cfg: &OverlayConfig, car: &CarRow, pit_opacity: f32, on_route: bool) -> Color32 {
+pub(crate) fn car_fill(
+    cfg: &OverlayConfig,
+    car: &CarRow,
+    pit_opacity: f32,
+    on_route: bool,
+    is_focus: bool,
+) -> Color32 {
     if car.is_pace_car {
         return cfg.color(SECTION, "pace_car", "#0b0e12");
     }
     // Python `_car_dot_style`: grey when on_pit or on_route (non-player).
-    if (car.on_pit || on_route) && !car.is_player {
+    if (car.on_pit || on_route) && !is_focus {
         let pit = cfg.color(SECTION, "pit_car", "#6e747d");
         return color_with_alpha(pit, (pit_opacity.clamp(0.05, 1.0) * 255.0) as u8);
     }
-    if car.is_player {
+    if is_focus {
         return cfg.color(SECTION, "player", "#46df7a");
     }
     if car.lapping && car.lap_ahead {
@@ -1091,7 +1186,7 @@ fn draw_other_dot(ui: &mut Ui, c: Pos2, r: f32, fill: Color32) {
     ui.painter().circle_stroke(c, r, Stroke::new(1.0_f32, ring));
 }
 
-fn car_label_text(car: &CarRow, mode: &str) -> String {
+pub(crate) fn car_label_text(car: &CarRow, mode: &str) -> String {
     if car.is_pace_car {
         return "PC".into();
     }
@@ -1105,57 +1200,72 @@ fn car_label_text(car: &CarRow, mode: &str) -> String {
 }
 
 /// Stroked centered label (Python `_draw_stroked_center_text`).
-fn draw_car_number_label(
+///
+/// White ink with a black halo on every dot colour, as in the Qt build —
+/// contrast-picked ink flipped to dark on light dots and read as inconsistent.
+/// Player and pace get all 8 offsets; everyone else gets 4 cardinals so dense
+/// fields stay cheap.
+pub(crate) fn draw_car_number_label(
     ui: &mut Ui,
     c: Pos2,
     text: &str,
-    _r: f32,
-    is_player: bool,
+    is_focus: bool,
     is_pace: bool,
     text_scale: f32,
-    dot_fill: Color32,
 ) {
     if text.is_empty() {
         return;
     }
-    let base = if is_player { 10.0 } else { 8.5 };
-    let size = (base * text_scale).max(7.0);
+    let base = if is_focus { 9.0 } else { 7.5 };
+    let size = (base * text_scale).round().max(6.0);
     let font = FontId::new(size, FontFamily::Proportional);
-    // Always pick high-contrast ink for the dot fill (white on blue/black/purple).
-    let fill = crate::chrome::contrast_text(dot_fill);
-    let stroke = if fill == Color32::WHITE {
-        Color32::from_rgba_unmultiplied(0, 0, 0, 230)
+    let stroke = Color32::from_rgba_unmultiplied(0, 0, 0, if is_pace { 160 } else { 220 });
+    let w = if is_focus { 1.2_f32 } else { 1.0 };
+    // Keep the dot's subpixel centre. Qt pixel-snapped here, but that makes the
+    // label crawl against the dot now that presents land on every refresh.
+    let offsets: &[(f32, f32)] = if is_focus || is_pace {
+        &CAR_LABEL_RICH
     } else {
-        Color32::from_rgba_unmultiplied(255, 255, 255, 220)
+        &CAR_LABEL_PLAIN
     };
-    let stroke_w = if is_player || is_pace {
-        1.35_f32
-    } else {
-        1.15
-    };
-    // Use the same subpixel center as the eased dot (no pixel-snap lag).
-    let pos = c;
-    let offsets: &[(f32, f32)] = &[
-        (-stroke_w, -stroke_w),
-        (-stroke_w, stroke_w),
-        (stroke_w, -stroke_w),
-        (stroke_w, stroke_w),
-        (-stroke_w, 0.0),
-        (stroke_w, 0.0),
-        (0.0, -stroke_w),
-        (0.0, stroke_w),
-    ];
     let painter = ui.painter();
     for &(ox, oy) in offsets {
         painter.text(
-            Pos2::new(pos.x + ox, pos.y + oy),
+            Pos2::new(c.x + ox * w, c.y + oy * w),
             Align2::CENTER_CENTER,
             text,
             font.clone(),
             stroke,
         );
     }
-    painter.text(pos, Align2::CENTER_CENTER, text, font, fill);
+    painter.text(c, Align2::CENTER_CENTER, text, font, Color32::WHITE);
+}
+
+/// Corner-label pill: dark cell + 1px border, muted ink (Qt `draw_dark_cell`).
+pub(crate) const CORNER_CELL_RADIUS: u8 = 4;
+pub(crate) const CORNER_TEXT: &str = "#d6dce2";
+
+/// Halo offsets in units of stroke width — 8-way for player/pace, 4-way else.
+pub(crate) const CAR_LABEL_RICH: [(f32, f32); 8] = [
+    (-1.0, -1.0),
+    (-1.0, 1.0),
+    (1.0, -1.0),
+    (1.0, 1.0),
+    (-1.0, 0.0),
+    (1.0, 0.0),
+    (0.0, -1.0),
+    (0.0, 1.0),
+];
+pub(crate) const CAR_LABEL_PLAIN: [(f32, f32); 4] =
+    [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
+
+/// Font size and halo width for an on-dot number (shared with the Skia path).
+pub(crate) fn car_label_metrics(is_focus: bool, text_scale: f32) -> (f32, f32) {
+    let base = if is_focus { 9.0 } else { 7.5 };
+    (
+        (base * text_scale).round().max(6.0),
+        if is_focus { 1.2 } else { 1.0 },
+    )
 }
 
 fn wrap_lap_delta(them: f32, me: f32) -> f32 {
@@ -1168,24 +1278,28 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Smooth lap-% for map dots (motion rev 23).
+/// Smooth lap-% for map dots (motion rev 31).
 ///
-/// Rev 22: presents matched host fps (~70) but cars still stuttered — coast +
-/// `TELEM_CORRECT` yank (ahead then pull back each sample). Rev 15-style predict
-/// also froze when `age` used `SessionTime` (held between SDK ticks → age=0).
-/// Rev 23: `predict = last_telem + vel * wall_age`, ease toward predict; update
-/// anchor/vel only on meaningful telem Δ; no hard blend. Present ~30 Hz (Python).
+/// Every earlier rev mixed free-running coast with conditional corrections
+/// (snap / ahead-pull / asymmetric blends). Each condition is a step change in
+/// display velocity, and they fire once per telem sample — that *is* the
+/// stutter. Rev 31 drops all of it for one unconditional critically damped
+/// tracker with measured-velocity feed-forward:
+///
+/// ```text
+/// a = ω²·(telem − pct) + 2ω·(vel_telem − vel_disp)
+/// ```
+///
+/// Position stays C1 (velocity is integrated, never assigned), steady-state
+/// error is zero while the car holds a speed, so the dot neither leads nor
+/// staircases. Only a teleport still snaps.
 fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap<i32, f32> {
     let mut out = HashMap::new();
     let telem_clock = wall_secs;
     let session_now = ctx.frame.session_time;
     let player_pct = ctx.frame.player_lap_dist_pct;
     let lap_est = ctx.frame.lap_est_time;
-    let vel_cap = if lap_est > 10.0 {
-        1.08 / lap_est
-    } else {
-        0.045
-    };
+    let vel_cap = if lap_est > 10.0 { 1.0 / lap_est } else { 0.042 };
 
     for car in &ctx.frame.cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
@@ -1223,20 +1337,19 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
             continue;
         }
 
+        // —— Feed-forward: measure lap-%/s from real telem deltas ——
         let d_telem = wrap_lap_delta(telem, st.last_telem);
         if d_telem.abs() > TELEM_EPS {
             let sess_dt = session_now - st.last_telem_session;
             let wall_dt = telem_clock - st.last_telem_secs;
-            let sample_dt = if st.last_telem_session > 0.0
-                && sess_dt > VEL_DT_MIN
-                && sess_dt < VEL_DT_MAX
-            {
-                sess_dt
-            } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX {
-                wall_dt
-            } else {
-                0.0
-            };
+            let sample_dt =
+                if st.last_telem_session > 0.0 && sess_dt > VEL_DT_MIN && sess_dt < VEL_DT_MAX {
+                    sess_dt
+                } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX {
+                    wall_dt
+                } else {
+                    0.0
+                };
             if sample_dt > 0.0 {
                 let inst = d_telem / sample_dt as f32;
                 st.vel += (inst - st.vel) * VEL_EMA;
@@ -1245,29 +1358,28 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
             st.last_telem = telem;
             st.last_telem_secs = telem_clock;
             st.last_telem_session = session_now;
-        } else {
-            let quiet = telem_clock - st.last_telem_secs;
-            if quiet > QUIET_DECAY_SECS {
-                st.vel = 0.0;
-            }
+        } else if telem_clock - st.last_telem_secs > VEL_HOLD_SECS {
+            // Held sample = car actually stopped; bleed feed-forward so the
+            // tracker settles on telem instead of hovering ahead of it.
+            st.vel *= (-dt / VEL_DECAY_TAU).exp();
         }
 
-        // Wall-clock age — SessionTime is flat between SDK ticks, so using it
-        // for predict age freezes the target (looks like move/stop stutter).
-        let age = ((telem_clock - st.last_telem_secs) as f32)
-            .max(0.0)
-            .min(PREDICT_AGE_MAX);
-        let predict = (st.last_telem + st.vel * age).rem_euclid(1.0);
-        let err = wrap_lap_delta(predict, st.pct);
-        if err.abs() > PCT_SNAP_ERR {
+        // —— Teleport / tow: nothing to smooth across half the track ——
+        if wrap_lap_delta(telem, st.pct).abs() > PCT_SNAP_ERR {
             st.pct = telem;
-            st.vel = 0.0;
-            st.last_telem = telem;
-            st.last_telem_secs = telem_clock;
-            st.last_telem_session = session_now;
+            st.disp_vel = st.vel;
         } else {
-            let a = 1.0 - (-dt / PCT_FOLLOW_TAU).exp();
-            st.pct = (st.pct + err * a).rem_euclid(1.0);
+            let disp_cap = vel_cap * 3.0;
+            let mut left = dt;
+            while left > 0.0 {
+                let h = left.min(TRACK_MAX_STEP);
+                left -= h;
+                let err = wrap_lap_delta(telem, st.pct);
+                let accel =
+                    TRACK_OMEGA * TRACK_OMEGA * err + 2.0 * TRACK_OMEGA * (st.vel - st.disp_vel);
+                st.disp_vel = (st.disp_vel + accel * h).clamp(-disp_cap, disp_cap);
+                st.pct = (st.pct + st.disp_vel * h).rem_euclid(1.0);
+            }
         }
 
         ctx.map.car_anim.insert(car.car_idx, st);
@@ -1280,29 +1392,17 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
     out
 }
 
-/// True while any racing-line car still has predict/ease error or coast vel.
-fn cars_pct_animating(ctx: &WidgetCtx<'_>) -> bool {
-    if ctx.demo {
+/// True while live cars are on the racing line (force ~60 Hz map present).
+/// Don't rely on coast vel after soft sync — still need continuous paints.
+pub(crate) fn cars_pct_animating(ctx: &WidgetCtx<'_>) -> bool {
+    if ctx.demo || !ctx.frame.connected {
         return false;
     }
-    let wall = ctx.mono_secs;
     for car in &ctx.frame.cars {
         if car.on_pit || car.lap_dist_pct < 0.0 {
             continue;
         }
-        let Some(st) = ctx.map.car_anim.get(&car.car_idx) else {
-            continue;
-        };
-        if st.vel.abs() > PCT_MOVING_EPS {
-            return true;
-        }
-        let age = ((wall - st.last_telem_secs) as f32)
-            .max(0.0)
-            .min(PREDICT_AGE_MAX);
-        let predict = (st.last_telem + st.vel * age).rem_euclid(1.0);
-        if wrap_lap_delta(predict, st.pct).abs() > PCT_MOVING_EPS {
-            return true;
-        }
+        return true;
     }
     false
 }
@@ -1311,6 +1411,7 @@ fn fresh_pct_anim(telem: f32, wall_secs: f64, session_now: f64) -> crate::state:
     crate::state::CarPctAnim {
         pct: telem,
         vel: 0.0,
+        disp_vel: 0.0,
         last_telem: telem,
         last_telem_secs: wall_secs,
         last_telem_session: session_now,
@@ -1341,7 +1442,7 @@ pub fn tick_car_motion(ctx: &mut WidgetCtx<'_>) -> f32 {
 }
 
 /// Python `_car_motion_key` (schematic): pct vs route + pit flags.
-fn car_motion_key(on_route: bool, on_pit: bool) -> u8 {
+pub(crate) fn car_motion_key(on_route: bool, on_pit: bool) -> u8 {
     let mode = if on_route { 1u8 } else { 0u8 };
     mode | ((on_route as u8) << 1) | ((on_pit as u8) << 2)
 }
@@ -1373,7 +1474,7 @@ fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) 
 /// - **route** mode: screen-space ease toward route targets
 /// - **pit**: snap to target
 /// Returns `(points, still_animating)`.
-fn smooth_car_screen_pts(
+pub(crate) fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
     targets: &HashMap<i32, (Pos2, u8)>,
     dt: f32,
@@ -1414,7 +1515,7 @@ fn smooth_car_screen_pts(
     (pts, animating)
 }
 
-fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
+pub(crate) fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
     let dx = pt.x - cc.x;
     let dy = pt.y - cc.y;
     let ln = (dx * dx + dy * dy).sqrt().max(1.0);
@@ -1422,7 +1523,7 @@ fn outward_from(pt: Pos2, cc: Pos2, extra: f32) -> Pos2 {
 }
 
 /// Screen-space inset so outward labels/icons are not clipped (Python `_layout_pad`).
-fn layout_pad(cfg: &OverlayConfig, asphalt_w: f32, text_scale: f32) -> f32 {
+pub(crate) fn layout_pad(cfg: &OverlayConfig, asphalt_w: f32, text_scale: f32) -> f32 {
     let pad = 26.0_f32;
     let mut outward = 0.0_f32;
     if cfg.bool_key(SECTION, "show_traffic_markers", true) {
@@ -1445,7 +1546,7 @@ fn layout_pad(cfg: &OverlayConfig, asphalt_w: f32, text_scale: f32) -> f32 {
     pad + outward
 }
 
-fn marker_color_key(slot: &str) -> (&'static str, &'static str) {
+pub(crate) fn marker_color_key(slot: &str) -> (&'static str, &'static str) {
     match slot {
         "leader" => ("marker_leader", "#ffd23a"),
         "ahead" => ("marker_ahead", "#46df7a"),
@@ -1454,7 +1555,7 @@ fn marker_color_key(slot: &str) -> (&'static str, &'static str) {
     }
 }
 
-fn marker_glyph_name(slot: &str) -> &'static str {
+pub(crate) fn marker_glyph_name(slot: &str) -> &'static str {
     match slot {
         "leader" => "leader",
         "ahead" => "car_ahead",
@@ -1477,6 +1578,7 @@ fn draw_traffic_markers(
     text_scale: f32,
     start_finish: f32,
     reverse: bool,
+    cal: Option<&[f32]>,
 ) {
     let sz = (10.0 * text_scale).max(8.0);
     let icon_off = asphalt_w * 1.2 + sz + 10.0;
@@ -1486,7 +1588,8 @@ fn draw_traffic_markers(
             continue;
         };
         let car_pt = car_pts.get(&m.idx).copied().unwrap_or_else(|| {
-            let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(m.pct, start_finish, reverse));
+            let (nx, ny) =
+                track_path::point_at(path, loop_frac_for_pct(m.pct, start_finish, reverse, cal));
             let (mx, my) = model_point(nx, ny, mirror, rot);
             xform.map(mx, my)
         });
@@ -1549,7 +1652,7 @@ fn draw_speaking(ui: &mut Ui, cfg: &OverlayConfig, c: Pos2, r: f32) {
     }
 }
 
-fn status_fill(cfg: &OverlayConfig, kind: &str) -> Option<Color32> {
+pub(crate) fn status_fill(cfg: &OverlayConfig, kind: &str) -> Option<Color32> {
     match kind {
         "pit" => Some(cfg.color(SECTION, "status_pit", "#ffd23a")),
         "off" => Some(cfg.color(SECTION, "status_off", "#ff5050")),
@@ -1604,6 +1707,34 @@ fn draw_status_badge(ui: &mut Ui, cfg: &OverlayConfig, c: Pos2, r: f32, kind: &s
     );
 }
 
+/// Screen-space polyline for a lap-% zone interval on the racing path.
+pub(crate) fn zone_screen_pts(
+    path: &[(f32, f32)],
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    lo: f32,
+    hi: f32,
+    start_finish: f32,
+    reverse: bool,
+    cal: Option<&[f32]>,
+) -> Vec<(f32, f32)> {
+    let span = (hi - lo).rem_euclid(1.0);
+    if path.len() < 2 || span <= 1e-5 {
+        return Vec::new();
+    }
+    let steps = (span * path.len() as f32).round().max(8.0) as usize;
+    let mut pts = Vec::with_capacity(steps + 1);
+    for i in 0..=steps {
+        let pct = (lo + span * (i as f32 / steps as f32)).rem_euclid(1.0);
+        let (nx, ny) =
+            track_path::point_at(path, loop_frac_for_pct(pct, start_finish, reverse, cal));
+        let (mx, my) = model_point(nx, ny, mirror, rot);
+        pts.push(xform.map_xy(mx, my));
+    }
+    pts
+}
+
 fn draw_zones(
     ui: &mut Ui,
     path: &[(f32, f32)],
@@ -1615,27 +1746,17 @@ fn draw_zones(
     color: Color32,
     start_finish: f32,
     reverse: bool,
+    cal: Option<&[f32]>,
 ) {
     if path.len() < 2 || zones.is_empty() {
         return;
     }
     for &(lo, hi) in zones {
-        let span = (hi - lo).rem_euclid(1.0);
-        if span <= 1e-5 {
+        let pts_xy = zone_screen_pts(path, xform, mirror, rot, lo, hi, start_finish, reverse, cal);
+        if pts_xy.len() < 2 {
             continue;
         }
-        let steps = (span * path.len() as f32).round().max(8.0) as usize;
-        let mut pts = Vec::with_capacity(steps + 1);
-        for i in 0..=steps {
-            let pct = (lo + span * (i as f32 / steps as f32)).rem_euclid(1.0);
-            let (nx, ny) =
-                track_path::point_at(path, loop_frac_for_pct(pct, start_finish, reverse));
-            let (mx, my) = model_point(nx, ny, mirror, rot);
-            pts.push(xform.map(mx, my));
-        }
-        if pts.len() < 2 {
-            continue;
-        }
+        let pts: Vec<Pos2> = pts_xy.iter().map(|&(x, y)| Pos2::new(x, y)).collect();
         ui.painter().add(Shape::Path(PathShape::line(
             pts,
             PathStroke::new(width, color),
@@ -1643,7 +1764,7 @@ fn draw_zones(
     }
 }
 
-fn wind_dir_radians(dir: f32) -> f32 {
+pub(crate) fn wind_dir_radians(dir: f32) -> f32 {
     if dir.abs() > TAU {
         dir.to_radians()
     } else {
@@ -1651,7 +1772,7 @@ fn wind_dir_radians(dir: f32) -> f32 {
     }
 }
 
-fn wind_center(screen: &[Pos2], rect: Rect) -> (Pos2, f32) {
+pub(crate) fn wind_center(screen: &[Pos2], rect: Rect) -> (Pos2, f32) {
     let r = (rect.width().min(rect.height()) * 0.034).max(8.0);
     let label_h = r + 14.0;
     let total_h = r + label_h + 6.0;
@@ -1903,7 +2024,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         .collect();
 
     if show_infield {
-        fill_infield(ui, &screen, infield);
+        fill_infield(ui, &screen, infield, ctx.map.cached_self_crossing);
     }
     // Dual stroke: thick asphalt under thinner outline (Python recipe).
     stroke_closed(ui, &screen, asphalt_w, asphalt);
@@ -1963,18 +2084,19 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let zone_w = (asphalt_w * 1.35).max(4.0);
     let sf = ctx.map.cached_start_finish;
     let reverse = map_reverse(ctx);
+    let cal = ctx.map.cached_pct_map.as_deref();
     if ctx.cfg.bool_key(SECTION, "show_drs_zones", false) && !ctx.map.cached_drs_zones.is_empty() {
         let col = ctx.cfg.color(SECTION, "drs_zone", "#46df7a88");
         let zones = ctx.map.cached_drs_zones.clone();
         draw_zones(
-            ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf, reverse,
+            ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf, reverse, cal,
         );
     }
     if ctx.cfg.bool_key(SECTION, "show_p2p_zones", false) && !ctx.map.cached_p2p_zones.is_empty() {
         let col = ctx.cfg.color(SECTION, "p2p_zone", "#3aa0ff88");
         let zones = ctx.map.cached_p2p_zones.clone();
         draw_zones(
-            ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf, reverse,
+            ui, &path, &xform, mirror, rot, &zones, zone_w, col, sf, reverse, cal,
         );
     }
     // Active sector wash (Python `_draw_active_sector`).
@@ -2007,12 +2129,19 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             col,
             sf,
             reverse,
+            cal,
         );
     }
 
     if show_sf && !modeled.is_empty() {
         // Transform tangent via model: evaluate on modeled path.
-        draw_start_finish(ui, &modeled, &xform, sf_loop_frac(sf, reverse));
+        draw_start_finish(
+            ui,
+            &modeled,
+            &xform,
+            sf_loop_frac(sf, reverse, ctx.map.cached_pct_map.as_deref()),
+            ctx.map.sf_edit,
+        );
     }
 
     let screen_centroid = if screen.is_empty() {
@@ -2087,6 +2216,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         .iter()
         .map(|(&idx, st)| (idx, st.pct))
         .collect();
+    let focus_idx = focus_car_idx(ctx);
     // Screen-ease uses an independent wall clock (host may already have ticked pct).
     let markers = if show_markers {
         map_markers::resolve_traffic_markers(
@@ -2094,6 +2224,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             &ctx.frame.cars,
             ctx.frame.session_time,
             hold_sec,
+            focus_idx,
         )
     } else {
         HashMap::new()
@@ -2111,9 +2242,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         )
     };
 
-    // Draw order: field first, then player, speaking on top (Python sort key).
+    // Draw order: field first, then the focus car, speaking on top (Python sort key).
     let mut cars: Vec<&CarRow> = ctx.frame.cars.iter().collect();
-    cars.sort_by_key(|c| (c.is_speaking, c.is_player));
+    cars.sort_by_key(|c| (c.is_speaking, Some(c.car_idx) == focus_idx));
 
     let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
     let pit_lane = ctx.map.cached_pit.clone();
@@ -2156,24 +2287,25 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             continue;
         };
         let on_route = car_on_route(ctx, car);
-        let mut r = if car.is_player {
+        let is_focus = Some(car.car_idx) == focus_idx;
+        let mut r = if is_focus {
             12.5 * player_scale
         } else {
             9.0 * other_scale
         };
-        if car.is_player && (car.on_pit || on_route) {
+        if is_focus && (car.on_pit || on_route) {
             r *= 1.15;
         }
         if let Some(slot) = marker_slots.get(&car.car_idx) {
-            if !car.is_player {
+            if !is_focus {
                 let (col_key, fallback) = marker_color_key(slot);
                 let ring = ctx.cfg.color(SECTION, col_key, fallback);
                 ui.painter()
                     .circle_stroke(p, r + 5.0, Stroke::new(2.6_f32, ring));
             }
         }
-        let fill = car_fill(ctx.cfg, car, pit_opacity, on_route);
-        if car.is_player {
+        let fill = car_fill(ctx.cfg, car, pit_opacity, on_route, is_focus);
+        if is_focus {
             draw_player_dot(ui, p, r, fill);
         } else {
             draw_other_dot(ui, p, r, fill);
@@ -2187,19 +2319,16 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             }
         }
         // Hide on-dot number when a traffic marker already labels the car.
-        let show_label =
-            car.is_player || car.is_pace_car || !marker_slots.contains_key(&car.car_idx);
+        let show_label = is_focus || car.is_pace_car || !marker_slots.contains_key(&car.car_idx);
         if show_label {
             let label_text = car_label_text(car, &car_label_mode);
             draw_car_number_label(
                 ui,
                 p,
                 &label_text,
-                r,
-                car.is_player,
+                is_focus,
                 car.is_pace_car,
                 map_text_scale,
-                fill,
             );
         }
     }
@@ -2219,6 +2348,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             map_text_scale,
             ctx.map.cached_start_finish,
             map_reverse(ctx),
+            ctx.map.cached_pct_map.as_deref(),
         );
     }
 
@@ -2353,7 +2483,11 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
                 }
             }
         }
-        let hint = if ctx.frame.cars.iter().any(|c| c.is_player && c.lap_dist_pct >= 0.0)
+        let hint = if ctx
+            .frame
+            .cars
+            .iter()
+            .any(|c| c.is_player && c.lap_dist_pct >= 0.0)
         {
             "S/F EDIT — click where YOU are"
         } else {
@@ -2455,6 +2589,7 @@ pub fn build_car_sprites(
     let text_scale = ctx.cfg.text_scale(SECTION);
     let pad_px = layout_pad(ctx.cfg, asphalt_w, text_scale);
     let show_pit = ctx.cfg.bool_key(SECTION, "show_pit", true);
+    let car_label_mode = ctx.cfg.str_key(SECTION, "car_label", "number");
 
     let fit_key = {
         use std::hash::{Hash, Hasher};
@@ -2520,8 +2655,9 @@ pub fn build_car_sprites(
         .map(|(&idx, st)| (idx, st.pct))
         .collect();
 
+    let focus_idx = focus_car_idx(ctx);
     let mut cars: Vec<&CarRow> = ctx.frame.cars.iter().collect();
-    cars.sort_by_key(|c| (c.is_speaking, c.is_player));
+    cars.sort_by_key(|c| (c.is_speaking, Some(c.car_idx) == focus_idx));
     let show_blends = ctx.cfg.bool_key(SECTION, "show_pit_blends", true);
     update_pit_route_latches(ctx, &cars);
 
@@ -2559,8 +2695,8 @@ pub fn build_car_sprites(
         *ctx.panel_animating = true;
     }
 
-    // Build candidates, then keep only the best-placed car when dots stack.
-    // Player is always kept (clears anyone stacked on them).
+    // Every car gets a dot. Dropping the worse-placed car of a stacked pair made
+    // dots blink out and back as fields converged; Qt drew them all overlapped.
     #[derive(Clone)]
     struct Cand {
         car_idx: i32,
@@ -2580,17 +2716,17 @@ pub fn build_car_sprites(
             continue;
         };
         let on_route = car_on_route(ctx, car);
-        let mut r = if car.is_player {
+        let is_focus = Some(car.car_idx) == focus_idx;
+        let mut r = if is_focus {
             12.5 * player_scale
         } else {
             9.0 * other_scale
         };
-        if car.is_player && (car.on_pit || on_route) {
+        if is_focus && (car.on_pit || on_route) {
             r *= 1.15;
         }
-        let fill = car_fill(ctx.cfg, car, pit_opacity, on_route);
-        // Hot composite: no number labels (font atlas blit dominated ULW cost).
-        let label = String::new();
+        let fill = car_fill(ctx.cfg, car, pit_opacity, on_route, is_focus);
+        let label = car_label_text(car, &car_label_mode);
         let place = if car.position > 0 {
             car.position
         } else if car.class_position > 0 {
@@ -2603,39 +2739,21 @@ pub fn build_car_sprites(
             p,
             r,
             fill,
-            player: car.is_player,
+            player: is_focus,
             label,
             place,
         });
     }
-    let stacked = |a: &Cand, b: &Cand| -> bool {
-        let dx = a.p.x - b.p.x;
-        let dy = a.p.y - b.p.y;
-        let lim = (a.r + b.r) * 0.72;
-        dx * dx + dy * dy < lim * lim
-    };
+    // Leader first, player last, so the player's dot lands on top of traffic.
     cands.sort_by(|a, b| {
-        a.place
-            .cmp(&b.place)
+        a.player
+            .cmp(&b.player)
+            .then_with(|| b.place.cmp(&a.place))
             .then_with(|| a.car_idx.cmp(&b.car_idx))
     });
-    let player_cand = cands.iter().find(|c| c.player).cloned();
-    let mut kept: Vec<Cand> = Vec::with_capacity(cands.len());
-    for c in cands {
-        if kept.iter().any(|k| stacked(&c, k)) {
-            continue;
-        }
-        kept.push(c);
-    }
-    if let Some(player) = player_cand {
-        kept.retain(|k| k.car_idx == player.car_idx || !stacked(k, &player));
-        if !kept.iter().any(|k| k.car_idx == player.car_idx) {
-            kept.push(player);
-        }
-    }
 
-    let mut out = Vec::with_capacity(kept.len());
-    for c in kept {
+    let mut out = Vec::with_capacity(cands.len());
+    for c in cands {
         out.push(crate::layered::MapCarSprite {
             x: c.p.x * ppp,
             y: c.p.y * ppp,
@@ -2680,7 +2798,8 @@ fn draw_sector_boundaries(
 
     let sf = ctx.map.cached_start_finish;
     let reverse = map_reverse(ctx);
-    let sf_frac = sf_loop_frac(sf, reverse);
+    let cal = ctx.map.cached_pct_map.as_deref();
+    let sf_frac = sf_loop_frac(sf, reverse, cal);
     let line = ctx.cfg.color(SECTION, "sector_line", "#a78bfa");
     let text_col = ctx.cfg.color(SECTION, "sector_text", "#c4b5fd");
     let asph = ctx.cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
@@ -2690,7 +2809,7 @@ fn draw_sector_boundaries(
     let mut label_num = 2_i32;
 
     for start in starts {
-        let frac = loop_frac_for_pct(start, sf, reverse);
+        let frac = loop_frac_for_pct(start, sf, reverse, cal);
         // Skip start/finish (Python: near 0 or sf_frac).
         if frac.abs() < 1e-4 || (frac - sf_frac).abs() < 0.01 {
             continue;
@@ -2737,7 +2856,10 @@ fn draw_corners(
     let sf = ctx.map.cached_start_finish;
     let corners = ctx.map.cached_corners.clone();
     for (idx, c) in corners.iter().enumerate() {
-        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf, map_reverse(ctx)));
+        let (nx, ny) = track_path::point_at(
+            path,
+            loop_frac_for_pct(c.pct, sf, map_reverse(ctx), ctx.map.cached_pct_map.as_deref()),
+        );
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
         let dx = s.x - centroid.x;
@@ -2751,37 +2873,34 @@ fn draw_corners(
             ax += omx * xform.scale * 0.15;
             ay += omy * xform.scale * 0.15;
         }
-        let label_txt = &c.label;
+        let ink = ctx.cfg.color(SECTION, "corner_text", CORNER_TEXT);
         let font = FontId::new(sz, FontFamily::Proportional);
-        let galley = ui.fonts(|f| {
-            f.layout_no_wrap(
-                label_txt.clone(),
-                font,
-                ctx.cfg.color(SECTION, "corner_text", "#d6dce2"),
-            )
-        });
-        let bw = galley.size().x.max(sz + 4.0) + 12.0;
+        let galley = ui.fonts(|f| f.layout_no_wrap(c.label.clone(), font, ink));
+        // Square-ish minimum so single digits don't render as thin slivers.
         let bh = galley.size().y + 4.0;
+        let bw = (galley.size().x + 12.0).max(bh);
         let rect = Rect::from_center_size(Pos2::new(ax, ay), egui::vec2(bw, bh));
-        let fill = if ctx.map.corner_edit {
+        if ctx.map.corner_edit {
             let a = if ctx.map.drag_corner == Some(idx) {
                 220
             } else {
                 160
             };
-            Color32::from_rgba_unmultiplied(255, 200, 60, a)
+            ui.painter().rect_filled(
+                rect,
+                egui::CornerRadius::same(CORNER_CELL_RADIUS),
+                Color32::from_rgba_unmultiplied(255, 200, 60, a),
+            );
         } else {
-            Color32::from_rgba_unmultiplied(15, 18, 22, 200)
-        };
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(4), fill);
+            crate::chrome::draw_dark_cell(ui, ctx.cfg, SECTION, rect, CORNER_CELL_RADIUS as f32);
+        }
         ui.painter().galley(
             Pos2::new(
                 rect.center().x - galley.size().x * 0.5,
                 rect.center().y - galley.size().y * 0.5,
             ),
             galley,
-            Color32::WHITE,
+            ink,
         );
     }
 }
@@ -3059,7 +3178,10 @@ fn handle_corner_edit(
     let sf = ctx.map.cached_start_finish;
     let corners = ctx.map.cached_corners.clone();
     for (idx, c) in corners.iter().enumerate() {
-        let (nx, ny) = track_path::point_at(path, loop_frac_for_pct(c.pct, sf, map_reverse(ctx)));
+        let (nx, ny) = track_path::point_at(
+            path,
+            loop_frac_for_pct(c.pct, sf, map_reverse(ctx), ctx.map.cached_pct_map.as_deref()),
+        );
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
         let dx = s.x - centroid.x;
@@ -3129,8 +3251,44 @@ fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
 
 #[cfg(test)]
 mod tests {
-    use super::earcut_triangles;
+    use super::{earcut_triangles, loop_frac_for_pct, sf_loop_frac};
     use egui::Pos2;
+
+    /// Table that puts the first tenth of the lap into a fifth of the loop, so
+    /// an uncalibrated dot would be running at half speed there.
+    fn stretched_table() -> Vec<f32> {
+        (0..256)
+            .map(|i| {
+                let p = i as f32 / 256.0;
+                if p < 0.1 {
+                    p * 2.0
+                } else {
+                    0.2 + (p - 0.1) * (0.8 / 0.9)
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn calibration_warps_lap_pct_onto_the_loop() {
+        let t = stretched_table();
+        assert!((loop_frac_for_pct(0.05, 0.0, false, None) - 0.05).abs() < 1e-6);
+        assert!((loop_frac_for_pct(0.05, 0.0, false, Some(&t)) - 0.10).abs() < 0.01);
+        // Ends still pin to the loop origin, so S/F does not drift.
+        assert!(loop_frac_for_pct(0.0, 0.0, false, Some(&t)).abs() < 1e-4);
+    }
+
+    #[test]
+    fn calibration_composes_with_start_finish_and_reverse() {
+        let t = stretched_table();
+        // The table applies to distance travelled since S/F, not raw lap %.
+        let f = loop_frac_for_pct(0.30, 0.25, false, Some(&t));
+        assert!((f - 0.10).abs() < 0.01, "got {f}");
+        let r = loop_frac_for_pct(0.30, 0.25, true, Some(&t));
+        assert!((r - 0.90).abs() < 0.01, "got {r}");
+        // Lap % 0 sits three quarters of the way round from S/F at 0.25.
+        assert!((sf_loop_frac(0.25, false, Some(&t)) - 0.778).abs() < 0.02);
+    }
 
     #[test]
     fn earcut_concave_quad_stays_inside() {

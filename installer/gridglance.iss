@@ -38,9 +38,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
 
 [Files]
-; Build: cargo build -p gridglance-overlay --release
-Source: "target\release\gridglance-overlay.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
-Source: "target\release\gridglance-overlay.exe"; DestDir: "{app}"; DestName: "GridGlance.exe"; Flags: ignoreversion
+; Build: cargo build -p gridglance-overlay --profile dist
+Source: "target\dist\gridglance-overlay.exe"; DestDir: "{app}"; DestName: "{#MyAppExeName}"; Flags: ignoreversion
+Source: "target\dist\gridglance-overlay.exe"; DestDir: "{app}"; DestName: "GridGlance.exe"; Flags: ignoreversion
 Source: "assets\app.ico"; DestDir: "{app}"; DestName: "app.ico"; Flags: ignoreversion
 Source: "assets\app.ico"; DestDir: "{app}\assets"; DestName: "app.ico"; Flags: ignoreversion
 

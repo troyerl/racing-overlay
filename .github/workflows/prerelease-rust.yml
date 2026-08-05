@@ -86,11 +86,11 @@ jobs:
       - name: Test workspace
         run: cargo test --workspace
 
-      - name: Build gridglance-overlay (release)
+      - name: Build gridglance-overlay (dist)
         env:
           GRIDGLANCE_GITHUB_REPO: ${{ github.repository }}
           GRIDGLANCE_MONGODB_READ_URI: ${{ secrets.GRIDGLANCE_MONGODB_READ_URI }}
-        run: cargo build --release -p gridglance-overlay
+        run: cargo build --profile dist -p gridglance-overlay
 
       - name: Cache Inno Setup
         id: cache-innosetup

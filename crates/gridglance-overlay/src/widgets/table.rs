@@ -98,22 +98,32 @@ pub fn paint_table(
     let rect = crate::chrome::full_rect(ui);
     let (card, radius) = draw_card(ui, cfg, section, rect);
     let show_footer = cfg.bool_key(section, "show_footer", true);
-    let rh = cfg.f64_key(section, "row_height_px", 36.0) as f32;
-    // Python table pad: fixed row height → 8px; else max(8, h*0.025).
-    // Not shared chrome `panel_pad` (h*0.08), which oversizes relative/standings.
-    let pad = if rh > 0.0 {
-        8.0
+    // Dense defaults — legacy 36px rows left large empty bands around text.
+    let rh_cfg = cfg.f64_key(section, "row_height_px", 28.0) as f32;
+    let rh = if (rh_cfg - 36.0).abs() < 0.01 {
+        28.0
     } else {
-        (card.height() * 0.025).max(8.0)
+        rh_cfg.max(16.0)
+    };
+    // Table edge inset — keep tight so more vertical space goes to rows.
+    let pad = if rh > 0.0 {
+        4.0
+    } else {
+        (card.height() * 0.02).max(4.0)
     };
     let scale = cfg.text_scale(section);
-    let font_scale = cfg.f64_key(section, "font_scale", 0.40) as f32;
+    let font_scale_cfg = cfg.f64_key(section, "font_scale", 0.48) as f32;
+    let font_scale = if (font_scale_cfg - 0.40).abs() < 0.001 {
+        0.48
+    } else {
+        font_scale_cfg
+    };
     let gap_font_scale = cfg.f64_key(section, "gap_font_scale", 1.12) as f32;
     let hscale = cfg.f64_key(section, "header_font_scale", 1.0) as f32;
     let fscale = cfg.f64_key(section, "footer_font_scale", 1.0) as f32;
-    let header_h = (rh * 0.72 * scale * hscale.max(0.3)).max(18.0);
+    let header_h = (rh * 0.58 * scale * hscale.max(0.3)).max(16.0);
     let footer_h = if show_footer {
-        (rh * 0.68 * scale * fscale.max(0.3)).max(16.0)
+        (rh * 0.55 * scale * fscale.max(0.3)).max(14.0)
     } else {
         0.0
     };
@@ -204,12 +214,14 @@ pub fn paint_table(
                 continue;
             }
             let target = i as f32;
+            // Start visible — under race-load ULW throttling a 0→1 fade could
+            // leave the whole table invisible if paints are sparse.
             let st = anim.slots.entry(row.key.clone()).or_insert(RowAnimState {
                 idx: target,
                 from: target,
                 to: target,
                 t0: now,
-                opacity: 0.0,
+                opacity: 1.0,
             });
 
             // Retarget: restart a timed slide from the current visual position.
@@ -261,7 +273,7 @@ pub fn paint_table(
         .unwrap_or_default();
 
     let columns = column_order(cfg, section);
-    let gutter = rh * width_mult(cfg, section, "gutter", 0.18);
+    let gutter = rh * width_mult(cfg, section, "gutter", 0.12);
     let alt = cfg.bool_key(section, "alt_row_shading", true);
     let text = cfg.color(section, "text", "#f4f6f8");
     let muted = cfg.color(section, "muted", "#8b93a1");
@@ -307,19 +319,25 @@ pub fn paint_table(
     let mut prev_draw_idx: Option<f32> = None;
     for &i in &draw_order {
         let row = &rows[i];
-        if row.empty {
-            continue;
-        }
         let st = anim.slots.get(&row.key);
-        let slot_idx = st.map(|s| s.idx).unwrap_or(i as f32) - scroll;
-        let opacity = st.map(|s| s.opacity).unwrap_or(1.0);
+        // Empty pads keep a fixed slot index so the configured window stays filled.
+        let slot_idx = if row.empty {
+            i as f32 - scroll
+        } else {
+            st.map(|s| s.idx).unwrap_or(i as f32) - scroll
+        };
+        let opacity = if row.empty {
+            1.0
+        } else {
+            st.map(|s| s.opacity).unwrap_or(1.0)
+        };
         let ry = body_top + slot_idx * rh;
         let row_rect = Rect::from_min_size(Pos2::new(left, ry), Vec2::new(inner_w, rh));
         // Skip rows wholly outside the body (scrolled away).
         if row_rect.bottom() < body_top - rh || row_rect.top() > body_bottom + rh {
             continue;
         }
-        let sliding = dense && (slot_idx + scroll - i as f32).abs() > 0.02;
+        let sliding = !row.empty && dense && (slot_idx + scroll - i as f32).abs() > 0.02;
         if dividers {
             if let Some(prev_idx) = prev_draw_idx {
                 // Divider only between nearly-adjacent settled animated slots.
@@ -336,6 +354,19 @@ pub fn paint_table(
                 }
             }
             prev_draw_idx = Some(slot_idx);
+        }
+        if row.empty {
+            // Placeholder slot: alt shading only (no badges/text).
+            paint_row_chrome(
+                ui,
+                cfg,
+                section,
+                row,
+                row_rect,
+                slot_idx.round().max(0.0) as usize,
+                alt,
+            );
+            continue;
         }
         if opacity < 0.99 {
             // Soft fade-in: tint with alpha via layer (simple multiply on text later).
@@ -433,9 +464,9 @@ fn paint_row_chrome(
     } else if row.lapping {
         // Red = traffic the focus car is lapping; blue = car lapping the focus.
         Some(if row.lap_ahead { "lapped" } else { "threat" })
-    } else if row.in_pit {
+    } else if row.in_pit || row.on_pit {
         Some("pit_row")
-    } else if row.inactive && section == "standings" {
+    } else if row.inactive {
         Some("inactive_row")
     } else if row.is_speaking {
         Some("speaking_row")
@@ -454,15 +485,33 @@ fn paint_row_chrome(
             "player_row" => "#ff941670",
             "threat" => "#ff505060",
             "lapped" => "#2563eb60",
-            "pit_row" => "#8b93a118",
-            "inactive_row" => "#8b93a128",
+            // Neutral muted wash for pit / away (not yellow — that reads as player/warn).
+            "pit_row" => "#6b728040",
+            "inactive_row" => "#6b728048",
             "speaking_row" => "#22c55e50",
             "undercut_row" => "#3aa0ff44",
             "cover_row" => "#ff941644",
             _ => "#ffffff08",
         };
         let accent = cfg.color(section, key, fallback);
-        draw_row_tint(ui, rect, accent);
+        // Old defaults used a near-invisible cool grey (α≈0x18) or the short-lived
+        // olive tint — treat both as unset so the neutral disabled wash applies.
+        let accent = if key == "pit_row" || key == "inactive_row" {
+            let warm = accent.r() > accent.b().saturating_add(20);
+            if accent.a() < 0x30 || warm {
+                parse_color_str(fallback)
+            } else {
+                accent
+            }
+        } else {
+            accent
+        };
+        if key == "pit_row" || key == "inactive_row" {
+            // Even muted fill (not the left accent stripe used for live rows).
+            ui.painter().rect_filled(rect, CornerRadius::ZERO, accent);
+        } else {
+            draw_row_tint(ui, rect, accent);
+        }
     } else if alt && i % 2 == 1 {
         let c = cfg.color(section, "row_alt", "#ffffff01");
         let a = (c.a() as f32 * 0.25).max(1.0) as u8;
@@ -503,8 +552,8 @@ fn paint_row_cols(
     text: Color32,
     _muted: Color32,
 ) {
-    let dim = row.in_pit || (row.inactive && section == "standings") || row.empty;
-    let dim_text = cfg.color(section, "muted", "#8b93a1");
+    let dim = row.in_pit || row.on_pit || row.inactive || row.empty;
+    let dim_text = cfg.color(section, "row_dim_text", "#5a616c");
     let name_col = columns.iter().any(|c| c == "name");
     let fixed: f32 = columns
         .iter()
@@ -534,20 +583,25 @@ fn paint_row_cols(
             rh * width_mult(cfg, section, col, default_width(col))
         };
         match col.as_str() {
-            "badge" => paint_badge(ui, cfg, section, row, cx, rect.top(), cw, rh),
+            "badge" => paint_badge(ui, cfg, section, row, cx, rect.top(), cw, rh, dim, dim_text),
             "position" => {
                 if stripe && !row.class_color.is_empty() {
                     let sc = parse_color_str(&row.class_color);
                     // Skip parse fallback magenta (#ff00ff) from bad class colors.
                     let is_fallback = sc.r() == 255 && sc.g() == 0 && sc.b() == 255;
                     if !is_fallback {
+                        let stripe_col = if dim {
+                            color_with_alpha(soften_color(sc, dim_text, 0.55), 160)
+                        } else {
+                            sc
+                        };
                         ui.painter().rect_filled(
                             Rect::from_min_size(
                                 Pos2::new(cx, rect.top() + rh * 0.18),
                                 Vec2::new(rh * 0.12, rh * 0.64),
                             ),
                             CornerRadius::same(2),
-                            sc,
+                            stripe_col,
                         );
                     }
                 }
@@ -579,9 +633,7 @@ fn paint_row_cols(
                         };
                         let font = icons::font_id(ic_px);
                         let gw = ui
-                            .fonts(|f| {
-                                f.layout_no_wrap(g.clone(), font.clone(), Color32::WHITE)
-                            })
+                            .fonts(|f| f.layout_no_wrap(g.clone(), font.clone(), Color32::WHITE))
                             .size()
                             .x;
                         ui.painter().text(
@@ -627,11 +679,15 @@ fn paint_row_cols(
                     .next()
                     .map(|c| c.to_ascii_uppercase())
                     .unwrap_or(' ');
-                let bg = soften_color(
+                let mut bg = soften_color(
                     license_color(cfg, section, &row.lic_class),
                     parse_color_str("#1b1f26"),
                     0.20,
                 );
+                if dim {
+                    bg = soften_color(bg, dim_text, 0.55);
+                    bg = color_with_alpha(bg, 150);
+                }
                 // Python: `"R 3.34"` — letter + space + full SR string.
                 let txt = if letter != ' ' && !row.sr.is_empty() {
                     format!("{letter} {}", row.sr)
@@ -666,7 +722,7 @@ fn paint_row_cols(
                     Align2::CENTER_CENTER,
                     &txt,
                     font_sz,
-                    contrast_text(bg),
+                    if dim { dim_text } else { contrast_text(bg) },
                     true,
                 );
             }
@@ -744,10 +800,10 @@ fn paint_row_cols(
                     Align2::CENTER_CENTER,
                     s,
                     fs * 0.85,
-                    if row.in_pit || row.on_pit {
-                        cfg.color(section, "badge_pit_text", "#ffd23a")
-                    } else if dim {
+                    if dim {
                         dim_text
+                    } else if row.in_pit || row.on_pit {
+                        cfg.color(section, "badge_pit_text", "#ffd23a")
                     } else {
                         text
                     },
@@ -1080,6 +1136,8 @@ fn paint_badge(
     y: f32,
     w: f32,
     h: f32,
+    dim: bool,
+    dim_text: Color32,
 ) {
     let cx = x + w * 0.5;
     let cy = y + h * 0.5;
@@ -1095,47 +1153,69 @@ fn paint_badge(
         return;
     }
     if row.is_pro {
-        ui.painter().circle_filled(
-            Pos2::new(cx, cy),
-            size * 0.5,
-            cfg.color(section, "badge_pro", "#ffd23a"),
-        );
+        let bg = if dim {
+            color_with_alpha(
+                soften_color(cfg.color(section, "badge_pro", "#ffd23a"), dim_text, 0.45),
+                170,
+            )
+        } else {
+            cfg.color(section, "badge_pro", "#ffd23a")
+        };
+        ui.painter()
+            .circle_filled(Pos2::new(cx, cy), size * 0.5, bg);
         label(
             ui,
             Pos2::new(cx, cy),
             Align2::CENTER_CENTER,
             "★",
             size * 0.55,
-            cfg.color(section, "badge_pro_text", "#141414"),
+            if dim {
+                dim_text
+            } else {
+                cfg.color(section, "badge_pro_text", "#141414")
+            },
             true,
         );
         return;
     }
     // Driver-group icons render beside the name, not here.
     if row.is_player {
-        ui.painter().circle_filled(
-            Pos2::new(cx, cy),
-            size * 0.5,
-            cfg.color(section, "badge_player", "#ff9416"),
-        );
+        let bg = if dim {
+            color_with_alpha(
+                soften_color(
+                    cfg.color(section, "badge_player", "#ff9416"),
+                    dim_text,
+                    0.45,
+                ),
+                170,
+            )
+        } else {
+            cfg.color(section, "badge_player", "#ff9416")
+        };
+        ui.painter()
+            .circle_filled(Pos2::new(cx, cy), size * 0.5, bg);
         return;
     }
-    if row.in_pit {
+    if row.in_pit || row.on_pit {
         let pill_w = w.min(size * 1.55);
         let pill_h = size * 0.92;
         let pill = Rect::from_center_size(Pos2::new(cx, cy), Vec2::new(pill_w, pill_h));
-        ui.painter().rect_filled(
-            pill,
-            CornerRadius::same(4),
-            cfg.color(section, "badge_pit_bg", "#ebeef0"),
-        );
+        let mut bg = cfg.color(section, "badge_pit_bg", "#ebeef0");
+        if dim {
+            bg = color_with_alpha(soften_color(bg, dim_text, 0.50), 160);
+        }
+        ui.painter().rect_filled(pill, CornerRadius::same(4), bg);
         label(
             ui,
             pill.center(),
             Align2::CENTER_CENTER,
             "PIT",
             pill_h * 0.46,
-            cfg.color(section, "badge_pit_text", "#141414"),
+            if dim {
+                dim_text
+            } else {
+                cfg.color(section, "badge_pit_text", "#141414")
+            },
             true,
         );
         return;
@@ -1143,7 +1223,7 @@ fn paint_badge(
     // Lapped traffic uses row tint only — no clock badge (looked like
     // multiple "fast lap" icons). Strategy U/C only when the tag is known.
     if let Some(tag) = row.strat_tag.as_deref() {
-        let (bg, letter) = match tag {
+        let (raw_bg, letter) = match tag {
             "undercut" => (cfg.color(section, "badge_undercut", "#3aa0ff"), "U"),
             "cover" => (cfg.color(section, "badge_cover", "#ff9416"), "C"),
             _ => {
@@ -1152,6 +1232,11 @@ fn paint_badge(
                 return;
             }
         };
+        let bg = if dim {
+            color_with_alpha(soften_color(raw_bg, dim_text, 0.50), 160)
+        } else {
+            raw_bg
+        };
         ui.painter().rect_filled(box_r, CornerRadius::same(3), bg);
         label(
             ui,
@@ -1159,7 +1244,11 @@ fn paint_badge(
             Align2::CENTER_CENTER,
             letter,
             size * 0.55,
-            cfg.color(section, "badge_strat_text", "#ffffff"),
+            if dim {
+                dim_text
+            } else {
+                cfg.color(section, "badge_strat_text", "#ffffff")
+            },
             true,
         );
         return;
@@ -1168,14 +1257,7 @@ fn paint_badge(
     paint_empty_badge(ui, cfg, section, cx, cy, size);
 }
 
-fn paint_empty_badge(
-    ui: &mut Ui,
-    cfg: &OverlayConfig,
-    section: &str,
-    cx: f32,
-    cy: f32,
-    size: f32,
-) {
+fn paint_empty_badge(ui: &mut Ui, cfg: &OverlayConfig, section: &str, cx: f32, cy: f32, size: f32) {
     ui.painter().circle_filled(
         Pos2::new(cx, cy),
         size * 0.5,
@@ -1504,7 +1586,7 @@ fn default_width(col: &str) -> f32 {
         "class_pos" | "status" | "car_flag" | "laps" => 1.35,
         "closing" => 1.80,
         "team" | "nickname" => 2.20,
-        "gutter" => 0.18,
+        "gutter" => 0.12,
         _ => 1.2,
     }
 }

@@ -14,6 +14,21 @@ const FA_TTF: &[u8] = include_bytes!("../../../assets/fonts/fa-solid-900.ttf");
 const NOTO_REGULAR: &[u8] = include_bytes!("../../../assets/fonts/NotoSans-Regular.ttf");
 const NOTO_BOLD: &[u8] = include_bytes!("../../../assets/fonts/NotoSans-Bold.ttf");
 
+/// Raw Font Awesome Solid TTF bytes (for Skia / other raster paths).
+pub fn fa_ttf_bytes() -> &'static [u8] {
+    FA_TTF
+}
+
+/// Noto Sans Regular TTF bytes.
+pub fn noto_regular_bytes() -> &'static [u8] {
+    NOTO_REGULAR
+}
+
+/// Noto Sans Bold TTF bytes.
+pub fn noto_bold_bytes() -> &'static [u8] {
+    NOTO_BOLD
+}
+
 /// Metric / label name → Font Awesome 6 Free Solid codepoint.
 /// Keep in sync with `overlay/widgets/icons.py` `_CODEPOINTS`.
 const CODEPOINTS: &[(&str, u32)] = &[

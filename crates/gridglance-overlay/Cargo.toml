@@ -36,13 +36,17 @@ once_cell = "1"
 scraper = "0.22"
 svgtypes = "0.15"
 sha2 = "0.11.0"
+skia-safe = { version = "0.87", default-features = true, features = ["textlayout"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Media",
     "Win32_System_Console",
+    "Win32_System_LibraryLoader",
     "Win32_UI_Shell",
+    "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
 iracing-telem = "0.2.1"

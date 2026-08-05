@@ -126,6 +126,9 @@ pub fn sample_best_subpath(d: &str, n: usize) -> anyhow::Result<Vec<(f32, f32)>>
     if best.len() < 3 {
         anyhow::bail!("SVG path produced too few points");
     }
+    // Tracks that pass under themselves are exported with the stroke broken at
+    // the crossing, which leaves one out-and-back ribbon instead of an annulus.
+    let best = super::ribbon::collapse_to_centerline(&best).unwrap_or(best);
     Ok(resample_open(&best, n.max(64)))
 }
 
