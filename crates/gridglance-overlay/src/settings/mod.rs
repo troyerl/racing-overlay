@@ -6,8 +6,9 @@ mod theme;
 mod widgets;
 
 pub use schema::{
-    help_text, is_skipped, matches_search, nav_for_tab, pretty_key, setting_groups, tab_color,
-    table_slot_options, top_tab_for, TopTab,
+    allows_free_text_setting, choice_label, default_table_col_width, help_text, is_skipped,
+    matches_search, nav_for_tab, pretty_key, setting_groups, string_choices, tab_color,
+    table_slot_options, top_tab_for, LAPLOG_COLUMNS, TABLE_DATA_COLUMNS, UNITS_CHOICES, TopTab,
 };
 
 use crate::config::{parse_color_str, ConfigContext};
@@ -20,9 +21,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use theme::{paint_background, MUTED, NAV_SECTION, NAV_WIDTH, TITLE};
 use widgets::{
-    accordion, button_kind, color_button, enable_card, enable_card_row, nav_item, number_row,
-    preset_button, search_field, setting_row, status_line, styled_combo, text_field, toggle_switch,
-    top_tab_button, top_tabs_frame, ButtonKind,
+    accordion, button_kind, color_button, enable_card, enable_card_row, icon_button, nav_item,
+    number_row, preset_button, search_field, setting_row, status_line, styled_choice_combo,
+    styled_combo, text_field, toggle_switch, top_tab_button, top_tabs_frame, ButtonKind,
 };
 
 const WINDOW_TITLE: &str = "GridGlance Settings";
@@ -555,8 +556,7 @@ fn paint_general(
         };
         let unit_help = help_text("__general__", "units");
         setting_row(ui, "Units", unit_help, |ui| {
-            let unit_options = vec!["metric".to_string(), "imperial".to_string()];
-            if let Some(next) = styled_combo(ui, "units", &units, &unit_options, 150.0) {
+            if let Some(next) = styled_choice_combo(ui, "units", &units, UNITS_CHOICES, 150.0) {
                 units = next;
                 set_global(state, "units", json!(units), dirty, ui_state);
             }
@@ -1052,8 +1052,12 @@ fn paint_widget_section(
         for (k, v) in values.iter() {
             grouped.insert(k.as_str(), v);
         }
-        let mut used = std::collections::HashSet::new();
-        for (group_title, keys) in groups {
+        // Every key claimed by a schema group — never also listed under Other.
+        let schema_keys: std::collections::HashSet<&str> = groups
+            .iter()
+            .flat_map(|(_, keys)| keys.iter().copied())
+            .collect();
+        for (group_title, keys) in &groups {
             let visible_keys: Vec<&str> = keys
                 .iter()
                 .copied()
@@ -1068,13 +1072,12 @@ fn paint_widget_section(
             }
             accordion(
                 ui,
-                (section, "group", group_title),
+                (section, "group", *group_title),
                 group_title,
                 accent,
                 group_default_open(group_title),
                 |ui| {
                     for key in visible_keys {
-                        used.insert(key);
                         if let Some(val) = grouped.get(key) {
                             paint_value(ui, state, section, key, val, dirty, accent, ui_state);
                         } else {
@@ -1088,18 +1091,28 @@ fn paint_widget_section(
                 },
             );
         }
+        // Other = true orphans only (legacy / unknown keys not in any group).
         let mut leftovers: Vec<_> = values
             .iter()
             .filter(|(k, _)| {
-                k.as_str() != "show"
-                    && !is_skipped(section, k)
-                    && !used.contains(k.as_str())
-                    && matches_search(section, k, &ui_state.search)
+                let key = k.as_str();
+                key != "show"
+                    && !is_skipped(section, key)
+                    && !schema_keys.contains(key)
+                    && matches_search(section, key, &ui_state.search)
             })
             .collect();
         leftovers.sort_by(|a, b| a.0.cmp(b.0));
         if !leftovers.is_empty() {
             accordion(ui, (section, "other"), "Other", accent, false, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Legacy keys from an older preset. Safe to ignore or clear by resetting this widget.",
+                    )
+                    .size(11.0)
+                    .color(MUTED),
+                );
+                ui.add_space(4.0);
                 for (key, val) in leftovers {
                     paint_value(ui, state, section, key, val, dirty, accent, ui_state);
                 }
@@ -1161,6 +1174,10 @@ fn schema_fallback_value(section: &str, key: &str) -> Value {
         "row_height_px" => json!(28.0),
         "corner_radius_frac" => json!(0.0),
         "panel_opacity" => json!(1.0),
+        "widths" => json!({}),
+        "column_order" if matches!(section, "relative" | "standings") => {
+            json!(["badge", "position", "name", "license", "irating", "gap"])
+        }
         k if k.starts_with("show_") => Value::Bool(true),
         _ => Value::Bool(true),
     }
@@ -1230,6 +1247,48 @@ fn paint_value(
     accent: Color32,
     ui_state: &mut SettingsUi,
 ) {
+    if key == "column_order" {
+        if matches!(section, "relative" | "standings") {
+            paint_ordered_columns(
+                ui,
+                state,
+                section,
+                key,
+                TABLE_DATA_COLUMNS,
+                &["name"],
+                dirty,
+                accent,
+                ui_state,
+            );
+            return;
+        }
+        if section == "laptime_log" {
+            paint_ordered_columns(
+                ui,
+                state,
+                section,
+                key,
+                LAPLOG_COLUMNS,
+                &["lap", "time"],
+                dirty,
+                accent,
+                ui_state,
+            );
+            return;
+        }
+    }
+    if key == "widths" && matches!(section, "relative" | "standings") {
+        paint_table_widths(ui, state, section, dirty, accent, ui_state);
+        return;
+    }
+    if key == "columns" && matches!(section, "relative" | "standings") {
+        paint_table_column_flags(ui, state, section, value, dirty, accent, ui_state);
+        return;
+    }
+    if key == "sizes" && section == "radar" {
+        paint_numeric_object(ui, state, section, key, value, dirty, accent, ui_state);
+        return;
+    }
     match value {
         Value::Bool(b) => {
             let mut v = *b;
@@ -1266,26 +1325,33 @@ fn paint_value(
                 paint_color_string(ui, state, section, key, s, dirty, ui_state);
                 return;
             }
-            if key == "panel_style" {
-                let options = vec!["data".into(), "elegant".into()];
-                let selected = if options.iter().any(|o| o == s) {
-                    s.clone()
+            if let Some(choices) = string_choices(section, key) {
+                let selected = if choices.iter().any(|(v, _)| *v == s) {
+                    s.as_str()
                 } else {
-                    "data".into()
+                    choices.first().map(|(v, _)| *v).unwrap_or(s.as_str())
                 };
                 setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
-                    if let Some(next) = styled_combo(ui, (section, key), &selected, &options, 160.0)
+                    if let Some(next) =
+                        styled_choice_combo(ui, (section, key), selected, choices, 180.0)
                     {
                         set_section_key(state, section, key, json!(next), dirty, ui_state);
                     }
                 });
                 return;
             }
-            let mut text = s.clone();
+            // Titles / labels only — every other string is a dropdown (or read-only).
+            if allows_free_text_setting(key) {
+                let mut text = s.clone();
+                setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
+                    if text_field(ui, &mut text, "", 220.0).changed() {
+                        set_section_key(state, section, key, json!(text), dirty, ui_state);
+                    }
+                });
+                return;
+            }
             setting_row(ui, &pretty_key(key), help_text(section, key), |ui| {
-                if text_field(ui, &mut text, "", 220.0).changed() {
-                    set_section_key(state, section, key, json!(text), dirty, ui_state);
-                }
+                ui.label(RichText::new(choice_label(s)).color(MUTED));
             });
         }
         Value::Object(map) if key == "colors" || key == "license_colors" => {
@@ -1312,27 +1378,12 @@ fn paint_value(
         Value::Object(map) if key == "header_icons" || key == "footer_icons" => {
             paint_table_slot_icons(ui, state, section, key, map, dirty, accent, ui_state);
         }
-        Value::Object(_) | Value::Array(_) => {
-            accordion(
-                ui,
-                (section, "json", key),
-                &format!("{} (JSON)", pretty_key(key)),
-                accent,
-                false,
-                |ui| {
-                    let mut text = serde_json::to_string_pretty(value).unwrap_or_default();
-                    let resp = ui.add(
-                        egui::TextEdit::multiline(&mut text)
-                            .code_editor()
-                            .desired_width(f32::INFINITY),
-                    );
-                    if resp.changed() {
-                        if let Ok(parsed) = serde_json::from_str::<Value>(&text) {
-                            set_section_key(state, section, key, parsed, dirty, ui_state);
-                        }
-                    }
-                },
-            );
+        Value::Object(_) => {
+            // Structured controls only — never raw JSON editors in widget settings.
+            paint_structured_object(ui, state, section, key, value, dirty, accent, ui_state);
+        }
+        Value::Array(arr) => {
+            paint_structured_array(ui, state, section, key, arr, dirty, accent, ui_state);
         }
         Value::Null => {}
     }
@@ -1516,7 +1567,12 @@ fn paint_table_slots(
     ui_state: &mut SettingsUi,
 ) {
     let slots = table_slot_options(section);
-    let options: Vec<String> = slots.iter().map(|s| (*s).to_string()).collect();
+    let labels: Vec<String> = slots.iter().map(|s| choice_label(s)).collect();
+    let choices: Vec<(&str, &str)> = slots
+        .iter()
+        .zip(labels.iter())
+        .map(|(v, l)| (*v, l.as_str()))
+        .collect();
     ui.add_space(4.0);
     ui.label(
         RichText::new(pretty_key(key))
@@ -1530,13 +1586,14 @@ fn paint_table_slots(
             .and_then(|v| v.as_str())
             .unwrap_or("none")
             .to_string();
-        let selected = if options.iter().any(|o| o == &current) {
+        let selected = if choices.iter().any(|(v, _)| *v == current) {
             current
         } else {
             "none".into()
         };
         setting_row(ui, &pretty_key(side), None, |ui| {
-            if let Some(next) = styled_combo(ui, (section, key, *side), &selected, &options, 200.0)
+            if let Some(next) =
+                styled_choice_combo(ui, (section, key, *side), &selected, &choices, 200.0)
             {
                 set_nested(state, section, key, side, json!(next), dirty, ui_state);
             }
@@ -1759,6 +1816,532 @@ fn paint_linked_row_counts(
             }));
             *dirty = true;
             ui_state.invalidate_section_cache();
+        }
+    }
+}
+
+fn column_order_from(
+    values: &HashMap<String, Value>,
+    catalog: &[&str],
+    defaults: &[&str],
+) -> Vec<String> {
+    if let Some(arr) = values.get("column_order").and_then(|v| v.as_array()) {
+        let cols: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|c| catalog.contains(&c.as_str()))
+            .collect();
+        if !cols.is_empty() {
+            return cols;
+        }
+    }
+    defaults.iter().map(|s| (*s).to_string()).collect()
+}
+
+fn ensure_required_columns(order: &mut Vec<String>, required: &[&str], catalog: &[&str]) {
+    for req in required {
+        if order.iter().any(|c| c == *req) {
+            continue;
+        }
+        insert_catalog_column(order, req, catalog);
+    }
+}
+
+fn insert_catalog_column(order: &mut Vec<String>, col: &str, catalog: &[&str]) {
+    if order.iter().any(|c| c == col) {
+        return;
+    }
+    let master_idx = catalog
+        .iter()
+        .position(|c| *c == col)
+        .unwrap_or(catalog.len());
+    let mut insert_at = order.len();
+    for (i, existing) in order.iter().enumerate() {
+        let ei = catalog
+            .iter()
+            .position(|c| c == existing)
+            .unwrap_or(catalog.len());
+        if ei > master_idx {
+            insert_at = i;
+            break;
+        }
+    }
+    order.insert(insert_at, col.to_string());
+}
+
+fn paint_ordered_columns(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    catalog: &[&str],
+    required: &[&str],
+    dirty: &mut bool,
+    accent: Color32,
+    ui_state: &mut SettingsUi,
+) {
+    let values = cached_section_values(state, section, ui_state);
+    let defaults: Vec<&str> = if section == "laptime_log" {
+        vec!["lap", "time", "delta", "temp"]
+    } else {
+        vec!["badge", "position", "name", "license", "irating", "gap"]
+    };
+    let mut order = column_order_from(&values, catalog, &defaults);
+    ensure_required_columns(&mut order, required, catalog);
+
+    ui.label(
+        RichText::new(help_text(section, key).unwrap_or("Visible columns"))
+            .size(11.0)
+            .color(MUTED),
+    );
+    ui.add_space(4.0);
+
+    let mut next_order: Option<Vec<String>> = None;
+    for i in 0..order.len() {
+        let col = order[i].clone();
+        let locked = required.contains(&col.as_str());
+        ui.horizontal(|ui| {
+            ui.scope(|ui| {
+                ui.set_min_width(120.0);
+                ui.label(RichText::new(pretty_key(&col)).color(TITLE));
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if !locked {
+                    let mut on = true;
+                    if toggle_switch(
+                        ui,
+                        &mut on,
+                        accent,
+                        ui.id().with((section, "col_vis", col.as_str())),
+                    )
+                    .changed()
+                        && !on
+                    {
+                        let mut o = order.clone();
+                        o.retain(|c| c != &col);
+                        ensure_required_columns(&mut o, required, catalog);
+                        next_order = Some(o);
+                    }
+                } else {
+                    ui.label(RichText::new("Required").size(11.0).color(MUTED));
+                }
+                let can_down = i + 1 < order.len() && next_order.is_none();
+                if icon_button(
+                    ui,
+                    "chevron_down",
+                    can_down,
+                    ui.id().with((section, "col_dn", i)),
+                )
+                .clicked()
+                    && can_down
+                {
+                    let mut o = order.clone();
+                    o.swap(i, i + 1);
+                    next_order = Some(o);
+                }
+                let can_up = i > 0 && next_order.is_none();
+                if icon_button(
+                    ui,
+                    "chevron_up",
+                    can_up,
+                    ui.id().with((section, "col_up", i)),
+                )
+                .clicked()
+                    && can_up
+                {
+                    let mut o = order.clone();
+                    o.swap(i, i - 1);
+                    next_order = Some(o);
+                }
+            });
+        });
+        ui.add_space(2.0);
+    }
+
+    let mut hidden: Vec<&str> = catalog
+        .iter()
+        .copied()
+        .filter(|c| !order.iter().any(|o| o == *c))
+        .collect();
+    // List by friendly name so the add picker is easy to scan.
+    hidden.sort_by(|a, b| {
+        pretty_key(a)
+            .to_ascii_lowercase()
+            .cmp(&pretty_key(b).to_ascii_lowercase())
+    });
+    if !hidden.is_empty() {
+        ui.add_space(6.0);
+        ui.label(RichText::new("Add column").size(11.0).color(MUTED));
+        for col in hidden {
+            let mut on = false;
+            setting_row(ui, &pretty_key(col), None, |ui| {
+                if toggle_switch(
+                    ui,
+                    &mut on,
+                    accent,
+                    ui.id().with((section, "col_add", col)),
+                )
+                .changed()
+                    && on
+                    && next_order.is_none()
+                {
+                    let mut o = order.clone();
+                    insert_catalog_column(&mut o, col, catalog);
+                    ensure_required_columns(&mut o, required, catalog);
+                    next_order = Some(o);
+                }
+            });
+        }
+    }
+
+    if let Some(o) = next_order {
+        if matches!(section, "relative" | "standings") {
+            if let Some(widths) = values.get("widths").and_then(|v| v.as_object()) {
+                let mut pruned = serde_json::Map::new();
+                for (k, v) in widths {
+                    if o.iter().any(|c| c == k) && k != "name" {
+                        pruned.insert(k.clone(), v.clone());
+                    }
+                }
+                set_section_key(state, section, "widths", Value::Object(pruned), dirty, ui_state);
+            }
+        }
+        set_section_key(state, section, key, json!(o), dirty, ui_state);
+    }
+}
+
+fn paint_table_column_flags(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    value: &Value,
+    dirty: &mut bool,
+    accent: Color32,
+    ui_state: &mut SettingsUi,
+) {
+    let map = value.as_object();
+    let mut stripe = map
+        .and_then(|m| m.get("stripe"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    setting_row(
+        ui,
+        "Class stripe",
+        Some("Colored bar beside position from the driver’s class color."),
+        |ui| {
+            if toggle_switch(
+                ui,
+                &mut stripe,
+                accent,
+                ui.id().with((section, "columns", "stripe")),
+            )
+            .changed()
+            {
+                set_nested(
+                    state,
+                    section,
+                    "columns",
+                    "stripe",
+                    json!(stripe),
+                    dirty,
+                    ui_state,
+                );
+            }
+        },
+    );
+}
+
+fn paint_numeric_object(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    group: &str,
+    value: &Value,
+    dirty: &mut bool,
+    accent: Color32,
+    ui_state: &mut SettingsUi,
+) {
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (ck, cv) in entries {
+        let Some(n) = cv.as_f64() else {
+            continue;
+        };
+        let mut v = n as f32;
+        let (range, step) = if ck.contains("tau") {
+            (0.05..=1.0, 0.01)
+        } else {
+            (0.01..=1.5, 0.01)
+        };
+        v = v.clamp(*range.start(), *range.end());
+        if number_row(
+            ui,
+            &pretty_key(ck),
+            &mut v,
+            range,
+            step,
+            accent,
+            help_text(section, group),
+        ) {
+            set_nested(
+                state,
+                section,
+                group,
+                ck,
+                json!((v as f64 * 1000.0).round() / 1000.0),
+                dirty,
+                ui_state,
+            );
+        }
+    }
+}
+
+fn paint_structured_object(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    value: &Value,
+    dirty: &mut bool,
+    accent: Color32,
+    ui_state: &mut SettingsUi,
+) {
+    let Some(map) = value.as_object() else {
+        return;
+    };
+    if map.is_empty() {
+        ui.label(
+            RichText::new("No options for this setting.")
+                .size(11.0)
+                .color(MUTED),
+        );
+        return;
+    }
+    let mut entries: Vec<_> = map.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+    for (ck, cv) in entries {
+        match cv {
+            Value::Bool(b) => {
+                let mut v = *b;
+                setting_row(ui, &pretty_key(ck), None, |ui| {
+                    if toggle_switch(
+                        ui,
+                        &mut v,
+                        accent,
+                        ui.id().with((section, key, ck.as_str())),
+                    )
+                    .changed()
+                    {
+                        set_nested(state, section, key, ck, json!(v), dirty, ui_state);
+                    }
+                });
+            }
+            Value::Number(n) => {
+                let mut v = n.as_f64().unwrap_or(0.0) as f32;
+                let (range, step) = number_setting_bounds(ck);
+                v = v.clamp(*range.start(), *range.end());
+                if number_row(ui, &pretty_key(ck), &mut v, range, step, accent, None) {
+                    set_nested(
+                        state,
+                        section,
+                        key,
+                        ck,
+                        json!(v as f64),
+                        dirty,
+                        ui_state,
+                    );
+                }
+            }
+            Value::String(s) if looks_like_color(s) => {
+                paint_nested_color(ui, state, section, key, ck, s, dirty, ui_state);
+            }
+            Value::String(s) => {
+                if let Some(choices) = string_choices(section, ck)
+                    .or_else(|| string_choices(key, ck))
+                {
+                    let selected = if choices.iter().any(|(v, _)| *v == s) {
+                        s.as_str()
+                    } else {
+                        choices.first().map(|(v, _)| *v).unwrap_or(s.as_str())
+                    };
+                    setting_row(ui, &pretty_key(ck), None, |ui| {
+                        if let Some(next) = styled_choice_combo(
+                            ui,
+                            (section, key, ck.as_str()),
+                            selected,
+                            choices,
+                            180.0,
+                        ) {
+                            set_nested(state, section, key, ck, json!(next), dirty, ui_state);
+                        }
+                    });
+                } else if allows_free_text_setting(ck) {
+                    let mut text = s.clone();
+                    setting_row(ui, &pretty_key(ck), None, |ui| {
+                        if text_field(ui, &mut text, "", 180.0).changed() {
+                            set_nested(state, section, key, ck, json!(text), dirty, ui_state);
+                        }
+                    });
+                } else {
+                    setting_row(ui, &pretty_key(ck), None, |ui| {
+                        ui.label(RichText::new(choice_label(s)).color(MUTED));
+                    });
+                }
+            }
+            _ => {
+                // Nested structures: skip rather than dump JSON.
+            }
+        }
+    }
+}
+
+fn paint_structured_array(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    key: &str,
+    arr: &[Value],
+    dirty: &mut bool,
+    accent: Color32,
+    ui_state: &mut SettingsUi,
+) {
+    if arr.iter().all(|v| v.as_str().is_some()) {
+        // Generic string-list editor: reorder/remove only (no free-text add).
+        ui.label(
+            RichText::new(pretty_key(key)).size(12.0).color(TITLE),
+        );
+        let mut items: Vec<String> = arr
+            .iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect();
+        enum Edit {
+            Swap(usize, usize),
+            Remove(usize),
+        }
+        let mut edit: Option<Edit> = None;
+        for i in 0..items.len() {
+            let item = choice_label(&items[i]);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(item).color(TITLE));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if icon_button(
+                        ui,
+                        "chevron_down",
+                        i + 1 < items.len() && edit.is_none(),
+                        ui.id().with((section, key, "dn", i)),
+                    )
+                    .clicked()
+                        && i + 1 < items.len()
+                    {
+                        edit = Some(Edit::Swap(i, i + 1));
+                    }
+                    if icon_button(
+                        ui,
+                        "chevron_up",
+                        i > 0 && edit.is_none(),
+                        ui.id().with((section, key, "up", i)),
+                    )
+                    .clicked()
+                        && i > 0
+                    {
+                        edit = Some(Edit::Swap(i, i - 1));
+                    }
+                    if button_kind(ui, "Remove", ButtonKind::GhostAccent).clicked() {
+                        edit = Some(Edit::Remove(i));
+                    }
+                });
+            });
+        }
+        let _ = accent;
+        if let Some(e) = edit {
+            match e {
+                Edit::Swap(a, b) => items.swap(a, b),
+                Edit::Remove(i) => {
+                    items.remove(i);
+                }
+            }
+            set_section_key(state, section, key, json!(items), dirty, ui_state);
+        }
+        return;
+    }
+    ui.label(
+        RichText::new("This list can’t be edited here.")
+            .size(11.0)
+            .color(MUTED),
+    );
+}
+
+fn paint_table_widths(
+    ui: &mut Ui,
+    state: &StateHandle,
+    section: &str,
+    dirty: &mut bool,
+    accent: Color32,
+    ui_state: &mut SettingsUi,
+) {
+    let values = cached_section_values(state, section, ui_state);
+    let order = column_order_from(
+        &values,
+        TABLE_DATA_COLUMNS,
+        &["badge", "position", "name", "license", "irating", "gap"],
+    );
+    let width_map = values.get("widths").and_then(|v| v.as_object());
+
+    // Name is flex (fills leftover space); only fixed columns are resizable.
+    let resizeable: Vec<&str> = order
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|c| *c != "name")
+        .collect();
+
+    if resizeable.is_empty() {
+        ui.label(
+            RichText::new("No fixed-width columns are visible. Enable columns under Columns.")
+                .size(11.0)
+                .color(MUTED),
+        );
+        return;
+    }
+
+    ui.label(
+        RichText::new(
+            help_text(section, "widths")
+                .unwrap_or("Column width as a multiple of row height."),
+        )
+        .size(11.0)
+        .color(MUTED),
+    );
+    ui.add_space(4.0);
+
+    for col in resizeable {
+        let default = default_table_col_width(col);
+        let mut v = width_map
+            .and_then(|m| m.get(col))
+            .and_then(|x| x.as_f64())
+            .map(|x| x as f32)
+            .unwrap_or(default)
+            .clamp(0.4, 4.0);
+        if number_row(
+            ui,
+            &pretty_key(col),
+            &mut v,
+            0.4..=4.0,
+            0.05,
+            accent,
+            Some("Width × row height."),
+        ) {
+            set_nested(
+                state,
+                section,
+                "widths",
+                col,
+                json!((v as f64 * 100.0).round() / 100.0),
+                dirty,
+                ui_state,
+            );
         }
     }
 }

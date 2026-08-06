@@ -19,7 +19,7 @@ use std::f32::consts::{PI, TAU};
 const SECTION: &str = "map";
 /// Bump when changing map car motion; shown in `--perf` as `map_motion_rev=`.
 /// Keep in sync with `docs/map-wiki.md`.
-pub const MAP_MOTION_REV: u32 = 33;
+pub const MAP_MOTION_REV: u32 = 34;
 /// Screen ease for pit-route / non-pct modes only (Python `_smooth_marker_point`).
 const SCREEN_EASE_TAU: f32 = 0.09;
 const SCREEN_EASE_SNAP: f32 = 120.0;
@@ -42,6 +42,9 @@ const TRACK_MAX_STEP: f32 = 0.01;
 const VEL_HOLD_SECS: f64 = 0.10;
 /// Time constant for bleeding feed-forward vel while telem is held.
 const VEL_DECAY_TAU: f32 = 0.30;
+/// Cap how far ahead of the last sample we predict. Beyond this the sim is
+/// stalled; coasting further just invents position.
+const TELEM_PRED_AGE_MAX: f32 = 0.25;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
 #[derive(Clone, Copy)]
@@ -170,9 +173,9 @@ fn live_status_for_miss(id: i32) -> TrackPathStatus {
 
 pub fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
     let tid = ctx.frame.track_id;
-    // Background cloud fetch finished — force reload from disk.
+    // Background cloud fetch or local calibration rewrote the file — reload.
     if let Some(id) = tid {
-        if crate::cloud::take_fetch_ready(id as i64) {
+        if crate::cloud::take_fetch_ready(id as i64) || crate::cloud::take_track_dirty(id as i64) {
             ctx.map.invalidate_track_cache();
         }
     }
@@ -1112,10 +1115,11 @@ pub(crate) fn dot_scale(frac: f64) -> f32 {
     ((f / 0.05) as f32).clamp(0.2, 4.0)
 }
 
-/// Car the map presents as "you": the car the iRacing camera is on while
-/// spectating, otherwise the seated player. Drives dot size, player fill, the
-/// centre ring, label weight, draw order, and which car traffic markers are
-/// relative to.
+/// Car the map presents as "you". Drives dot size, player fill, the centre
+/// ring, label weight, draw order, and which car traffic markers are relative to.
+///
+/// While your seated car is still a live competitor, focus stays on you even if
+/// the camera wanders. Pure spectators (ghost seated entry) follow the camera.
 ///
 /// Presentation only. The S/F calibrate click and the high-precision
 /// `player_lap_dist_pct` feed still key off `is_player`, since the seated
@@ -1123,21 +1127,7 @@ pub(crate) fn dot_scale(frac: f64) -> f32 {
 /// on your own car — the normal racing case — this resolves to the same car and
 /// nothing changes.
 pub(crate) fn focus_car_idx(ctx: &WidgetCtx<'_>) -> Option<i32> {
-    if let Some(cam) = ctx.frame.camera_car_idx {
-        if ctx
-            .frame
-            .cars
-            .iter()
-            .any(|c| c.car_idx == cam && !c.is_pace_car)
-        {
-            return Some(cam);
-        }
-    }
-    ctx.frame
-        .cars
-        .iter()
-        .find(|c| c.is_player)
-        .map(|c| c.car_idx)
+    crate::telemetry::presentation_focus_car_idx(&ctx.frame.cars, ctx.frame.camera_car_idx)
 }
 
 /// Python map colors: player / competitor / lap tint / pit / pace — not class color.
@@ -1160,12 +1150,12 @@ pub(crate) fn car_fill(
         return cfg.color(SECTION, "player", "#46df7a");
     }
     if car.lapping && car.lap_ahead {
-        // Blue = this car is lapping the player/focus car.
-        return cfg.color(SECTION, "lapped", "#2563eb");
+        // Red = this car is lapping the player/focus car (iRacing Relative).
+        return cfg.color(SECTION, "lapping", "#ff5050");
     }
     if car.lapping {
-        // Red = this is lapped traffic for the player/focus car.
-        return cfg.color(SECTION, "lapping", "#ff5050");
+        // Blue = lapped traffic for the player/focus car.
+        return cfg.color(SECTION, "lapped", "#2563eb");
     }
     cfg.color(SECTION, "competitor", "#b06bff")
 }
@@ -1278,7 +1268,7 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Smooth lap-% for map dots (motion rev 31).
+/// Smooth lap-% for map dots (motion rev 34).
 ///
 /// Every earlier rev mixed free-running coast with conditional corrections
 /// (snap / ahead-pull / asymmetric blends). Each condition is a step change in
@@ -1369,16 +1359,24 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
             st.pct = telem;
             st.disp_vel = st.vel;
         } else {
+            // Track the *predicted* lap % (last sample + vel·age), not the held
+            // sample itself. Chasing a held telem with nonzero feed-forward vel
+            // settles at telem + 2·vel/ω — an offset that grows with speed and
+            // vanishes when you brake, which is exactly the Iowa oval symptom.
+            let mut age = ((telem_clock - st.last_telem_secs) as f32).max(0.0);
             let disp_cap = vel_cap * 3.0;
             let mut left = dt;
             while left > 0.0 {
                 let h = left.min(TRACK_MAX_STEP);
                 left -= h;
-                let err = wrap_lap_delta(telem, st.pct);
+                let target =
+                    (st.last_telem + st.vel * age.min(TELEM_PRED_AGE_MAX)).rem_euclid(1.0);
+                let err = wrap_lap_delta(target, st.pct);
                 let accel =
                     TRACK_OMEGA * TRACK_OMEGA * err + 2.0 * TRACK_OMEGA * (st.vel - st.disp_vel);
                 st.disp_vel = (st.disp_vel + accel * h).clamp(-disp_cap, disp_cap);
                 st.pct = (st.pct + st.disp_vel * h).rem_euclid(1.0);
+                age += h;
             }
         }
 
@@ -3252,7 +3250,49 @@ fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::{earcut_triangles, loop_frac_for_pct, sf_loop_frac};
+    use crate::telemetry::{presentation_focus_car_idx, CarRow};
     use egui::Pos2;
+
+    #[test]
+    fn map_focus_stays_on_live_seated_player_while_watching() {
+        let cars = vec![
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                lap_dist_pct: 0.2,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 5,
+                position: 4,
+                is_player: true,
+                lap_dist_pct: 0.25,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(presentation_focus_car_idx(&cars, Some(2)), Some(5));
+    }
+
+    #[test]
+    fn map_focus_follows_camera_for_spectator_ghost() {
+        let cars = vec![
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                lap_dist_pct: 0.2,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 99,
+                position: 0,
+                is_player: true,
+                inactive: true,
+                lap_dist_pct: -1.0,
+                ..Default::default()
+            },
+        ];
+        assert_eq!(presentation_focus_car_idx(&cars, Some(2)), Some(2));
+    }
 
     /// Table that puts the first tenth of the lap into a fifth of the loop, so
     /// an uncalibrated dot would be running at half speed there.

@@ -664,11 +664,10 @@ impl OverlayApp {
 
         self.pit_stops.observe(&frame.cars, frame.session_time);
 
-        // Camera / player focus change: drop sticky relative order so rows don't
-        // inherit the previous car's ahead/behind ranking.
-        let table_focus = frame
-            .camera_car_idx
-            .or_else(|| frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx));
+        // Table focus change: drop sticky relative order so rows don't inherit
+        // the previous car's ahead/behind ranking.
+        let table_focus =
+            crate::telemetry::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
         if table_focus != self.last_table_focus {
             self.rel_order = RelativeOrderHysteresis::default();
             self.last_table_focus = table_focus;

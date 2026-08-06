@@ -1195,6 +1195,33 @@ fn sanitize_config_sections(cfg: &mut Value) {
     }
     strip_section_keys(cfg, "ers_hybrid", &["show_lap_energy", "label_lap"]);
     strip_section_keys(cfg, "inputs", &["show_handbrake", "show_steering_torque"]);
+    strip_foreign_widget_keys(cfg);
+}
+
+/// Drop keys that do not belong on a widget (legacy defaults stamped every
+/// section, so Standings Settings → Other used to list Dash controls).
+fn strip_foreign_widget_keys(cfg: &mut Value) {
+    let defaults = default_cfg();
+    for section in WIDGET_KEYS {
+        let Some(allowed) = defaults.get(*section).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        let extras = optional_section_keys(section);
+        let Some(obj) = cfg.get_mut(*section).and_then(|v| v.as_object_mut()) else {
+            continue;
+        };
+        obj.retain(|k, _| allowed.contains_key(k) || extras.contains(&k.as_str()));
+    }
+}
+
+/// Schema-only keys users may have saved that are not always in DEFAULTS.
+fn optional_section_keys(section: &str) -> &'static [&'static str] {
+    match section {
+        "relative" | "standings" => &["widths", "license_colors"],
+        "laptime_log" => &["widths"],
+        "radar" => &["show_side_labels", "show_clear_timer", "side_proximity_color"],
+        _ => &[],
+    }
 }
 
 /// Keep `rows == rows_ahead + rows_behind` for Relative / Standings.
@@ -1405,57 +1432,14 @@ fn default_cfg() -> Value {
     let mut m = Map::new();
     for key in WIDGET_KEYS {
         let mut section = Map::new();
+        // Shared chrome only — widget-specific keys go in the arms below so they
+        // do not leak into every panel's Settings → Other list.
         section.insert("show".into(), Value::Bool(default_show(key)));
         section.insert("corner_radius_frac".into(), json!(0.0));
         section.insert("colors".into(), Value::Object(default_colors()));
-        section.insert(
-            "title".into(),
-            Value::String(key.to_uppercase().replace('_', " ")),
-        );
-        section.insert("show_title".into(), Value::Bool(true));
         if !matches!(*key, "standings" | "relative" | "dash") {
             section.insert("panel_style".into(), Value::String("data".into()));
         }
-        section.insert("idle_text".into(), Value::String("TRACK CLEAR".into()));
-        section.insert("range".into(), json!(1.0));
-        section.insert("show_value".into(), Value::Bool(true));
-        section.insert("row_height_px".into(), json!(28));
-        section.insert("font_scale".into(), json!(0.48));
-        section.insert("show_wind".into(), Value::Bool(true));
-        // Dash defaults matching Python CFG.
-        section.insert("show_shift_bar".into(), Value::Bool(true));
-        section.insert("show_ring".into(), Value::Bool(true));
-        section.insert("show_position".into(), Value::Bool(true));
-        section.insert("show_flags".into(), Value::Bool(true));
-        section.insert("start_go_text".into(), Value::String("GO".into()));
-        section.insert("start_set_text".into(), Value::String("SET".into()));
-        section.insert("start_ready_text".into(), Value::String("READY".into()));
-        section.insert("show_delta_bar".into(), Value::Bool(false));
-        section.insert("show_throttle".into(), Value::Bool(true));
-        section.insert("show_brake".into(), Value::Bool(true));
-        section.insert("show_clutch".into(), Value::Bool(false));
-        section.insert("center_mode".into(), Value::String("ring".into()));
-        section.insert("top_right".into(), Value::String("incidents".into()));
-        section.insert("primary_left".into(), Value::String("lap_count".into()));
-        section.insert("primary_right".into(), Value::String("speed".into()));
-        section.insert("stat_left".into(), Value::String("tires".into()));
-        section.insert("stat_right".into(), Value::String("fuel_stack".into()));
-        section.insert("strip_left".into(), Value::String("air_temp".into()));
-        section.insert("strip_center".into(), Value::String("track_temp".into()));
-        section.insert("strip_right".into(), Value::String("last_lap".into()));
-        section.insert("text_scale".into(), json!(1.0));
-        section.insert("shift_blink".into(), Value::Bool(true));
-        section.insert("shift_blink_hz".into(), json!(7.0));
-        section.insert("shift_blink_pct".into(), json!(0.99));
-        section.insert("shift_blink_max_sec".into(), json!(3.0));
-        section.insert("shift_segments".into(), json!(20));
-        section.insert("shift_red_frac".into(), json!(0.16));
-        section.insert("shift_yellow_frac".into(), json!(0.24));
-        section.insert("ring_segments".into(), json!(16));
-        section.insert("delta_bar_range".into(), json!(1.0));
-        section.insert("show_irating_projection".into(), Value::Bool(false));
-        section.insert("irating_abbreviate".into(), Value::Bool(true));
-        section.insert("irating_show_icon".into(), Value::Bool(true));
         // Table / radar defaults (Python parity) so demo works without a full CFG dump.
         if *key == "relative" || *key == "standings" {
             section.insert(
@@ -1480,12 +1464,17 @@ fn default_cfg() -> Value {
             section.insert("row_dividers".into(), Value::Bool(true));
             section.insert("name_font_bold".into(), Value::Bool(true));
             section.insert("gap_font_scale".into(), json!(1.12));
+            section.insert("text_scale".into(), json!(1.0));
             section.insert("pit_mode".into(), Value::String("laps_since".into()));
+            section.insert("show_irating_projection".into(), Value::Bool(false));
+            section.insert("irating_abbreviate".into(), Value::Bool(true));
+            section.insert("irating_show_icon".into(), Value::Bool(true));
             section.insert(
                 "column_order".into(),
                 json!(["badge", "position", "name", "license", "irating", "gap"]),
             );
             section.insert("columns".into(), json!({ "stripe": true }));
+            section.insert("widths".into(), json!({}));
             if *key == "relative" {
                 section.insert("show_strategy_hints".into(), Value::Bool(true));
                 section.insert("strategy_fuel_pct_thresh".into(), json!(0.18));
@@ -1541,6 +1530,54 @@ fn default_cfg() -> Value {
                     json!({"left": false, "center": false, "right": false}),
                 );
             }
+        }
+        if *key == "dash" {
+            section.insert("show_shift_bar".into(), Value::Bool(true));
+            section.insert("show_ring".into(), Value::Bool(true));
+            section.insert("show_position".into(), Value::Bool(true));
+            section.insert("show_flags".into(), Value::Bool(true));
+            section.insert("start_go_text".into(), Value::String("GO".into()));
+            section.insert("start_set_text".into(), Value::String("SET".into()));
+            section.insert("start_ready_text".into(), Value::String("READY".into()));
+            section.insert("show_delta_bar".into(), Value::Bool(false));
+            section.insert("show_throttle".into(), Value::Bool(true));
+            section.insert("show_brake".into(), Value::Bool(true));
+            section.insert("show_clutch".into(), Value::Bool(false));
+            section.insert("center_mode".into(), Value::String("ring".into()));
+            section.insert("top_right".into(), Value::String("incidents".into()));
+            section.insert("primary_left".into(), Value::String("lap_count".into()));
+            section.insert("primary_right".into(), Value::String("speed".into()));
+            section.insert("stat_left".into(), Value::String("tires".into()));
+            section.insert("stat_right".into(), Value::String("fuel_stack".into()));
+            section.insert("strip_left".into(), Value::String("air_temp".into()));
+            section.insert("strip_center".into(), Value::String("track_temp".into()));
+            section.insert("strip_right".into(), Value::String("last_lap".into()));
+            section.insert("text_scale".into(), json!(1.0));
+            section.insert("shift_blink".into(), Value::Bool(true));
+            section.insert("shift_blink_hz".into(), json!(7.0));
+            section.insert("shift_blink_pct".into(), json!(0.99));
+            section.insert("shift_blink_max_sec".into(), json!(3.0));
+            section.insert("shift_segments".into(), json!(20));
+            section.insert("shift_red_frac".into(), json!(0.16));
+            section.insert("shift_yellow_frac".into(), json!(0.24));
+            section.insert("ring_segments".into(), json!(16));
+            section.insert("delta_bar_range".into(), json!(1.0));
+            section.insert("show_irating_projection".into(), Value::Bool(false));
+            section.insert("irating_abbreviate".into(), Value::Bool(true));
+            section.insert("irating_show_icon".into(), Value::Bool(true));
+        }
+        if *key == "flags" {
+            section.insert("idle_text".into(), Value::String("TRACK CLEAR".into()));
+            section.insert("show_incident_warning".into(), Value::Bool(true));
+            section.insert("incident_warn_pct".into(), json!(80.0));
+            section.insert("show_blue_detail".into(), Value::Bool(true));
+            section.insert("show_pit_limiter".into(), Value::Bool(true));
+            section.insert("show_finish_position".into(), Value::Bool(true));
+        }
+        if *key == "delta_bar" {
+            section.insert("mode".into(), Value::String("session_best".into()));
+            section.insert("range".into(), json!(1.0));
+            section.insert("show_value".into(), Value::Bool(true));
         }
         if *key == "map" {
             section.insert("show_panel".into(), Value::Bool(false));
@@ -1612,6 +1649,7 @@ fn default_cfg() -> Value {
             }
             section.insert("show_sector_boundaries".into(), Value::Bool(true));
             section.insert("show_corners".into(), Value::Bool(true));
+            section.insert("text_scale".into(), json!(1.0));
         }
         if *key == "radar" {
             section.insert("show_panel".into(), Value::Bool(false));
@@ -1619,6 +1657,7 @@ fn default_cfg() -> Value {
             section.insert("show_rear".into(), Value::Bool(true));
             section.insert("show_axis".into(), Value::Bool(true));
             section.insert("show_nose".into(), Value::Bool(true));
+            section.insert("text_scale".into(), json!(1.0));
             section.insert("range_pct".into(), json!(0.03));
             section.insert("alongside_zone_pct".into(), json!(0.004));
             section.insert("side_span_pct".into(), json!(0.0045));
@@ -1649,6 +1688,7 @@ fn default_cfg() -> Value {
             section.insert("show_car_number".into(), Value::Bool(true));
             section.insert("show_name".into(), Value::Bool(true));
             section.insert("highlight_player".into(), Value::Bool(true));
+            section.insert("text_scale".into(), json!(1.0));
             section.insert("row_height_px".into(), json!(0));
             section.insert("panel_opacity".into(), json!(1.0));
         }
@@ -1665,12 +1705,16 @@ fn default_cfg() -> Value {
             section.insert("show_live_burn".into(), Value::Bool(false));
             section.insert("show_tank_pct".into(), Value::Bool(false));
             section.insert("show_low_fuel_alert".into(), Value::Bool(true));
+            section.insert("show_pit_compare".into(), Value::Bool(true));
             section.insert("history_laps".into(), json!(10));
+            section.insert("pit_loss_seconds".into(), json!(25.0));
             section.insert("low_fuel_laps_threshold".into(), json!(2.0));
             section.insert("low_fuel_time_threshold".into(), json!(120.0));
+            section.insert("row_height_px".into(), json!(28));
             section.insert("max_row_height_frac".into(), json!(0.14));
             section.insert("stats_header_font_scale".into(), json!(1.0));
             section.insert("stats_row_font_scale".into(), json!(1.0));
+            section.insert("row_dividers".into(), Value::Bool(true));
         }
         if *key == "inputs" {
             section.insert("history_seconds".into(), json!(6.0));
@@ -1786,6 +1830,8 @@ fn default_cfg() -> Value {
             section.insert("show_lap".into(), Value::Bool(false));
             section.insert("show_mph".into(), Value::Bool(false));
             section.insert("highlight_player".into(), Value::Bool(true));
+            section.insert("row_height_px".into(), json!(28));
+            section.insert("max_row_height_frac".into(), json!(0.14));
             if let Some(Value::Object(colors)) = section.get_mut("colors") {
                 colors.insert("pylon_bg".into(), Value::String("#000000".into()));
                 colors.insert("digit".into(), Value::String("#ff9416".into()));
@@ -1799,6 +1845,11 @@ fn default_cfg() -> Value {
             section.insert("temp_icon".into(), Value::Bool(true));
             section.insert("alt_row_shading".into(), Value::Bool(true));
             section.insert("row_dividers".into(), Value::Bool(true));
+            section.insert("row_height_px".into(), json!(28));
+            section.insert("font_scale".into(), json!(0.48));
+            section.insert("header_font_scale".into(), json!(1.0));
+            section.insert("text_scale".into(), json!(1.0));
+            section.insert("max_row_height_frac".into(), json!(0.14));
             section.insert(
                 "column_order".into(),
                 json!(["lap", "time", "delta", "temp"]),
@@ -1814,6 +1865,9 @@ fn default_cfg() -> Value {
             section.insert("show_sector_delta".into(), Value::Bool(false));
             section.insert("show_predicted_lap".into(), Value::Bool(false));
             section.insert("highlight_active_sector_on_map".into(), Value::Bool(false));
+            section.insert("text_scale".into(), json!(1.0));
+            section.insert("row_height_px".into(), json!(28));
+            section.insert("max_row_height_frac".into(), json!(0.14));
         }
         if *key == "lap_compare" {
             section.insert("reference_mode".into(), Value::String("best".into()));
@@ -1862,6 +1916,47 @@ mod tests {
         assert_eq!(cols.len(), 2);
         assert!(cfg["ers_hybrid"].get("show_lap_energy").is_none());
         assert!(cfg["inputs"].get("show_handbrake").is_none());
+    }
+
+    #[test]
+    fn widget_defaults_do_not_leak_dash_keys() {
+        let cfg = default_cfg();
+        let standings = cfg["standings"].as_object().unwrap();
+        for foreign in [
+            "show_shift_bar",
+            "center_mode",
+            "idle_text",
+            "delta_bar_range",
+            "show_throttle",
+            "start_go_text",
+        ] {
+            assert!(
+                !standings.contains_key(foreign),
+                "standings should not default {foreign}"
+            );
+        }
+        assert!(cfg["dash"]["show_shift_bar"].as_bool().unwrap());
+        assert_eq!(cfg["flags"]["idle_text"], "TRACK CLEAR");
+    }
+
+    #[test]
+    fn sanitize_strips_foreign_widget_keys() {
+        let mut cfg = json!({
+            "standings": {
+                "show": true,
+                "show_shift_bar": true,
+                "center_mode": "ring",
+                "idle_text": "TRACK CLEAR",
+                "rows_ahead": 4,
+                "rows_behind": 5
+            }
+        });
+        sanitize_config_sections(&mut cfg);
+        let s = cfg["standings"].as_object().unwrap();
+        assert!(s.get("show_shift_bar").is_none());
+        assert!(s.get("center_mode").is_none());
+        assert!(s.get("idle_text").is_none());
+        assert!(s.get("rows_ahead").is_some());
     }
 
     #[test]

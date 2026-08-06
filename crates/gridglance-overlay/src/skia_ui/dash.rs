@@ -357,6 +357,11 @@ fn label(
     );
 }
 
+/// Gear digit in the dash circle — centre on ink bounds so "1"/"N"/"R" sit true.
+fn gear_label(c: &mut Canvas, cx: f32, cy: f32, text: &str, size: f32, color: Rgba) {
+    c.text_ink_centered(text, cx, cy, FontSpec::bold(size), color);
+}
+
 fn text_w(c: &Canvas, size: f32, bold: bool, text: &str) -> f32 {
     c.measure_text(
         text,
@@ -1016,15 +1021,13 @@ fn draw_ring(
         }
     }
 
-    label(
+    gear_label(
         c,
         cx,
         cy,
         &gear_str(f.gear),
         gear_px,
         section_color(cfg, SECTION, "gear", "#ffffff"),
-        true,
-        TextAlign::Center,
     );
 }
 
@@ -1080,28 +1083,24 @@ fn draw_pedals(
 
     let bars = selected_inputs(cfg, f, thr, brk, clt);
     if bars.is_empty() {
-        label(
+        gear_label(
             c,
             cx,
             cy,
             &gear_str(f.gear),
             ring_d * 0.50 * text_scale,
             section_color(cfg, SECTION, "gear", "#ffffff"),
-            true,
-            TextAlign::Center,
         );
         return;
     }
 
-    label(
+    gear_label(
         c,
         cx,
         cy - ring_d * 0.28,
         &gear_str(f.gear),
         ring_d * 0.26 * text_scale,
         section_color(cfg, SECTION, "gear", "#ffffff"),
-        true,
-        TextAlign::Center,
     );
 
     let n = bars.len();
@@ -1143,7 +1142,7 @@ fn flag_bar_style(cfg: &OverlayConfig, flag: &str) -> Option<(String, &'static s
         "yellow" => ("CAUTION".into(), "flag_yellow", "flag_yellow_text"),
         "black" => ("BLACK FLAG".into(), "flag_black", "flag_black_text"),
         "green" => ("GREEN".into(), "flag_green", "flag_green_text"),
-        "white" => ("LAST LAP".into(), "flag_white_bg", "flag_white_text"),
+        "white" => ("FINAL NEXT".into(), "flag_white_bg", "flag_white_text"),
         "red" => ("RED FLAG".into(), "flag_red", "flag_red_text"),
         "blue" => ("LET BY".into(), "flag_blue", "flag_blue_text"),
         "checkered" => ("FINISH".into(), "flag_checker_bg", "flag_checker_text"),

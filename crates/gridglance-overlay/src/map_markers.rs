@@ -28,22 +28,25 @@ pub fn fresh_hold_states() -> HoldStates {
         .collect()
 }
 
+/// Car can host a traffic marker wherever it is on the map — racing line or
+/// pits — as long as it has a placeable lap %. Garage / not-in-world hide.
 pub fn marker_car_valid(car: &CarRow) -> bool {
     if car.is_pace_car {
         return false;
     }
-    if car.on_pit || car.in_pit {
-        return false;
-    }
-    car.on_track && car.lap_dist_pct >= 0.0
+    car.lap_dist_pct >= 0.0 && (car.on_track || car.on_pit || car.in_pit)
 }
 
 /// Raw CarIdx targets for ahead / behind / leader (no hold debounce).
-/// Ahead/behind are race-position neighbors; no fallthrough if invalid.
 ///
-/// `focus_idx` is the car the markers are relative to — the spectated car while
-/// spectating, else the seated player. Without it the seated player's ghost car
-/// has no race position while spectating, so every slot came back empty.
+/// Ahead/behind are race-position neighbors (P−1 / P+1) wherever they are on
+/// the map — including pits. No proximity gate and no fallthrough to the next
+/// position. Leader is overall P1 when placeable, never the focus car. Ahead
+/// is omitted when it is the same car as leader (crown alone).
+///
+/// `focus_idx` is the car the markers are relative to — your live race car when
+/// still competing (even if the camera wanders), else the spectated car for a
+/// pure spectator.
 pub fn select_marker_candidates(
     cars: &[CarRow],
     focus_idx: Option<i32>,
@@ -57,7 +60,9 @@ pub fn select_marker_candidates(
     else {
         return out;
     };
-    if player.lap_dist_pct < 0.0 || player.position < 1 {
+    // Focus needs a race position; they need not be on a valid lap % for
+    // neighbors to resolve (e.g. brief telem glitch) — still require position.
+    if player.position < 1 {
         return out;
     }
     let my_pos = player.position;
@@ -71,7 +76,7 @@ pub fn select_marker_candidates(
             if c.position != target || c.car_idx == player_idx {
                 continue;
             }
-            // Found that race position — valid or hide (no fallthrough).
+            // Found that race position — placeable or hide (no fallthrough).
             return if marker_car_valid(c) {
                 Some(c.car_idx)
             } else {
@@ -81,18 +86,28 @@ pub fn select_marker_candidates(
         None
     };
 
-    out.insert("ahead", idx_at_pos(my_pos - 1));
-    out.insert("behind", idx_at_pos(my_pos + 1));
+    let mut ahead = idx_at_pos(my_pos - 1);
+    let behind = idx_at_pos(my_pos + 1);
 
+    let mut leader = None;
     for c in cars {
-        if c.position != 1 {
+        if c.position != 1 || c.car_idx == player_idx {
             continue;
         }
         if marker_car_valid(c) {
-            out.insert("leader", Some(c.car_idx));
+            leader = Some(c.car_idx);
         }
         break;
     }
+
+    // P2: ahead is the leader — keep the crown only, drop the green ahead icon.
+    if ahead.is_some() && ahead == leader {
+        ahead = None;
+    }
+
+    out.insert("ahead", ahead);
+    out.insert("behind", behind);
+    out.insert("leader", leader);
     out
 }
 
@@ -108,6 +123,8 @@ fn apply_marker_hold(
     }
 
     let Some(candidate_idx) = candidate_idx else {
+        // No eligible target — clear hold so a later car starts fresh.
+        state.locked = None;
         state.pending = None;
         state.pending_since = None;
         return None;
@@ -136,7 +153,11 @@ fn apply_marker_hold(
     if locked_valid {
         state.locked
     } else {
-        None
+        // First acquire: show immediately (don't wait a full hold with nothing up).
+        state.locked = Some(candidate_idx);
+        state.pending = None;
+        state.pending_since = None;
+        Some(candidate_idx)
     }
 }
 
@@ -175,15 +196,52 @@ pub fn resolve_traffic_markers(
             }
         }
     }
+
+    // Final pass: never draw two floating icons on the same car.
+    dedupe_marker_slots(&mut out);
     out
 }
 
-/// Slot name for a car idx (leader → ahead → behind; later overwrites).
+/// Prefer leader > ahead > behind when the same car would claim multiple slots.
+fn dedupe_marker_slots(markers: &mut HashMap<&'static str, Option<TrafficMarker>>) {
+    let leader = markers
+        .get("leader")
+        .and_then(|m| m.as_ref().map(|t| t.idx));
+    let ahead = markers
+        .get("ahead")
+        .and_then(|m| m.as_ref().map(|t| t.idx));
+    if let Some(li) = leader {
+        if ahead == Some(li) {
+            markers.insert("ahead", None);
+        }
+        if markers
+            .get("behind")
+            .and_then(|m| m.as_ref().map(|t| t.idx))
+            == Some(li)
+        {
+            markers.insert("behind", None);
+        }
+    }
+    let ahead = markers
+        .get("ahead")
+        .and_then(|m| m.as_ref().map(|t| t.idx));
+    if let Some(ai) = ahead {
+        if markers
+            .get("behind")
+            .and_then(|m| m.as_ref().map(|t| t.idx))
+            == Some(ai)
+        {
+            markers.insert("behind", None);
+        }
+    }
+}
+
+/// Slot name for a car idx. Leader wins over ahead/behind if anything slips through.
 pub fn marker_slots_by_idx(
     markers: &HashMap<&'static str, Option<TrafficMarker>>,
 ) -> HashMap<i32, &'static str> {
     let mut out = HashMap::new();
-    for &slot in &["leader", "ahead", "behind"] {
+    for &slot in &["behind", "ahead", "leader"] {
         if let Some(Some(m)) = markers.get(slot) {
             out.insert(m.idx, slot);
         }
@@ -201,7 +259,7 @@ mod tests {
             position: pos,
             is_player: player,
             on_track: true,
-            lap_dist_pct: 0.1 * idx as f32,
+            lap_dist_pct: 0.40 + 0.02 * (idx as f32 - 2.0),
             car_number: format!("{idx}"),
             ..Default::default()
         }
@@ -219,6 +277,62 @@ mod tests {
         assert_eq!(c["leader"], Some(0));
         assert_eq!(c["ahead"], Some(1));
         assert_eq!(c["behind"], Some(3));
+    }
+
+    #[test]
+    fn p2_keeps_leader_crown_without_ahead_duplicate() {
+        let cars = vec![car(0, 1, false), car(1, 2, true), car(2, 3, false)];
+        let c = select_marker_candidates(&cars, None);
+        assert_eq!(c["leader"], Some(0));
+        assert_eq!(c["ahead"], None, "ahead is the leader — crown only");
+        assert_eq!(c["behind"], Some(2));
+    }
+
+    #[test]
+    fn leader_marker_skips_focus_when_you_lead() {
+        let cars = vec![car(0, 1, true), car(1, 2, false), car(2, 3, false)];
+        let c = select_marker_candidates(&cars, None);
+        assert_eq!(c["leader"], None);
+        assert_eq!(c["ahead"], None);
+        assert_eq!(c["behind"], Some(1));
+    }
+
+    #[test]
+    fn shows_ahead_anywhere_on_the_map() {
+        let mut cars = vec![
+            car(0, 1, false),
+            car(1, 2, false),
+            car(2, 3, true),
+            car(3, 4, false),
+        ];
+        // Far around the circuit — still mark them.
+        cars[1].lap_dist_pct = (cars[2].lap_dist_pct + 0.5).rem_euclid(1.0);
+        let c = select_marker_candidates(&cars, None);
+        assert_eq!(c["ahead"], Some(1));
+        assert_eq!(c["behind"], Some(3));
+        assert_eq!(c["leader"], Some(0));
+    }
+
+    #[test]
+    fn shows_ahead_when_in_pits() {
+        let mut cars = vec![car(0, 1, false), car(1, 2, false), car(2, 3, true)];
+        cars[1].on_pit = true;
+        cars[1].in_pit = true;
+        cars[1].on_track = false;
+        let c = select_marker_candidates(&cars, None);
+        assert_eq!(c["ahead"], Some(1), "pitting ahead car must stay marked");
+        assert_eq!(c["leader"], Some(0));
+    }
+
+    #[test]
+    fn hides_ahead_in_garage_without_lap_pct() {
+        let mut cars = vec![car(0, 1, false), car(1, 2, false), car(2, 3, true)];
+        cars[1].on_track = false;
+        cars[1].on_pit = false;
+        cars[1].lap_dist_pct = -1.0;
+        let c = select_marker_candidates(&cars, None);
+        assert_eq!(c["ahead"], None);
+        assert_eq!(c["leader"], Some(0));
     }
 
     /// Spectating: the seated player's ghost has no position, so markers must
@@ -269,12 +383,17 @@ mod tests {
     }
 
     #[test]
-    fn no_fallthrough_when_ahead_in_pit() {
-        let mut cars = vec![car(0, 1, false), car(1, 2, false), car(2, 3, true)];
-        cars[1].on_pit = true;
-        cars[1].on_track = false;
-        let c = select_marker_candidates(&cars, None);
-        assert_eq!(c["ahead"], None);
-        assert_eq!(c["leader"], Some(0));
+    fn first_acquire_shows_immediately() {
+        let cars = vec![
+            car(0, 1, false),
+            car(1, 2, false),
+            car(2, 3, true),
+            car(3, 4, false),
+        ];
+        let mut hold = fresh_hold_states();
+        let m = resolve_traffic_markers(&mut hold, &cars, 10.0, 3.0, None);
+        assert!(m["ahead"].is_some());
+        assert!(m["behind"].is_some());
+        assert!(m["leader"].is_some());
     }
 }

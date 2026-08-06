@@ -5,6 +5,24 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.14 - 2026-08-05
+
+- **In-race spectating.** Watching another car while you are still racing no
+  longer hides you from Standings or treats the camera target as you. Tables and
+  map focus stay on your live car; pure spectators still follow the camera.
+- **Lapped traffic colors.** Relative, Standings, and map dots use iRacing’s
+  convention again — red for cars lapping you, blue for traffic you are lapping.
+  One-lap tints follow on-track gap (same basis as Relative); Standings keeps
+  the row tints; Relative also colors name/position ink.
+- **Map dot number.** Settings → Map → Dot number dropdown chooses car number
+  or race position on each dot.
+- **Map ahead / behind markers.** Always mark the cars one place ahead and
+  behind wherever they are on the map, including pits. No self-crown when you
+  lead; when you are P2 the leader crown alone is shown (no duplicate ahead
+  icon). First marker appears immediately; the hold still smooths switches.
+- **Friendly Settings dropdowns.** Choice fields show readable labels (e.g.
+  Metric, Session best, Car number) instead of raw config keys.
+
 ## 1.69.13 - 2026-07-30
 
 - **Relative / Standings row slides.** Rows use a fixed-duration ease-in-out so

@@ -21,6 +21,31 @@ fn gear_str(g: i32) -> String {
     }
 }
 
+/// Centre the gear glyph on its ink box (advance/line-height centering leaves
+/// "1"/"N"/"R" looking shifted inside the circle).
+fn gear_label(ui: &mut Ui, cx: f32, cy: f32, text: &str, size: f32, color: Color32) {
+    let font = FontId::new(
+        size.max(1.0),
+        egui::FontFamily::Name(crate::icons::BOLD_FAMILY.into()),
+    );
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, color));
+    let mesh = galley.mesh_bounds;
+    if mesh.width() > 0.0 && mesh.height() > 0.0 {
+        let pos = Pos2::new(cx - mesh.center().x, cy - mesh.center().y);
+        ui.painter().galley(pos, galley, color);
+    } else {
+        label(
+            ui,
+            Pos2::new(cx, cy),
+            Align2::CENTER_CENTER,
+            text,
+            size,
+            color,
+            true,
+        );
+    }
+}
+
 fn speed_value(cfg: &OverlayConfig, ms: f32) -> String {
     let unit = if cfg.imperial_units() { "mph" } else { "kph" };
     format!("{:.0} {unit}", cfg.conv_speed(ms))
@@ -1068,14 +1093,13 @@ fn draw_ring(
         }
     }
 
-    label(
+    gear_label(
         ui,
-        Pos2::new(cx, cy),
-        Align2::CENTER_CENTER,
+        cx,
+        cy,
         &gear_str(f.gear),
         gear_px,
         cfg.color(SECTION, "gear", "#ffffff"),
-        true,
     );
 }
 
@@ -1156,26 +1180,24 @@ fn draw_pedals(
 
     let bars = selected_inputs(cfg, f, thr, brk, clt);
     if bars.is_empty() {
-        label(
+        gear_label(
             ui,
-            Pos2::new(cx, cy),
-            Align2::CENTER_CENTER,
+            cx,
+            cy,
             &gear_str(f.gear),
             ring_d * 0.50 * text_scale,
             cfg.color(SECTION, "gear", "#ffffff"),
-            true,
         );
         return;
     }
 
-    label(
+    gear_label(
         ui,
-        Pos2::new(cx, cy - ring_d * 0.28),
-        Align2::CENTER_CENTER,
+        cx,
+        cy - ring_d * 0.28,
         &gear_str(f.gear),
         ring_d * 0.26 * text_scale,
         cfg.color(SECTION, "gear", "#ffffff"),
-        true,
     );
 
     let n = bars.len();
@@ -1222,7 +1244,7 @@ fn flag_bar_style(cfg: &OverlayConfig, flag: &str) -> Option<(String, &'static s
         "yellow" => ("CAUTION".into(), "flag_yellow", "flag_yellow_text"),
         "black" => ("BLACK FLAG".into(), "flag_black", "flag_black_text"),
         "green" => ("GREEN".into(), "flag_green", "flag_green_text"),
-        "white" => ("LAST LAP".into(), "flag_white_bg", "flag_white_text"),
+        "white" => ("FINAL NEXT".into(), "flag_white_bg", "flag_white_text"),
         "red" => ("RED FLAG".into(), "flag_red", "flag_red_text"),
         "blue" => ("LET BY".into(), "flag_blue", "flag_blue_text"),
         "checkered" => ("FINISH".into(), "flag_checker_bg", "flag_checker_text"),

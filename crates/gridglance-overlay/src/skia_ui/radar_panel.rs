@@ -51,16 +51,6 @@ fn prox_color(cfg: &OverlayConfig, closeness: f32, alpha: u8) -> Rgba {
     )
 }
 
-/// Tent map 0→1→0 across [0, 1] (Python `_feather_mask` edge dissolve).
-fn tent(t: f32) -> f32 {
-    let t = t.clamp(0.0, 1.0);
-    if t <= 0.5 {
-        (t * 2.0).clamp(0.0, 1.0)
-    } else {
-        ((1.0 - t) * 2.0).clamp(0.0, 1.0)
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn side_marker(
     c: &mut Canvas,
@@ -85,35 +75,13 @@ fn side_marker(
     } else {
         section_color(cfg, SECTION, "red", "#ff5050")
     };
-    // Horizontal fade toward car + vertical tent feather (Python side pixmap).
-    let nx = 16;
-    let ny = 10;
-    for ix in 0..nx {
-        let tx0 = ix as f32 / nx as f32;
-        let tx1 = (ix + 1) as f32 / nx as f32;
-        let tx = (tx0 + tx1) * 0.5;
-        let hfade = if to_left { 1.0 - tx } else { tx };
-        for iy in 0..ny {
-            let ty0 = iy as f32 / ny as f32;
-            let ty1 = (iy + 1) as f32 / ny as f32;
-            let ty = (ty0 + ty1) * 0.5;
-            let vfade = tent(ty);
-            let a = (peak as f32 * hfade * vfade) as u8;
-            if a < 2 {
-                continue;
-            }
-            c.fill_rect(
-                Rect::from_xywh(
-                    left + w * tx0,
-                    yc - h * 0.5 + h * ty0,
-                    w * (tx1 - tx0),
-                    h * (ty1 - ty0),
-                ),
-                base.with_alpha(a),
-                0.0,
-            );
-        }
-    }
+    // Smooth tent × linear fade (replaces coarse rect grid that looked pixelated).
+    // Opaque toward the car: right edge when to_left, left edge otherwise.
+    c.fill_tent_horizontal_fade(
+        Rect::from_xywh(left, yc - h * 0.5, w, h),
+        base.with_alpha(peak),
+        !to_left,
+    );
     if !label_txt.is_empty() {
         text_at(
             c,
@@ -144,36 +112,12 @@ fn v_glow(
     let w = (half_w * 2.0).max(1.0);
     let peak = (80.0 + 130.0 * closeness.clamp(0.0, 1.0)) as u8;
     let base = prox_color(cfg, closeness, 255);
-    // Inner→outer fade × horizontal tent feather (Python _build_glow_pixmap).
-    let ny = 20;
-    let nx = 12;
-    for iy in 0..ny {
-        let ty0 = iy as f32 / ny as f32;
-        let ty1 = (iy + 1) as f32 / ny as f32;
-        let ty = (ty0 + ty1) * 0.5;
-        let from_inner = if y_inner <= y_outer { ty } else { 1.0 - ty };
-        let a_v = 1.0 - from_inner;
-        for ix in 0..nx {
-            let tx0 = ix as f32 / nx as f32;
-            let tx1 = (ix + 1) as f32 / nx as f32;
-            let tx = (tx0 + tx1) * 0.5;
-            let a_h = tent(tx);
-            let a = (peak as f32 * a_v * a_h) as u8;
-            if a < 2 {
-                continue;
-            }
-            c.fill_rect(
-                Rect::from_xywh(
-                    cx - half_w + w * tx0,
-                    top + h * ty0,
-                    w * (tx1 - tx0),
-                    h * (ty1 - ty0),
-                ),
-                base.with_alpha(a),
-                0.0,
-            );
-        }
-    }
+    // Inner→outer fade × horizontal tent (smooth gradients, not rect tiles).
+    c.fill_tent_vertical_fade(
+        Rect::from_xywh(cx - half_w, top, w, h),
+        base.with_alpha(peak),
+        y_inner <= y_outer,
+    );
 }
 
 /// Paint the radar HUD. Returns `true` while any eased value is still moving

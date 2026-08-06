@@ -223,28 +223,223 @@ pub fn calibrate_track(track_id: i32, samples: &[Sample]) -> anyhow::Result<Stri
     let file = crate::track_path::find_track_file(track_id)
         .with_context(|| format!("no local track file for {track_id}"))?;
     let tp = crate::track_path::load_points(&file, 720).context("track file has no loop")?;
-    let table = calibrate::solve_pct_map(samples, &tp.points)
-        .context("laps did not match the drawn loop well enough to calibrate")?;
+
+    let original = tp.points.clone();
+    let mut loop_pts = original.clone();
+    let fix = resolve_loop_fix(samples, &mut loop_pts);
+    let table =
+        calibrate::solve_pct_map(samples, &loop_pts).map_err(|e| anyhow::anyhow!(e))?;
 
     let text = std::fs::read_to_string(&file)?;
     let mut doc: serde_json::Value = serde_json::from_str(&text)?;
     let obj = doc
         .as_object_mut()
         .context("track file is not a JSON object")?;
+    let geom_changed = loop_pts
+        .iter()
+        .zip(original.iter())
+        .any(|(a, b)| (a.0 - b.0).abs() + (a.1 - b.1).abs() > 1e-6)
+        || loop_pts.len() != original.len();
+    if geom_changed {
+        write_polyline_field(obj, "points", &loop_pts);
+        match fix {
+            calibrate::LoopFix::Mirror => bake_mirror_into_doc(obj, /*skip_points=*/ true),
+            calibrate::LoopFix::Reverse => bake_reverse_into_doc(obj, /*skip_points=*/ true),
+            calibrate::LoopFix::None => {}
+        }
+        obj.insert("map_mirror".into(), serde_json::json!(false));
+    }
+    // Oval corner labels are often authored against a backwards SVG. After a
+    // driven-lap solve we know racing direction — rebuild 2–4 turn ovals in
+    // lap-% order so T1..Tn match iRacing.
+    if let Some(n) = obj.get("num_turns").and_then(|v| v.as_i64()) {
+        if (2..=4).contains(&n) {
+            obj.insert(
+                "corners".into(),
+                serde_json::Value::Array(oval_corners_in_lap_order(&loop_pts, n as usize)),
+            );
+        }
+    }
     let rounded: Vec<serde_json::Value> = table
         .iter()
         .map(|v| serde_json::json!((*v as f64 * 1e6).round() / 1e6))
         .collect();
     obj.insert("pct_map".into(), serde_json::Value::Array(rounded));
     crate::cloud::write_json_atomic(&file, &doc)?;
+    crate::cloud::mark_track_dirty(track_id as i64);
 
     let worst = worst_offset(&table);
+    let fix_note = match fix {
+        calibrate::LoopFix::Reverse => "; reversed path winding",
+        calibrate::LoopFix::Mirror => "; fixed mirrored drawing",
+        calibrate::LoopFix::None if geom_changed => "; restored authored outline",
+        calibrate::LoopFix::None => "",
+    };
     Ok(format!(
-        "calibrated {} — corrected up to {:.2}% of a lap; saved to {}",
+        "calibrated {} — corrected up to {:.2}% of a lap{}; saved to {}",
         tp.name,
         worst * 100.0,
+        fix_note,
         file.display()
     ))
+}
+
+/// Apply [`calibrate::choose_loop_fix`], or undo a mistaken mirror-bake when
+/// unmirror+reverse restores the authored outline equally well.
+fn resolve_loop_fix(samples: &[Sample], loop_pts: &mut Vec<(f32, f32)>) -> calibrate::LoopFix {
+    match calibrate::choose_loop_fix(samples, loop_pts) {
+        calibrate::LoopFix::Reverse => {
+            calibrate::reverse_loop_keep_sf(loop_pts);
+            calibrate::LoopFix::Reverse
+        }
+        calibrate::LoopFix::Mirror => {
+            calibrate::mirror_polyline(loop_pts);
+            calibrate::LoopFix::Mirror
+        }
+        calibrate::LoopFix::None => {
+            // Already fits. If that is only because we previously baked a mirror
+            // onto a reverse-wound SVG, unmirror+reverse restores the Members
+            // outline (same Procrustes error, familiar left/right).
+            let mut unmirrored = loop_pts.clone();
+            calibrate::mirror_polyline(&mut unmirrored);
+            if calibrate::choose_loop_fix(samples, &unmirrored) == calibrate::LoopFix::Reverse {
+                calibrate::reverse_loop_keep_sf(&mut unmirrored);
+                *loop_pts = unmirrored;
+                // Points already final; do not reverse the on-disk doc again.
+                return calibrate::LoopFix::None;
+            }
+            calibrate::LoopFix::None
+        }
+    }
+}
+
+/// Quadrant extrema ordered by lap %, labelled 1..n in racing direction.
+fn oval_corners_in_lap_order(loop_pts: &[(f32, f32)], n: usize) -> Vec<serde_json::Value> {
+    let mut corners = super::layers::oval_corners(loop_pts, n);
+    corners.sort_by(|a, b| {
+        let pa = a.get("pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let pb = b.get("pct").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        pa.partial_cmp(&pb).unwrap_or(std::cmp::Ordering::Equal)
+    });
+    for (i, c) in corners.iter_mut().enumerate() {
+        if let Some(obj) = c.as_object_mut() {
+            obj.insert("label".into(), serde_json::json!((i + 1).to_string()));
+        }
+    }
+    corners
+}
+
+fn polyline_keys(skip_points: bool) -> &'static [&'static str] {
+    if skip_points {
+        &[
+            "pit_path",
+            "pit_entry",
+            "pit_road",
+            "pit_merge",
+            "pit_path_2",
+            "pit_entry_2",
+            "pit_road_2",
+            "pit_merge_2",
+        ]
+    } else {
+        &[
+            "points",
+            "pit_path",
+            "pit_entry",
+            "pit_road",
+            "pit_merge",
+            "pit_path_2",
+            "pit_entry_2",
+            "pit_road_2",
+            "pit_merge_2",
+        ]
+    }
+}
+
+fn read_polyline_field(
+    obj: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<Vec<(f32, f32)>> {
+    let arr = obj.get(key)?.as_array()?;
+    let pts: Vec<(f32, f32)> = arr
+        .iter()
+        .filter_map(|p| {
+            let a = p.as_array()?;
+            Some((a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
+        })
+        .collect();
+    (pts.len() >= 2).then_some(pts)
+}
+
+fn write_polyline_field(
+    obj: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    pts: &[(f32, f32)],
+) {
+    let arr: Vec<serde_json::Value> = pts
+        .iter()
+        .map(|&(x, y)| {
+            serde_json::json!([
+                ((x as f64) * 1e6).round() / 1e6,
+                ((y as f64) * 1e6).round() / 1e6
+            ])
+        })
+        .collect();
+    obj.insert(key.into(), serde_json::Value::Array(arr));
+}
+
+/// Flip every `[x, y]` polyline on the track document through its shared
+/// vertical centreline (same transform as [`calibrate::mirror_polyline`]).
+fn bake_mirror_into_doc(obj: &mut serde_json::Map<String, serde_json::Value>, skip_points: bool) {
+    let mut polys: Vec<(String, Vec<(f32, f32)>)> = Vec::new();
+    for key in polyline_keys(skip_points) {
+        if let Some(pts) = read_polyline_field(obj, key) {
+            polys.push(((*key).to_string(), pts));
+        }
+    }
+    // Include racing line for the shared centreline even when not rewriting it.
+    if skip_points {
+        if let Some(pts) = read_polyline_field(obj, "points") {
+            polys.push(("points".into(), pts));
+        }
+    }
+    if polys.is_empty() {
+        return;
+    }
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    for (_, poly) in &polys {
+        for &(x, _) in poly {
+            min_x = min_x.min(x);
+            max_x = max_x.max(x);
+        }
+    }
+    if !min_x.is_finite() || !max_x.is_finite() || max_x - min_x < 1e-9 {
+        return;
+    }
+    let cx = 0.5 * (min_x + max_x);
+    for (key, poly) in &polys {
+        if skip_points && key == "points" {
+            continue;
+        }
+        let flipped: Vec<(f32, f32)> = poly.iter().map(|&(x, y)| (2.0 * cx - x, y)).collect();
+        write_polyline_field(obj, key, &flipped);
+    }
+}
+
+/// Reverse open/closed polylines in the document (S/F kept at index 0 for `points`).
+fn bake_reverse_into_doc(obj: &mut serde_json::Map<String, serde_json::Value>, skip_points: bool) {
+    for key in polyline_keys(skip_points) {
+        let Some(mut pts) = read_polyline_field(obj, key) else {
+            continue;
+        };
+        if *key == "points" {
+            calibrate::reverse_loop_keep_sf(&mut pts);
+        } else {
+            pts.reverse();
+        }
+        write_polyline_field(obj, key, &pts);
+    }
 }
 
 /// Calibrate from a CSV this probe wrote earlier, so a recording can be reused

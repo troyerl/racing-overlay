@@ -257,10 +257,30 @@ static FETCH_TRIED: Lazy<Mutex<std::collections::HashSet<i64>>> =
     Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
 static FETCH_READY: Lazy<Mutex<std::collections::HashSet<i64>>> =
     Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
+/// Local edits (driven-lap calibration, etc.) that should force the map to reload.
+static TRACK_DIRTY: Lazy<Mutex<std::collections::HashSet<i64>>> =
+    Lazy::new(|| Mutex::new(std::collections::HashSet::new()));
 
 /// True once if a background [`fetch_track_async`] just wrote this track to disk.
 pub fn take_fetch_ready(tid: i64) -> bool {
     FETCH_READY
+        .lock()
+        .map(|mut s| s.remove(&tid))
+        .unwrap_or(false)
+}
+
+/// Mark a locally rewritten track so the live map drops its cache.
+pub fn mark_track_dirty(tid: i64) {
+    if tid > 0 {
+        if let Ok(mut s) = TRACK_DIRTY.lock() {
+            s.insert(tid);
+        }
+    }
+}
+
+/// True once if [`mark_track_dirty`] ran for this TrackID since the last take.
+pub fn take_track_dirty(tid: i64) -> bool {
+    TRACK_DIRTY
         .lock()
         .map(|mut s| s.remove(&tid))
         .unwrap_or(false)

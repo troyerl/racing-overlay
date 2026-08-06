@@ -75,6 +75,38 @@ pub struct CarRow {
     pub car_flag: Option<String>,
 }
 
+impl CarRow {
+    /// Still an active race/qual entry (not pace car, retired, or spectator ghost).
+    pub fn is_live_competitor(&self) -> bool {
+        !self.is_pace_car
+            && !self.inactive
+            && self.position > 0
+            && self.lap_dist_pct >= 0.0
+    }
+
+    /// Seated-account ghost with no race presence (true spectator / not in field).
+    pub fn is_spectator_ghost(&self) -> bool {
+        self.inactive || self.position <= 0 || self.lap_dist_pct < 0.0
+    }
+}
+
+/// Presentation / table focus while racing or spectating.
+///
+/// Live seated racer keeps focus even if the camera wanders; pure spectators
+/// follow the camera car, else the seated player.
+pub fn presentation_focus_car_idx(cars: &[CarRow], camera_car_idx: Option<i32>) -> Option<i32> {
+    let seated = cars.iter().find(|c| c.is_player);
+    if seated.map(|c| c.is_live_competitor()).unwrap_or(false) {
+        return seated.map(|c| c.car_idx);
+    }
+    if let Some(cam) = camera_car_idx {
+        if cars.iter().any(|c| c.car_idx == cam && !c.is_pace_car) {
+            return Some(cam);
+        }
+    }
+    seated.map(|c| c.car_idx)
+}
+
 /// Seated-car motion state. iRacing withholds `Lat`/`Lon` in live telemetry, so
 /// this is what `--log-track-path` integrates to reconstruct the driven path.
 /// Velocities are car-local (x forward, y left) in m/s; angles are radians.
@@ -89,8 +121,9 @@ pub struct PlayerMotion {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TelemetryFrame {
     pub connected: bool,
-    /// Car currently shown by the iRacing camera. Relative/Standings center on
-    /// this car while spectating, without changing player telemetry semantics.
+    /// Car currently shown by the iRacing camera. Pure spectators center
+    /// Relative/Standings on this car; live racers watching another car keep
+    /// table focus on themselves. Does not change player telemetry semantics.
     #[serde(default)]
     pub camera_car_idx: Option<i32>,
     /// Player is seated in their car with physics (`IsOnTrack`). False while
@@ -101,7 +134,7 @@ pub struct TelemetryFrame {
     #[serde(default)]
     pub in_garage: bool,
     pub session_time: f64,
-    /// iRacing SessionState (4=racing, 5=checkered).
+    /// iRacing SessionState (4=racing, 5=checkered, 6=cooldown).
     pub session_state: i32,
     pub flag: Option<String>,
     pub flag_context: Option<String>,
@@ -417,7 +450,7 @@ pub mod demo {
         } else if cyc < 20.0 {
             (
                 Some("white".into()),
-                Some("Lap 49 of 50 — finish this lap".into()),
+                Some("Lap 49 of 50 — last lap next".into()),
                 false,
             )
         } else if cyc < 23.0 {

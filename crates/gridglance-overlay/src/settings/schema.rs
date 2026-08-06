@@ -54,6 +54,7 @@ const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "rows_ahead",
             "rows_behind",
             "show_footer",
+            "pit_mode",
             "text_scale",
         ],
     ),
@@ -101,6 +102,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "rows_ahead",
                     "rows_behind",
                     "show_footer",
+                    "pit_mode",
                     "text_scale",
                     "show_strategy_hints",
                     "strategy_fuel_pct_thresh",
@@ -167,6 +169,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 "Content",
                 &[
                     "title",
+                    "history_laps",
                     "pit_loss_seconds",
                     "low_fuel_laps_threshold",
                     "low_fuel_time_threshold",
@@ -221,7 +224,16 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "text_scale",
                 ],
             ),
-            ("Shift bar", &["show_shift_bar"]),
+            (
+                "Shift bar",
+                &[
+                    "show_shift_bar",
+                    "shift_blink",
+                    "shift_blink_hz",
+                    "shift_blink_pct",
+                    "shift_blink_max_sec",
+                ],
+            ),
             (
                 "Center medallion",
                 &[
@@ -311,7 +323,17 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
             ("Colors", &["colors"]),
         ],
         "lap_compare" => vec![
-            ("Content", &["panel_style", "max_turns", "show_graph"]),
+            (
+                "Content",
+                &[
+                    "panel_style",
+                    "reference_mode",
+                    "max_turns",
+                    "show_graph",
+                    "show_brake_markers",
+                    "show_lift_markers",
+                ],
+            ),
             ("Row layout", &["alt_row_shading"]),
             ("Colors", &["colors"]),
         ],
@@ -320,8 +342,10 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 "Content",
                 &[
                     "panel_style",
+                    "sectors",
                     "show_sector_delta",
                     "show_predicted_lap",
+                    "highlight_active_sector_on_map",
                     "text_scale",
                 ],
             ),
@@ -536,7 +560,54 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
 }
 
 pub fn group_default_open(group_title: &str) -> bool {
-    !matches!(group_title, "Colors" | "Sizing" | "Row layout")
+    !matches!(group_title, "Colors" | "Row layout")
+}
+
+/// Laptime log columns (toggle / order in Settings).
+pub const LAPLOG_COLUMNS: &[&str] = &[
+    "lap", "time", "delta", "temp", "sectors", "fuel", "tires", "incidents", "tag",
+];
+
+/// Data columns Relative / Standings can show (order = default insertion order).
+pub const TABLE_DATA_COLUMNS: &[&str] = &[
+    "badge",
+    "position",
+    "car_number",
+    "name",
+    "license",
+    "irating",
+    "gap",
+    "gap_ahead",
+    "gap_leader",
+    "pit",
+    "last_lap",
+    "best_lap",
+    "class_pos",
+    "status",
+    "car_flag",
+    "laps",
+    "closing",
+    "team",
+    "nickname",
+];
+
+/// Default width multiplier (× row height) for a table column. `name` is flex.
+pub fn default_table_col_width(col: &str) -> f32 {
+    match col {
+        "badge" => 0.95,
+        "position" => 1.25,
+        "car_number" => 1.60,
+        "gap" | "gap_ahead" | "gap_leader" => 1.70,
+        "irating" => 1.20,
+        "license" => 1.35,
+        "pit" => 2.10,
+        "last_lap" | "best_lap" => 2.90,
+        "class_pos" | "status" | "car_flag" | "laps" => 1.35,
+        "closing" => 1.80,
+        "team" | "nickname" => 2.20,
+        "gutter" => 0.12,
+        _ => 1.2,
+    }
 }
 
 /// Per-widget accent (Python `TAB_COLORS`).
@@ -584,8 +655,27 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
             "max_row_height_frac",
             "data_font_bold",
             "pit_loss_seconds",
+            "title",
+            "show_title",
         ],
-        "standings" => &["irating_show_icon", "max_row_height_frac", "data_font_bold"],
+        "standings" => &[
+            "irating_show_icon",
+            "max_row_height_frac",
+            "data_font_bold",
+            "show_title",
+        ],
+        "dash" => &[
+            "flag_pulse",
+            "flag_pulse_seconds",
+            "flag_blink_hz",
+            "flag_green_seconds",
+            "delta_bar_mode",
+            "row_dividers",
+            "data_font_bold",
+            "irating_show_icon",
+            "title",
+            "show_title",
+        ],
         "laptime_log" => &["data_font_bold"],
         "fuel_calc" => &[
             "show_stints",
@@ -598,15 +688,6 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
             "row_dividers",
             "closing_rate_color",
             "closing_rate_full",
-            "data_font_bold",
-        ],
-        "dash" => &[
-            "flag_pulse",
-            "flag_pulse_seconds",
-            "flag_blink_hz",
-            "flag_green_seconds",
-            "delta_bar_mode",
-            "row_dividers",
             "data_font_bold",
         ],
         "inputs" => &[
@@ -729,6 +810,7 @@ pub fn pretty_key(key: &str) -> String {
         "show_network" => return "Network".into(),
         "show_ffb" => return "FFB".into(),
         "show_icons" => return "Icons".into(),
+        "car_label" => return "Dot number".into(),
         _ => {}
     }
     key.split('_')
@@ -816,6 +898,158 @@ pub fn table_slot_options(section: &str) -> &'static [&'static str] {
     }
 }
 
+/// Friendly label for a stored choice value (snake_case → title case, plus overrides).
+pub fn choice_label(value: &str) -> String {
+    match value {
+        "none" => "None".into(),
+        "sof" => "SOF".into(),
+        "class_sof" => "Class SOF".into(),
+        "cpu" => "CPU".into(),
+        "mem" => "Memory".into(),
+        "gpu" => "GPU".into(),
+        "order_pill" => "Order pill".into(),
+        "metric" => "Metric".into(),
+        "imperial" => "Imperial".into(),
+        "data" => "Data".into(),
+        "elegant" => "Elegant".into(),
+        "number" => "Car number".into(),
+        "position" => "Position".into(),
+        "laps_since" => "Laps since pit".into(),
+        "time_since" => "Time since pit".into(),
+        "at_lap" => "Pit lap number".into(),
+        "at_time" => "Pit clock time".into(),
+        "ring" => "Input ring".into(),
+        "pedals" => "Pedals".into(),
+        "session_best" => "Session best".into(),
+        "best_lap" => "Best lap".into(),
+        "optimal" => "Optimal".into(),
+        "last_lap" => "Last lap".into(),
+        "leader_last" => "Leader last lap".into(),
+        "previous" => "Previous lap".into(),
+        "best" => "Best lap".into(),
+        "personal_best" => "Personal best".into(),
+        "entry" => "Entry".into(),
+        "road" => "Road".into(),
+        "merge" => "Merge".into(),
+        "1" => "Lane 1".into(),
+        "2" => "Lane 2".into(),
+        "lap_count" => "Lap count".into(),
+        "laps_left" => "Laps left".into(),
+        "car_number" => "Car number".into(),
+        "fuel_laps" => "Fuel laps".into(),
+        "fuel_stack" => "Fuel stack".into(),
+        "cur_lap" => "Current lap".into(),
+        "air_temp" => "Air temp".into(),
+        "track_temp" => "Track temp".into(),
+        "class_position" => "Class position".into(),
+        "session_time" => "Session time".into(),
+        "race_time" => "Race time".into(),
+        "track_name" => "Track name".into(),
+        "my_session_best" => "My session best".into(),
+        "local_time" => "Local time".into(),
+        "sim_time" => "Sim time".into(),
+        "laps_remain" => "Laps remaining".into(),
+        "incident_limit" => "Incident limit".into(),
+        "fast_repairs" => "Fast repairs".into(),
+        "track_wetness" => "Track wetness".into(),
+        "session_type" => "Session type".into(),
+        "race_split" => "Race split".into(),
+        _ => pretty_key(value),
+    }
+}
+
+/// Keys that may be typed freely (panel titles / display labels). Everything else is a dropdown.
+pub fn allows_free_text_setting(key: &str) -> bool {
+    matches!(
+        key,
+        "title"
+            | "label_text"
+            | "idle_text"
+            | "empty_text"
+            | "active_text"
+            | "start_go_text"
+            | "start_set_text"
+            | "start_ready_text"
+            | "label_battery"
+            | "label_boost"
+            | "label_p2p"
+    ) || key.starts_with("label_")
+}
+
+/// Known enum string settings → (stored value, friendly label).
+pub fn string_choices(section: &str, key: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match (section, key) {
+        (_, "panel_style") => Some(&[("data", "Data"), ("elegant", "Elegant")]),
+        ("map", "car_label") => Some(&[("number", "Car number"), ("position", "Position")]),
+        ("relative" | "standings", "pit_mode") => Some(&[
+            ("laps_since", "Laps since pit"),
+            ("time_since", "Time since pit"),
+            ("at_lap", "Pit lap number"),
+            ("at_time", "Pit clock time"),
+        ]),
+        ("dash", "center_mode") => Some(&[("ring", "Input ring"), ("pedals", "Pedals")]),
+        ("delta_bar", "mode") | ("dash", "delta_bar_mode") => Some(&[
+            ("session_best", "Session best"),
+            ("best_lap", "Best lap"),
+            ("optimal", "Optimal"),
+            ("last_lap", "Last lap"),
+            ("leader_last", "Leader last lap"),
+        ]),
+        ("laptime_log", "delta_mode") => Some(&[
+            ("previous", "Previous lap"),
+            ("best", "Best lap"),
+            ("personal_best", "Personal best"),
+        ]),
+        ("lap_compare", "reference_mode") => {
+            Some(&[("best", "Best lap"), ("last", "Last lap")])
+        }
+        (
+            "dash",
+            "top_left"
+                | "top_right"
+                | "primary_left"
+                | "primary_right"
+                | "stat_left"
+                | "stat_right"
+                | "strip_left"
+                | "strip_center"
+                | "strip_right",
+        ) => Some(DASH_SLOT_CHOICES),
+        _ => None,
+    }
+}
+
+pub const DASH_SLOT_CHOICES: &[(&str, &str)] = &[
+    ("none", "None"),
+    ("speed", "Speed"),
+    ("rpm", "RPM"),
+    ("gear", "Gear"),
+    ("position", "Position"),
+    ("car_number", "Car number"),
+    ("lap_count", "Lap count"),
+    ("laps_left", "Laps left"),
+    ("lap", "Lap"),
+    ("fuel", "Fuel"),
+    ("fuel_laps", "Fuel laps"),
+    ("fuel_stack", "Fuel stack"),
+    ("tires", "Tires"),
+    ("incidents", "Incidents"),
+    ("last_lap", "Last lap"),
+    ("best_lap", "Best lap"),
+    ("cur_lap", "Current lap"),
+    ("delta", "Delta"),
+    ("irating", "iRating"),
+    ("air_temp", "Air temp"),
+    ("track_temp", "Track temp"),
+];
+
+pub const UNITS_CHOICES: &[(&str, &str)] = &[("metric", "Metric"), ("imperial", "Imperial")];
+
+pub const PIT_PHASE_CHOICES: &[(&str, &str)] =
+    &[("entry", "Entry"), ("road", "Road"), ("merge", "Merge")];
+
+pub const PIT_LANE_CHOICES: &[(&str, &str)] = &[("1", "Lane 1"), ("2", "Lane 2")];
+
 pub fn matches_search(section: &str, key: &str, query: &str) -> bool {
     if query.trim().is_empty() {
         return true;
@@ -830,6 +1064,19 @@ pub fn matches_search(section: &str, key: &str, query: &str) -> bool {
 /// Short help for common keys (subset of Python `setting_help`).
 pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
     match (section, key) {
+        ("relative" | "standings", "column_order") => {
+            Some("Toggle columns and reorder. Order is left-to-right on the table.")
+        }
+        ("laptime_log", "column_order") => {
+            Some("Toggle and reorder lap log columns (left-to-right).")
+        }
+        ("relative" | "standings", "columns") => {
+            Some("Extra column options (class color stripe beside position).")
+        }
+        ("radar", "sizes") => Some("Relative sizes of radar car, bars, and glow."),
+        ("relative" | "standings", "widths") => Some(
+            "Width of each visible column as a multiple of row height. Name always fills leftover space.",
+        ),
         ("__general__", "units") => Some("Metric or imperial display units."),
         ("__general__", "text_scale") => Some("Global UI text scale multiplier."),
         ("__general__", "start_overlay_on_launch") => {
@@ -851,6 +1098,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         (_, "panel_style") => Some(
             "Data: dense telemetry layout. Elegant: softer minimal visual layout.",
         ),
+        ("map", "car_label") => {
+            Some("Number drawn on each car dot: car number or race position.")
+        },
         ("relative", "rows") => {
             Some("Total cars ahead+behind (must equal rows ahead + rows behind).")
         }

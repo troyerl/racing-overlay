@@ -2,7 +2,9 @@
 
 use super::WidgetCtx;
 use crate::chrome::{anim_dt, color_with_alpha, ease, full_rect, label, panel_card, still_easing};
-use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Stroke, Ui, Vec2};
+use egui::{
+    epaint::Vertex, Align2, Color32, CornerRadius, Mesh, Pos2, Rect, Shape, Stroke, Ui, Vec2,
+};
 
 const SECTION: &str = "radar";
 
@@ -271,34 +273,17 @@ fn side_marker(
     } else {
         ctx.cfg.color(SECTION, "red", "#ff5050")
     };
-    // Horizontal fade toward car + vertical tent feather (Python side pixmap).
-    let nx = 16;
-    let ny = 10;
-    for ix in 0..nx {
-        let tx0 = ix as f32 / nx as f32;
-        let tx1 = (ix + 1) as f32 / nx as f32;
-        let tx = (tx0 + tx1) * 0.5;
-        // Solid near car: right edge when to_left, left edge otherwise.
-        let hfade = if to_left { 1.0 - tx } else { tx };
-        for iy in 0..ny {
-            let ty0 = iy as f32 / ny as f32;
-            let ty1 = (iy + 1) as f32 / ny as f32;
-            let ty = (ty0 + ty1) * 0.5;
-            let vfade = tent(ty);
-            let a = (peak as f32 * hfade * vfade) as u8;
-            if a < 2 {
-                continue;
-            }
-            ui.painter().rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(left + w * tx0, yc - h * 0.5 + h * ty0),
-                    Pos2::new(left + w * tx1, yc - h * 0.5 + h * ty1),
-                ),
-                CornerRadius::ZERO,
-                color_with_alpha(base, a),
-            );
-        }
-    }
+    // Smooth tent × linear fade via vertex-colored mesh (GPU interpolates).
+    paint_feather_mesh(
+        ui,
+        Rect::from_min_max(
+            Pos2::new(left, yc - h * 0.5),
+            Pos2::new(right, yc + h * 0.5),
+        ),
+        base,
+        peak,
+        FeatherKind::HorizontalTowardCar { to_left },
+    );
     if !label_txt.is_empty() {
         label(
             ui,
@@ -324,37 +309,72 @@ fn v_glow(
 ) {
     let top = y_inner.min(y_outer);
     let bottom = y_inner.max(y_outer);
-    let h = (bottom - top).max(1.0);
-    let w = (half_w * 2.0).max(1.0);
     let peak = (80.0 + 130.0 * closeness.clamp(0.0, 1.0)) as u8;
     let base = prox_color(ctx, closeness, 255);
-    // Inner→outer fade × horizontal tent feather (Python _build_glow_pixmap).
-    let ny = 20;
-    let nx = 12;
+    paint_feather_mesh(
+        ui,
+        Rect::from_min_max(
+            Pos2::new(cx - half_w, top),
+            Pos2::new(cx + half_w, bottom),
+        ),
+        base,
+        peak,
+        FeatherKind::VerticalFromInner {
+            opaque_at_top: y_inner <= y_outer,
+        },
+    );
+}
+
+enum FeatherKind {
+    VerticalFromInner { opaque_at_top: bool },
+    HorizontalTowardCar { to_left: bool },
+}
+
+/// Soft glow mesh: tent × linear fade with enough verts for smooth interpolation.
+fn paint_feather_mesh(ui: &mut Ui, rect: Rect, base: Color32, peak: u8, kind: FeatherKind) {
+    if rect.width() < 0.5 || rect.height() < 0.5 || peak < 2 {
+        return;
+    }
+    // Odd counts so a column/row sits on the tent peak (t=0.5).
+    let (nx, ny) = match kind {
+        FeatherKind::VerticalFromInner { .. } => (17usize, 9usize),
+        FeatherKind::HorizontalTowardCar { .. } => (9usize, 17usize),
+    };
+    let mut mesh = Mesh::default();
     for iy in 0..ny {
-        let ty0 = iy as f32 / ny as f32;
-        let ty1 = (iy + 1) as f32 / ny as f32;
-        let ty = (ty0 + ty1) * 0.5;
-        // t=0 at inner, t=1 at outer
-        let from_inner = if y_inner <= y_outer { ty } else { 1.0 - ty };
-        let a_v = 1.0 - from_inner;
+        let ty = iy as f32 / (ny - 1) as f32;
         for ix in 0..nx {
-            let tx0 = ix as f32 / nx as f32;
-            let tx1 = (ix + 1) as f32 / nx as f32;
-            let tx = (tx0 + tx1) * 0.5;
-            let a_h = tent(tx);
-            let a = (peak as f32 * a_v * a_h) as u8;
-            if a < 2 {
-                continue;
-            }
-            ui.painter().rect_filled(
-                Rect::from_min_max(
-                    Pos2::new(cx - half_w + w * tx0, top + h * ty0),
-                    Pos2::new(cx - half_w + w * tx1, top + h * ty1),
+            let tx = ix as f32 / (nx - 1) as f32;
+            let a_mul = match kind {
+                FeatherKind::VerticalFromInner { opaque_at_top } => {
+                    let a_h = tent(tx);
+                    let a_v = if opaque_at_top { 1.0 - ty } else { ty };
+                    a_h * a_v
+                }
+                FeatherKind::HorizontalTowardCar { to_left } => {
+                    let a_v = tent(ty);
+                    let a_h = if to_left { 1.0 - tx } else { tx };
+                    a_h * a_v
+                }
+            };
+            let a = (peak as f32 * a_mul) as u8;
+            mesh.vertices.push(Vertex {
+                pos: Pos2::new(
+                    rect.left() + rect.width() * tx,
+                    rect.top() + rect.height() * ty,
                 ),
-                CornerRadius::ZERO,
-                color_with_alpha(base, a),
-            );
+                uv: egui::epaint::WHITE_UV,
+                color: color_with_alpha(base, a),
+            });
         }
     }
+    for iy in 0..(ny - 1) {
+        for ix in 0..(nx - 1) {
+            let i = (iy * nx + ix) as u32;
+            let nx_u = nx as u32;
+            mesh.indices
+                .extend_from_slice(&[i, i + 1, i + nx_u, i + 1, i + 1 + nx_u, i + nx_u]);
+        }
+    }
+    ui.painter().add(Shape::mesh(mesh));
 }

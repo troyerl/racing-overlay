@@ -236,6 +236,13 @@ Things to know:
   solved. Change either and recalibrate.
 - `--calibrate-track-path <csv>` re-solves from a recording already on disk, so a
   solver change does not cost another driving session.
+- Some Members drawings are **wound against LapDistPct** (Iowa 559). On a
+  symmetric oval that looks the same as a left/right mirror to Procrustes —
+  calibration **prefers reversing** the polyline (S/F kept at index 0) so the
+  familiar outline is preserved. A true mirror bake is used only when it fits
+  clearly better. Corner labels for 2–4 turn ovals are rebuilt in lap order, and
+  the live map cache is invalidated so the rewrite is picked up without a
+  restart.
 
 #### The projection window has to stay narrow
 
@@ -421,14 +428,16 @@ corner pill height uses `sz * CORNER_LINE_HEIGHT` to match egui's galley.
 
 ## Who the map calls "you"
 
-`widgets::map::focus_car_idx` resolves it: the iRacing camera car if that car is
-in the field and not the pace car, else the seated player. It drives dot radius,
-the green player fill, the centre ring, label weight, draw order, and which car
-the leader / ahead / behind markers hang off.
+`widgets::map::focus_car_idx` resolves it: if your seated car is still a live
+competitor, focus stays on you even when the camera wanders; pure spectators
+(ghost seated entry) follow the iRacing camera car, else the seated player. It
+drives dot radius, the green player fill, the centre ring, label weight, draw
+order, and which car the leader / ahead / behind markers hang off.
 
 `frame.cars[].is_player` is deliberately left as the *seated* player — timing
 tables already take the same approach via `apply_table_focus`, which mutates a
-clone. Two things must keep using it:
+clone (and also keeps focus on a live seated racer while watching). Two things
+must keep using it:
 
 - The `player_lap_dist_pct` override in the pct feed. It is a higher-precision
   value for the seated car only; applying it to a spectated car places the dot
@@ -474,7 +483,7 @@ all land here, so this is not just a first-load path.
 
 ## Related non-map fixes (same stretch)
 
-- Standings while spectating: no center window; clear lapping/lap_ahead tints when `!in_car`
+- Standings while spectating: no center window; lap tints follow presentation focus
 - Demo map dots: pin to continuous demo telem; don’t let coast fight demo feed
 
 ---
@@ -513,6 +522,7 @@ Append a short bullet each time you change map behavior:
 - **2026-08-03 (track load):** Host no longer overwrites live SDK `TrackID` with `cached_track_id` every tick (stuck wrong map after Track Scan / prior session). Authoring stamp only when demo/disconnected; invalidate when live ID changes.
 - **2026-08-04 (hot path parity):** Dots blinked out, showed no numbers, and had no player / leader / ahead / behind markers. Root cause was not the renderer but the *hot path*: `skia_ui::manager::paint_map` composited cars with `layered::composite_map_cars`, a CPU circle blitter that hardcodes `label = String::new()`, has no marker rings, no player ring and no status badges — and `build_car_sprites` dropped the worse-placed car of any stacked pair, which is what made dots vanish and return. Since rev 32 freed ~12 ms/frame, the hot path now seeds a **reused** `Canvas` (`Canvas::new` reloads three typefaces, so it must not be per-frame) with the cached static BGRA via `write_bgra`, then runs the real car renderer through the new `MapPaintMode::DynamicOnly`. Everything in `paint_inner` before the cars is skipped because it is already in the bg cache. Dirty-rect ULW was dropped with it: traffic-marker badges and pills sit well outside the car radii, so car-anchored rects can't cover them. Watch `ulw=` in `--perf` — it was ~0.6 ms/present with dirty rects.
 - **2026-08-04 (spectator focus):** Spectating drew the followed car as plain traffic and showed no leader/ahead/behind markers, because both keyed off `is_player` — the seated car, which while spectating has `position == 0` and `lap_dist_pct < 0`. Added `widgets::map::focus_car_idx` (camera car → seated player) and threaded it through both renderers plus `build_car_sprites`; `car_fill` and `select_marker_candidates` now take it as an argument instead of reading `is_player`. Also extended `car_on_route`'s ApproachingPits branch to the focus car so a spectated pit entry blends like your own. `is_player` still governs the `player_lap_dist_pct` override and the S/F edit click.
+- **2026-08-05 (motion rev 34):** Iowa oval: dot off when fast, matched when slow. Root cause was the critically damped tracker chasing a *held* `LapDistPct` while feed-forward vel stayed nonzero — that DE settles at `telem + 2·vel/ω` (~5–15 m at oval speed, ~0 when stopped). Rev 34 tracks the predicted setpoint `last_telem + vel·age` instead, so steady state is on the coasting prediction with no speed-proportional bias.
 - **2026-08-05 (map calibration):** "The dot moves faster than the car on the straights" was neither the motion model nor the overall map scale. A critically damped tracker has zero steady-state error and only `a/ω²` (~5e-6 lap) under acceleration, and the Charlotte drawing measures 0.472 m per SVG unit — a believable 9.4 m track width. What is wrong is that `point_at` reads lap % as a **drawn arc fraction**, and imported SVGs do not distribute length like the real track. Dead reckoning three driven laps from `VelocityX`/`VelocityY`/`Yaw` (iRacing exposes no `Lat`/`Lon`) put the dot 19 m ahead at worst and 45 m behind at worst, running 0.82–1.41× the correct rate. `--log-track-path` now solves a 256-knot `pct_map` (Procrustes shape fit + monotone projection, `tracks::calibrate`) and writes it to the track document; `loop_frac_for_pct` applies it to every lap-%-to-position conversion. Fit on one lap and scored on the next: rms 14.1 m → 1.4 m, worst 43.9 m → 5.0 m.
 - **2026-08-05 (calibration rejected every lap):** A clean three-lap recording at Charlotte produced no `pct_map` — "laps did not match the drawn loop well enough". The shape fit was fine (14 m rms on a 3.6 km lap); the projection was not. `project_monotone` searched `m/6` of the loop ahead of the current vertex — 600 m against a 14 m knot spacing — and at the infield hairpin, whose legs run a few metres apart but ~100 m apart along the lap, the return leg won. The walk jumped the gap and doubled back on the way out, and the strict "no backward step" gate threw both laps away. The window is now sized in knot steps (1.5 back, 3 ahead), and backward steps are clamped out of the table instead of voiding the lap, with cumulative backtracking over 2 % of a lap still rejecting it. Also added `--calibrate-track-path <csv>` so an existing recording can be re-solved without driving again. Scored on the *other* recording: rms 14.3 m → 2 m, worst 44.8 m → 12 m, the remainder a single blip at the hairpin apex.
 - **2026-08-04 (self-crossing import):** Oran Park GP (202) laps twice per lap of `LapDistPct`. The exporter breaks the stroke at Yokohama Bridge to draw the overpass, which makes the circuit an open arc, so its outline is a single zero-area ribbon rather than an annulus and `pick_best_subpath` had no outer boundary to pick. New `tracks::ribbon::collapse_to_centerline` folds the ribbon onto its centreline (area-derived width cross-checked against nearest-far-index pairing, opposite-*polyline* projection to absorb corner drift) and closes the ring across the gap. The recovered lap self-intersects on purpose: `track_path::loop_self_crossing` flags it so the infield uses a winding fill instead of ear clipping. Also filtered the turns layer with `is_turn_label` — Oran Park puts corner names in it, which imported as 28 turns.

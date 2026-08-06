@@ -388,6 +388,54 @@ pub fn preset_button(ui: &mut Ui, label: &str) -> Response {
     button_kind(ui, label, ButtonKind::Default)
 }
 
+/// Compact square button that paints a Font Awesome glyph (reorder controls, etc.).
+pub fn icon_button(ui: &mut Ui, icon_key: &str, enabled: bool, id: egui::Id) -> Response {
+    let size = Vec2::new(28.0, 28.0);
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, _) = ui.allocate_exact_size(size, sense);
+    // Re-bind with a stable id so hover/click state tracks across frames.
+    let resp = ui.interact(rect, id, sense);
+    let (fill, stroke, ink) = if !enabled {
+        (
+            Color32::TRANSPARENT,
+            Stroke::new(1.0_f32, Color32::from_rgb(0x2a, 0x30, 0x38)),
+            Color32::from_rgb(0x5a, 0x62, 0x70),
+        )
+    } else if resp.hovered() {
+        (
+            Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 31),
+            Stroke::new(
+                1.0_f32,
+                Color32::from_rgba_unmultiplied(ACCENT.r(), ACCENT.g(), ACCENT.b(), 84),
+            ),
+            ACCENT,
+        )
+    } else {
+        (
+            Color32::TRANSPARENT,
+            Stroke::new(1.0_f32, BTN_BORDER),
+            ROW_LABEL,
+        )
+    };
+    ui.painter().rect_filled(rect, BTN_RADIUS, fill);
+    ui.painter()
+        .rect_stroke(rect, BTN_RADIUS, stroke, StrokeKind::Inside);
+    if let Some(g) = crate::icons::glyph(icon_key) {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            g,
+            crate::icons::font_id(12.0),
+            ink,
+        );
+    }
+    resp
+}
+
 pub fn button_kind(ui: &mut Ui, label: &str, kind: ButtonKind) -> Response {
     let strong = matches!(kind, ButtonKind::Primary | ButtonKind::Go);
     let font = if strong {
@@ -463,6 +511,23 @@ pub fn styled_combo(
     options: &[String],
     width: f32,
 ) -> Option<String> {
+    let choices: Vec<(&str, &str)> = options.iter().map(|s| (s.as_str(), s.as_str())).collect();
+    styled_choice_combo(ui, id_source, selected, &choices, width)
+}
+
+/// Dropdown that shows friendly `label`s and returns the stored `value`.
+pub fn styled_choice_combo(
+    ui: &mut Ui,
+    id_source: impl std::hash::Hash,
+    selected_value: &str,
+    choices: &[(&str, &str)],
+    width: f32,
+) -> Option<String> {
+    let selected_label = choices
+        .iter()
+        .find(|(v, _)| *v == selected_value)
+        .map(|(_, l)| *l)
+        .unwrap_or(selected_value);
     let id = ui.make_persistent_id(id_source);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
     let open = ui.memory(|mem| mem.is_popup_open(id));
@@ -480,7 +545,7 @@ pub fn styled_combo(
     ui.painter().text(
         rect.left_center() + Vec2::new(11.0, 0.0),
         egui::Align2::LEFT_CENTER,
-        selected,
+        selected_label,
         FontId::proportional(12.0),
         theme::TEXT,
     );
@@ -512,11 +577,11 @@ pub fn styled_combo(
                 .corner_radius(FIELD_RADIUS)
                 .inner_margin(egui::Margin::symmetric(6, 6))
                 .show(ui, |ui| {
-                    for opt in options {
-                        let selected_row = opt == selected;
-                        let row_resp = nav_like_row(ui, opt, selected_row);
+                    for &(value, label) in choices {
+                        let selected_row = value == selected_value;
+                        let row_resp = nav_like_row(ui, label, selected_row);
                         if row_resp.clicked() {
-                            picked = Some(opt.clone());
+                            picked = Some(value.to_string());
                             ui.memory_mut(|mem| mem.close_popup());
                         }
                     }

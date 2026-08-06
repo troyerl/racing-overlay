@@ -3,8 +3,9 @@
 #[cfg(windows)]
 mod win {
     use crate::telemetry::format::{
-        fmt_car_gap, fmt_laptime, format_session_type, map_session_flag_label, parse_race_split,
-        parse_race_split_total, parse_session_types,
+        apply_white_flag_timing, fmt_car_gap, fmt_laptime, format_session_type,
+        map_session_flag_label, parse_race_split, parse_race_split_total, parse_session_types,
+        update_white_flag_hud, WhiteFlagHud,
     };
     use crate::telemetry::pit_service::any_requested;
     use crate::telemetry::{
@@ -101,6 +102,8 @@ mod win {
         results: HashMap<i32, ResultPosEntry>,
         /// From QualifyResultsInfo.Results (starting grid / live qual order).
         qualify_grid: HashMap<i32, ResultPosEntry>,
+        /// Dash white HUD: show from in-game white until the player takes S/F.
+        white_flag_hud: WhiteFlagHud,
     }
 
     pub struct IrsdkReader {
@@ -278,7 +281,7 @@ mod win {
         };
 
         let sf = read_i32(session, "SessionFlags");
-        let flag = map_flag(sf);
+        let mut flag = map_flag(sf);
         // Incident warn is computed in finalize_frame from count/limit + settings.
         let incident_warn = false;
         let incidents_limit = cache.incidents_limit;
@@ -470,6 +473,13 @@ mod win {
         } else {
             session_laps_remain_sdk
         };
+        // Dash white: only after in-game FLAG_WHITE, until this car takes S/F
+        // (do not synthesize from SessionLapsRemain — timed races sit near ~2 laps).
+        let sdk_white = sf & FLAG_WHITE != 0;
+        let (white_hud, show_white_hud) =
+            update_white_flag_hud(cache.white_flag_hud, sdk_white, lap);
+        cache.white_flag_hud = white_hud;
+        flag = apply_white_flag_timing(flag, show_white_hud);
         let pits_open = {
             // PitsOpen may be absent; treat unknown as None.
             match session.find_var("PitsOpen").map(|v| session.var_value(&v)) {
@@ -816,7 +826,7 @@ mod win {
         flag: Option<&str>,
         sf: i32,
         pits_open: Option<bool>,
-        session_laps_remain: Option<f32>,
+        _session_laps_remain: Option<f32>,
         session_time_remain: Option<f32>,
         lap: i32,
         laps_total: i32,
@@ -867,12 +877,10 @@ mod win {
                 }
             }
             Some("white") => {
-                if session_laps_remain.map(|v| v.round() as i32) == Some(1) {
-                    Some("1 lap remaining".into())
-                } else if laps_total > 0 && lap > 0 {
-                    Some(format!("Lap {lap} of {laps_total} — finish this lap"))
+                if laps_total > 0 && lap > 0 {
+                    Some(format!("Lap {lap} of {laps_total} — last lap next"))
                 } else {
-                    Some("Final lap — finish the race".into())
+                    Some("White flag — last lap next".into())
                 }
             }
             Some("blue") => Some("Faster car approaching — let them pass".into()),

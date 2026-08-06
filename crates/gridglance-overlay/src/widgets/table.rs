@@ -462,8 +462,8 @@ fn paint_row_chrome(
     let tint_key = if row.is_player {
         Some("player_row")
     } else if row.lapping {
-        // Red = traffic the focus car is lapping; blue = car lapping the focus.
-        Some(if row.lap_ahead { "lapped" } else { "threat" })
+        // iRacing Relative: red = car lapping you; blue = traffic you're lapping.
+        Some(if row.lap_ahead { "threat" } else { "lapped" })
     } else if row.in_pit || row.on_pit {
         Some("pit_row")
     } else if row.inactive {
@@ -537,6 +537,19 @@ fn paint_row_chrome(
     }
 }
 
+/// iRacing Relative ink: red when they lap you, blue when you lap them.
+fn lap_traffic_ink(cfg: &OverlayConfig, section: &str, row: &TableRow) -> Option<Color32> {
+    if !row.lapping || row.is_player || row.empty {
+        return None;
+    }
+    let (key, fallback) = if row.lap_ahead {
+        ("threat", "#ff5050")
+    } else {
+        ("lapped", "#2563eb")
+    };
+    Some(color_with_alpha(cfg.color(section, key, fallback), 255))
+}
+
 fn paint_row_cols(
     ui: &mut Ui,
     cfg: &OverlayConfig,
@@ -554,6 +567,7 @@ fn paint_row_cols(
 ) {
     let dim = row.in_pit || row.on_pit || row.inactive || row.empty;
     let dim_text = cfg.color(section, "row_dim_text", "#5a616c");
+    let lap_ink = lap_traffic_ink(cfg, section, row);
     let name_col = columns.iter().any(|c| c == "name");
     let fixed: f32 = columns
         .iter()
@@ -606,18 +620,27 @@ fn paint_row_cols(
                     }
                 }
                 // Python: left-aligned after class stripe inset.
+                let pos_col = if dim {
+                    dim_text
+                } else {
+                    lap_ink.unwrap_or(text)
+                };
                 label(
                     ui,
                     Pos2::new(cx + rh * 0.2, cy),
                     Align2::LEFT_CENTER,
                     &format!("{}", row.position.max(0)),
                     fs,
-                    if dim { dim_text } else { text },
+                    pos_col,
                     true,
                 );
             }
             "name" => {
-                let colc = if dim { dim_text } else { text };
+                let colc = if dim {
+                    dim_text
+                } else {
+                    lap_ink.unwrap_or(text)
+                };
                 let bold = cfg.bool_key(section, "name_font_bold", true);
                 let mut text_x = cx + 4.0;
                 // Driver-group / league icons sit beside the name — not in the

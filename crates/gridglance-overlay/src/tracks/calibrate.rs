@@ -37,11 +37,89 @@ const MAX_FIT_RMS: f32 = 0.05;
 /// track rather than wobbled along it.
 const MAX_BACKTRACK: f32 = 0.02;
 
-/// Solve a lap-% → loop-arc table from recorded laps. `None` when the samples
-/// do not contain a usable lap.
-pub fn solve_pct_map(samples: &[Sample], loop_pts: &[(f32, f32)]) -> Option<Vec<f32>> {
+/// How to fix a drawn loop that does not match the driven path's sense of travel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopFix {
+    None,
+    /// Point order runs against LapDistPct. Reversing keeps the familiar drawing
+    /// and is the usual Members-SVG oval failure mode.
+    Reverse,
+    /// Drawing is a left/right mirror of the circuit (rare; prefer [`LoopFix::Reverse`]
+    /// when both fit, because ovals make the two look alike to Procrustes).
+    Mirror,
+}
+
+/// Choose a geometry fix so lap % advances the right way around the drawn loop.
+pub fn choose_loop_fix(samples: &[Sample], loop_pts: &[(f32, f32)]) -> LoopFix {
+    let Some(lap) = complete_laps(samples).into_iter().next() else {
+        return LoopFix::None;
+    };
+    let path = dead_reckon(lap);
+    let shape = resample_by_arc(&path, FIT_N);
+    let loop_fit: Vec<(f32, f32)> = (0..FIT_N)
+        .map(|i| point_at(loop_pts, i as f32 / FIT_N as f32))
+        .collect();
+    let mut reversed = loop_pts.to_vec();
+    reverse_loop_keep_sf(&mut reversed);
+    let rev_fit: Vec<(f32, f32)> = (0..FIT_N)
+        .map(|i| point_at(&reversed, i as f32 / FIT_N as f32))
+        .collect();
+
+    let plain = fit_rms_for_handedness(&shape, &loop_fit, false);
+    let mirrored = fit_rms_for_handedness(&shape, &loop_fit, true);
+    let reversed_rms = fit_rms_for_handedness(&shape, &rev_fit, false);
+
+    let plain = plain.unwrap_or(f32::MAX);
+    let mirrored = mirrored.unwrap_or(f32::MAX);
+    let reversed_rms = reversed_rms.unwrap_or(f32::MAX);
+
+    let reverse_ok = reversed_rms < MAX_FIT_RMS && reversed_rms * 3.0 < plain;
+    let mirror_ok = mirrored < MAX_FIT_RMS && mirrored * 3.0 < plain;
+    match (reverse_ok, mirror_ok) {
+        // Symmetric ovals: reverse ≅ mirror to Procrustes — keep the drawing.
+        // Only take mirror when it is clearly better than reversing.
+        (true, true) if mirrored * 3.0 < reversed_rms => LoopFix::Mirror,
+        (true, _) => LoopFix::Reverse,
+        (false, true) => LoopFix::Mirror,
+        _ => LoopFix::None,
+    }
+}
+
+/// Reverse winding but keep the S/F sample at index 0.
+pub fn reverse_loop_keep_sf(pts: &mut Vec<(f32, f32)>) {
+    if pts.len() < 3 {
+        return;
+    }
+    let first = pts[0];
+    let mut rest: Vec<(f32, f32)> = pts.drain(1..).collect();
+    rest.reverse();
+    pts.clear();
+    pts.push(first);
+    pts.extend(rest);
+}
+
+/// Reflect every point through the vertical centreline of the polyline set so
+/// the drawing matches the driven path's handedness without leaving the bbox.
+pub fn mirror_polyline(pts: &mut [(f32, f32)]) {
+    let mut min_x = f32::MAX;
+    let mut max_x = f32::MIN;
+    for &(x, _) in pts.iter() {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+    }
+    if !min_x.is_finite() || !max_x.is_finite() || max_x - min_x < 1e-9 {
+        return;
+    }
+    let cx = 0.5 * (min_x + max_x);
+    for p in pts.iter_mut() {
+        p.0 = 2.0 * cx - p.0;
+    }
+}
+
+/// Solve a lap-% → loop-arc table from recorded laps.
+pub fn solve_pct_map(samples: &[Sample], loop_pts: &[(f32, f32)]) -> Result<Vec<f32>, String> {
     if loop_pts.len() < 8 {
-        return None;
+        return Err("track loop is too short".into());
     }
     let loop_fit: Vec<(f32, f32)> = (0..FIT_N)
         .map(|i| point_at(loop_pts, i as f32 / FIT_N as f32))
@@ -50,16 +128,33 @@ pub fn solve_pct_map(samples: &[Sample], loop_pts: &[(f32, f32)]) -> Option<Vec<
         .map(|i| point_at(loop_pts, i as f32 / DENSE_N as f32))
         .collect();
 
+    let laps = complete_laps(samples);
+    if laps.is_empty() {
+        return Err(format!(
+            "need a full flying lap (got {} samples spanning {:.1}% of a lap)",
+            samples.len(),
+            samples
+                .last()
+                .zip(samples.first())
+                .map(|(a, b)| (a.pct - b.pct).rem_euclid(1.0) * 100.0)
+                .unwrap_or(0.0)
+        ));
+    }
     let mut tables = Vec::new();
-    for lap in complete_laps(samples) {
-        if let Some(t) = solve_one_lap(lap, &loop_fit, &dense) {
-            tables.push(t);
+    let mut rejects = Vec::new();
+    for (i, lap) in laps.iter().enumerate() {
+        match solve_one_lap(lap, &loop_fit, &dense) {
+            Ok(t) => tables.push(t),
+            Err(why) => rejects.push(format!("lap {i}: {why}")),
         }
     }
     if tables.is_empty() {
-        return None;
+        return Err(format!(
+            "no lap matched the drawn loop ({})",
+            rejects.join("; ")
+        ));
     }
-    Some(average_tables(&tables))
+    Ok(average_tables(&tables))
 }
 
 /// Slices spanning a full lap, split on the lap-% wrap.
@@ -75,7 +170,15 @@ fn complete_laps(samples: &[Sample]) -> Vec<&[Sample]> {
     for w in bounds.windows(2) {
         let lap = &samples[w[0]..w[1]];
         // A partial out-lap covers only part of the range and would extrapolate.
-        if lap.len() >= 200 && lap[lap.len() - 1].pct - lap[0].pct > 0.97 {
+        if lap.len() < 200 || lap[lap.len() - 1].pct - lap[0].pct <= 0.97 {
+            continue;
+        }
+        // Session restart / pause leaves a hole that dead reckoning cannot bridge.
+        let dt_ok = lap.windows(2).all(|p| {
+            let dt = p[1].t - p[0].t;
+            (0.0..1.0).contains(&dt)
+        });
+        if dt_ok {
             out.push(lap);
         }
     }
@@ -86,26 +189,31 @@ fn solve_one_lap(
     lap: &[Sample],
     loop_fit: &[(f32, f32)],
     dense: &[(f32, f32)],
-) -> Option<Vec<f32>> {
+) -> Result<Vec<f32>, String> {
     let path = dead_reckon(lap);
     let shape = resample_by_arc(&path, FIT_N);
-    let (xf, rms) = best_fit(&shape, loop_fit)?;
+    let (xf, rms) = best_fit(&shape, loop_fit).ok_or_else(|| "shape fit failed".to_string())?;
     if rms > MAX_FIT_RMS {
-        return None;
+        return Err(format!(
+            "driven path does not match drawing (rms {rms:.4} > {MAX_FIT_RMS})"
+        ));
     }
 
     // Sample the driven path at even lap-% steps, then read off where each lands.
     let at_pct: Vec<(f32, f32)> = (0..KNOTS)
         .map(|i| xf.apply(interp_at_pct(lap, &path, i as f32 / KNOTS as f32)))
         .collect();
-    let walk = project_monotone(&at_pct, dense)?;
+    let walk = project_monotone(&at_pct, dense).ok_or_else(|| "projection failed".to_string())?;
 
     // The drawing is wrong for this track if the walk could not follow it
     // round, and a table built on that would scatter the dot.
     if walk.backtrack > MAX_BACKTRACK || !(0.8..1.05).contains(&walk.advance) {
-        return None;
+        return Err(format!(
+            "projection lost the loop (advance={:.3}, backtrack={:.3})",
+            walk.advance, walk.backtrack
+        ));
     }
-    Some(walk.arcs)
+    Ok(walk.arcs)
 }
 
 /// Integrate car-local velocity through heading, then spread the loop-closure
@@ -210,53 +318,77 @@ impl Fit {
     }
 }
 
-/// Best similarity taking the driven shape onto the drawn loop, searching both
-/// handednesses and every cyclic start offset.
-fn best_fit(shape: &[(f32, f32)], loop_fit: &[(f32, f32)]) -> Option<(Fit, f32)> {
+/// Best similarity for one handedness (cyclic start searched).
+fn fit_rms_for_handedness(
+    shape: &[(f32, f32)],
+    loop_fit: &[(f32, f32)],
+    mirror: bool,
+) -> Option<f32> {
+    best_fit_handedness(shape, loop_fit, mirror).map(|(_, e)| e)
+}
+
+fn best_fit_handedness(
+    shape: &[(f32, f32)],
+    loop_fit: &[(f32, f32)],
+    mirror: bool,
+) -> Option<(Fit, f32)> {
     let n = shape.len();
-    if n != loop_fit.len() {
+    if n == 0 || n != loop_fit.len() {
         return None;
     }
     let cb = centroid(loop_fit);
     let b: Vec<(f32, f32)> = loop_fit.iter().map(|p| (p.0 - cb.0, p.1 - cb.1)).collect();
     let sum_b: f32 = b.iter().map(|p| p.0 * p.0 + p.1 * p.1).sum();
-
+    let m: Vec<(f32, f32)> = shape
+        .iter()
+        .map(|p| (if mirror { -p.0 } else { p.0 }, p.1))
+        .collect();
+    let ca = centroid(&m);
+    let a: Vec<(f32, f32)> = m.iter().map(|p| (p.0 - ca.0, p.1 - ca.1)).collect();
+    let sum_a: f32 = a.iter().map(|p| p.0 * p.0 + p.1 * p.1).sum();
+    if sum_a <= 1e-12 {
+        return None;
+    }
     let mut best: Option<(Fit, f32)> = None;
-    for &mirror in &[false, true] {
-        let m: Vec<(f32, f32)> = shape
-            .iter()
-            .map(|p| (if mirror { -p.0 } else { p.0 }, p.1))
-            .collect();
-        let ca = centroid(&m);
-        let a: Vec<(f32, f32)> = m.iter().map(|p| (p.0 - ca.0, p.1 - ca.1)).collect();
-        let sum_a: f32 = a.iter().map(|p| p.0 * p.0 + p.1 * p.1).sum();
-        if sum_a <= 1e-12 {
+    for k in 0..n {
+        let (mut sxx, mut sxy) = (0.0f32, 0.0f32);
+        for i in 0..n {
+            let p = a[(i + k) % n];
+            let q = b[i];
+            sxx += p.0 * q.0 + p.1 * q.1;
+            sxy += p.0 * q.1 - p.1 * q.0;
+        }
+        let mag = sxx.hypot(sxy);
+        let err = ((sum_b - mag * mag / sum_a).max(0.0) / n as f32).sqrt();
+        if best.as_ref().is_some_and(|(_, e)| *e <= err) {
             continue;
         }
-        for k in 0..n {
-            let (mut sxx, mut sxy) = (0.0f32, 0.0f32);
-            for i in 0..n {
-                let p = a[(i + k) % n];
-                let q = b[i];
-                sxx += p.0 * q.0 + p.1 * q.1;
-                sxy += p.0 * q.1 - p.1 * q.0;
-            }
-            let mag = sxx.hypot(sxy);
-            let err = ((sum_b - mag * mag / sum_a).max(0.0) / n as f32).sqrt();
-            if best.as_ref().is_some_and(|(_, e)| *e <= err) {
-                continue;
-            }
-            best = Some((
-                Fit {
-                    mirror,
-                    ca,
-                    cb,
-                    s_cos: sxx / sum_a,
-                    s_sin: sxy / sum_a,
-                },
-                err,
-            ));
+        best = Some((
+            Fit {
+                mirror,
+                ca,
+                cb,
+                s_cos: sxx / sum_a,
+                s_sin: sxy / sum_a,
+            },
+            err,
+        ));
+    }
+    best
+}
+
+/// Best similarity taking the driven shape onto the drawn loop, searching both
+/// handednesses and every cyclic start offset.
+fn best_fit(shape: &[(f32, f32)], loop_fit: &[(f32, f32)]) -> Option<(Fit, f32)> {
+    let mut best: Option<(Fit, f32)> = None;
+    for mirror in [false, true] {
+        let Some(cand) = best_fit_handedness(shape, loop_fit, mirror) else {
+            continue;
+        };
+        if best.as_ref().is_some_and(|(_, e)| *e <= cand.1) {
+            continue;
         }
+        best = Some(cand);
     }
     best
 }
@@ -459,7 +591,7 @@ mod tests {
     fn a_partial_lap_yields_nothing() {
         let mut samples = circle_lap(3000, 1);
         samples.truncate(900);
-        assert!(solve_pct_map(&samples, &circle_loop(400)).is_none());
+        assert!(solve_pct_map(&samples, &circle_loop(400)).is_err());
     }
 
     /// A recorded-lap fixture: `[t, pct, vx, vy, yaw]` rows plus the loop the
@@ -557,5 +689,77 @@ mod tests {
             .map(|i| wrap_delta(table[i], table[0]) - i as f32 / KNOTS as f32)
             .fold(f32::MIN, f32::max);
         assert!(lead > 0.002, "distortion was flattened away: {lead:.4}");
+    }
+
+    /// Elongated circuit so a left/right flip is not a free rotation of a circle.
+    fn oval_lap(n: usize) -> (Vec<Sample>, Vec<(f32, f32)>) {
+        let dt = 0.02f64;
+        let mut samples = Vec::new();
+        let mut loop_pts = Vec::with_capacity(n);
+        for i in 0..n {
+            let a = i as f32 / n as f32 * TAU;
+            // Stadium-ish: stretch X so mirror cannot be absorbed into rotation.
+            let (x, y) = (0.5 + 0.45 * a.cos(), 0.5 + 0.22 * a.sin());
+            loop_pts.push((x, y));
+        }
+        // Constant-speed drive around the same oval.
+        let mut dist = 0.0f32;
+        let mut cum = vec![0.0f32];
+        for w in loop_pts.windows(2) {
+            dist += dist2(w[0], w[1]).sqrt();
+            cum.push(dist);
+        }
+        dist += dist2(loop_pts[loop_pts.len() - 1], loop_pts[0]).sqrt();
+        let speed = dist / (n as f32 * dt as f32);
+        for i in 0..(n + 1) {
+            let frac = (i % n) as f32 / n as f32;
+            let a = frac * TAU;
+            // Tangent heading for the parametric oval.
+            let tx = -0.45 * a.sin();
+            let ty = 0.22 * a.cos();
+            let yaw = ty.atan2(tx);
+            samples.push(Sample {
+                t: i as f64 * dt,
+                pct: frac,
+                vx: speed,
+                vy: 0.0,
+                yaw,
+            });
+        }
+        // Two laps so complete_laps keeps a full flying one.
+        let mut two = samples.clone();
+        let t0 = samples.last().unwrap().t;
+        for s in &samples[1..] {
+            two.push(Sample {
+                t: t0 + s.t,
+                pct: s.pct,
+                vx: s.vx,
+                vy: s.vy,
+                yaw: s.yaw,
+            });
+        }
+        (two, loop_pts)
+    }
+
+    #[test]
+    fn reverse_winding_is_preferred_over_mirror_on_an_oval() {
+        let (samples, loop_pts) = oval_lap(400);
+        assert_eq!(choose_loop_fix(&samples, &loop_pts), LoopFix::None);
+
+        let mut reversed = loop_pts.clone();
+        reverse_loop_keep_sf(&mut reversed);
+        assert_eq!(choose_loop_fix(&samples, &reversed), LoopFix::Reverse);
+
+        // Left/right flip of a near-symmetric oval looks like reverse to
+        // Procrustes — we still prefer reverse so the familiar outline is kept.
+        let mut mirrored = loop_pts.clone();
+        for p in &mut mirrored {
+            p.0 = 1.0 - p.0;
+        }
+        let fix = choose_loop_fix(&samples, &mirrored);
+        assert!(
+            matches!(fix, LoopFix::Reverse | LoopFix::Mirror),
+            "opposite chirality should be detected, got {fix:?}"
+        );
     }
 }

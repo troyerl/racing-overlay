@@ -116,11 +116,37 @@ fn car_started(c: &CarRow) -> bool {
     car_rank(c) > 0 || c.laps_completed > 0
 }
 
+/// Rating used in the field matrix. Missing/zero DriverInfo iRating still counts
+/// in official results (often rookies with `oldi_rating: -1`); fill those seats
+/// with the class mean so field size / SOF stay honest.
+fn field_rating(ir: i32, fallback: i32) -> i32 {
+    if ir > 0 {
+        ir
+    } else {
+        fallback
+    }
+}
+
+fn class_ir_fallback(cars: &[&CarRow]) -> i32 {
+    let known: Vec<i32> = cars.iter().map(|c| c.irating).filter(|&ir| ir > 0).collect();
+    if known.is_empty() {
+        // iRacing's default starting iRating when nothing else is known.
+        return 1350;
+    }
+    let sum: f64 = known.iter().map(|&x| x as f64).sum();
+    round_half_away(sum / known.len() as f64)
+}
+
 /// CarIdx → projected iRating change, computed per `class_id` (Python parity).
 pub fn project_deltas_by_class(cars: &[CarRow]) -> HashMap<i32, i32> {
     let mut by_class: HashMap<i32, Vec<&CarRow>> = HashMap::new();
     for c in cars {
-        if c.is_pace_car || c.irating <= 0 {
+        if c.is_pace_car {
+            continue;
+        }
+        // Keep unrated entrants that actually joined (position / laps). Skipping
+        // them shrinks the field and under-projects gains (e.g. +21 vs +27).
+        if c.irating <= 0 && !car_started(c) {
             continue;
         }
         by_class.entry(c.class_id).or_default().push(c);
@@ -128,6 +154,7 @@ pub fn project_deltas_by_class(cars: &[CarRow]) -> HashMap<i32, i32> {
 
     let mut result = HashMap::new();
     for idxs in by_class.values() {
+        let fallback = class_ir_fallback(idxs);
         let mut starters: Vec<&CarRow> = Vec::new();
         let mut non_starters: Vec<&CarRow> = Vec::new();
         for c in idxs {
@@ -145,8 +172,15 @@ pub fn project_deltas_by_class(cars: &[CarRow]) -> HashMap<i32, i32> {
                 r
             }
         });
-        let mut ordered: Vec<(i32, bool)> = starters.iter().map(|c| (c.irating, true)).collect();
-        ordered.extend(non_starters.iter().map(|c| (c.irating, false)));
+        let mut ordered: Vec<(i32, bool)> = starters
+            .iter()
+            .map(|c| (field_rating(c.irating, fallback), true))
+            .collect();
+        ordered.extend(
+            non_starters
+                .iter()
+                .map(|c| (field_rating(c.irating, fallback), false)),
+        );
         if ordered.len() < 2 {
             continue;
         }
@@ -262,5 +296,56 @@ mod tests {
         ];
         let d = calculate_deltas(&entries);
         assert_eq!(d[4], -7);
+    }
+
+    /// Regression: subsession 87743952 — Logan Troyer P5 gained +27. Dropping the
+    /// three unrated rookies left an 11-car field and projected +21.
+    #[test]
+    fn unrated_rookies_keep_field_size() {
+        let finish: &[(i32, i32, i32)] = &[
+            (0, 1, 1059),
+            (1, 2, 1100),
+            (2, 3, 1105),
+            (3, 4, 1098),
+            (4, 5, 1097), // player
+            (5, 6, 1107),
+            (6, 7, 0),    // Marc Cooper2 — results oldi_rating -1
+            (7, 8, 1095),
+            (8, 9, 0),    // Darcy Roulston4
+            (9, 10, 0),   // Victor Zamorano
+            (10, 11, 1131),
+            (11, 12, 1114),
+        ];
+        let cars: Vec<CarRow> = finish
+            .iter()
+            .map(|&(idx, pos, ir)| CarRow {
+                car_idx: idx,
+                position: pos,
+                class_position: pos,
+                irating: ir,
+                class_id: 74,
+                is_player: idx == 4,
+                laps_completed: 1,
+                ..Default::default()
+            })
+            .collect();
+
+        let d = project_deltas_by_class(&cars);
+        let player = d[&4];
+        // Full 12-car field with class-mean fill lands near the official +27
+        // (exact ghost IRs are unknown; mean fallback is within a couple points).
+        assert!(
+            (25..=29).contains(&player),
+            "expected ~+27 with unrated seats filled, got {player}"
+        );
+
+        // Old bug: skip ir<=0 → 9-car field → +0 at P5 among rated-only order,
+        // or 11-car if only one rookie is missing → +21 with 1350 fill.
+        let rated_only: Vec<(i32, bool)> = finish
+            .iter()
+            .filter(|(_, _, ir)| *ir > 0)
+            .map(|(_, _, ir)| (*ir, true))
+            .collect();
+        assert_eq!(calculate_deltas(&rated_only)[4], 0);
     }
 }

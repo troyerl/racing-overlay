@@ -85,6 +85,76 @@ pub fn fmt_car_gap(position: i32, f2: f32) -> String {
     format!("+{f2:.1}")
 }
 
+/// Latch state for the dash white-flag HUD.
+///
+/// Show only after the in-game white flag waves, and only until the player
+/// crosses S/F to begin that last lap (SDK keeps `FLAG_WHITE` for the whole lap).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WhiteFlagHud {
+    #[default]
+    Idle,
+    /// White just waved; show while `player_lap` equals this value.
+    Active(i32),
+    /// Player already took the S/F after white — suppress until white clears.
+    Exhausted,
+}
+
+/// Update the white HUD latch from SDK bits + player lap.
+pub fn update_white_flag_hud(
+    state: WhiteFlagHud,
+    sdk_white: bool,
+    player_lap: i32,
+) -> (WhiteFlagHud, bool) {
+    if !sdk_white {
+        return (WhiteFlagHud::Idle, false);
+    }
+    match state {
+        WhiteFlagHud::Idle => {
+            if player_lap > 0 {
+                (WhiteFlagHud::Active(player_lap), true)
+            } else {
+                (WhiteFlagHud::Idle, false)
+            }
+        }
+        WhiteFlagHud::Active(wl) if player_lap > wl => (WhiteFlagHud::Exhausted, false),
+        WhiteFlagHud::Active(wl) => (WhiteFlagHud::Active(wl), player_lap == wl),
+        WhiteFlagHud::Exhausted => (WhiteFlagHud::Exhausted, false),
+    }
+}
+
+/// Apply white HUD gate. Higher-priority flags are left alone; SDK white is
+/// stripped once the player has started the final lap.
+pub fn apply_white_flag_timing(flag: Option<String>, show_white_hud: bool) -> Option<String> {
+    let blocks_white = matches!(
+        flag.as_deref(),
+        Some(
+            "checkered"
+                | "red"
+                | "dq"
+                | "black"
+                | "meatball"
+                | "furled"
+                | "yellow"
+                | "blue"
+                | "debris"
+                | "crossed"
+                | "start_go"
+                | "start_set"
+                | "start_ready"
+        )
+    );
+    if blocks_white {
+        return flag;
+    }
+    if show_white_hud {
+        Some("white".into())
+    } else if flag.as_deref() == Some("white") {
+        None
+    } else {
+        flag
+    }
+}
+
 /// Session flag label for the table `car_flag` column (blue / meatball / …).
 pub fn map_session_flag_label(car_flags: i32) -> Option<String> {
     if car_flags & FLAG_REPAIR != 0 {
@@ -219,6 +289,40 @@ mod tests {
         assert_eq!(finite_laps_total(0), None);
         assert_eq!(finite_laps_total(32_767), None);
         assert_eq!(finite_laps_total(100_000), None);
+    }
+
+    #[test]
+    fn white_flag_hud_latches_until_sf_cross() {
+        // No SDK white → never show (timed races with ~2 laps left must not stuck-on).
+        let (s, show) = update_white_flag_hud(WhiteFlagHud::Idle, false, 12);
+        assert_eq!(s, WhiteFlagHud::Idle);
+        assert!(!show);
+
+        // White waves on lap 12 → show for the rest of that lap only.
+        let (s, show) = update_white_flag_hud(WhiteFlagHud::Idle, true, 12);
+        assert_eq!(s, WhiteFlagHud::Active(12));
+        assert!(show);
+        let (s, show) = update_white_flag_hud(s, true, 12);
+        assert!(show);
+        let (s, show) = update_white_flag_hud(s, true, 13);
+        assert_eq!(s, WhiteFlagHud::Exhausted);
+        assert!(!show);
+        // Still white in SDK on the final lap → stay hidden.
+        let (s, show) = update_white_flag_hud(s, true, 13);
+        assert_eq!(s, WhiteFlagHud::Exhausted);
+        assert!(!show);
+        assert_eq!(
+            apply_white_flag_timing(Some("white".into()), false),
+            None
+        );
+        assert_eq!(
+            apply_white_flag_timing(Some("yellow".into()), true).as_deref(),
+            Some("yellow")
+        );
+        assert_eq!(
+            apply_white_flag_timing(None, true).as_deref(),
+            Some("white")
+        );
     }
 
     #[test]

@@ -18,7 +18,7 @@ const SPEC: &[(&str, &str, &str, &str)] = &[
     ("furled", "WARNING", "flag_furled", "flag_furled_text"),
     ("dq", "DISQUALIFIED", "flag_dq", "flag_dq_text"),
     ("green", "GREEN", "flag_green", "flag_green_text"),
-    ("white", "LAST LAP", "flag_white_bg", "flag_white_text"),
+    ("white", "FINAL NEXT", "flag_white_bg", "flag_white_text"),
     ("red", "RED FLAG", "flag_red", "flag_red_text"),
     ("blue", "LET BY", "flag_blue", "flag_blue_text"),
     ("debris", "DEBRIS", "flag_debris", "flag_debris_text"),

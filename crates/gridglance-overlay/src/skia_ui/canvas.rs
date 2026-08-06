@@ -2,8 +2,8 @@
 
 use super::types::{FontSpec, Rect, Rgba};
 use skia_safe::{
-    surfaces, AlphaType, Color, Color4f, ColorType, Font, FontMgr, FontStyle, ImageInfo, Paint,
-    PaintStyle, Point, Surface, TextBlob, TileMode, Typeface,
+    surfaces, AlphaType, BlendMode, Color, Color4f, ColorType, Font, FontMgr, FontStyle, ImageInfo,
+    Paint, PaintStyle, Point, Surface, TextBlob, TileMode, Typeface,
 };
 
 pub struct Canvas {
@@ -133,6 +133,98 @@ impl Canvas {
         if let Some(sh) = shader {
             paint.set_shader(sh);
         }
+        self.surface.canvas().draw_rect(rect.to_skia(), &paint);
+    }
+
+    /// Soft glow: horizontal tent (peak at center) × vertical linear fade.
+    /// `opaque_at_top`: peak alpha on the top edge, fading out toward the bottom.
+    pub fn fill_tent_vertical_fade(&mut self, rect: Rect, color: Rgba, opaque_at_top: bool) {
+        if rect.width() < 0.5 || rect.height() < 0.5 || color.a < 2 {
+            return;
+        }
+        let peak = Color::from_argb(color.a, color.r, color.g, color.b);
+        let clear = Color::from_argb(0, color.r, color.g, color.b);
+        let Some(h_shader) = skia_safe::Shader::linear_gradient(
+            (
+                Point::new(rect.left(), rect.top()),
+                Point::new(rect.right(), rect.top()),
+            ),
+            [clear, peak, clear].as_ref(),
+            [0.0_f32, 0.5, 1.0].as_ref(),
+            TileMode::Clamp,
+            None,
+            None,
+        ) else {
+            return;
+        };
+        let (top_a, bot_a) = if opaque_at_top { (255, 0) } else { (0, 255) };
+        let Some(v_shader) = skia_safe::Shader::linear_gradient(
+            (
+                Point::new(rect.left(), rect.top()),
+                Point::new(rect.left(), rect.bottom()),
+            ),
+            [
+                Color::from_argb(top_a, 255, 255, 255),
+                Color::from_argb(bot_a, 255, 255, 255),
+            ]
+            .as_ref(),
+            None,
+            TileMode::Clamp,
+            None,
+            None,
+        ) else {
+            return;
+        };
+        let shader = skia_safe::shaders::blend(BlendMode::Modulate, h_shader, v_shader);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_shader(shader);
+        self.surface.canvas().draw_rect(rect.to_skia(), &paint);
+    }
+
+    /// Soft glow: vertical tent (peak at mid-height) × horizontal linear fade.
+    /// `opaque_at_left`: peak alpha on the left edge, fading out toward the right.
+    pub fn fill_tent_horizontal_fade(&mut self, rect: Rect, color: Rgba, opaque_at_left: bool) {
+        if rect.width() < 0.5 || rect.height() < 0.5 || color.a < 2 {
+            return;
+        }
+        let peak = Color::from_argb(color.a, color.r, color.g, color.b);
+        let clear = Color::from_argb(0, color.r, color.g, color.b);
+        let Some(v_shader) = skia_safe::Shader::linear_gradient(
+            (
+                Point::new(rect.left(), rect.top()),
+                Point::new(rect.left(), rect.bottom()),
+            ),
+            [clear, peak, clear].as_ref(),
+            [0.0_f32, 0.5, 1.0].as_ref(),
+            TileMode::Clamp,
+            None,
+            None,
+        ) else {
+            return;
+        };
+        let (left_a, right_a) = if opaque_at_left { (255, 0) } else { (0, 255) };
+        let Some(h_shader) = skia_safe::Shader::linear_gradient(
+            (
+                Point::new(rect.left(), rect.top()),
+                Point::new(rect.right(), rect.top()),
+            ),
+            [
+                Color::from_argb(left_a, 255, 255, 255),
+                Color::from_argb(right_a, 255, 255, 255),
+            ]
+            .as_ref(),
+            None,
+            TileMode::Clamp,
+            None,
+            None,
+        ) else {
+            return;
+        };
+        let shader = skia_safe::shaders::blend(BlendMode::Modulate, v_shader, h_shader);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        paint.set_shader(shader);
         self.surface.canvas().draw_rect(rect.to_skia(), &paint);
     }
 
@@ -417,6 +509,40 @@ impl Canvas {
         let font = self.font(spec);
         let (_, rect) = font.measure_str(text, None);
         rect.width()
+    }
+
+    /// Draw `text` so its ink box is centred on `(cx, cy)`.
+    pub fn text_ink_centered(
+        &mut self,
+        text: &str,
+        cx: f32,
+        cy: f32,
+        spec: FontSpec,
+        color: Rgba,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let font = self.font(spec);
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        let (_, rect) = font.measure_str(text, None);
+        let draw_x = cx - (rect.left + rect.right) * 0.5;
+        let baseline = cy - (rect.top + rect.bottom) * 0.5;
+        let Some(blob) = TextBlob::from_str(text, &font) else {
+            return;
+        };
+        self.surface
+            .canvas()
+            .draw_text_blob(&blob, (draw_x, baseline), &paint);
     }
 
     /// Measure a Font Awesome glyph string (from `crate::icons::glyph`).

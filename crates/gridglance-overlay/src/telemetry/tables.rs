@@ -2,6 +2,7 @@
 
 use crate::config::OverlayConfig;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 use super::{format, CarRow, TelemetryFrame};
 
@@ -207,6 +208,9 @@ impl TableRow {
 pub struct RelativeOrderHysteresis {
     ahead_idxs: Vec<i32>,
     behind_idxs: Vec<i32>,
+    /// Last projected iRating deltas (car_idx → delta), held through cooldown.
+    irating_deltas: HashMap<i32, i32>,
+    irating_player_delta: Option<i32>,
 }
 
 /// Seconds of gap required to overturn the previous Relative order.
@@ -233,19 +237,30 @@ fn sticky_sort_by_delta(items: &mut Vec<(f32, &CarRow)>, prev: &[i32], ascending
     });
 }
 
-/// Mark exactly one table focus for Relative/Standings: camera car if set,
-/// else seated player, else race leader. Same rule while racing or spectating.
+/// Mark exactly one table focus for Relative/Standings.
+///
+/// While your seated car is still a live competitor, keep focus on you even if
+/// the iRacing camera is on someone else. Pure spectators (ghost seated entry)
+/// center on the camera car, then seated, then race leader.
 fn apply_table_focus(cars: &mut [CarRow], camera_car_idx: Option<i32>) {
-    let focus = camera_car_idx
-        .and_then(|idx| cars.iter().position(|c| c.car_idx == idx))
-        .or_else(|| cars.iter().position(|c| c.is_player))
-        .or_else(|| {
-            cars.iter()
-                .enumerate()
-                .filter(|(_, c)| !c.is_pace_car && c.position > 0)
-                .min_by_key(|(_, c)| c.position)
-                .map(|(i, _)| i)
-        });
+    let seated = cars.iter().position(|c| c.is_player);
+    let seated_live = seated
+        .map(|i| cars[i].is_live_competitor())
+        .unwrap_or(false);
+    let focus = if seated_live {
+        seated
+    } else {
+        camera_car_idx
+            .and_then(|idx| cars.iter().position(|c| c.car_idx == idx))
+            .or(seated)
+            .or_else(|| {
+                cars.iter()
+                    .enumerate()
+                    .filter(|(_, c)| !c.is_pace_car && c.position > 0)
+                    .min_by_key(|(_, c)| c.position)
+                    .map(|(i, _)| i)
+            })
+    };
     if let Some(fi) = focus {
         for (i, car) in cars.iter_mut().enumerate() {
             car.is_player = i == fi;
@@ -253,15 +268,24 @@ fn apply_table_focus(cars: &mut [CarRow], camera_car_idx: Option<i32>) {
     }
 }
 
-/// Apply lapped-traffic tint relative to the marked focus car.
+/// Apply lapped-traffic tint relative to a focus car.
 ///
 /// Only applied in race sessions — practice/qualifying ignore lap-down
-/// blue/red row coloring.
+/// blue/red row coloring. iRacing Relative convention: red = car lapping
+/// you (`lap_ahead`), blue = traffic you're lapping.
 ///
 /// For a one-lap difference, tint only when the faster car is within five
 /// seconds behind and approaching the slower car. A difference of two or more
 /// completed laps is always tinted.
-fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32, session_type: Option<&str>) {
+///
+/// `focus_car_idx` overrides `is_player` when set (map uses camera/live focus
+/// while tables use the marked table-focus car).
+fn apply_lap_tints(
+    cars: &mut [CarRow],
+    lap_est_hint: f32,
+    session_type: Option<&str>,
+    focus_car_idx: Option<i32>,
+) {
     for car in cars.iter_mut() {
         car.lapping = false;
         car.lap_ahead = false;
@@ -269,11 +293,19 @@ fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32, session_type: Option<
     if !is_race_session(session_type) {
         return;
     }
-    let Some(focus_idx) = cars.iter().position(|c| c.is_player) else {
+    let Some(focus_idx) = focus_car_idx
+        .and_then(|idx| cars.iter().position(|c| c.car_idx == idx))
+        .or_else(|| cars.iter().position(|c| c.is_player))
+    else {
         return;
     };
     let focus_lap = cars[focus_idx].lap;
     let focus_est = cars[focus_idx].est_time;
+    let focus_pct = cars[focus_idx].lap_dist_pct;
+    let focus_on_route = {
+        let f = &cars[focus_idx];
+        f.on_track || f.in_pit || f.on_pit
+    };
     let lap_est = if lap_est_hint > 10.0 {
         lap_est_hint
     } else {
@@ -285,10 +317,20 @@ fn apply_lap_tints(cars: &mut [CarRow], lap_est_hint: f32, session_type: Option<
             continue;
         }
         let lap_diff = car.lap - focus_lap;
-        let relative_secs = wrap_est_delta(car.est_time - focus_est, lap_est);
+        // Prefer LapDistPct (same basis as Relative neighbors); EstTime fallback.
+        let relative_secs = {
+            let car_on_route = car.on_track || car.in_pit || car.on_pit;
+            if car.lap_dist_pct >= 0.0 && focus_pct >= 0.0 && car_on_route && focus_on_route {
+                wrap_lap_delta(car.lap_dist_pct, focus_pct) * lap_est
+            } else if car.est_time > 1.0 && focus_est > 1.0 {
+                wrap_est_delta(car.est_time - focus_est, lap_est)
+            } else {
+                f32::NAN
+            }
+        };
         let one_lap_close = relative_secs.is_finite()
             && match lap_diff {
-                // Focus is one lap ahead; slower car is just ahead.
+                // Focus is one lap ahead; slower car is just ahead on track.
                 -1 => relative_secs > 0.0 && relative_secs <= 5.0,
                 // Other car is one lap ahead and just behind the focus.
                 1 => (-5.0..0.0).contains(&relative_secs),
@@ -585,7 +627,8 @@ fn estimate_lap_est(cars: &[CarRow]) -> f32 {
 ///
 /// Qualifying/practice order by best lap and renumber 1..N. Race sessions keep
 /// live race positions so the table matches iRacing Results. When spectating
-/// another car, the seated player's ghost entry is omitted.
+/// as a pure spectator, the seated player's ghost entry is omitted — but if you
+/// are still racing and just watching another car, you stay in the field.
 ///
 /// `standings.rows` (Total rows) is the exact number of slots shown.
 pub fn build_standings(
@@ -607,8 +650,8 @@ pub fn build_standings(
             if c.is_pace_car {
                 return false;
             }
-            // Spectating: never list the seated player's inactive ghost car.
-            if spectating && Some(c.car_idx) == seated_car_idx {
+            // Pure spectator ghost only — keep your live race car when watching.
+            if spectating && Some(c.car_idx) == seated_car_idx && c.is_spectator_ghost() {
                 return false;
             }
             true
@@ -734,8 +777,6 @@ pub fn build_standings(
 
     for row in &mut out {
         row.apply_driver_group(groups);
-        row.lapping = false;
-        row.lap_ahead = false;
     }
     out
 }
@@ -964,11 +1005,18 @@ pub fn finalize_frame(
             }
         }
     }
-    apply_irating_projection(frame, cfg);
+    apply_irating_projection(frame, cfg, rel_sticky);
     resolve_delta_mode(frame, cfg);
     apply_flag_config(frame, cfg);
-    let lap_est = frame.lap_est_time;
-    apply_lap_tints(&mut frame.cars, lap_est, frame.session_type.as_deref());
+
+    // Map dots: tint relative to presentation focus (live you, else camera).
+    let map_focus = super::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
+    apply_lap_tints(
+        &mut frame.cars,
+        frame.lap_est_time,
+        frame.session_type.as_deref(),
+        map_focus,
+    );
 
     // Rebuild fuel first so relative undercut/cover tags can use the pit window.
     let inp = crate::telemetry::FuelInputs {
@@ -986,16 +1034,18 @@ pub fn finalize_frame(
     };
     frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 
-    // Timing tables center on camera -> seated player -> race leader. Keep
-    // `frame.cars.is_player` unchanged so map/fuel/radar/dashboard still use
-    // the user's actual car. Always mark exactly one focus so Relative isn't empty.
+    // Timing tables: live seated racer keeps focus; pure spectators center on
+    // camera -> seated -> leader. Keep `frame.cars.is_player` unchanged so
+    // map/fuel/radar/dashboard still use the user's actual car.
     let seated_car_idx = frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
     let mut focused_cars = frame.cars.clone();
     apply_table_focus(&mut focused_cars, frame.camera_car_idx);
+    let table_focus = focused_cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
     apply_lap_tints(
         &mut focused_cars,
         frame.lap_est_time,
         frame.session_type.as_deref(),
+        table_focus,
     );
 
     let mut rel = build_relative(
@@ -1265,35 +1315,55 @@ fn needs_irating_projection(cfg: &OverlayConfig) -> bool {
     false
 }
 
-fn apply_irating_projection(frame: &mut TelemetryFrame, cfg: &OverlayConfig) {
-    // Clear prior deltas unless we recompute.
+fn apply_irating_projection(
+    frame: &mut TelemetryFrame,
+    cfg: &OverlayConfig,
+    sticky: &mut RelativeOrderHysteresis,
+) {
+    // Clear prior deltas unless we recompute / restore.
     for c in &mut frame.cars {
         c.irating_delta = None;
     }
     frame.irating_delta = None;
 
     if !needs_irating_projection(cfg) {
+        sticky.irating_deltas.clear();
+        sticky.irating_player_delta = None;
         return;
     }
-    // Race / checkered only (SessionState 4, 5); demo uses 4.
-    if frame.session_state != 4 && frame.session_state != 5 {
+    // Racing / checkered / cooldown (4–6). Keep the projection up after the race.
+    if !(4..=6).contains(&frame.session_state) {
+        sticky.irating_deltas.clear();
+        sticky.irating_player_delta = None;
         return;
     }
 
     let deltas = crate::irating::project_deltas_by_class(&frame.cars);
-    if deltas.is_empty() {
+    if !deltas.is_empty() {
+        sticky.irating_deltas = deltas;
+        sticky.irating_player_delta = frame
+            .cars
+            .iter()
+            .find(|c| c.is_player)
+            .and_then(|p| sticky.irating_deltas.get(&p.car_idx).copied());
+    } else if sticky.irating_deltas.is_empty() {
         return;
     }
+
     for c in &mut frame.cars {
-        if let Some(d) = deltas.get(&c.car_idx) {
+        if let Some(d) = sticky.irating_deltas.get(&c.car_idx) {
             c.irating_delta = Some(*d);
         }
     }
     if let Some(p) = frame.cars.iter().find(|c| c.is_player) {
-        frame.irating_delta = p.irating_delta;
+        frame.irating_delta = p
+            .irating_delta
+            .or(sticky.irating_player_delta);
         if frame.irating <= 0 {
             frame.irating = p.irating;
         }
+    } else {
+        frame.irating_delta = sticky.irating_player_delta;
     }
 }
 
@@ -1865,7 +1935,7 @@ mod tests {
     }
 
     #[test]
-    fn standings_never_shows_lap_tints() {
+    fn standings_keeps_lap_tints() {
         let mut cars = Vec::new();
         for i in 0..8 {
             cars.push(CarRow {
@@ -1890,10 +1960,10 @@ mod tests {
             None,
             None,
         );
-        assert!(
-            rows.iter().all(|r| !r.lapping && !r.lap_ahead),
-            "standings must not paint lapped/lapper row colors"
-        );
+        let d2 = rows.iter().find(|r| r.name == "D2").unwrap();
+        let d3 = rows.iter().find(|r| r.name == "D3").unwrap();
+        assert!(d2.lapping && !d2.lap_ahead, "lapped traffic tint kept");
+        assert!(d3.lapping && d3.lap_ahead, "lapper tint kept");
     }
 
     #[test]
@@ -2195,6 +2265,113 @@ mod tests {
         );
         assert_eq!(live[0].name, "Leader");
         assert_eq!(live.len(), 2);
+    }
+
+    #[test]
+    fn standings_keeps_live_seated_car_while_watching() {
+        // Racing but camera on someone else — stay listed with your race position.
+        let cars = vec![
+            CarRow {
+                car_idx: 1,
+                position: 1,
+                name: "Leader".into(),
+                best_lap: "0:40.000".into(),
+                on_track: true,
+                lap_dist_pct: 0.1,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                name: "Watched".into(),
+                best_lap: "0:40.200".into(),
+                on_track: true,
+                lap_dist_pct: 0.2,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 5,
+                position: 4,
+                name: "Me".into(),
+                best_lap: "0:40.300".into(),
+                on_track: true,
+                is_player: true,
+                lap_dist_pct: 0.25,
+                ..Default::default()
+            },
+        ];
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            Some(2),
+            Some(5),
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert!(
+            live.iter().any(|r| r.name == "Me" && r.position == 4),
+            "live racer must stay in standings while watching another car"
+        );
+        assert_eq!(live.len(), 3);
+    }
+
+    #[test]
+    fn table_focus_stays_on_live_seated_player_while_watching() {
+        let mut cars = vec![
+            CarRow {
+                car_idx: 1,
+                position: 1,
+                lap_dist_pct: 0.1,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                name: "Watched".into(),
+                lap_dist_pct: 0.2,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 5,
+                position: 4,
+                name: "Me".into(),
+                is_player: true,
+                lap_dist_pct: 0.25,
+                ..Default::default()
+            },
+        ];
+        apply_table_focus(&mut cars, Some(2));
+        assert!(cars.iter().find(|c| c.car_idx == 5).unwrap().is_player);
+        assert!(!cars.iter().find(|c| c.car_idx == 2).unwrap().is_player);
+    }
+
+    #[test]
+    fn table_focus_follows_camera_for_spectator_ghost() {
+        let mut cars = vec![
+            CarRow {
+                car_idx: 2,
+                position: 3,
+                name: "Watched".into(),
+                lap_dist_pct: 0.2,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 99,
+                position: 0,
+                name: "Ghost".into(),
+                is_player: true,
+                inactive: true,
+                lap_dist_pct: -1.0,
+                ..Default::default()
+            },
+        ];
+        apply_table_focus(&mut cars, Some(2));
+        assert!(cars.iter().find(|c| c.car_idx == 2).unwrap().is_player);
+        assert!(!cars.iter().find(|c| c.car_idx == 99).unwrap().is_player);
     }
 
     #[test]
@@ -2580,7 +2757,7 @@ mod tests {
                 ..Default::default()
             },
         ];
-        apply_lap_tints(&mut cars, 90.0, Some("Race"));
+        apply_lap_tints(&mut cars, 90.0, Some("Race"), None);
 
         assert!(cars[1].lapping && !cars[1].lap_ahead);
         assert!(!cars[2].lapping);
@@ -2588,6 +2765,43 @@ mod tests {
         assert!(!cars[4].lapping);
         assert!(cars[5].lapping && !cars[5].lap_ahead);
         assert!(cars[6].lapping && cars[6].lap_ahead);
+    }
+
+    #[test]
+    fn lap_tints_use_lap_dist_pct_like_relative() {
+        // Relative neighbors are LapDistPct-based; one-lap tint must use the
+        // same gap so cars in the Relative list actually get red/blue.
+        let mut cars = vec![
+            CarRow {
+                car_idx: 0,
+                is_player: true,
+                lap: 10,
+                lap_dist_pct: 0.50,
+                on_track: true,
+                est_time: 0.0, // EstTime missing — pct must still work
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                lap: 9,
+                // ~3s ahead on a 90s lap
+                lap_dist_pct: 0.50 + 3.0 / 90.0,
+                on_track: true,
+                est_time: 0.0,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                lap: 9,
+                // Far ahead — no tint
+                lap_dist_pct: 0.50 + 20.0 / 90.0,
+                on_track: true,
+                ..Default::default()
+            },
+        ];
+        apply_lap_tints(&mut cars, 90.0, Some("Race"), None);
+        assert!(cars[1].lapping && !cars[1].lap_ahead);
+        assert!(!cars[2].lapping);
     }
 
     #[test]
@@ -2613,9 +2827,9 @@ mod tests {
                 ..Default::default()
             },
         ];
-        apply_lap_tints(&mut cars, 90.0, Some("Practice"));
+        apply_lap_tints(&mut cars, 90.0, Some("Practice"), None);
         assert!(cars.iter().all(|c| !c.lapping && !c.lap_ahead));
-        apply_lap_tints(&mut cars, 90.0, Some("Qualifying"));
+        apply_lap_tints(&mut cars, 90.0, Some("Qualifying"), None);
         assert!(cars.iter().all(|c| !c.lapping && !c.lap_ahead));
     }
 

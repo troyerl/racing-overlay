@@ -9,10 +9,11 @@ use egui::{Color32, RichText, Ui};
 use serde_json::{json, Value};
 use std::sync::Arc;
 
+use super::schema::{PIT_LANE_CHOICES, PIT_PHASE_CHOICES};
 use super::theme::{MUTED, TEXT, TITLE};
 use super::widgets::{
-    button_kind, enable_card, info_card, setting_row, styled_combo, text_field, toggle_switch,
-    ButtonKind,
+    button_kind, enable_card, info_card, setting_row, styled_choice_combo, styled_combo, text_field,
+    toggle_switch, ButtonKind,
 };
 use super::SettingsUi;
 
@@ -124,11 +125,10 @@ pub fn paint_track_scan(
             }
         });
 
-        let phases = ["entry", "road", "merge"];
         let mut phase = phase;
         setting_row(ui, "Phase", None, |ui| {
-            let opts: Vec<String> = phases.iter().map(|s| (*s).into()).collect();
-            if let Some(next) = styled_combo(ui, "pit_phase", &phase, &opts, 120.0) {
+            if let Some(next) = styled_choice_combo(ui, "pit_phase", &phase, PIT_PHASE_CHOICES, 120.0)
+            {
                 phase = next;
                 if let Some(mut st) = state.try_write() {
                     st.map.phase = phase.clone();
@@ -140,11 +140,9 @@ pub fn paint_track_scan(
             }
         });
 
-        let lanes = ["1", "2"];
         let mut lane = lane;
         setting_row(ui, "Lane", None, |ui| {
-            let opts: Vec<String> = lanes.iter().map(|s| (*s).into()).collect();
-            if let Some(next) = styled_combo(ui, "pit_lane", &lane, &opts, 80.0) {
+            if let Some(next) = styled_choice_combo(ui, "pit_lane", &lane, PIT_LANE_CHOICES, 100.0) {
                 lane = next;
                 if let Some(mut st) = state.try_write() {
                     st.map.lane = if lane == "2" { "2".into() } else { "1".into() };

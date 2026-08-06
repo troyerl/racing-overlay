@@ -126,9 +126,10 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("dc_tire_set", 0xF1CD),
     ("engine_warn", 0xF06A), // circle-exclamation
     ("lap_corners", 0xF5EB), // turn-right
-    // settings accordion
+    // settings accordion / reorder
     ("chevron_right", 0xF054), // chevron-right
     ("chevron_down", 0xF078),  // chevron-down
+    ("chevron_up", 0xF077),    // chevron-up
 ];
 
 pub fn install_fonts(ctx: &egui::Context) {
