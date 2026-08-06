@@ -1055,11 +1055,7 @@ pub fn finalize_frame(
     rel_sticky: &mut RelativeOrderHysteresis,
 ) {
     let app = crate::cloud::load_app_settings_cache().unwrap_or_else(|| serde_json::json!({}));
-    let groups = cfg
-        .cfg
-        .get("driver_groups")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
+    let groups = cfg.driver_groups_value();
 
     if let Some(radio) = frame.radio.as_mut() {
         radio.is_pro = crate::cloud::is_pro_driver(&radio.name, &app);

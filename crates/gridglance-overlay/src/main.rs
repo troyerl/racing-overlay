@@ -25,6 +25,7 @@ mod skia_ui;
 mod state;
 mod sysstats;
 mod telemetry;
+mod telemetry_lan;
 mod track_path;
 mod tracks;
 mod updater;

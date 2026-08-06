@@ -248,6 +248,7 @@ impl Default for OverlayConfig {
                 "auto_switch_by_league": false,
                 "auto_switch_by_car": false,
                 "auto_switch_to_default": false,
+                "driver_groups": [],
                 "active_preset": "Default",
                 "presets": {
                     "Default": {
@@ -284,22 +285,31 @@ impl OverlayConfig {
             .and_then(|v| v.as_str())
             .unwrap_or("Default")
             .to_string();
-        let cfg = if doc.get("schema").and_then(|s| s.as_u64()) == Some(2) {
+        let mut cfg = if doc.get("schema").and_then(|s| s.as_u64()) == Some(2) {
             Self::cfg_from_doc(&doc, &active, ConfigContext::Race)
         } else {
             // Legacy flat config
             let mut cfg = default_cfg();
             deep_merge(&mut cfg, &doc);
             sanitize_config_sections(&mut cfg);
+            let legacy_groups = cfg.get("driver_groups").cloned().unwrap_or_else(|| json!([]));
+            if let Some(obj) = cfg.as_object_mut() {
+                obj.remove("driver_groups");
+            }
+            let mut sparse = sparse_diff(&default_cfg(), &cfg);
+            if let Some(obj) = sparse.as_object_mut() {
+                obj.remove("driver_groups");
+            }
             doc = json!({
                 "schema": 2,
                 "active_preset": "Default",
                 "auto_switch_by_league": false,
                 "auto_switch_by_car": false,
                 "auto_switch_to_default": false,
+                "driver_groups": legacy_groups,
                 "presets": {
                     "Default": {
-                        "config": sparse_diff(&default_cfg(), &cfg),
+                        "config": sparse,
                         "layout": {},
                         "layout_garage": {},
                         "cars": [],
@@ -308,8 +318,10 @@ impl OverlayConfig {
                     }
                 }
             });
-            cfg
+            hoist_driver_groups_to_doc(&mut doc);
+            Self::cfg_from_doc(&doc, "Default", ConfigContext::Race)
         };
+        inject_doc_driver_groups(&mut cfg, &doc);
         Ok(Self {
             cfg,
             doc,
@@ -395,8 +407,33 @@ impl OverlayConfig {
         self.generation = self.generation.saturating_add(1);
     }
 
+    /// App-wide driver groups (document root — not per preset / garage profile).
+    pub fn set_driver_groups(&mut self, groups: Value) {
+        let normalized = Value::Array(crate::driver_groups::normalize_driver_groups(&groups));
+        if let Some(doc) = self.doc.as_object_mut() {
+            doc.insert("driver_groups".into(), normalized.clone());
+        }
+        if let Some(obj) = self.cfg.as_object_mut() {
+            obj.insert("driver_groups".into(), normalized);
+        }
+        // Keep presets clean if a prior build wrote groups into them.
+        strip_driver_groups_from_all_presets(&mut self.doc);
+        self.generation = self.generation.saturating_add(1);
+    }
+
+    /// Effective `driver_groups` for UI / telemetry (document root).
+    pub fn driver_groups_value(&self) -> Value {
+        self.doc
+            .get("driver_groups")
+            .cloned()
+            .or_else(|| self.cfg.get("driver_groups").cloned())
+            .unwrap_or_else(|| json!([]))
+    }
+
     pub fn context_cfg(&self, context: ConfigContext) -> Value {
-        Self::cfg_from_doc(&self.doc, &self.active_preset, context)
+        let mut cfg = Self::cfg_from_doc(&self.doc, &self.active_preset, context);
+        inject_doc_driver_groups(&mut cfg, &self.doc);
+        cfg
     }
 
     pub fn apply_context(&mut self, context: ConfigContext) {
@@ -714,12 +751,18 @@ impl OverlayConfig {
         if !sparse.is_object() {
             sparse = json!({});
         }
+        // App-wide keys live on the document root, never in preset sparse.
+        strip_driver_groups_from_value(&mut sparse);
         // Preserve garage overrides already on the preset if present.
         if let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) {
             if let Some(preset) = presets.get(&self.active_preset) {
-                if let Some(garage) = preset.get("config").and_then(|c| c.get("garage")).cloned() {
+                if let Some(mut garage) = preset.get("config").and_then(|c| c.get("garage")).cloned()
+                {
+                    strip_driver_groups_from_value(&mut garage);
                     if let Some(obj) = sparse.as_object_mut() {
-                        obj.insert("garage".into(), garage);
+                        if garage.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
+                            obj.insert("garage".into(), garage);
+                        }
                     }
                 }
             }
@@ -737,6 +780,7 @@ impl OverlayConfig {
             doc.entry("auto_switch_by_league").or_insert(json!(false));
             doc.entry("auto_switch_by_car").or_insert(json!(false));
             doc.entry("auto_switch_to_default").or_insert(json!(false));
+            doc.entry("driver_groups").or_insert_with(|| json!([]));
             doc.insert(
                 "active_preset".into(),
                 Value::String(self.active_preset.clone()),
@@ -750,7 +794,8 @@ impl OverlayConfig {
             ConfigContext::Race => self.sync_active_preset_config(),
             ConfigContext::Garage => {
                 let race = self.context_cfg(ConfigContext::Race);
-                let garage = sparse_diff(&race, &self.cfg);
+                let mut garage = sparse_diff(&race, &self.cfg);
+                strip_driver_groups_from_value(&mut garage);
                 if let Some(presets) = self.doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
                     let entry = presets
                         .entry(self.active_preset.clone())
@@ -1217,6 +1262,12 @@ const DEAD_TABLE_COLUMNS: &[&str] = &["qual_pos", "qual_best", "gap_pole"];
 /// editing them in the garage profile leaves on-track stuck on defaults.
 const SHARED_SECTION_KEYS: &[(&str, &str)] = &[("map", "car_label")];
 
+fn value_nonempty_array(v: Option<&Value>) -> bool {
+    v.and_then(|x| x.as_array())
+        .map(|a| !a.is_empty())
+        .unwrap_or(false)
+}
+
 fn sanitize_loaded_config(doc: &mut Value) {
     if let Some(presets) = doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
         for preset in presets.values_mut() {
@@ -1226,6 +1277,95 @@ fn sanitize_loaded_config(doc: &mut Value) {
             }
         }
     }
+    hoist_driver_groups_to_doc(doc);
+}
+
+/// Inject document-root driver groups into a live/context CFG snapshot.
+fn inject_doc_driver_groups(cfg: &mut Value, doc: &Value) {
+    let groups = doc
+        .get("driver_groups")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert("driver_groups".into(), groups);
+    }
+}
+
+fn strip_driver_groups_from_value(v: &mut Value) {
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    obj.remove("driver_groups");
+    if let Some(garage) = obj.get_mut(GARAGE_KEY).and_then(|g| g.as_object_mut()) {
+        garage.remove("driver_groups");
+        if garage.is_empty() {
+            obj.remove(GARAGE_KEY);
+        }
+    }
+}
+
+fn strip_driver_groups_from_all_presets(doc: &mut Value) {
+    let Some(presets) = doc.get_mut("presets").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    for preset in presets.values_mut() {
+        if let Some(config) = preset.get_mut("config") {
+            strip_driver_groups_from_value(config);
+        }
+    }
+}
+
+/// Move driver groups to the document root (shared across all presets/profiles).
+/// Collects legacy copies from preset race/garage configs, merges by name, then strips them.
+fn hoist_driver_groups_to_doc(doc: &mut Value) {
+    let mut chunks: Vec<Value> = Vec::new();
+    if let Some(root) = doc.get("driver_groups").cloned() {
+        if value_nonempty_array(Some(&root)) {
+            chunks.push(root);
+        }
+    }
+    if let Some(presets) = doc.get("presets").and_then(|p| p.as_object()) {
+        for preset in presets.values() {
+            let Some(config) = preset.get("config") else {
+                continue;
+            };
+            if let Some(g) = config.get("driver_groups").cloned() {
+                if value_nonempty_array(Some(&g)) {
+                    chunks.push(g);
+                }
+            }
+            if let Some(g) = config
+                .get(GARAGE_KEY)
+                .and_then(|garage| garage.get("driver_groups"))
+                .cloned()
+            {
+                if value_nonempty_array(Some(&g)) {
+                    chunks.push(g);
+                }
+            }
+        }
+    }
+
+    let mut merged = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for chunk in chunks {
+        for group in crate::driver_groups::normalize_driver_groups(&chunk) {
+            let name = group
+                .get("name")
+                .and_then(|n| n.as_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if name.is_empty() || !seen.insert(name) {
+                continue;
+            }
+            merged.push(group);
+        }
+    }
+
+    if let Some(obj) = doc.as_object_mut() {
+        obj.insert("driver_groups".into(), Value::Array(merged));
+    }
+    strip_driver_groups_from_all_presets(doc);
 }
 
 /// Lift garage-only copies of shared keys onto the race base when race has no
@@ -2040,6 +2180,12 @@ fn default_cfg() -> Value {
     m.insert("check_updates_on_launch".into(), Value::Bool(true));
     m.insert("start_at_login".into(), Value::Bool(false));
     m.insert("close_settings_to_tray".into(), Value::Bool(true));
+    m.insert("lan_telemetry_enabled".into(), Value::Bool(false));
+    m.insert(
+        "lan_telemetry_port".into(),
+        json!(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT),
+    );
+    m.insert("lan_telemetry_hz".into(), json!(15));
     m.insert("driver_groups".into(), json!([]));
     m.insert("units".into(), Value::String("imperial".into()));
     m.insert("text_scale".into(), json!(1.20));
@@ -2197,6 +2343,79 @@ mod tests {
         let garage = oc.context_cfg(ConfigContext::Garage);
         assert_eq!(garage["units"], "imperial");
         assert_eq!(garage["dash"]["show"], false);
+    }
+
+    #[test]
+    fn hoist_driver_groups_to_document_root() {
+        let mut doc = json!({
+            "schema": 2,
+            "active_preset": "Default",
+            "presets": {
+                "Default": {
+                    "config": {
+                        "garage": {
+                            "driver_groups": [{
+                                "name": "802",
+                                "icon": "league",
+                                "color": "#5bb8ff",
+                                "members": [{ "name": "Test Driver", "aliases": [] }]
+                            }]
+                        }
+                    },
+                    "default": true
+                },
+                "Racing": {
+                    "config": {
+                        "driver_groups": [{
+                            "name": "Friends",
+                            "icon": "flag",
+                            "color": "#ff0000",
+                            "members": [{ "name": "Other Driver", "aliases": [] }]
+                        }]
+                    }
+                }
+            }
+        });
+        sanitize_loaded_config(&mut doc);
+        assert_eq!(doc["driver_groups"][0]["name"], "802");
+        assert_eq!(doc["driver_groups"][1]["name"], "Friends");
+        assert!(doc["presets"]["Default"]["config"]
+            .get("garage")
+            .and_then(|g| g.get("driver_groups"))
+            .is_none());
+        assert!(doc["presets"]["Racing"]["config"]
+            .get("driver_groups")
+            .is_none());
+
+        let mut oc = OverlayConfig {
+            cfg: default_cfg(),
+            doc: doc.clone(),
+            generation: 0,
+            active_preset: "Default".into(),
+        };
+        oc.apply_context(ConfigContext::Race);
+        assert_eq!(oc.cfg["driver_groups"][0]["name"], "802");
+        oc.set_active_preset("Racing").unwrap();
+        oc.apply_context(ConfigContext::Garage);
+        // Same app-wide groups after preset / profile switch.
+        assert_eq!(oc.driver_groups_value()[0]["name"], "802");
+        assert_eq!(oc.cfg["driver_groups"][1]["name"], "Friends");
+    }
+
+    #[test]
+    fn sync_preset_does_not_store_driver_groups() {
+        let mut oc = OverlayConfig::default();
+        oc.set_driver_groups(json!([{
+            "name": "802",
+            "icon": "league",
+            "color": "#5bb8ff",
+            "members": []
+        }]));
+        oc.sync_active_preset_config();
+        assert_eq!(oc.doc["driver_groups"][0]["name"], "802");
+        assert!(oc.doc["presets"]["Default"]["config"]
+            .get("driver_groups")
+            .is_none());
     }
 
     #[test]

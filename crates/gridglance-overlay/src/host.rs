@@ -154,6 +154,7 @@ pub struct OverlayApp {
     tire_energy: TireEnergyTracker,
     lift_coast: LiftCoastTracker,
     fcy_model: FcyModel,
+    lan_server: crate::telemetry_lan::LanTelemetryServer,
     /// Settings form dirty flag (unsaved edits).
     settings_dirty: bool,
     /// Autosave debounce after edits.
@@ -262,6 +263,7 @@ impl OverlayApp {
             tire_energy: TireEnergyTracker::default(),
             lift_coast: LiftCoastTracker::default(),
             fcy_model: FcyModel::default(),
+            lan_server: crate::telemetry_lan::LanTelemetryServer::default(),
             settings_dirty: false,
             settings_autosave_at: None,
             settings_ui: settings::SettingsUi::default(),
@@ -878,6 +880,7 @@ impl OverlayApp {
         finalize_frame(&mut frame, cfg.as_ref(), &mut self.rel_order);
         self.pit_stops.apply_frame(&mut frame, cfg.as_ref());
         self.path_probe.observe(&frame);
+        self.lan_server.publish(&frame);
 
         {
             let n = cfg
@@ -1029,6 +1032,29 @@ impl OverlayApp {
         }
     }
 
+    fn sync_lan_telemetry(&mut self) {
+        let (enabled, port, hz) = {
+            let st = self.state.read();
+            let cfg = &st.config.cfg;
+            let enabled = cfg
+                .get("lan_telemetry_enabled")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let port = cfg
+                .get("lan_telemetry_port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(u64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
+                .clamp(1, 65535) as u16;
+            let hz = cfg
+                .get("lan_telemetry_hz")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(15)
+                .clamp(5, 30) as u32;
+            (enabled, port, hz)
+        };
+        self.lan_server.sync(enabled, port, hz);
+    }
+
     /// Drop present/geom caches so garage↔track (telemetry or Settings preview)
     /// cannot leave ghost layered HWNDs at the previous profile's positions.
     fn invalidate_on_profile_switch(&mut self) {
@@ -1044,6 +1070,12 @@ impl OverlayApp {
     }
 }
 
+impl Drop for OverlayApp {
+    fn drop(&mut self) {
+        self.lan_server.shutdown();
+    }
+}
+
 impl eframe::App for OverlayApp {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0, 0.0, 0.0, 0.0]
@@ -1052,6 +1084,7 @@ impl eframe::App for OverlayApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_shell_commands();
         self.handle_taskbar_activate(ctx);
+        self.sync_lan_telemetry();
         let telem_start = Instant::now();
         self.tick_telemetry();
         if self.perf {

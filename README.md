@@ -53,6 +53,22 @@ IPC listens on `127.0.0.1:19847`. Mutating methods require a `token` field
 matching `%LOCALAPPDATA%\GridGlance\ipc_token` (created on first launch).
 `ping`, `layout.get`, and map state reads stay public.
 
+### LAN Telemetry API
+
+Optional read-only API for other apps on the same Wi‑Fi/LAN. Enable in
+**Settings → App → LAN telemetry API**. Default port `19848` (separate from
+control IPC `19847`); use **Copy token** in that card (or
+`%LOCALAPPDATA%\GridGlance\ipc_token`) on the client.
+
+| Setting | Default | Notes |
+|---------|---------|--------|
+| Enable | off | Binds `0.0.0.0` when on (Windows may prompt Firewall) |
+| Port | `19848` | Separate from control IPC `19847` |
+| Push rate | `15` Hz | Clamped 5–30 when subscribed |
+
+Full connect guide (protocol, PowerShell/Python examples, troubleshooting):
+[`docs/lan-telemetry-wiki.md`](docs/lan-telemetry-wiki.md).
+
 ## Project layout
 
 ```

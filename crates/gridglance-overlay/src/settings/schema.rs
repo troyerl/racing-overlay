@@ -1110,6 +1110,15 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("__app__", "close_settings_to_tray") => Some(
             "Closing the Settings window hides it to the system tray instead of quitting the app. Use Quit to exit fully.",
         ),
+        ("__app__", "lan_telemetry_enabled") => Some(
+            "Start a read-only LAN telemetry server so other devices on your Wi‑Fi can subscribe to live iRacing state. Requires ipc_token on every request. Windows may prompt for Firewall access the first time.",
+        ),
+        ("__app__", "lan_telemetry_port") => Some(
+            "TCP port for the LAN telemetry API (default 19848). Listens on all interfaces when enabled. Separate from localhost control IPC (19847).",
+        ),
+        ("__app__", "lan_telemetry_hz") => Some(
+            "How often subscribed clients receive telemetry push frames (5–30 Hz).",
+        ),
         (_, "show") => Some("Show this panel on the overlay."),
         (_, "text_scale") => Some("Per-panel text scale (multiplies global)."),
         (_, "show_panel") => Some("Draw the card background behind this panel."),

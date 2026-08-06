@@ -54,7 +54,16 @@ pub struct SettingsUi {
     pub dg_name: String,
     pub dg_icon: String,
     pub dg_color: String,
+    /// Comma-separated member names (source of truth for the open group).
     pub dg_members: String,
+    /// Single-name field: filled by selecting a member, or typed to add/rename.
+    pub dg_member_edit: String,
+    /// Member currently selected in the list (display name).
+    pub dg_member_sel: Option<String>,
+    /// True while composing a new group (do not auto-select an existing one).
+    pub dg_new: bool,
+    /// Reveal full LAN ipc_token in App settings (off by default).
+    pub show_lan_token: bool,
     /// Cached widget section values (invalidated on edit / section change).
     pub section_cache_id: String,
     pub section_cache: Option<std::sync::Arc<std::collections::HashMap<String, Value>>>,
@@ -808,6 +817,137 @@ fn paint_app(
         );
     });
     ui.add_space(8.0);
+    enable_card(ui, "LAN telemetry API", accent, |ui| {
+        ui.label(
+            RichText::new(
+                "Read-only API for other apps on your Wi‑Fi/LAN. Listens on all interfaces when enabled. Clients must send your ipc_token.",
+            )
+            .size(11.0)
+            .color(MUTED),
+        );
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(format!(
+                "Token file: {}",
+                crate::paths::ipc_token_path().display()
+            ))
+            .size(10.0)
+            .color(MUTED),
+        );
+        ui.add_space(6.0);
+        let lan_token = crate::ipc::ensure_ipc_token().unwrap_or_default();
+        setting_row(
+            ui,
+            "IPC token",
+            Some("Paste this token into the client on your phone or other PC. Same secret as localhost control IPC."),
+            |ui| {
+                let display = if ui_state.show_lan_token {
+                    lan_token.clone()
+                } else if lan_token.len() <= 8 {
+                    "••••••••".into()
+                } else {
+                    format!("{}…{}", &lan_token[..4], &lan_token[lan_token.len() - 4..])
+                };
+                ui.label(RichText::new(display).size(12.0).monospace().color(TITLE));
+                ui.add_space(6.0);
+                if button_kind(
+                    ui,
+                    if ui_state.show_lan_token {
+                        "Hide"
+                    } else {
+                        "Show"
+                    },
+                    ButtonKind::GhostAccent,
+                )
+                .clicked()
+                {
+                    ui_state.show_lan_token = !ui_state.show_lan_token;
+                }
+                if button_kind(ui, "Copy token", ButtonKind::Primary).clicked() {
+                    if lan_token.is_empty() {
+                        ui_state.flash("Could not read ipc_token");
+                    } else {
+                        ui.ctx().copy_text(lan_token.clone());
+                        ui_state.flash("Token copied — paste it into your other device’s app");
+                    }
+                }
+            },
+        );
+        ui.add_space(4.0);
+        let mut lan_on = state
+            .read()
+            .config
+            .cfg
+            .get("lan_telemetry_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        setting_row(
+            ui,
+            "Enable LAN telemetry",
+            help_text("__app__", "lan_telemetry_enabled"),
+            |ui| {
+                if toggle_switch(ui, &mut lan_on, accent, ui.id().with("lan_telem_on")).changed() {
+                    set_global(
+                        state,
+                        "lan_telemetry_enabled",
+                        json!(lan_on),
+                        dirty,
+                        ui_state,
+                    );
+                }
+            },
+        );
+        let mut port = state
+            .read()
+            .config
+            .cfg
+            .get("lan_telemetry_port")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
+            as f32;
+        if number_row(
+            ui,
+            "Port",
+            &mut port,
+            1024.0..=65535.0,
+            1.0,
+            accent,
+            help_text("__app__", "lan_telemetry_port"),
+        ) {
+            set_global(
+                state,
+                "lan_telemetry_port",
+                json!(port.round() as u64),
+                dirty,
+                ui_state,
+            );
+        }
+        let mut hz = state
+            .read()
+            .config
+            .cfg
+            .get("lan_telemetry_hz")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(15.0) as f32;
+        if number_row(
+            ui,
+            "Push rate (Hz)",
+            &mut hz,
+            5.0..=30.0,
+            1.0,
+            accent,
+            help_text("__app__", "lan_telemetry_hz"),
+        ) {
+            set_global(
+                state,
+                "lan_telemetry_hz",
+                json!(hz.round() as u64),
+                dirty,
+                ui_state,
+            );
+        }
+    });
+    ui.add_space(8.0);
     enable_card(ui, "Auto-switch presets", accent, |ui| {
         for (key, label) in [
             ("auto_switch_by_league", "Switch by league"),
@@ -840,16 +980,16 @@ fn paint_driver_groups(
     ui.add_space(8.0);
     enable_card(ui, "Driver groups", accent, |ui| {
         ui.label(
-            RichText::new("Local name groups with icons for Relative / Standings / Radio.")
-                .size(11.0)
-                .color(MUTED),
+            RichText::new(
+                "App-wide (all presets, On track and In garage). Icons show on Relative, Standings, and Radio.",
+            )
+            .size(11.0)
+            .color(MUTED),
         );
 
         let mut groups = {
             let st = state.read();
-            crate::driver_groups::normalize_driver_groups(
-                st.config.cfg.get("driver_groups").unwrap_or(&json!([])),
-            )
+            crate::driver_groups::normalize_driver_groups(&st.config.driver_groups_value())
         };
 
         let names: Vec<String> = groups
@@ -860,45 +1000,79 @@ fn paint_driver_groups(
                     .map(|s| s.to_string())
             })
             .collect();
-        let selected = ui_state
-            .dg_sel
-            .clone()
-            .filter(|s| names.contains(s))
-            .or_else(|| names.first().cloned())
-            .unwrap_or_default();
 
-        if !names.is_empty() {
-            if let Some(next) = styled_combo(ui, "dg_list", &selected, &names, 200.0) {
-                ui_state.dg_sel = Some(next.clone());
-                if let Some(g) = groups
-                    .iter()
-                    .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(next.as_str()))
-                {
-                    ui_state.dg_name = next;
-                    ui_state.dg_icon = g
-                        .get("icon")
-                        .and_then(|i| i.as_str())
-                        .unwrap_or("league")
-                        .to_string();
-                    ui_state.dg_color = g
-                        .get("color")
-                        .and_then(|c| c.as_str())
-                        .unwrap_or("#5bb8ff")
-                        .to_string();
-                    ui_state.dg_members = g
-                        .get("members")
-                        .and_then(|m| m.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|e| e.get("name").and_then(|n| n.as_str()))
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default();
-                }
-            }
+        let selected = if ui_state.dg_new {
+            String::new()
+        } else {
+            ui_state
+                .dg_sel
+                .clone()
+                .filter(|s| names.contains(s))
+                .or_else(|| names.first().cloned())
+                .unwrap_or_default()
+        };
+
+        // Keep the editor filled whenever the selection changes (including first paint).
+        if !ui_state.dg_new
+            && !selected.is_empty()
+            && (ui_state.dg_sel.as_deref() != Some(selected.as_str())
+                || ui_state.dg_name.trim().is_empty())
+        {
+            load_driver_group_into_ui(ui_state, &groups, &selected);
         }
 
+        if names.is_empty() {
+            ui.label(
+                RichText::new("No groups yet — add a name and members below.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        } else {
+            let combo_sel = if selected.is_empty() {
+                names.first().cloned().unwrap_or_default()
+            } else {
+                selected.clone()
+            };
+            setting_row(ui, "Group", None, |ui| {
+                if let Some(next) = styled_combo(ui, "dg_list", &combo_sel, &names, 220.0) {
+                    load_driver_group_into_ui(ui_state, &groups, &next);
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!("{} group(s)", names.len()))
+                    .size(11.0)
+                    .color(MUTED),
+            );
+            egui::ScrollArea::vertical()
+                .id_salt("dg_group_list")
+                .max_height(120.0)
+                .show(ui, |ui| {
+                    for g in &groups {
+                        let name = g
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        if name.is_empty() {
+                            continue;
+                        }
+                        let n_members = g
+                            .get("members")
+                            .and_then(|m| m.as_array())
+                            .map(|a| a.len())
+                            .unwrap_or(0);
+                        let is_sel = ui_state.dg_sel.as_deref() == Some(name.as_str());
+                        let label = format!("{name}  ·  {n_members} drivers");
+                        let resp = ui.selectable_label(is_sel, RichText::new(label).size(12.0));
+                        if resp.clicked() {
+                            load_driver_group_into_ui(ui_state, &groups, &name);
+                        }
+                    }
+                });
+        }
+
+        ui.add_space(8.0);
         setting_row(ui, "Group name", None, |ui| {
             let _ = text_field(ui, &mut ui_state.dg_name, "League mates", 180.0);
         });
@@ -915,8 +1089,117 @@ fn paint_driver_groups(
         setting_row(ui, "Color", None, |ui| {
             let _ = text_field(ui, &mut ui_state.dg_color, "#5bb8ff", 120.0);
         });
-        setting_row(ui, "Members", None, |ui| {
-            let _ = text_field(ui, &mut ui_state.dg_members, "comma-separated names", 260.0);
+
+        let member_names: Vec<String> = ui_state
+            .dg_members
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if ui_state
+            .dg_member_sel
+            .as_ref()
+            .is_some_and(|s| !member_names.iter().any(|n| n == s))
+        {
+            ui_state.dg_member_sel = None;
+        }
+        ui.label(
+            RichText::new(format!("Members ({})", member_names.len()))
+                .size(12.0)
+                .strong()
+                .color(TITLE),
+        );
+        if member_names.is_empty() {
+            ui.label(
+                RichText::new("No drivers in this group yet.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        } else {
+            egui::ScrollArea::vertical()
+                .id_salt("dg_member_list")
+                .max_height(160.0)
+                .show(ui, |ui| {
+                    for (i, name) in member_names.iter().enumerate() {
+                        let is_sel = ui_state.dg_member_sel.as_deref() == Some(name.as_str());
+                        ui.horizontal(|ui| {
+                            if ui
+                                .selectable_label(is_sel, RichText::new(name).size(12.0))
+                                .clicked()
+                            {
+                                ui_state.dg_member_sel = Some(name.clone());
+                                ui_state.dg_member_edit = name.clone();
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if button_kind(ui, "Remove", ButtonKind::GhostAccent).clicked()
+                                    {
+                                        let mut next = member_names.clone();
+                                        next.remove(i);
+                                        if ui_state.dg_member_sel.as_deref() == Some(name.as_str())
+                                        {
+                                            ui_state.dg_member_sel = None;
+                                            ui_state.dg_member_edit.clear();
+                                        }
+                                        ui_state.dg_members = next.join(", ");
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+        }
+        setting_row(
+            ui,
+            "Edit member",
+            Some("Click a member above to load their name, then rename or add."),
+            |ui| {
+                let _ = text_field(ui, &mut ui_state.dg_member_edit, "Driver name", 220.0);
+            },
+        );
+        ui.horizontal(|ui| {
+            if button_kind(ui, "Add member", ButtonKind::GhostAccent).clicked() {
+                let name = ui_state.dg_member_edit.trim().to_string();
+                if !name.is_empty() {
+                    let mut next = member_names.clone();
+                    let exists = next
+                        .iter()
+                        .any(|n| n.eq_ignore_ascii_case(name.as_str()));
+                    if !exists {
+                        next.push(name.clone());
+                        ui_state.dg_members = next.join(", ");
+                        ui_state.dg_member_sel = Some(name);
+                        ui_state.flash("Member added (Save group to keep)");
+                    } else {
+                        ui_state.flash("Already in this group");
+                    }
+                }
+            }
+            if button_kind(ui, "Rename selected", ButtonKind::Default).clicked() {
+                let new_name = ui_state.dg_member_edit.trim().to_string();
+                if let Some(old) = ui_state.dg_member_sel.clone() {
+                    if !new_name.is_empty() {
+                        let mut next = member_names.clone();
+                        if let Some(pos) = next.iter().position(|n| n == &old) {
+                            let clash = next.iter().enumerate().any(|(i, n)| {
+                                i != pos && n.eq_ignore_ascii_case(new_name.as_str())
+                            });
+                            if clash {
+                                ui_state.flash("Another member already has that name");
+                            } else {
+                                next[pos] = new_name.clone();
+                                ui_state.dg_members = next.join(", ");
+                                ui_state.dg_member_sel = Some(new_name.clone());
+                                ui_state.dg_member_edit = new_name;
+                                ui_state.flash("Renamed (Save group to keep)");
+                            }
+                        }
+                    }
+                } else {
+                    ui_state.flash("Select a member first");
+                }
+            }
         });
 
         ui.horizontal(|ui| {
@@ -945,19 +1228,33 @@ fn paint_driver_groups(
                         groups.push(entry);
                     }
                     ui_state.dg_sel = Some(name);
-                    set_global(state, "driver_groups", json!(groups), dirty, ui_state);
+                    ui_state.dg_new = false;
+                    set_driver_groups(state, json!(groups), dirty, ui_state);
                     ui_state.flash("Driver group saved");
                 }
             }
-            if button_kind(ui, "Remove", ButtonKind::Warn).clicked() {
+            if button_kind(ui, "Remove group", ButtonKind::Warn).clicked() {
                 if let Some(sel) = ui_state.dg_sel.clone() {
                     groups.retain(|g| g.get("name").and_then(|n| n.as_str()) != Some(sel.as_str()));
-                    set_global(state, "driver_groups", json!(groups), dirty, ui_state);
+                    set_driver_groups(state, json!(groups), dirty, ui_state);
                     ui_state.dg_sel = None;
+                    ui_state.dg_new = false;
                     ui_state.dg_name.clear();
                     ui_state.dg_members.clear();
+                    ui_state.dg_member_edit.clear();
+                    ui_state.dg_member_sel = None;
                     ui_state.flash("Driver group removed");
                 }
+            }
+            if button_kind(ui, "New group", ButtonKind::Default).clicked() {
+                ui_state.dg_sel = None;
+                ui_state.dg_new = true;
+                ui_state.dg_name.clear();
+                ui_state.dg_icon = "league".into();
+                ui_state.dg_color = "#5bb8ff".into();
+                ui_state.dg_members.clear();
+                ui_state.dg_member_edit.clear();
+                ui_state.dg_member_sel = None;
             }
             if button_kind(ui, "Import from results...", ButtonKind::Default).clicked() {
                 if let Some(path) = rfd::FileDialog::new()
@@ -991,6 +1288,40 @@ fn paint_driver_groups(
             }
         });
     });
+}
+
+fn load_driver_group_into_ui(ui_state: &mut SettingsUi, groups: &[Value], name: &str) {
+    let Some(g) = groups
+        .iter()
+        .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(name))
+    else {
+        return;
+    };
+    ui_state.dg_new = false;
+    ui_state.dg_sel = Some(name.to_string());
+    ui_state.dg_name = name.to_string();
+    ui_state.dg_icon = g
+        .get("icon")
+        .and_then(|i| i.as_str())
+        .unwrap_or("league")
+        .to_string();
+    ui_state.dg_color = g
+        .get("color")
+        .and_then(|c| c.as_str())
+        .unwrap_or("#5bb8ff")
+        .to_string();
+    ui_state.dg_members = g
+        .get("members")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.get("name").and_then(|n| n.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    ui_state.dg_member_edit.clear();
+    ui_state.dg_member_sel = None;
 }
 
 fn paint_widget_section(
@@ -1224,6 +1555,8 @@ fn number_setting_bounds(key: &str) -> (std::ops::RangeInclusive<f32>, f32) {
         "range_pct" => return (0.0..=0.15, 0.005),
         "alongside_zone_pct" | "side_span_pct" => return (0.0..=0.02, 0.0005),
         "dot_radius_frac" | "other_dot_radius_frac" => return (0.01..=0.15, 0.005),
+        "lan_telemetry_port" => return (1024.0..=65535.0, 1.0),
+        "lan_telemetry_hz" => return (5.0..=30.0, 1.0),
         _ => {}
     }
 
@@ -1717,6 +2050,20 @@ fn set_global(
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
         cfg.apply_cfg_patch(&json!({ key: val }));
+        *dirty = true;
+        ui_state.invalidate_section_cache();
+    }
+}
+
+fn set_driver_groups(
+    state: &StateHandle,
+    val: Value,
+    dirty: &mut bool,
+    ui_state: &mut SettingsUi,
+) {
+    if let Some(mut st) = state.try_write() {
+        let cfg = Arc::make_mut(&mut st.config);
+        cfg.set_driver_groups(val);
         *dirty = true;
         ui_state.invalidate_section_cache();
     }

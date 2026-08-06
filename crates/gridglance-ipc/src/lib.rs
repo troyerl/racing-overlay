@@ -15,6 +15,9 @@ use serde_json::Value;
 /// Default localhost port for overlay IPC.
 pub const DEFAULT_IPC_PORT: u16 = 19847;
 
+/// Default LAN telemetry API port (binds all interfaces when enabled).
+pub const DEFAULT_LAN_TELEMETRY_PORT: u16 = 19848;
+
 /// Protocol version advertised in `ping` (2 = token auth for mutating methods).
 pub const PROTOCOL_VERSION: u32 = 2;
 
@@ -224,12 +227,23 @@ pub mod methods {
     pub const MAP_SET_CORNERS: &str = "map.set_corners";
     pub const MAP_SET_START_FINISH: &str = "map.set_start_finish";
     pub const TRACK_AUTHORING_STATE: &str = "track.authoring_state";
+    pub const TELEMETRY_GET: &str = "telemetry.get";
+    pub const TELEMETRY_SUBSCRIBE: &str = "telemetry.subscribe";
+    pub const TELEMETRY_UNSUBSCRIBE: &str = "telemetry.unsubscribe";
 
-    /// Methods that do not require the local IPC token.
+    /// Methods that do not require the local IPC token (localhost control IPC).
     pub fn is_public(method: &str) -> bool {
         matches!(
             method,
             PING | LAYOUT_GET | MAP_GET_STATE | TRACK_AUTHORING_STATE
+        )
+    }
+
+    /// Methods allowed on the LAN telemetry socket (all require token).
+    pub fn is_lan_allowed(method: &str) -> bool {
+        matches!(
+            method,
+            PING | TELEMETRY_GET | TELEMETRY_SUBSCRIBE | TELEMETRY_UNSUBSCRIBE
         )
     }
 }
@@ -256,5 +270,16 @@ mod tests {
     fn public_methods() {
         assert!(methods::is_public(methods::PING));
         assert!(!methods::is_public(methods::CONFIG_APPLY));
+    }
+
+    #[test]
+    fn lan_allowlist_is_read_only() {
+        assert!(methods::is_lan_allowed(methods::PING));
+        assert!(methods::is_lan_allowed(methods::TELEMETRY_GET));
+        assert!(methods::is_lan_allowed(methods::TELEMETRY_SUBSCRIBE));
+        assert!(methods::is_lan_allowed(methods::TELEMETRY_UNSUBSCRIBE));
+        assert!(!methods::is_lan_allowed(methods::CONFIG_APPLY));
+        assert!(!methods::is_lan_allowed(methods::LAYOUT_SET));
+        assert!(!methods::is_lan_allowed(methods::OVERLAY_START));
     }
 }
