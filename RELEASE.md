@@ -5,6 +5,16 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.18 - 2026-08-06
+
+- **LAN telemetry API.** Optional read-only NDJSON API on port 19848 (Settings →
+  App) so other devices on your Wi‑Fi can `ping` / `telemetry.get` / subscribe
+  with the local `ipc_token`. Copy token + Show/Hide in Settings; guide in
+  `docs/lan-telemetry-wiki.md`.
+- **Driver groups (app-wide).** Groups are shared across all presets and On
+  track / In garage (no longer garage-only). Settings lists groups and members;
+  click a member to edit/rename in the name field.
+
 ## 1.69.17 - 2026-08-06
 
 - **Pit Engineer strategy stack.** Stop advice now uses green-flag EMA fuel,
