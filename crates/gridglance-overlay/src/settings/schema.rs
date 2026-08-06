@@ -1099,19 +1099,25 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
             "Data: dense telemetry layout. Elegant: softer minimal visual layout.",
         ),
         ("map", "car_label") => {
-            Some("Number drawn on each car dot: car number or race position.")
+            Some("Number on each car dot (and traffic-marker pills): car number or race position. Shared for on-track and garage profiles.")
         },
-        ("relative", "rows") => {
-            Some("Total cars ahead+behind (must equal rows ahead + rows behind).")
-        }
+        ("relative", "rows") => Some(
+            "Total relative rows including you. Rows ahead + rows behind = total − 1.",
+        ),
         ("standings", "rows") => Some(
             "Exact number of standings rows to show (pads with empty slots when the field is shorter).",
         ),
-        (_, "rows_ahead") => {
-            Some("Cars ahead of you. Rows ahead + rows behind must equal total rows.")
+        ("relative", "rows_ahead") => Some(
+            "Cars ahead of you. With rows behind, must equal total rows minus your row.",
+        ),
+        ("relative", "rows_behind") => Some(
+            "Cars behind you. With rows ahead, must equal total rows minus your row.",
+        ),
+        ("standings", "rows_ahead") => {
+            Some("Preferred cars ahead when centering on you.")
         }
-        (_, "rows_behind") => {
-            Some("Cars behind you. Rows ahead + rows behind must equal total rows.")
+        ("standings", "rows_behind") => {
+            Some("Preferred cars behind when centering on you.")
         }
         (_, "center_on_player") => Some("Keep your row centered in the table."),
         ("pace_caution", "show_delta") => {

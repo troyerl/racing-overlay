@@ -318,7 +318,8 @@ pub fn draw_edge_band(
     }
 
     let scale = cfg.text_scale(section);
-    let fs = (content.height() * 0.42).clamp(9.0, 16.0) * scale;
+    // Fill the compact band — was 0.42 with extra pad stacked outside content.
+    let fs = (content.height() * 0.52).clamp(9.0, 16.0) * scale;
     let icons_group = if is_header {
         "header_icons"
     } else {

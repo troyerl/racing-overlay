@@ -365,9 +365,9 @@ pub fn build_relative(
 ) -> Vec<TableRow> {
     let n_ahead = cfg.f64_key("relative", "rows_ahead", 3.0).max(0.0) as usize;
     let n_behind = cfg.f64_key("relative", "rows_behind", 3.0).max(0.0) as usize;
-    // Ahead/behind are authoritative. Do not re-derive behind from `rows`
-    // (that zeroed rows_behind when an old preset had rows ~= ahead).
-    let _ = cfg.f64_key("relative", "rows", (n_ahead + n_behind) as f64);
+    // Ahead/behind are authoritative. `rows` is the on-screen total including you
+    // (ahead + self + behind); do not re-derive behind from it here.
+    let _ = cfg.f64_key("relative", "rows", (n_ahead + n_behind + 1) as f64);
     let center = cfg.bool_key("relative", "center_on_player", true);
     let _ = session_type;
 

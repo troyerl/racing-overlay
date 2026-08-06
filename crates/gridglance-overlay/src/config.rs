@@ -350,6 +350,46 @@ impl OverlayConfig {
         self.generation = self.generation.saturating_add(1);
     }
 
+    /// Write a shared preference onto the race base of the active preset and
+    /// clear any garage-only copy so on-track / in-garage stay aligned.
+    pub fn write_shared_section_key(&mut self, section: &str, key: &str, val: Value) {
+        if !SHARED_SECTION_KEYS
+            .iter()
+            .any(|&(s, k)| s == section && k == key)
+        {
+            return;
+        }
+        if let Some(obj) = self.cfg.as_object_mut() {
+            let sec = obj.entry(section.to_string()).or_insert_with(|| json!({}));
+            if let Some(sec_obj) = sec.as_object_mut() {
+                sec_obj.insert(key.into(), val.clone());
+            }
+        }
+        if let Some(config) = self.active_preset_config_mut() {
+            let Some(cfg_obj) = config.as_object_mut() else {
+                return;
+            };
+            let race_sec = cfg_obj
+                .entry(section.to_string())
+                .or_insert_with(|| json!({}));
+            if let Some(sec_obj) = race_sec.as_object_mut() {
+                sec_obj.insert(key.into(), val);
+            }
+            if let Some(garage_obj) = cfg_obj.get_mut(GARAGE_KEY).and_then(|v| v.as_object_mut()) {
+                if let Some(sec) = garage_obj.get_mut(section).and_then(|v| v.as_object_mut()) {
+                    sec.remove(key);
+                    if sec.is_empty() {
+                        garage_obj.remove(section);
+                    }
+                }
+                if garage_obj.is_empty() {
+                    cfg_obj.remove(GARAGE_KEY);
+                }
+            }
+        }
+        self.generation = self.generation.saturating_add(1);
+    }
+
     pub fn context_cfg(&self, context: ConfigContext) -> Value {
         Self::cfg_from_doc(&self.doc, &self.active_preset, context)
     }
@@ -1168,12 +1208,66 @@ pub fn parse_color_str(s: &str) -> egui::Color32 {
 const DEAD_TABLE_COLUMNS: &[&str] = &["qual_pos", "qual_best", "gap_pole"];
 
 /// Strip removed widget keys from a loaded config document (schema 2 presets).
+/// Presentation prefs that should not live only under `garage.*` — otherwise
+/// editing them in the garage profile leaves on-track stuck on defaults.
+const SHARED_SECTION_KEYS: &[(&str, &str)] = &[("map", "car_label")];
+
 fn sanitize_loaded_config(doc: &mut Value) {
     if let Some(presets) = doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
         for preset in presets.values_mut() {
             if let Some(config) = preset.get_mut("config") {
                 sanitize_config_sections(config);
+                promote_shared_garage_prefs(config);
             }
+        }
+    }
+}
+
+/// Lift garage-only copies of shared keys onto the race base when race has no
+/// explicit value (fixes Dot number = Position in garage while on-track still
+/// showed car numbers).
+fn promote_shared_garage_prefs(config: &mut Value) {
+    let Some(cfg_obj) = config.as_object_mut() else {
+        return;
+    };
+    let Some(garage_val) = cfg_obj.get(GARAGE_KEY).cloned() else {
+        return;
+    };
+    let Some(garage) = garage_val.as_object() else {
+        return;
+    };
+    let mut changed = false;
+    for &(section, key) in SHARED_SECTION_KEYS {
+        let Some(val) = garage.get(section).and_then(|s| s.get(key)).cloned() else {
+            continue;
+        };
+        let race_has = cfg_obj
+            .get(section)
+            .and_then(|s| s.get(key))
+            .is_some();
+        if !race_has {
+            let race_sec = cfg_obj.entry(section.to_string()).or_insert_with(|| json!({}));
+            if let Some(obj) = race_sec.as_object_mut() {
+                obj.insert(key.into(), val);
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return;
+    }
+    // Drop promoted keys from the garage overlay so both profiles share one value.
+    if let Some(garage_obj) = cfg_obj.get_mut(GARAGE_KEY).and_then(|v| v.as_object_mut()) {
+        for &(section, key) in SHARED_SECTION_KEYS {
+            if let Some(sec) = garage_obj.get_mut(section).and_then(|v| v.as_object_mut()) {
+                sec.remove(key);
+                if sec.is_empty() {
+                    garage_obj.remove(section);
+                }
+            }
+        }
+        if garage_obj.is_empty() {
+            cfg_obj.remove(GARAGE_KEY);
         }
     }
 }
@@ -1224,11 +1318,14 @@ fn optional_section_keys(section: &str) -> &'static [&'static str] {
     }
 }
 
-/// Keep `rows == rows_ahead + rows_behind` for Relative / Standings.
+/// Keep Relative / Standings row counts consistent.
+/// Relative: on-screen total includes you → `rows == rows_ahead + rows_behind + 1`.
+/// Standings: `rows == rows_ahead + rows_behind`.
 fn normalize_table_row_counts(cfg: &mut Value, section: &str) {
     let Some(obj) = cfg.get_mut(section).and_then(|v| v.as_object_mut()) else {
         return;
     };
+    let include_self = section == "relative";
     let ahead = obj
         .get("rows_ahead")
         .and_then(|v| v.as_f64())
@@ -1241,12 +1338,34 @@ fn normalize_table_row_counts(cfg: &mut Value, section: &str) {
         .unwrap_or(if section == "relative" { 3.0 } else { 5.0 })
         .max(0.0)
         .round() as i64;
-    let sum = ahead + behind;
-    // Ahead/behind drive the live table; `rows` is their total. If an older
-    // preset has a mismatched top-N `rows`, sync total to the split.
-    obj.insert("rows_ahead".into(), json!(ahead.max(0)));
-    obj.insert("rows_behind".into(), json!(behind.max(0)));
-    obj.insert("rows".into(), json!(sum.max(0)));
+    let neighbors = ahead.max(0) + behind.max(0);
+    let stored_rows = obj
+        .get("rows")
+        .and_then(|v| v.as_f64())
+        .map(|v| v.max(0.0).round() as i64);
+    let (ahead, behind, total) = if include_self {
+        // Old presets stored neighbor-only totals (`rows == ahead + behind`).
+        // Treat that value as the desired on-screen total (including you) so
+        // 10 + 5/5 becomes 10 + 5/4 instead of growing to 11.
+        let total = match stored_rows {
+            Some(r) if r == neighbors && r > 0 => r,
+            Some(r) if r == neighbors + 1 => r,
+            _ => neighbors + 1,
+        }
+        .max(1);
+        let budget = total - 1;
+        let a = ahead.max(0).min(budget);
+        (a, budget - a, total)
+    } else {
+        (
+            ahead.max(0),
+            behind.max(0),
+            neighbors.max(0),
+        )
+    };
+    obj.insert("rows_ahead".into(), json!(ahead));
+    obj.insert("rows_behind".into(), json!(behind));
+    obj.insert("rows".into(), json!(total));
 }
 
 fn strip_section_keys(cfg: &mut Value, section: &str, keys: &[&str]) {
@@ -1450,8 +1569,8 @@ fn default_cfg() -> Value {
                 "rows_behind".into(),
                 json!(if *key == "relative" { 3 } else { 5 }),
             );
-            // Total neighbor slots: rows_ahead + rows_behind.
-            section.insert("rows".into(), json!(if *key == "relative" { 6 } else { 9 }));
+            // Relative total includes you (ahead + self + behind); standings is ahead + behind.
+            section.insert("rows".into(), json!(if *key == "relative" { 7 } else { 9 }));
             section.insert("center_on_player".into(), Value::Bool(true));
             section.insert("show_footer".into(), Value::Bool(true));
             section.insert("row_ease_tau".into(), json!(0.24));
@@ -1960,6 +2079,35 @@ mod tests {
     }
 
     #[test]
+    fn relative_rows_total_includes_player() {
+        // Old linked form: rows == ahead + behind (forgot self) → keep total, fix split.
+        let mut cfg = json!({
+            "relative": {
+                "rows": 10,
+                "rows_ahead": 5,
+                "rows_behind": 5
+            }
+        });
+        sanitize_config_sections(&mut cfg);
+        assert_eq!(cfg["relative"]["rows"], 10);
+        assert_eq!(cfg["relative"]["rows_ahead"], 5);
+        assert_eq!(cfg["relative"]["rows_behind"], 4);
+
+        // Already includes self: leave 5/5 with total 11 alone.
+        let mut cfg = json!({
+            "relative": {
+                "rows": 11,
+                "rows_ahead": 5,
+                "rows_behind": 5
+            }
+        });
+        sanitize_config_sections(&mut cfg);
+        assert_eq!(cfg["relative"]["rows"], 11);
+        assert_eq!(cfg["relative"]["rows_ahead"], 5);
+        assert_eq!(cfg["relative"]["rows_behind"], 5);
+    }
+
+    #[test]
     fn parse_hex8() {
         let c = parse_color_str("#46df7aff");
         assert_eq!(c.r(), 0x46);
@@ -2020,6 +2168,48 @@ mod tests {
         let garage = oc.context_cfg(ConfigContext::Garage);
         assert_eq!(garage["units"], "imperial");
         assert_eq!(garage["dash"]["show"], false);
+    }
+
+    #[test]
+    fn promote_garage_only_car_label_onto_race_base() {
+        let mut doc = json!({
+            "schema": 2,
+            "active_preset": "Default",
+            "presets": {
+                "Default": {
+                    "config": {
+                        "garage": { "map": { "car_label": "position" } }
+                    },
+                    "default": true
+                }
+            }
+        });
+        sanitize_loaded_config(&mut doc);
+        assert_eq!(
+            doc["presets"]["Default"]["config"]["map"]["car_label"],
+            "position"
+        );
+        assert!(
+            doc["presets"]["Default"]["config"]
+                .get("garage")
+                .and_then(|g| g.get("map"))
+                .and_then(|m| m.get("car_label"))
+                .is_none()
+        );
+        let race = OverlayConfig::cfg_from_doc(&doc, "Default", ConfigContext::Race);
+        assert_eq!(race["map"]["car_label"], "position");
+    }
+
+    #[test]
+    fn write_shared_car_label_updates_race_base_from_garage() {
+        let mut oc = OverlayConfig::default();
+        oc.apply_context(ConfigContext::Garage);
+        oc.write_shared_section_key("map", "car_label", json!("position"));
+        assert_eq!(oc.cfg["map"]["car_label"], "position");
+        assert_eq!(
+            oc.context_cfg(ConfigContext::Race)["map"]["car_label"],
+            "position"
+        );
     }
 
     #[test]

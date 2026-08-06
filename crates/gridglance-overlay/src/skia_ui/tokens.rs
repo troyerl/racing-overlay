@@ -42,18 +42,20 @@ impl DesignTokens {
         let show_footer = cfg.bool_key(section, "show_footer", true);
         // Match egui draw_card: max(8, h * corner_radius_frac).
         let radius = (panel_h * cfg.f64_key(section, "corner_radius_frac", 0.0) as f32).max(8.0);
+        // Horizontal inset for band slots / row body — keep modest so edges aren't flush.
         let pad = if rh > 0.0 {
-            4.0
+            6.0
         } else {
-            (panel_h * 0.02).max(4.0)
+            (panel_h * 0.02).max(6.0)
         };
         Self {
             row_height: rh,
             pad,
             radius,
-            header_h: (rh * 0.58 * scale * hscale.max(0.3)).max(16.0),
+            // Compact chrome bands (no extra vertical pad stacked into the band).
+            header_h: (rh * 0.50 * scale * hscale.max(0.3)).max(15.0),
             footer_h: if show_footer {
-                (rh * 0.55 * scale * fscale.max(0.3)).max(14.0)
+                (rh * 0.48 * scale * fscale.max(0.3)).max(14.0)
             } else {
                 0.0
             },

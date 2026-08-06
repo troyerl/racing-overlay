@@ -37,8 +37,9 @@ pub fn paint_table(
     let inner_w = bounds.width() - 2.0 * pad;
     let left = bounds.left() + pad;
 
-    let hdr_band = Rect::from_xywh(bounds.x, bounds.y, bounds.w, pad + header_h);
-    let hdr_content = Rect::from_xywh(left, bounds.y + pad, inner_w, header_h);
+    // Header band hugs its content height; only horizontal pad insets the slots.
+    let hdr_band = Rect::from_xywh(bounds.x, bounds.y, bounds.w, header_h);
+    let hdr_content = Rect::from_xywh(left, bounds.y, inner_w, header_h);
     draw_edge_band(
         c,
         cfg,
@@ -52,11 +53,11 @@ pub fn paint_table(
         &slots.header_right,
     );
 
-    let body_top = bounds.y + pad + header_h;
+    let body_top = bounds.y + header_h;
     let body_bottom = if show_footer {
-        bounds.bottom() - pad * 0.5 - footer_h
+        bounds.bottom() - footer_h
     } else {
-        bounds.bottom() - pad
+        bounds.bottom() - pad * 0.5
     };
     let inner = Rect::from_ltrb(left, body_top, left + inner_w, body_bottom);
 
@@ -172,7 +173,7 @@ pub fn paint_table(
     });
 
     if show_footer {
-        let band_top = bounds.bottom() - pad * 0.5 - footer_h;
+        let band_top = bounds.bottom() - footer_h;
         let ftr_band = Rect::from_ltrb(bounds.left(), band_top, bounds.right(), bounds.bottom());
         let ftr_content = Rect::from_xywh(left, band_top, inner_w, footer_h);
         draw_edge_band(

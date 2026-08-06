@@ -37,6 +37,27 @@ pub fn marker_car_valid(car: &CarRow) -> bool {
     car.lap_dist_pct >= 0.0 && (car.on_track || car.on_pit || car.in_pit)
 }
 
+/// Text drawn on map dots / traffic-marker pills (`map.car_label`).
+pub fn car_dot_label(car: &CarRow, mode: &str) -> String {
+    if car.is_pace_car {
+        return "PC".into();
+    }
+    if mode.eq_ignore_ascii_case("position") {
+        let pos = if car.position > 0 {
+            car.position
+        } else {
+            car.class_position
+        };
+        if pos > 0 {
+            return pos.to_string();
+        }
+    }
+    if !car.car_number.is_empty() {
+        return car.car_number.clone();
+    }
+    "?".into()
+}
+
 /// Raw CarIdx targets for ahead / behind / leader (no hold debounce).
 ///
 /// Ahead/behind are race-position neighbors (P−1 / P+1) wherever they are on
@@ -168,6 +189,7 @@ pub fn resolve_traffic_markers(
     now: f64,
     hold_sec: f64,
     focus_idx: Option<i32>,
+    label_mode: &str,
 ) -> HashMap<&'static str, Option<TrafficMarker>> {
     let candidates = select_marker_candidates(cars, focus_idx);
     let mut out: HashMap<&'static str, Option<TrafficMarker>> =
@@ -189,7 +211,7 @@ pub fn resolve_traffic_markers(
                         Some(TrafficMarker {
                             idx,
                             pct: c.lap_dist_pct,
-                            label: c.car_number.clone(),
+                            label: car_dot_label(c, label_mode),
                         }),
                     );
                 }
@@ -391,9 +413,20 @@ mod tests {
             car(3, 4, false),
         ];
         let mut hold = fresh_hold_states();
-        let m = resolve_traffic_markers(&mut hold, &cars, 10.0, 3.0, None);
+        let m = resolve_traffic_markers(&mut hold, &cars, 10.0, 3.0, None, "number");
         assert!(m["ahead"].is_some());
         assert!(m["behind"].is_some());
         assert!(m["leader"].is_some());
+    }
+
+    #[test]
+    fn car_dot_label_uses_position_mode() {
+        let mut c = car(5, 3, false);
+        c.car_number = "48".into();
+        assert_eq!(car_dot_label(&c, "position"), "3");
+        assert_eq!(car_dot_label(&c, "number"), "48");
+        c.position = 0;
+        c.class_position = 2;
+        assert_eq!(car_dot_label(&c, "position"), "2");
     }
 }

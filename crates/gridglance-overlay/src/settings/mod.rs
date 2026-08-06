@@ -1719,6 +1719,9 @@ fn set_section_key(
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
         cfg.apply_cfg_patch(&json!({ section: { key: val.clone() } }));
+        // Dot number (and similar) must land on the race base so a garage-profile
+        // edit is not invisible once you go on track.
+        cfg.write_shared_section_key(section, key, val.clone());
         if key == "panel_style" {
             let (w, h) = crate::config::preferred_panel_size(st.config.as_ref(), section);
             crate::state::fit_panel_size(&mut st.layout, section, w, h);
@@ -1729,7 +1732,9 @@ fn set_section_key(
     }
 }
 
-/// Relative / Standings: keep rows == rows_ahead + rows_behind while editing.
+/// Relative / Standings linked row counts.
+/// Relative: `rows` is the on-screen total including you → ahead + behind = rows − 1.
+/// Standings: `rows` stays ahead + behind (window size helpers).
 fn paint_linked_row_counts(
     ui: &mut Ui,
     state: &StateHandle,
@@ -1739,6 +1744,7 @@ fn paint_linked_row_counts(
     accent: Color32,
     ui_state: &mut SettingsUi,
 ) {
+    let include_self = section == "relative";
     let (total, ahead, behind) = {
         let st = state.read();
         let sec = st.config.section(section);
@@ -1754,12 +1760,23 @@ fn paint_linked_row_counts(
             .unwrap_or(3.0)
             .max(0.0)
             .round() as i32;
+        let neighbors = ahead.max(0) + behind.max(0);
+        let min_total = if include_self {
+            neighbors + 1
+        } else {
+            neighbors
+        };
         let total = sec
             .get("rows")
             .and_then(|v| v.as_f64())
             .map(|v| v.max(0.0).round() as i32)
-            .unwrap_or(ahead + behind);
-        (total.max(ahead + behind), ahead.max(0), behind.max(0))
+            .unwrap_or(min_total);
+        (total.max(min_total), ahead.max(0), behind.max(0))
+    };
+    let neighbor_budget = if include_self {
+        (total - 1).max(0)
+    } else {
+        total.max(0)
     };
 
     let label = match key {
@@ -1774,34 +1791,40 @@ fn paint_linked_row_counts(
         "rows_behind" => behind as f32,
         _ => return,
     };
+    let min_v = if key == "rows" && include_self {
+        1.0
+    } else {
+        0.0
+    };
     let max = if key == "rows" {
         40.0
     } else {
-        total.max(0) as f32
+        neighbor_budget as f32
     };
     if number_row(
         ui,
         label,
         &mut v,
-        0.0..=max,
+        min_v..=max,
         1.0,
         accent,
         help_text(section, key),
     ) {
-        let n = v.round().clamp(0.0, 40.0) as i32;
+        let n = v.round().clamp(min_v, 40.0) as i32;
         let (new_total, new_ahead, new_behind) = match key {
             "rows" => {
-                let t = n.max(0);
-                let a = ahead.min(t).max(0);
-                (t, a, t - a)
+                let t = if include_self { n.max(1) } else { n.max(0) };
+                let budget = if include_self { t - 1 } else { t };
+                let a = ahead.min(budget).max(0);
+                (t, a, budget - a)
             }
             "rows_ahead" => {
-                let a = n.clamp(0, total);
-                (total, a, total - a)
+                let a = n.clamp(0, neighbor_budget);
+                (total, a, neighbor_budget - a)
             }
             "rows_behind" => {
-                let b = n.clamp(0, total);
-                (total, total - b, b)
+                let b = n.clamp(0, neighbor_budget);
+                (total, neighbor_budget - b, b)
             }
             _ => return,
         };

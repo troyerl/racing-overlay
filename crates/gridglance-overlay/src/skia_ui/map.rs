@@ -405,6 +405,7 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
             ctx.frame.session_time,
             hold_sec,
             focus_idx,
+            &car_label_mode,
         )
     } else {
         HashMap::new()

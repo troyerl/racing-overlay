@@ -25,9 +25,9 @@ pub fn paint(
     let h = bounds.height();
     let text_scale = cfg.text_scale(SECTION);
 
-    let m = h * 0.045;
-    let gp = h * 0.022;
-    let hg = w * 0.007;
+    let m = h * 0.028;
+    let gp = h * 0.014;
+    let hg = w * 0.006;
     let show_pos = cfg.bool_key(SECTION, "show_position", true);
     let mut panels_top = bounds.top() + m;
     let panels_bottom = bounds.top() + h * 0.80;
@@ -41,7 +41,7 @@ pub fn paint(
         let flag_bar_h =
             (if has_ctx { h * 0.165 } else { h * 0.105 }).max(if has_ctx { 8.0 } else { 6.0 });
         flag_rect = Some(Rect::from_xywh(left_left, panels_top, bar_w, flag_bar_h));
-        panels_top += flag_bar_h + h * 0.03;
+        panels_top += flag_bar_h + h * 0.018;
     }
 
     let mut delta_bar: Option<Rect> = None;
@@ -86,12 +86,12 @@ pub fn paint(
     let ring_cy = panels_top + total * 0.5;
     let ring_d = total * 0.80;
     let ring_half = ring_d * 0.5;
-    let bpad = bot_rect.height() * 0.14;
-    let ring_gap = (h * 0.09).max(ring_d * 0.10);
+    let bpad = bot_rect.height() * 0.07;
+    let ring_gap = (h * 0.035).max(ring_d * 0.045);
     let gap_l = ring_cx - ring_half - ring_gap;
     let gap_r = ring_cx + ring_half + ring_gap;
 
-    let ipad = top_rect.height() * 0.22;
+    let ipad = top_rect.height() * 0.12;
     if cfg.bool_key(SECTION, "show_shift_bar", true) {
         let shift_rect = Rect::from_ltrb(
             top_rect.left() + ipad,
@@ -145,11 +145,11 @@ pub fn paint(
         slot(cfg, "strip_right", "last_lap"),
     ];
     if strip_keys.iter().any(|k| k != "none") {
-        let pill_w = (right_edge - left_left) * 0.66;
-        let pill_h = h * 0.22;
+        let pill_w = (right_edge - left_left) * 0.78;
+        let pill_h = h * 0.18;
         let pill = Rect::from_xywh(
             ring_cx - pill_w * 0.5,
-            panels_bottom - pill_h * 0.28 + h * 0.02,
+            panels_bottom - pill_h * 0.22 + h * 0.01,
             pill_w,
             pill_h,
         );
@@ -583,7 +583,7 @@ fn draw_primary(
     let both = show_l && show_r;
     let cols = if both { 2 } else { 1 };
     let col_gap = if both {
-        (h * 0.45).clamp(16.0, 36.0)
+        (h * 0.28).clamp(8.0, 22.0)
     } else {
         0.0
     };
@@ -605,7 +605,7 @@ fn draw_primary(
         let val = metric_str(cfg, f, key);
         let mut ic_px = h * 0.30 * text_scale;
         let mut val_px = h * 0.58 * text_scale;
-        let mut gap = h * 0.18;
+        let mut gap = h * 0.12;
         let mut iw = ic_px * 0.7;
         let mut vw = text_w(c, val_px, true, &val);
         let mut total = iw + gap + vw;
@@ -666,7 +666,7 @@ fn draw_stats(
     let both = show_l && show_r;
     let cols = if both { 2 } else { 1 };
     let col_gap = if both {
-        (rect.height() * 0.45).clamp(16.0, 36.0)
+        (rect.height() * 0.28).clamp(8.0, 22.0)
     } else {
         0.0
     };
@@ -812,11 +812,11 @@ fn draw_strip(
     if items.is_empty() {
         return;
     }
-    let pad = sh * 0.55;
+    let pad = sh * 0.28;
     let cx0 = pill.left() + pad;
     let content_w = pill.width() - 2.0 * pad;
     let cell = content_w / items.len() as f32;
-    let gap = sh * 0.18;
+    let gap = sh * 0.12;
     for (i, key) in items.into_iter().enumerate() {
         if key == "irating" {
             let val_px = sh * 0.34 * text_scale;

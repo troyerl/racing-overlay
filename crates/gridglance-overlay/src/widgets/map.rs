@@ -1177,16 +1177,7 @@ fn draw_other_dot(ui: &mut Ui, c: Pos2, r: f32, fill: Color32) {
 }
 
 pub(crate) fn car_label_text(car: &CarRow, mode: &str) -> String {
-    if car.is_pace_car {
-        return "PC".into();
-    }
-    if mode == "position" && car.position > 0 {
-        return car.position.to_string();
-    }
-    if !car.car_number.is_empty() {
-        return car.car_number.clone();
-    }
-    "?".into()
+    map_markers::car_dot_label(car, mode)
 }
 
 /// Stroked centered label (Python `_draw_stroked_center_text`).
@@ -2223,6 +2214,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             ctx.frame.session_time,
             hold_sec,
             focus_idx,
+            &car_label_mode,
         )
     } else {
         HashMap::new()

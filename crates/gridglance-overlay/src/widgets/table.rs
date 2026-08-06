@@ -105,11 +105,11 @@ pub fn paint_table(
     } else {
         rh_cfg.max(16.0)
     };
-    // Table edge inset — keep tight so more vertical space goes to rows.
+    // Horizontal inset for band slots / row body.
     let pad = if rh > 0.0 {
-        4.0
+        6.0
     } else {
-        (card.height() * 0.02).max(4.0)
+        (card.height() * 0.02).max(6.0)
     };
     let scale = cfg.text_scale(section);
     let font_scale_cfg = cfg.f64_key(section, "font_scale", 0.48) as f32;
@@ -121,9 +121,10 @@ pub fn paint_table(
     let gap_font_scale = cfg.f64_key(section, "gap_font_scale", 1.12) as f32;
     let hscale = cfg.f64_key(section, "header_font_scale", 1.0) as f32;
     let fscale = cfg.f64_key(section, "footer_font_scale", 1.0) as f32;
-    let header_h = (rh * 0.58 * scale * hscale.max(0.3)).max(16.0);
+    // Compact chrome bands — height is the band itself (no stacked vertical pad).
+    let header_h = (rh * 0.50 * scale * hscale.max(0.3)).max(15.0);
     let footer_h = if show_footer {
-        (rh * 0.55 * scale * fscale.max(0.3)).max(14.0)
+        (rh * 0.48 * scale * fscale.max(0.3)).max(14.0)
     } else {
         0.0
     };
@@ -131,13 +132,13 @@ pub fn paint_table(
     let inner_w = card.width() - 2.0 * pad;
     let left = card.left() + pad;
 
-    // Header band: full card width; slots inset by pad (Python draw_header).
+    // Header band: full card width; slots inset horizontally only.
     let hdr_band = Rect::from_min_size(
         Pos2::new(card.left(), card.top()),
-        Vec2::new(card.width(), pad + header_h),
+        Vec2::new(card.width(), header_h),
     );
     let hdr_content = Rect::from_min_size(
-        Pos2::new(left, card.top() + pad),
+        Pos2::new(left, card.top()),
         Vec2::new(inner_w, header_h),
     );
     draw_edge_band(
@@ -153,11 +154,11 @@ pub fn paint_table(
         &slots.header_right,
     );
 
-    let body_top = card.top() + pad + header_h;
+    let body_top = card.top() + header_h;
     let body_bottom = if show_footer {
-        card.bottom() - pad * 0.5 - footer_h
+        card.bottom() - footer_h
     } else {
-        card.bottom() - pad
+        card.bottom() - pad * 0.5
     };
 
     // Row motion: fixed-duration ease-in-out keyed to wall clock so irregular
@@ -427,8 +428,8 @@ pub fn paint_table(
     ui.set_clip_rect(prev_clip);
 
     if show_footer {
-        // Full-bleed footer band; slots inset (Python draw_footer).
-        let band_top = card.bottom() - pad * 0.5 - footer_h;
+        // Full-bleed footer band; slots inset horizontally only.
+        let band_top = card.bottom() - footer_h;
         let ftr_band = Rect::from_min_max(
             Pos2::new(card.left(), band_top),
             Pos2::new(card.right(), card.bottom()),
@@ -1393,8 +1394,8 @@ fn draw_edge_band(
     ui.painter().rect_filled(band, cr, bg);
     let muted = cfg.color(section, "muted", "#8b93a1");
     let text = cfg.color(section, "text", "#f4f6f8");
-    // Font from content height (Python: h * 0.42), not the padded band.
-    let fs = (content.height() * 0.42).clamp(9.0, 16.0) * cfg.text_scale(section);
+    // Font from content height — fill the compact band.
+    let fs = (content.height() * 0.52).clamp(9.0, 16.0) * cfg.text_scale(section);
     let icons_group = if is_header {
         "header_icons"
     } else {
