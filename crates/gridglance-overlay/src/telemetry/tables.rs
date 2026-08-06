@@ -268,15 +268,19 @@ fn apply_table_focus(cars: &mut [CarRow], camera_car_idx: Option<i32>) {
     }
 }
 
+/// Max on-track gap (seconds) for a one-lap red/blue tint. Wide enough to cover
+/// cars that appear in Relative, tight enough to avoid opposite-side SF flashes.
+const ONE_LAP_TINT_SECS: f32 = 10.0;
+
 /// Apply lapped-traffic tint relative to a focus car.
 ///
 /// Only applied in race sessions — practice/qualifying ignore lap-down
 /// blue/red row coloring. iRacing Relative convention: red = car lapping
 /// you (`lap_ahead`), blue = traffic you're lapping.
 ///
-/// For a one-lap difference, tint only when the faster car is within five
-/// seconds behind and approaching the slower car. A difference of two or more
-/// completed laps is always tinted.
+/// For a one-lap difference, tint only when the faster car is within
+/// [`ONE_LAP_TINT_SECS`] of catching the slower car. A difference of two or
+/// more laps is always tinted. Garage / not-in-world cars are never tinted.
 ///
 /// `focus_car_idx` overrides `is_player` when set (map uses camera/live focus
 /// while tables use the marked table-focus car).
@@ -299,13 +303,12 @@ fn apply_lap_tints(
     else {
         return;
     };
-    let focus_lap = cars[focus_idx].lap;
+    let focus_lap = cars[focus_idx].lap.max(0);
+    if focus_lap <= 0 {
+        return;
+    }
     let focus_est = cars[focus_idx].est_time;
     let focus_pct = cars[focus_idx].lap_dist_pct;
-    let focus_on_route = {
-        let f = &cars[focus_idx];
-        f.on_track || f.in_pit || f.on_pit
-    };
     let lap_est = if lap_est_hint > 10.0 {
         lap_est_hint
     } else {
@@ -316,27 +319,40 @@ fn apply_lap_tints(
         if i == focus_idx || car.is_pace_car {
             continue;
         }
-        let lap_diff = car.lap - focus_lap;
-        // Prefer LapDistPct (same basis as Relative neighbors); EstTime fallback.
-        let relative_secs = {
-            let car_on_route = car.on_track || car.in_pit || car.on_pit;
-            if car.lap_dist_pct >= 0.0 && focus_pct >= 0.0 && car_on_route && focus_on_route {
-                wrap_lap_delta(car.lap_dist_pct, focus_pct) * lap_est
-            } else if car.est_time > 1.0 && focus_est > 1.0 {
-                wrap_est_delta(car.est_time - focus_est, lap_est)
-            } else {
-                f32::NAN
-            }
+        // Don't paint garage / spectator ghosts as lapped traffic.
+        if car.inactive {
+            continue;
+        }
+        let car_lap = car.lap.max(0);
+        if car_lap <= 0 {
+            continue;
+        }
+        let lap_diff = car_lap - focus_lap;
+        // Prefer LapDistPct (same basis as Relative); EstTime fallback.
+        // Valid pct is enough — off-track / grass still have a lap % and must
+        // tint when they're the car you're catching or being caught by.
+        let relative_secs = if car.lap_dist_pct >= 0.0 && focus_pct >= 0.0 {
+            wrap_lap_delta(car.lap_dist_pct, focus_pct) * lap_est
+        } else if car.est_time > 0.0 && focus_est > 0.0 {
+            wrap_est_delta(car.est_time - focus_est, lap_est)
+        } else {
+            f32::NAN
         };
+        // Two+ laps always tint (even with no gap sample). One-lap needs proximity.
+        if lap_diff.abs() >= 2 {
+            car.lapping = true;
+            car.lap_ahead = lap_diff > 0;
+            continue;
+        }
         let one_lap_close = relative_secs.is_finite()
             && match lap_diff {
                 // Focus is one lap ahead; slower car is just ahead on track.
-                -1 => relative_secs > 0.0 && relative_secs <= 5.0,
+                -1 => relative_secs > 0.0 && relative_secs <= ONE_LAP_TINT_SECS,
                 // Other car is one lap ahead and just behind the focus.
-                1 => (-5.0..0.0).contains(&relative_secs),
+                1 => (-ONE_LAP_TINT_SECS..0.0).contains(&relative_secs),
                 _ => false,
             };
-        car.lapping = lap_diff.abs() >= 2 || one_lap_close;
+        car.lapping = one_lap_close;
         car.lap_ahead = car.lapping && lap_diff > 0;
     }
 }
@@ -2714,57 +2730,100 @@ mod tests {
                 car_idx: 0,
                 is_player: true,
                 lap: 10,
-                est_time: 20.0,
+                lap_dist_pct: 0.50,
+                on_track: true,
                 ..Default::default()
             },
-            // Focus is lapping this car: red when it is just ahead.
+            // ~4s ahead, one lap down → blue
             CarRow {
                 car_idx: 1,
                 lap: 9,
-                est_time: 24.0,
+                lap_dist_pct: 0.50 + 4.0 / 90.0,
+                on_track: true,
                 ..Default::default()
             },
+            // ~15s ahead, one lap down → no tint
             CarRow {
                 car_idx: 2,
                 lap: 9,
-                est_time: 30.0,
+                lap_dist_pct: 0.50 + 15.0 / 90.0,
+                on_track: true,
                 ..Default::default()
             },
-            // This car is lapping focus: blue when it is just behind.
+            // ~4s behind, one lap up → red
             CarRow {
                 car_idx: 3,
                 lap: 11,
-                est_time: 16.0,
+                lap_dist_pct: 0.50 - 4.0 / 90.0,
+                on_track: true,
                 ..Default::default()
             },
+            // ~15s behind, one lap up → no tint
             CarRow {
                 car_idx: 4,
                 lap: 11,
-                est_time: 10.0,
+                lap_dist_pct: 0.50 - 15.0 / 90.0,
+                on_track: true,
                 ..Default::default()
             },
-            // More than one completed lap is always tinted.
+            // Two+ laps always tinted.
             CarRow {
                 car_idx: 5,
                 lap: 8,
-                est_time: 60.0,
+                lap_dist_pct: 0.20,
+                on_track: true,
                 ..Default::default()
             },
             CarRow {
                 car_idx: 6,
                 lap: 12,
-                est_time: 60.0,
+                lap_dist_pct: 0.80,
+                on_track: true,
                 ..Default::default()
             },
         ];
         apply_lap_tints(&mut cars, 90.0, Some("Race"), None);
 
-        assert!(cars[1].lapping && !cars[1].lap_ahead);
-        assert!(!cars[2].lapping);
-        assert!(cars[3].lapping && cars[3].lap_ahead);
-        assert!(!cars[4].lapping);
+        assert!(cars[1].lapping && !cars[1].lap_ahead, "lapped traffic blue");
+        assert!(!cars[2].lapping, "one-lap far ahead stays untinted");
+        assert!(cars[3].lapping && cars[3].lap_ahead, "lapper red");
+        assert!(!cars[4].lapping, "one-lap far behind stays untinted");
         assert!(cars[5].lapping && !cars[5].lap_ahead);
         assert!(cars[6].lapping && cars[6].lap_ahead);
+    }
+
+    #[test]
+    fn lap_tints_skip_inactive_and_work_off_track() {
+        let mut cars = vec![
+            CarRow {
+                car_idx: 0,
+                is_player: true,
+                lap: 10,
+                lap_dist_pct: 0.50,
+                on_track: true,
+                ..Default::default()
+            },
+            // Garage ghost — must not paint blue just because lap is 0/low.
+            CarRow {
+                car_idx: 1,
+                lap: 5,
+                lap_dist_pct: -1.0,
+                inactive: true,
+                ..Default::default()
+            },
+            // Off-track but still in the race, one lap down and close → blue.
+            CarRow {
+                car_idx: 2,
+                lap: 9,
+                lap_dist_pct: 0.50 + 3.0 / 90.0,
+                on_track: false,
+                inactive: false,
+                ..Default::default()
+            },
+        ];
+        apply_lap_tints(&mut cars, 90.0, Some("Race"), None);
+        assert!(!cars[1].lapping, "inactive cars stay untinted");
+        assert!(cars[2].lapping && !cars[2].lap_ahead, "off-track still tints");
     }
 
     #[test]

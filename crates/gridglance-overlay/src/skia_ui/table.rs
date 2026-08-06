@@ -432,11 +432,8 @@ fn paint_cols(
                         );
                     }
                 }
-                let pos_col = if dim {
-                    dim_text
-                } else {
-                    lap_ink.unwrap_or(text)
-                };
+                // Lap traffic ink wins over pit dim so red/blue stay readable.
+                let pos_col = lap_ink.unwrap_or(if dim { dim_text } else { text });
                 label(
                     c,
                     cx + rh * 0.2,
@@ -449,11 +446,7 @@ fn paint_cols(
                 );
             }
             "name" => {
-                let colc = if dim {
-                    dim_text
-                } else {
-                    lap_ink.unwrap_or(text)
-                };
+                let colc = lap_ink.unwrap_or(if dim { dim_text } else { text });
                 let bold = cfg.bool_key(section, "name_font_bold", true);
                 let mut text_x = cx + 4.0;
                 if !row.is_pro && !row.group_icon.is_empty() {
@@ -1085,6 +1078,17 @@ fn paint_badge(
             true,
             TextAlign::Center,
         );
+        return;
+    }
+
+    if row.lapping && !row.is_player && !row.empty {
+        let bg = if row.lap_ahead {
+            section_color(cfg, section, "threat", "#ff5050").with_alpha(255)
+        } else {
+            section_color(cfg, section, "lapped", "#2563eb").with_alpha(255)
+        };
+        c.circle(cx, cy, size * 0.42, bg, true);
+        c.circle_ex(cx, cy, size * 0.42, Rgba::new(0, 0, 0, 140), false, 1.0);
         return;
     }
 

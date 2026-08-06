@@ -621,11 +621,8 @@ fn paint_row_cols(
                     }
                 }
                 // Python: left-aligned after class stripe inset.
-                let pos_col = if dim {
-                    dim_text
-                } else {
-                    lap_ink.unwrap_or(text)
-                };
+                // Lap traffic ink wins over pit dim so red/blue stay readable.
+                let pos_col = lap_ink.unwrap_or(if dim { dim_text } else { text });
                 label(
                     ui,
                     Pos2::new(cx + rh * 0.2, cy),
@@ -637,11 +634,7 @@ fn paint_row_cols(
                 );
             }
             "name" => {
-                let colc = if dim {
-                    dim_text
-                } else {
-                    lap_ink.unwrap_or(text)
-                };
+                let colc = lap_ink.unwrap_or(if dim { dim_text } else { text });
                 let bold = cfg.bool_key(section, "name_font_bold", true);
                 let mut text_x = cx + 4.0;
                 // Driver-group / league icons sit beside the name — not in the
@@ -1244,14 +1237,13 @@ fn paint_badge(
         );
         return;
     }
-    // Lapped traffic uses row tint only — no clock badge (looked like
-    // multiple "fast lap" icons). Strategy U/C only when the tag is known.
+    // Strategy U/C takes priority; then a red/blue lap-traffic pip (not the
+    // old purple clock — that collided with session-best).
     if let Some(tag) = row.strat_tag.as_deref() {
         let (raw_bg, letter) = match tag {
             "undercut" => (cfg.color(section, "badge_undercut", "#3aa0ff"), "U"),
             "cover" => (cfg.color(section, "badge_cover", "#ff9416"), "C"),
             _ => {
-                // Unknown tag: fall through to the empty status dot.
                 paint_empty_badge(ui, cfg, section, cx, cy, size);
                 return;
             }
@@ -1274,6 +1266,22 @@ fn paint_badge(
                 cfg.color(section, "badge_strat_text", "#ffffff")
             },
             true,
+        );
+        return;
+    }
+
+    if row.lapping && !row.is_player && !row.empty {
+        let raw = if row.lap_ahead {
+            cfg.color(section, "threat", "#ff5050")
+        } else {
+            cfg.color(section, "lapped", "#2563eb")
+        };
+        let bg = color_with_alpha(raw, 255);
+        ui.painter().circle_filled(Pos2::new(cx, cy), size * 0.42, bg);
+        ui.painter().circle_stroke(
+            Pos2::new(cx, cy),
+            size * 0.42,
+            Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(0, 0, 0, 140)),
         );
         return;
     }

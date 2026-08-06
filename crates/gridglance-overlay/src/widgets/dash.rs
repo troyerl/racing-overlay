@@ -282,12 +282,18 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let ring_cx = (left_left + right_edge) * 0.5;
     let ring_cy = panels_top + total * 0.5;
     let ring_d = total * 0.80;
-    let ring_half = ring_d * 0.5;
-    let bpad = bot_rect.height() * 0.07;
-    // Clearance between the center ring and left/right metric columns.
-    let ring_gap = (h * 0.035).max(ring_d * 0.045);
-    let gap_l = ring_cx - ring_half - ring_gap;
-    let gap_r = ring_cx + ring_half + ring_gap;
+    // Match draw_ring's outer fill (half + 6%), then add clearance so metrics
+    // sit outside the rim instead of kissing it.
+    let ring_outer = ring_d * 0.56;
+    let ring_clear = (h * 0.055).max(ring_d * 0.10);
+    let gap_l = ring_cx - ring_outer - ring_clear;
+    let gap_r = ring_cx + ring_outer + ring_clear;
+
+    let vpad = bot_rect.height() * 0.08;
+    // Horizontal inset keeps end metrics (laps / fuel) inside the rounded panel.
+    let hpad = (bot_rect.height() * 0.16)
+        .max(bot_rect.width() * 0.022)
+        .max(12.0);
 
     let ipad = top_rect.height() * 0.12;
     if cfg.bool_key(SECTION, "show_shift_bar", true) {
@@ -323,10 +329,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let primary_r = slot(cfg, "primary_right", "speed");
     if primary_l != "none" || primary_r != "none" {
         let primary = Rect::from_min_max(
-            Pos2::new(bot_rect.left() + bpad, bot_rect.top() + bpad),
+            Pos2::new(bot_rect.left() + hpad, bot_rect.top() + vpad),
             Pos2::new(
-                gap_l.max(bot_rect.left() + bpad + 10.0),
-                bot_rect.bottom() - bpad,
+                gap_l.max(bot_rect.left() + hpad + 10.0),
+                bot_rect.bottom() - vpad,
             ),
         );
         draw_primary(ui, cfg, primary, &primary_l, &primary_r, f, text_scale);
@@ -336,8 +342,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let stat_r = slot(cfg, "stat_right", "fuel_stack");
     if stat_l != "none" || stat_r != "none" {
         let stats = Rect::from_min_max(
-            Pos2::new(gap_r, bot_rect.top() + bpad),
-            Pos2::new(bot_rect.right() - bpad, bot_rect.bottom() - bpad),
+            Pos2::new(gap_r, bot_rect.top() + vpad),
+            Pos2::new(bot_rect.right() - hpad, bot_rect.bottom() - vpad),
         );
         draw_stats(ui, cfg, stats, &stat_l, &stat_r, f, text_scale);
     }
@@ -667,8 +673,9 @@ fn draw_primary(
             .unwrap_or(0.0);
         let mut vw = text_w(ui, &FontId::proportional(val_px), &val);
         let mut total = iw + if g.is_some() { gap } else { 0.0 } + vw;
-        if total > cell.width() && total > 0.0 {
-            let s = cell.width() / total;
+        let fit_w = cell.width() * 0.96;
+        if total > fit_w && total > 0.0 {
+            let s = fit_w / total;
             ic_px *= s;
             val_px *= s;
             gap *= s;
@@ -782,8 +789,9 @@ fn draw_stats(
             widest = widest.max(lw + text_w(ui, &FontId::proportional(val_px), val));
         }
         let mut total = iw + if g.is_some() { icon_gap } else { 0.0 } + widest;
-        if total > cell.width() && total > 0.0 {
-            let s = cell.width() / total;
+        let fit_w = cell.width() * 0.96;
+        if total > fit_w && total > 0.0 {
+            let s = fit_w / total;
             ic_px *= s;
             lbl_px *= s;
             val_px *= s;

@@ -576,8 +576,20 @@ pub mod demo {
                     lap_dist_pct: pct,
                     est_time: est,
                     f2_time: f2,
-                    lap: 12 - (i / 4),
-                    laps_completed: (12 - (i / 4)).max(0),
+                    // Spread laps so demo shows blue (lapped) and red (lapper)
+                    // traffic once finalize_frame applies proximity tints.
+                    lap: match i {
+                        0 | 1 => 13, // lappers (ahead of player lap 12)
+                        2 | 3 => 12, // same lap as player (i=3)
+                        4 | 5 | 6 | 7 => 11,
+                        _ => 10,
+                    },
+                    laps_completed: match i {
+                        0 | 1 => 12,
+                        2 | 3 => 11,
+                        4 | 5 | 6 | 7 => 10,
+                        _ => 9,
+                    },
                     speed_mps: 55.0 + (i as f32) * 1.5 + 3.0 * (t as f32 * 0.4).sin(),
                     status_kind: if on_pit_lane {
                         Some("pit".into())
