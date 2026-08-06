@@ -17,8 +17,46 @@ const ROW_SPECS: &[(&str, &str, &str)] = &[
     ("show_ffb", "FFB", "ffb"),
 ];
 
-fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String, bool)> {
+fn push_child(
+    rows: &mut Vec<(&'static str, &'static str, String, bool, u8)>,
+    name: &'static str,
+    val: Option<&String>,
+) {
+    let Some(v) = val
+        .map(String::as_str)
+        .filter(|v| !v.is_empty() && *v != "--" && *v != "—")
+    else {
+        return;
+    };
+    rows.push((name, "", v.to_string(), false, 1));
+}
+
+fn push_process_children(
+    rows: &mut Vec<(&'static str, &'static str, String, bool, u8)>,
+    cfg: &crate::config::OverlayConfig,
+    iracing: (&'static str, Option<&String>),
+    overlays: &[(&'static str, Option<&String>)],
+    music: &[(&'static str, Option<&String>)],
+) {
+    if cfg.bool_key(SECTION, "show_subtask_iracing", true) {
+        push_child(rows, iracing.0, iracing.1);
+    }
+    if cfg.bool_key(SECTION, "show_subtask_overlays", true) {
+        for &(name, val) in overlays {
+            push_child(rows, name, val);
+        }
+    }
+    if cfg.bool_key(SECTION, "show_subtask_music", false) {
+        for &(name, val) in music {
+            push_child(rows, name, val);
+        }
+    }
+}
+
+/// (label, icon_key, value, warn, indent_level).
+fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String, bool, u8)> {
     let f = ctx.frame;
+    let breakdown = ctx.cfg.bool_key(SECTION, "show_process_breakdown", true);
     let mut rows = Vec::new();
     for &(cfg_key, text_label, icon_key) in ROW_SPECS {
         if !ctx.cfg.bool_key(SECTION, cfg_key, true) {
@@ -53,7 +91,57 @@ fn collect_rows(ctx: &WidgetCtx<'_>) -> Vec<(&'static str, &'static str, String,
             }
             _ => ("—".into(), false),
         };
-        rows.push((text_label, icon_key, value, warn));
+        rows.push((text_label, icon_key, value, warn, 0));
+        if breakdown {
+            match cfg_key {
+                "show_cpu" => push_process_children(
+                    &mut rows,
+                    ctx.cfg,
+                    ("iRacing", f.cpu_iracing.as_ref()),
+                    &[
+                        ("GridGlance", f.cpu_overlay.as_ref()),
+                        ("RaceLab", f.cpu_racelab.as_ref()),
+                        ("iOverlay", f.cpu_ioverlay.as_ref()),
+                    ],
+                    &[
+                        ("Spotify", f.cpu_spotify.as_ref()),
+                        ("Apple Music", f.cpu_apple_music.as_ref()),
+                        ("YouTube Music", f.cpu_youtube_music.as_ref()),
+                    ],
+                ),
+                "show_mem" => push_process_children(
+                    &mut rows,
+                    ctx.cfg,
+                    ("iRacing", f.mem_iracing.as_ref()),
+                    &[
+                        ("GridGlance", f.mem_overlay.as_ref()),
+                        ("RaceLab", f.mem_racelab.as_ref()),
+                        ("iOverlay", f.mem_ioverlay.as_ref()),
+                    ],
+                    &[
+                        ("Spotify", f.mem_spotify.as_ref()),
+                        ("Apple Music", f.mem_apple_music.as_ref()),
+                        ("YouTube Music", f.mem_youtube_music.as_ref()),
+                    ],
+                ),
+                "show_gpu" => push_process_children(
+                    &mut rows,
+                    ctx.cfg,
+                    ("iRacing", f.gpu_iracing.as_ref()),
+                    &[
+                        ("GridGlance", f.gpu_overlay.as_ref()),
+                        ("RaceLab", f.gpu_racelab.as_ref()),
+                        ("iOverlay", f.gpu_ioverlay.as_ref()),
+                    ],
+                    &[
+                        ("Spotify", f.gpu_spotify.as_ref()),
+                        ("Apple Music", f.gpu_apple_music.as_ref()),
+                        ("YouTube Music", f.gpu_youtube_music.as_ref()),
+                    ],
+                ),
+                _ => {}
+            }
+        }
     }
     rows
 }
@@ -78,39 +166,60 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
 
     let show_icons = ctx.cfg.bool_key(SECTION, "show_icons", false);
     let rows = collect_rows(ctx);
-    let n = rows.len().max(1) as f32;
-    let avail = (card.bottom() - pad - y).max(0.0);
-    let rh = (avail / n)
-        .min(ctx.cfg.f64_key(SECTION, "row_height_px", 36.0) as f32)
-        .clamp(12.0, 48.0);
+    // Fixed row height — panel HWND is live-fitted; don't stretch into empty space.
+    let rh = (ctx.cfg.f64_key(SECTION, "row_height_px", 20.0) as f32).clamp(16.0, 28.0);
     let text = ctx.cfg.color(SECTION, "text", "#f4f6f8");
     let muted = ctx.cfg.color(SECTION, "muted", "#8b93a1");
     let header = ctx.cfg.color(SECTION, "header", "#9aa3b2");
     let warn = ctx.cfg.color(SECTION, "warn", "#ff5b5b");
-    for (text_label, icon_key, value, is_warn) in rows {
+    let child_label = color_with_alpha(muted, 170);
+    let child_value = color_with_alpha(muted, 210);
+    for (text_label, icon_key, value, is_warn, indent) in rows {
+        let is_child = indent > 0;
         let row = egui::Rect::from_min_size(
             Pos2::new(card.left() + pad, y),
             egui::vec2((card.width() - 2.0 * pad).max(1.0), rh),
         );
-        if show_icons && icons::has(icon_key) {
+        let indent_px = if is_child { 18.0 } else { 0.0 };
+        let label_x = row.left() + 8.0 + indent_px;
+        if !is_child && show_icons && icons::has(icon_key) {
             if let Some(g) = icons::glyph(icon_key) {
                 ui.painter().text(
-                    Pos2::new(row.left() + 8.0, row.center().y),
+                    Pos2::new(label_x, row.center().y),
                     Align2::LEFT_CENTER,
                     g,
                     icons::font_id((rh * 0.42).clamp(8.0, 22.0)),
                     header,
                 );
             }
-        } else {
+        } else if is_child {
             label(
                 ui,
                 Pos2::new(row.left() + 8.0, row.center().y),
                 Align2::LEFT_CENTER,
-                text_label,
-                (rh * 0.38).clamp(8.0, 20.0),
-                muted,
+                "–",
+                (rh * 0.34).clamp(8.0, 14.0),
+                child_label,
                 false,
+            );
+            label(
+                ui,
+                Pos2::new(label_x + 4.0, row.center().y),
+                Align2::LEFT_CENTER,
+                text_label,
+                (rh * 0.32).clamp(8.0, 15.0),
+                child_label,
+                false,
+            );
+        } else {
+            label(
+                ui,
+                Pos2::new(label_x, row.center().y),
+                Align2::LEFT_CENTER,
+                text_label,
+                (rh * 0.40).clamp(9.0, 20.0),
+                header,
+                true,
             );
         }
         label(
@@ -118,9 +227,19 @@ fn paint_data(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(row.right() - 8.0, row.center().y),
             Align2::RIGHT_CENTER,
             &value,
-            (rh * 0.42).clamp(8.0, 22.0),
-            if is_warn { warn } else { text },
-            true,
+            if is_child {
+                (rh * 0.34).clamp(8.0, 16.0)
+            } else {
+                (rh * 0.44).clamp(10.0, 22.0)
+            },
+            if is_warn {
+                warn
+            } else if is_child {
+                child_value
+            } else {
+                text
+            },
+            !is_child,
         );
         y += rh;
     }
@@ -159,39 +278,68 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         y += 14.0;
     }
 
-    let avail = (card.bottom() - pad_y - y).max(rows.len() as f32 * 18.0);
-    let row_h = (avail / rows.len() as f32).clamp(16.0, 22.0);
+    let row_h = 18.0;
     let warn_c = ctx.cfg.color(SECTION, "warn", "#ff5b5b");
+    let child_label = color_with_alpha(muted, 160);
+    let child_value = color_with_alpha(muted, 200);
 
-    for (text_label, icon_key, value, is_warn) in rows {
+    for (text_label, icon_key, value, is_warn, indent) in rows {
+        let is_child = indent > 0;
         let cy = y + row_h * 0.5;
         let icon_sz = 12.0;
-        let value_c = if is_warn { warn_c } else { text };
-        if let Some(g) = icons::glyph(icon_key) {
-            ui.painter().text(
-                Pos2::new(left, cy),
-                Align2::LEFT_CENTER,
-                g,
-                icons::font_id(icon_sz),
-                accent,
-            );
-            label(
-                ui,
-                Pos2::new(left + icon_sz + 6.0, cy),
-                Align2::LEFT_CENTER,
-                text_label,
-                11.0,
-                muted,
-                false,
-            );
+        let value_c = if is_warn {
+            warn_c
+        } else if is_child {
+            child_value
+        } else {
+            text
+        };
+        if !is_child {
+            if let Some(g) = icons::glyph(icon_key) {
+                ui.painter().text(
+                    Pos2::new(left, cy),
+                    Align2::LEFT_CENTER,
+                    g,
+                    icons::font_id(icon_sz),
+                    accent,
+                );
+                label(
+                    ui,
+                    Pos2::new(left + icon_sz + 6.0, cy),
+                    Align2::LEFT_CENTER,
+                    text_label,
+                    11.0,
+                    accent,
+                    true,
+                );
+            } else {
+                label(
+                    ui,
+                    Pos2::new(left, cy),
+                    Align2::LEFT_CENTER,
+                    text_label,
+                    11.0,
+                    accent,
+                    true,
+                );
+            }
         } else {
             label(
                 ui,
-                Pos2::new(left, cy),
+                Pos2::new(left + 10.0, cy),
+                Align2::LEFT_CENTER,
+                "–",
+                10.0,
+                child_label,
+                false,
+            );
+            label(
+                ui,
+                Pos2::new(left + 20.0, cy),
                 Align2::LEFT_CENTER,
                 text_label,
-                11.0,
-                muted,
+                10.0,
+                child_label,
                 false,
             );
         }
@@ -200,9 +348,9 @@ fn paint_elegant(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             Pos2::new(left + width, cy),
             Align2::RIGHT_CENTER,
             &value,
-            12.0,
+            if is_child { 11.0 } else { 13.0 },
             value_c,
-            true,
+            !is_child,
         );
         y += row_h;
     }

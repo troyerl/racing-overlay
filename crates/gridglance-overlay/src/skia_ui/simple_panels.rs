@@ -742,7 +742,7 @@ pub fn paint_pit_advisor(
     let chip_h = if elegant {
         24.0
     } else {
-        (rect.height() * 0.18).max(22.0)
+        (rect.height() * 0.16).max(22.0)
     };
     let chip = Rect::from_xywh(rect.left() + pad, y, content_w, chip_h);
     let chip_bg = if active {
@@ -779,20 +779,60 @@ pub fn paint_pit_advisor(
         false,
         TextAlign::Left,
     );
-    y += 28.0;
+    y += if elegant { 22.0 } else { 26.0 };
 
-    if let Some(sec) = advice
-        .secondary
-        .clone()
-        .or_else(|| edit_mode.then(|| "Best stop: laps 24–26".to_string()))
-    {
+    let muted = section_color(cfg, section, "muted", "#8b93a1").with_alpha(200);
+    let meta = if edit_mode && advice.stop_window.is_none() {
+        Some("Stop L24–26 · Add 18.4L · Fuel+tires".to_string())
+    } else {
+        crate::telemetry::strategy_meta_line(&advice).or(advice.secondary.clone())
+    };
+    if let Some(line) = meta {
         text_at(
             c,
             rect.left() + pad,
             y + 5.0,
-            &sec,
+            &line,
             10.0,
-            section_color(cfg, section, "muted", "#8b93a1").with_alpha(200),
+            muted,
+            false,
+            TextAlign::Left,
+        );
+        y += 14.0;
+    }
+
+    let loss = if edit_mode && advice.pit_loss_s.is_none() {
+        Some("Loss ~22s · Clear merge".to_string())
+    } else {
+        crate::telemetry::strategy_loss_line(&advice)
+    };
+    if let Some(line) = loss {
+        text_at(
+            c,
+            rect.left() + pad,
+            y + 5.0,
+            &line,
+            10.0,
+            muted,
+            false,
+            TextAlign::Left,
+        );
+        y += 14.0;
+    }
+
+    let ctx_line = if edit_mode && advice.fcy_note.is_none() && advice.lap_down_note.is_none() {
+        Some("Pit risks lap down · Pace drop 0.08s/L · FCY ~12%".to_string())
+    } else {
+        crate::telemetry::strategy_context_line(&advice)
+    };
+    if let Some(line) = ctx_line {
+        text_at(
+            c,
+            rect.left() + pad,
+            y + 5.0,
+            &line,
+            10.0,
+            muted,
             false,
             TextAlign::Left,
         );
@@ -1019,10 +1059,45 @@ const SYSTEM_ROWS: &[(&str, &str, &str)] = &[
     ("show_ffb", "FFB", "ffb"),
 ];
 
+fn push_child(
+    rows: &mut Vec<(&'static str, &'static str, String, bool, u8)>,
+    name: &'static str,
+    val: Option<&String>,
+) {
+    let Some(v) = val.map(String::as_str).filter(|v| !v.is_empty() && *v != "--") else {
+        return;
+    };
+    rows.push((name, "", v.to_string(), false, 1));
+}
+
+fn push_process_children(
+    rows: &mut Vec<(&'static str, &'static str, String, bool, u8)>,
+    cfg: &OverlayConfig,
+    iracing: (&'static str, Option<&String>),
+    overlays: &[(&'static str, Option<&String>)],
+    music: &[(&'static str, Option<&String>)],
+) {
+    if cfg.bool_key(SYSTEM_SECTION, "show_subtask_iracing", true) {
+        push_child(rows, iracing.0, iracing.1);
+    }
+    if cfg.bool_key(SYSTEM_SECTION, "show_subtask_overlays", true) {
+        for &(name, val) in overlays {
+            push_child(rows, name, val);
+        }
+    }
+    if cfg.bool_key(SYSTEM_SECTION, "show_subtask_music", false) {
+        for &(name, val) in music {
+            push_child(rows, name, val);
+        }
+    }
+}
+
+/// (label, icon_key, value, warn, indent_level). Child rows use indent 1 and empty icon.
 fn collect_system_rows(
     cfg: &OverlayConfig,
     f: &TelemetryFrame,
-) -> Vec<(&'static str, &'static str, String, bool)> {
+) -> Vec<(&'static str, &'static str, String, bool, u8)> {
+    let breakdown = cfg.bool_key(SYSTEM_SECTION, "show_process_breakdown", true);
     let mut rows = Vec::new();
     for &(cfg_key, text_label, icon_key) in SYSTEM_ROWS {
         if !cfg.bool_key(SYSTEM_SECTION, cfg_key, true) {
@@ -1057,9 +1132,94 @@ fn collect_system_rows(
             }
             _ => ("--".into(), false),
         };
-        rows.push((text_label, icon_key, value, warn));
+        rows.push((text_label, icon_key, value, warn, 0));
+        if breakdown {
+            match cfg_key {
+                "show_cpu" => push_process_children(
+                    &mut rows,
+                    cfg,
+                    ("iRacing", f.cpu_iracing.as_ref()),
+                    &[
+                        ("GridGlance", f.cpu_overlay.as_ref()),
+                        ("RaceLab", f.cpu_racelab.as_ref()),
+                        ("iOverlay", f.cpu_ioverlay.as_ref()),
+                    ],
+                    &[
+                        ("Spotify", f.cpu_spotify.as_ref()),
+                        ("Apple Music", f.cpu_apple_music.as_ref()),
+                        ("YouTube Music", f.cpu_youtube_music.as_ref()),
+                    ],
+                ),
+                "show_mem" => push_process_children(
+                    &mut rows,
+                    cfg,
+                    ("iRacing", f.mem_iracing.as_ref()),
+                    &[
+                        ("GridGlance", f.mem_overlay.as_ref()),
+                        ("RaceLab", f.mem_racelab.as_ref()),
+                        ("iOverlay", f.mem_ioverlay.as_ref()),
+                    ],
+                    &[
+                        ("Spotify", f.mem_spotify.as_ref()),
+                        ("Apple Music", f.mem_apple_music.as_ref()),
+                        ("YouTube Music", f.mem_youtube_music.as_ref()),
+                    ],
+                ),
+                "show_gpu" => push_process_children(
+                    &mut rows,
+                    cfg,
+                    ("iRacing", f.gpu_iracing.as_ref()),
+                    &[
+                        ("GridGlance", f.gpu_overlay.as_ref()),
+                        ("RaceLab", f.gpu_racelab.as_ref()),
+                        ("iOverlay", f.gpu_ioverlay.as_ref()),
+                    ],
+                    &[
+                        ("Spotify", f.gpu_spotify.as_ref()),
+                        ("Apple Music", f.gpu_apple_music.as_ref()),
+                        ("YouTube Music", f.gpu_youtube_music.as_ref()),
+                    ],
+                ),
+                _ => {}
+            }
+        }
     }
     rows
+}
+
+/// Fixed layout metrics so height can hug visible rows with no empty band.
+const SYSTEM_ELEGANT_PAD_Y: f32 = 8.0;
+const SYSTEM_ELEGANT_PAD_X: f32 = 10.0;
+const SYSTEM_ELEGANT_TITLE_H: f32 = 14.0;
+const SYSTEM_ELEGANT_ROW_H: f32 = 18.0;
+const SYSTEM_DATA_PAD: f32 = 8.0;
+const SYSTEM_DATA_TITLE_H: f32 = 22.0;
+
+fn system_data_row_h(cfg: &OverlayConfig) -> f32 {
+    (cfg.f64_key(SYSTEM_SECTION, "row_height_px", 20.0) as f32).clamp(16.0, 28.0)
+}
+
+/// Content-fitted size for the currently visible system-panel rows.
+pub fn system_panel_content_size(cfg: &OverlayConfig, frame: &TelemetryFrame) -> (i32, i32) {
+    let rows = collect_system_rows(cfg, frame);
+    let n = rows.len().max(1) as f32;
+    let show_title = cfg.bool_key(SYSTEM_SECTION, "show_title", true);
+    let h = if is_elegant(cfg, SYSTEM_SECTION) {
+        let title = if show_title {
+            SYSTEM_ELEGANT_TITLE_H
+        } else {
+            0.0
+        };
+        SYSTEM_ELEGANT_PAD_Y * 2.0 + title + n * SYSTEM_ELEGANT_ROW_H
+    } else {
+        let title = if show_title {
+            SYSTEM_DATA_TITLE_H + SYSTEM_DATA_PAD * 0.35
+        } else {
+            0.0
+        };
+        SYSTEM_DATA_PAD * 2.0 + title + n * system_data_row_h(cfg)
+    };
+    (200, h.ceil().max(32.0) as i32)
 }
 
 /// Paint the system panel. Static content — always returns false.
@@ -1084,49 +1244,91 @@ fn paint_system_data(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame
         return;
     }
     let section = SYSTEM_SECTION;
-    let radius = panel_card(c, cfg, section, rect);
-    let pad = panel_content_pad(cfg, section, rect.height());
-    let mut y = rect.top() + pad;
-    y = panel_title(c, cfg, section, rect, radius, y, pad, "SYSTEM");
+    let rows = collect_system_rows(cfg, frame);
+    let rh = system_data_row_h(cfg);
+    let show_title = cfg.bool_key(section, "show_title", true);
+    let title_h = if show_title {
+        SYSTEM_DATA_TITLE_H + SYSTEM_DATA_PAD * 0.35
+    } else {
+        0.0
+    };
+    let content_h =
+        SYSTEM_DATA_PAD * 2.0 + title_h + rows.len().max(1) as f32 * rh;
+    // Hug content — ignore oversize HWND so the card never shows an empty band.
+    let card = Rect::from_xywh(rect.left(), rect.top(), rect.width(), content_h.min(rect.height()));
+    let radius = panel_card(c, cfg, section, card);
+    let pad = SYSTEM_DATA_PAD;
+    let mut y = card.top() + pad;
+    if show_title {
+        let title = cfg.str_key(section, "title", "SYSTEM");
+        let hdr = Rect::from_xywh(
+            card.left() + pad,
+            y,
+            (card.width() - 2.0 * pad).max(1.0),
+            SYSTEM_DATA_TITLE_H,
+        );
+        super::chrome::draw_section_header(c, cfg, section, hdr, &title, radius);
+        y += SYSTEM_DATA_TITLE_H + pad * 0.35;
+    }
 
     let show_icons = cfg.bool_key(section, "show_icons", false);
-    let rows = collect_system_rows(cfg, frame);
-    let n = rows.len().max(1) as f32;
-    let avail = (rect.bottom() - pad - y).max(0.0);
-    let rh = (avail / n)
-        .min(cfg.f64_key(section, "row_height_px", 36.0) as f32)
-        .clamp(12.0, 48.0);
     let text = section_color(cfg, section, "text", "#f4f6f8");
     let muted = section_color(cfg, section, "muted", "#8b93a1");
     let header = section_color(cfg, section, "header", "#9aa3b2");
     let warn = section_color(cfg, section, "warn", "#ff5b5b");
-    for (text_label, icon_key, value, is_warn) in rows {
+    let child_label = muted.with_alpha(170);
+    let child_value = muted.with_alpha(210);
+    for (text_label, icon_key, value, is_warn, indent) in rows {
+        let is_child = indent > 0;
         let row = Rect::from_xywh(
-            rect.left() + pad,
+            card.left() + pad,
             y,
-            (rect.width() - 2.0 * pad).max(1.0),
+            (card.width() - 2.0 * pad).max(1.0),
             rh,
         );
-        if show_icons {
+        let indent_px = if is_child { 18.0 } else { 0.0 };
+        let label_x = row.left() + 8.0 + indent_px;
+        if !is_child && show_icons && !icon_key.is_empty() {
             let ic = (rh * 0.42).clamp(8.0, 22.0);
             super::icons::paint(
                 c,
                 icon_key,
-                row.left() + 8.0,
+                label_x,
                 row.center().1,
                 ic,
                 header,
                 TextAlign::Left,
             );
-        } else {
+        } else if is_child {
             text_at(
                 c,
                 row.left() + 8.0,
                 row.center().1,
-                text_label,
-                (rh * 0.38).clamp(8.0, 20.0),
-                muted,
+                "–",
+                (rh * 0.34).clamp(8.0, 14.0),
+                child_label,
                 false,
+                TextAlign::Left,
+            );
+            text_at(
+                c,
+                label_x + 4.0,
+                row.center().1,
+                text_label,
+                (rh * 0.32).clamp(8.0, 15.0),
+                child_label,
+                false,
+                TextAlign::Left,
+            );
+        } else {
+            text_at(
+                c,
+                label_x,
+                row.center().1,
+                text_label,
+                (rh * 0.40).clamp(9.0, 20.0),
+                header,
+                true,
                 TextAlign::Left,
             );
         }
@@ -1135,9 +1337,19 @@ fn paint_system_data(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame
             row.right() - 8.0,
             row.center().1,
             &value,
-            (rh * 0.42).clamp(8.0, 22.0),
-            if is_warn { warn } else { text },
-            true,
+            if is_child {
+                (rh * 0.34).clamp(8.0, 16.0)
+            } else {
+                (rh * 0.44).clamp(10.0, 22.0)
+            },
+            if is_warn {
+                warn
+            } else if is_child {
+                child_value
+            } else {
+                text
+            },
+            !is_child,
             TextAlign::Right,
         );
         y += rh;
@@ -1147,21 +1359,27 @@ fn paint_system_data(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame
 fn paint_system_elegant(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame) {
     let rect = bounds(c);
     let section = SYSTEM_SECTION;
-    panel_card(c, cfg, section, rect);
-    let pad_x = (rect.width() * 0.05).clamp(8.0, 12.0);
-    let pad_y = (rect.height() * 0.05).clamp(6.0, 10.0);
-    let text = section_color(cfg, section, "text", "#f4f6f8");
-    let muted = section_color(cfg, section, "muted", "#8b93a1").with_alpha(200);
-    let accent = section_color(cfg, section, "accent", "#9aa3b2");
     let rows = collect_system_rows(cfg, frame);
     if rows.is_empty() {
         return;
     }
-
     let show_title = cfg.bool_key(section, "show_title", true);
-    let mut y = rect.top() + pad_y;
-    let left = rect.left() + pad_x;
-    let width = rect.width() - 2.0 * pad_x;
+    let title_h = if show_title {
+        SYSTEM_ELEGANT_TITLE_H
+    } else {
+        0.0
+    };
+    let content_h = SYSTEM_ELEGANT_PAD_Y * 2.0 + title_h + rows.len() as f32 * SYSTEM_ELEGANT_ROW_H;
+    let card = Rect::from_xywh(rect.left(), rect.top(), rect.width(), content_h.min(rect.height()));
+    panel_card(c, cfg, section, card);
+    let pad_x = SYSTEM_ELEGANT_PAD_X;
+    let pad_y = SYSTEM_ELEGANT_PAD_Y;
+    let text = section_color(cfg, section, "text", "#f4f6f8");
+    let muted = section_color(cfg, section, "muted", "#8b93a1").with_alpha(200);
+    let accent = section_color(cfg, section, "accent", "#9aa3b2");
+    let mut y = card.top() + pad_y;
+    let left = card.left() + pad_x;
+    let width = card.width() - 2.0 * pad_x;
 
     if show_title {
         let title = cfg.str_key(section, "title", "SYSTEM");
@@ -1175,36 +1393,78 @@ fn paint_system_elegant(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFr
             false,
             TextAlign::Left,
         );
-        y += 14.0;
+        y += SYSTEM_ELEGANT_TITLE_H;
     }
 
-    let avail = (rect.bottom() - pad_y - y).max(rows.len() as f32 * 18.0);
-    let row_h = (avail / rows.len() as f32).clamp(16.0, 22.0);
+    let row_h = SYSTEM_ELEGANT_ROW_H;
     let warn_c = section_color(cfg, section, "warn", "#ff5b5b");
+    let child_label = muted.with_alpha(160);
+    let child_value = muted.with_alpha(200);
 
-    for (text_label, icon_key, value, is_warn) in rows {
+    for (text_label, icon_key, value, is_warn, indent) in rows {
+        let is_child = indent > 0;
         let cy = y + row_h * 0.5;
         let icon_sz = 12.0;
-        let value_c = if is_warn { warn_c } else { text };
-        let iw = super::icons::paint(c, icon_key, left, cy, icon_sz, accent, TextAlign::Left);
-        text_at(
-            c,
-            left + iw.max(icon_sz) + 6.0,
-            cy,
-            text_label,
-            11.0,
-            muted,
-            false,
-            TextAlign::Left,
-        );
+        let value_c = if is_warn {
+            warn_c
+        } else if is_child {
+            child_value
+        } else {
+            text
+        };
+        if !is_child && !icon_key.is_empty() {
+            let iw = super::icons::paint(c, icon_key, left, cy, icon_sz, accent, TextAlign::Left);
+            text_at(
+                c,
+                left + iw.max(icon_sz) + 6.0,
+                cy,
+                text_label,
+                11.0,
+                accent,
+                true,
+                TextAlign::Left,
+            );
+        } else if is_child {
+            text_at(
+                c,
+                left + 10.0,
+                cy,
+                "–",
+                10.0,
+                child_label,
+                false,
+                TextAlign::Left,
+            );
+            text_at(
+                c,
+                left + 20.0,
+                cy,
+                text_label,
+                10.0,
+                child_label,
+                false,
+                TextAlign::Left,
+            );
+        } else {
+            text_at(
+                c,
+                left,
+                cy,
+                text_label,
+                11.0,
+                accent,
+                true,
+                TextAlign::Left,
+            );
+        }
         text_at(
             c,
             left + width,
             cy,
             &value,
-            12.0,
+            if is_child { 11.0 } else { 13.0 },
             value_c,
-            true,
+            !is_child,
             TextAlign::Right,
         );
         y += row_h;

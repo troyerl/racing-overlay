@@ -1,9 +1,10 @@
-//! Pit engineer panel (Python `pit_advisor.py` parity).
+//! Pit engineer panel (Python `pit_advisor.py` parity + strategy meta).
 
 use super::WidgetCtx;
 use crate::chrome::{
     color_with_alpha, full_rect, is_elegant, label, panel_card, panel_content_pad, panel_title,
 };
+use crate::telemetry::{strategy_context_line, strategy_loss_line, strategy_meta_line};
 use egui::{Align2, Color32, CornerRadius, Pos2, Rect, Ui, Vec2};
 
 const SECTION: &str = "pit_advisor";
@@ -60,7 +61,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let chip_h = if elegant {
         24.0
     } else {
-        (card.height() * 0.18).max(22.0)
+        (card.height() * 0.16).max(22.0)
     };
     let chip = Rect::from_min_size(Pos2::new(card.left() + pad, y), Vec2::new(text_w, chip_h));
     let chip_bg = if active {
@@ -97,20 +98,59 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         },
         false,
     );
-    y += 28.0;
+    y += if elegant { 22.0 } else { 26.0 };
 
-    if let Some(sec) = advice
-        .secondary
-        .clone()
-        .or_else(|| ctx.edit_mode.then(|| "Best stop: laps 24–26".into()))
-    {
+    let muted = color_with_alpha(ctx.cfg.color(SECTION, "muted", "#8b93a1"), 200);
+    let meta = if ctx.edit_mode && advice.stop_window.is_none() {
+        Some("Stop L24–26 · Add 18.4L · Fuel+tires".into())
+    } else {
+        strategy_meta_line(&advice).or(advice.secondary.clone())
+    };
+    if let Some(line) = meta {
         label(
             ui,
             Pos2::new(card.left() + pad, y),
             Align2::LEFT_TOP,
-            &sec,
+            &line,
             10.0,
-            color_with_alpha(ctx.cfg.color(SECTION, "muted", "#8b93a1"), 200),
+            muted,
+            false,
+        );
+        y += 14.0;
+    }
+
+    let loss = if ctx.edit_mode && advice.pit_loss_s.is_none() {
+        Some("Loss ~22s · Clear merge".into())
+    } else {
+        strategy_loss_line(&advice)
+    };
+    if let Some(line) = loss {
+        label(
+            ui,
+            Pos2::new(card.left() + pad, y),
+            Align2::LEFT_TOP,
+            &line,
+            10.0,
+            muted,
+            false,
+        );
+        y += 14.0;
+    }
+
+    let ctx_line = if ctx.edit_mode && advice.fcy_note.is_none() && advice.lap_down_note.is_none()
+    {
+        Some("Pit risks lap down · Pace drop 0.08s/L · FCY ~12%".into())
+    } else {
+        strategy_context_line(&advice)
+    };
+    if let Some(line) = ctx_line {
+        label(
+            ui,
+            Pos2::new(card.left() + pad, y),
+            Align2::LEFT_TOP,
+            &line,
+            10.0,
+            muted,
             false,
         );
     }

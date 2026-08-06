@@ -206,6 +206,12 @@ mod win {
         let brake = read_f32(session, "Brake");
         let clutch = read_f32(session, "Clutch");
         let steering = read_f32(session, "SteeringWheelAngle");
+        let lat_accel = read_f32(session, "LatAccel");
+        let long_accel = read_f32(session, "LongAccel");
+        let vert_accel = read_f32_opt(session, "VertAccel").unwrap_or(0.0);
+        let yaw_rate = read_f32_opt(session, "YawRate")
+            .or_else(|| read_f32_opt(session, "Yaw"))
+            .unwrap_or(0.0);
         let ffb_pct = read_f32_opt(session, "SteeringWheelPctTorque").map(|v| {
             // SDK unit is %; some builds return 0–1 — normalize to percent display units.
             if v.is_finite() && v.abs() <= 2.0 {
@@ -524,6 +530,10 @@ mod win {
             brake,
             clutch,
             steering,
+            lat_accel,
+            long_accel,
+            vert_accel,
+            yaw_rate,
             abs_active,
             fuel_l,
             fuel_pct,
@@ -1177,15 +1187,18 @@ mod win {
             let approaching_pits = surf == TRK_APPROACHING_PITS;
             let est_t = est.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0.0);
             let f2_t = f2.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0.0);
-            let last_lap = last_laps
+            let last_lap_time_s = last_laps
                 .as_ref()
                 .and_then(|a| a.get(i).copied())
-                .map(|s| fmt_laptime(s as f64, ""))
-                .unwrap_or_default();
-            let best_lap = best_laps
+                .filter(|s| s.is_finite() && *s > 0.0);
+            let best_lap_time_s = best_laps
                 .get(i)
                 .copied()
-                .filter(|s| s.is_finite() && *s > 0.0)
+                .filter(|s| s.is_finite() && *s > 0.0);
+            let last_lap = last_lap_time_s
+                .map(|s| fmt_laptime(s as f64, ""))
+                .unwrap_or_default();
+            let best_lap = best_lap_time_s
                 .map(|s| fmt_laptime(s as f64, ""))
                 .unwrap_or_default();
             let car_lap = laps.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0);
@@ -1270,6 +1283,8 @@ mod win {
                 gap,
                 last_lap,
                 best_lap,
+                last_lap_time_s,
+                best_lap_time_s,
                 irating: ir,
                 irating_delta: None,
                 class_id,

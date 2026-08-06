@@ -999,6 +999,55 @@ fn pick_context_indices(
     chosen
 }
 
+/// Leader lap / track % / pace for timed-race fuel projection.
+fn leader_pace_bits(frame: &TelemetryFrame) -> (i32, f32, Option<f32>) {
+    let leader = frame
+        .cars
+        .iter()
+        .filter(|c| c.is_live_competitor())
+        .max_by(|a, b| {
+            a.lap
+                .cmp(&b.lap)
+                .then_with(|| {
+                    a.lap_dist_pct
+                        .partial_cmp(&b.lap_dist_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+        })
+        .or_else(|| {
+            frame
+                .cars
+                .iter()
+                .find(|c| c.is_live_competitor() && c.position == 1)
+        });
+    let Some(l) = leader else {
+        return (
+            frame.lead_lap.max(frame.lap),
+            frame.player_lap_dist_pct.clamp(0.0, 0.999),
+            frame.last_lap_s.map(|s| s as f32).filter(|s| *s > 10.0),
+        );
+    };
+    let pace = if l.is_player {
+        frame
+            .last_lap_s
+            .map(|s| s as f32)
+            .filter(|s| *s > 10.0)
+            .or_else(|| {
+                (frame.lap_est_time > 10.0).then_some(frame.lap_est_time)
+            })
+    } else if l.est_time > 10.0 {
+        // EstTime is not lap duration; prefer session lap estimate.
+        (frame.lap_est_time > 10.0).then_some(frame.lap_est_time)
+    } else {
+        (frame.lap_est_time > 10.0).then_some(frame.lap_est_time)
+    };
+    (
+        l.lap.max(0),
+        l.lap_dist_pct.clamp(0.0, 0.999),
+        pace,
+    )
+}
+
 /// Fill relative_cars / standings_cars and enrich radar from cars + cfg.
 pub fn finalize_frame(
     frame: &mut TelemetryFrame,
@@ -1035,6 +1084,7 @@ pub fn finalize_frame(
     );
 
     // Rebuild fuel first so relative undercut/cover tags can use the pit window.
+    let (leader_lap, leader_pct, leader_lap_s) = leader_pace_bits(frame);
     let inp = crate::telemetry::FuelInputs {
         level: frame.fuel_l,
         fuel_pct: frame.fuel_pct,
@@ -1047,8 +1097,56 @@ pub fn finalize_frame(
         fuel_use_per_hour: frame.fuel_use_per_hour,
         laps_total: frame.laps_total,
         fc_use: frame.fuel_use_history.clone(),
+        ema_usage: frame.fuel_ema_l,
+        economy_usage: frame.fuel_economy_l,
+        leader_lap,
+        leader_lap_dist_pct: leader_pct,
+        leader_lap_s,
+        caution: matches!(
+            frame.flag.as_deref(),
+            Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
+        ),
     };
     frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
+
+    // Refine service plan with accurate fuel-add from the snapshot.
+    {
+        let fuel_rate = cfg.f64_key("pit_advisor", "fuel_fill_rate_lps", 2.2) as f32;
+        let t2 = cfg.f64_key("pit_advisor", "tire_change_2t_s", 8.0) as f32;
+        let t4 = cfg.f64_key("pit_advisor", "tire_change_4t_s", 12.0) as f32;
+        let fallback_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0) as f32;
+        let transit = frame
+            .measured_pit_loss_s
+            .map(|m| (m - 10.0).clamp(8.0, 40.0))
+            .unwrap_or(18.0_f32.min(fallback_loss * 0.7));
+        let wear_low = frame
+            .tire_corners
+            .iter()
+            .filter_map(|c| c.wear)
+            .any(|w| w > 0.0 && w < 0.45);
+        let add = frame.fuel.add.unwrap_or(0.0);
+        frame.strategy.service = Some(crate::telemetry::best_service_plan(
+            add,
+            frame.strategy.tire.tire_urgent,
+            frame.strategy.pace.loss_per_lap,
+            frame.fuel.laps_remaining,
+            transit,
+            fuel_rate,
+            t2,
+            t4,
+            wear_low,
+        ));
+        // Prefer coast-model economy on the fuel snapshot when present.
+        if let Some(eco) = frame.strategy.coast.economy_usage {
+            frame.fuel.economy_usage = Some(eco);
+            if let (Some(race), Some(fuel)) = (frame.fuel.ema_usage.or(frame.fuel.avg.usage), frame.fuel.level)
+            {
+                if eco > 0.0 && race > 0.0 {
+                    frame.fuel.economy_extra_laps = Some((fuel / eco) - (fuel / race));
+                }
+            }
+        }
+    }
 
     // Timing tables: live seated racer keeps focus; pure spectators center on
     // camera -> seated -> leader. Keep `frame.cars.is_player` unchanged so

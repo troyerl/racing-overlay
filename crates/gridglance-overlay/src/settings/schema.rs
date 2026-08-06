@@ -170,6 +170,8 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 &[
                     "title",
                     "history_laps",
+                    "green_history_laps",
+                    "fuel_ema_alpha",
                     "pit_loss_seconds",
                     "low_fuel_laps_threshold",
                     "low_fuel_time_threshold",
@@ -455,6 +457,15 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "show_ffb",
                 ],
             ),
+            (
+                "Subtasks",
+                &[
+                    "show_process_breakdown",
+                    "show_subtask_iracing",
+                    "show_subtask_overlays",
+                    "show_subtask_music",
+                ],
+            ),
             ("Row layout", &["row_height_px"]),
             ("Layout", &["corner_radius_frac", "panel_opacity"]),
             ("Colors", &["colors"]),
@@ -475,10 +486,28 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "show_title",
                     "title",
                     "show_only_when_actionable",
+                    "show_field_context",
+                    "show_tire_inventory",
+                    "final_laps_optional_suppress",
                     "low_fuel_laps_threshold",
+                    "legal_fuel_buffer_l",
+                    "min_stint_laps",
                     "undercut_gap_max_s",
                     "cover_gap_max_s",
                     "pit_loss_seconds",
+                    "caution_pit_loss_factor",
+                    "caution_fuel_multiplier",
+                    "opponent_stint_due_laps",
+                    "opponent_splash_pit_max_s",
+                    "track_wetness_tire_suppress",
+                    "race_tire_sets_total",
+                    "tire_sets_reserve",
+                    "fuel_mass_laptime_s_per_l",
+                    "fuel_fill_rate_lps",
+                    "tire_change_4t_s",
+                    "tire_change_2t_s",
+                    "pace_window_laps",
+                    "fcy_horizon_laps",
                 ],
             ),
             ("Layout", &["corner_radius_frac"]),
@@ -745,22 +774,7 @@ pub fn section_skip(section: &str) -> &'static [&'static str] {
             "row_dividers",
             "data_font_bold",
         ],
-        "pit_advisor" => &[
-            "row_dividers",
-            "race_tire_sets_total",
-            "tire_sets_reserve",
-            "min_stint_laps",
-            "legal_fuel_buffer_l",
-            "caution_fuel_multiplier",
-            "track_wetness_tire_suppress",
-            "opponent_stint_due_laps",
-            "opponent_splash_pit_max_s",
-            "final_laps_optional_suppress",
-            "show_field_context",
-            "show_tire_inventory",
-            "text_scale",
-            "data_font_bold",
-        ],
+        "pit_advisor" => &["row_dividers", "text_scale", "data_font_bold"],
         _ => &[],
     }
 }
@@ -809,6 +823,10 @@ pub fn pretty_key(key: &str) -> String {
         "show_fps" => return "FPS".into(),
         "show_network" => return "Network".into(),
         "show_ffb" => return "FFB".into(),
+        "show_process_breakdown" => return "Show subtasks".into(),
+        "show_subtask_iracing" => return "iRacing".into(),
+        "show_subtask_overlays" => return "Overlays".into(),
+        "show_subtask_music" => return "Music".into(),
         "show_icons" => return "Icons".into(),
         "car_label" => return "Dot number".into(),
         _ => {}
@@ -1132,6 +1150,18 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("system_panel", "show_fps") => Some("Show iRacing FPS."),
         ("system_panel", "show_network") => Some("Show connection / channel quality."),
         ("system_panel", "show_ffb") => Some("Show force-feedback torque (%). Warns above 100%."),
+        ("system_panel", "show_process_breakdown") => Some(
+            "Under CPU, memory, and GPU, show selected process subtasks.",
+        ),
+        ("system_panel", "show_subtask_iracing") => {
+            Some("Show iRacing process usage under CPU, memory, and GPU.")
+        }
+        ("system_panel", "show_subtask_overlays") => Some(
+            "Show GridGlance, RaceLab, and iOverlay process usage under CPU, memory, and GPU.",
+        ),
+        ("system_panel", "show_subtask_music") => Some(
+            "Show Spotify, Apple Music, and YouTube Music process usage under CPU, memory, and GPU.",
+        ),
         ("system_panel", "show_icons") => Some("Use icons instead of text labels for each metric."),
         (_, "panel_opacity") => {
             Some("Panel background opacity. 1.0 (100%) is fully solid; lower values fade the fill.")

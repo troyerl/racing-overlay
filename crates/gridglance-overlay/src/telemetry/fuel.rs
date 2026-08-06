@@ -1,4 +1,7 @@
 //! Fuel calculator snapshot (Python `pit_strategy.build_fuel_snapshot`).
+//!
+//! Green-flag EMA burn tracking, timed-race leader lap projection, and light
+//! economy (low-throttle) usage estimates.
 
 use crate::config::OverlayConfig;
 use serde::{Deserialize, Serialize};
@@ -39,6 +42,25 @@ pub struct FuelCalcState {
     pub alert: bool,
     pub lap: Option<i32>,
     pub laps_remaining: Option<f32>,
+    /// EMA of green-flag burn (L/lap).
+    #[serde(default)]
+    pub ema_usage: Option<f32>,
+    /// Estimated burn under fuel-save / low-throttle (L/lap).
+    #[serde(default)]
+    pub economy_usage: Option<f32>,
+    /// Extra laps available at economy vs race-pace EMA.
+    #[serde(default)]
+    pub economy_extra_laps: Option<f32>,
+}
+
+/// Context for filtering a completed lap before recording burn.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FuelLapContext {
+    pub caution: bool,
+    pub on_pit: bool,
+    pub in_pit: bool,
+    pub approaching_pits: bool,
+    pub throttle: f32,
 }
 
 /// Raw telemetry bits needed to build a fuel snapshot.
@@ -56,46 +78,142 @@ pub struct FuelInputs {
     pub laps_total: i32,
     /// Per-lap burn (litres), newest first — Python `fc_use`.
     pub fc_use: Vec<f32>,
+    /// Optional precomputed EMA from the burn tracker.
+    pub ema_usage: Option<f32>,
+    /// Optional economy burn from the burn tracker.
+    pub economy_usage: Option<f32>,
+    /// Leader lap for timed-race projection (0 = unknown).
+    pub leader_lap: i32,
+    /// Leader track position 0..1.
+    pub leader_lap_dist_pct: f32,
+    /// Leader last/est lap time (seconds).
+    pub leader_lap_s: Option<f32>,
+    /// When true, scale usage by caution_fuel_multiplier (slower burn under yellow).
+    pub caution: bool,
 }
 
-/// Tracks fuel burned each completed lap (Python `_track_fuel_per_lap`).
+/// Tracks fuel burned each completed green-flag lap.
 #[derive(Debug, Clone, Default)]
 pub struct FuelBurnTracker {
     prev_lap: Option<i32>,
     lap_start_fuel: f32,
+    /// Throttle sum / samples for the lap in progress.
+    throttle_sum: f64,
+    throttle_n: u32,
+    /// True if any sample this lap was caution / pit-contaminated.
+    lap_contaminated: bool,
+    /// True if we left pit road this lap (out-lap).
+    left_pits_this_lap: bool,
+    was_on_pit: bool,
     pub uses: Vec<f32>,
+    /// Parallel avg throttle (0..1) for each entry in `uses`.
+    pub throttle_avgs: Vec<f32>,
+    pub ema: Option<f32>,
+    pub economy_ema: Option<f32>,
 }
 
 impl FuelBurnTracker {
-    pub fn observe(&mut self, lap: i32, fuel: f32, cap: f32, history_n: usize) {
+    /// Sample continuous state every tick (throttle + pit/caution contamination).
+    pub fn tick(&mut self, ctx: &FuelLapContext) {
+        if ctx.caution || ctx.on_pit || ctx.in_pit || ctx.approaching_pits {
+            self.lap_contaminated = true;
+        }
+        if self.was_on_pit && !ctx.on_pit && !ctx.in_pit {
+            self.left_pits_this_lap = true;
+            self.lap_contaminated = true;
+        }
+        self.was_on_pit = ctx.on_pit || ctx.in_pit;
+        if ctx.throttle.is_finite() && ctx.throttle >= 0.0 {
+            self.throttle_sum += ctx.throttle.clamp(0.0, 1.0) as f64;
+            self.throttle_n = self.throttle_n.saturating_add(1);
+        }
+    }
+
+    /// Call every tick, then `observe` for lap transitions.
+    pub fn observe(
+        &mut self,
+        lap: i32,
+        fuel: f32,
+        cap: f32,
+        history_n: usize,
+        ema_alpha: f32,
+    ) {
         if lap <= 0 || !fuel.is_finite() {
             return;
         }
         let cap = if cap > 0.0 { cap } else { 1e9 };
+        let alpha = ema_alpha.clamp(0.05, 0.95);
+
         match self.prev_lap {
             None => {
                 self.prev_lap = Some(lap);
                 self.lap_start_fuel = fuel;
+                self.reset_lap_accum();
             }
             Some(prev) if lap > prev => {
+                // Finalize the lap that just completed using accumulators from
+                // prior ticks — do not fold the new lap's context in.
                 let used = self.lap_start_fuel - fuel;
-                if used > 0.0 && used < cap {
+                let thr_avg = if self.throttle_n > 0 {
+                    (self.throttle_sum / self.throttle_n as f64) as f32
+                } else {
+                    1.0
+                };
+                let eligible = !self.lap_contaminated
+                    && !self.left_pits_this_lap
+                    && used > 0.0
+                    && used < cap
+                    && !is_burn_outlier(used, self.ema);
+
+                if eligible {
                     self.uses.insert(0, used);
+                    self.throttle_avgs.insert(0, thr_avg);
                     let n = history_n.max(1);
                     if self.uses.len() > n {
                         self.uses.truncate(n);
+                        self.throttle_avgs.truncate(n);
+                    }
+                    self.ema = Some(match self.ema {
+                        Some(prev_e) => alpha * used + (1.0 - alpha) * prev_e,
+                        None => used,
+                    });
+                    // Low-throttle laps feed the economy EMA.
+                    if thr_avg < 0.78 {
+                        self.economy_ema = Some(match self.economy_ema {
+                            Some(prev_e) => alpha * used + (1.0 - alpha) * prev_e,
+                            None => used,
+                        });
                     }
                 }
                 self.prev_lap = Some(lap);
                 self.lap_start_fuel = fuel;
+                self.reset_lap_accum();
             }
             Some(prev) if lap < prev => {
                 self.uses.clear();
+                self.throttle_avgs.clear();
+                self.ema = None;
+                self.economy_ema = None;
                 self.prev_lap = Some(lap);
                 self.lap_start_fuel = fuel;
+                self.reset_lap_accum();
             }
             _ => {}
         }
+    }
+
+    fn reset_lap_accum(&mut self) {
+        self.throttle_sum = 0.0;
+        self.throttle_n = 0;
+        self.lap_contaminated = false;
+        self.left_pits_this_lap = false;
+    }
+}
+
+fn is_burn_outlier(used: f32, ema: Option<f32>) -> bool {
+    match ema {
+        Some(e) if e > 0.05 => used > e * 1.5 || used < e * 0.35,
+        _ => false,
     }
 }
 
@@ -135,13 +253,56 @@ fn fuel_lap_secs(est_lap: f32, last_lap: Option<f64>) -> Option<f32> {
     }
 }
 
+/// Project remaining race laps for a timed race from the leader's pace and
+/// track position when the clock hits zero (plus the checkered finish lap).
+pub fn project_timed_race_laps_remain(
+    time_remain: Option<f32>,
+    leader_lap: i32,
+    leader_pct: f32,
+    leader_lap_s: Option<f32>,
+    player_lap: i32,
+    player_pace: Option<f32>,
+) -> Option<f32> {
+    let t = sane_session_seconds(time_remain)?;
+    let pace = leader_lap_s
+        .filter(|s| *s > 10.0)
+        .or(player_pace.filter(|s| *s > 10.0))?;
+    if pace <= 0.0 || leader_lap <= 0 {
+        return None;
+    }
+    let pct = leader_pct.clamp(0.0, 0.999);
+    // Laps the leader still completes before the clock expires, including the
+    // fractional lap they are on, then +1 for the checkered finish lap.
+    let laps_to_zero = t / pace + (1.0 - pct);
+    let finish_lap = leader_lap as f32 + laps_to_zero.ceil();
+    let player = player_lap.max(0) as f32;
+    Some((finish_lap - player).max(0.0))
+}
+
 fn race_remaining(
     laps_remain: Option<f32>,
     time_remain: Option<f32>,
     lap_avg: Option<f32>,
+    inp: &FuelInputs,
 ) -> (Option<f32>, Option<f32>) {
     let mut laps = laps_remain.filter(|l| *l >= 0.0 && *l <= 32000.0);
     let mut t = sane_session_seconds(time_remain);
+
+    // Timed race: prefer leader-based projection over player-only time/pace.
+    let timed = inp.laps_total <= 0;
+    if timed {
+        if let Some(proj) = project_timed_race_laps_remain(
+            time_remain,
+            inp.leader_lap,
+            inp.leader_lap_dist_pct,
+            inp.leader_lap_s,
+            inp.lap,
+            lap_avg,
+        ) {
+            laps = Some(proj);
+        }
+    }
+
     if laps.is_none() {
         if let (Some(tt), Some(avg)) = (t, lap_avg) {
             if avg > 0.0 {
@@ -190,7 +351,7 @@ fn scenario(u: Option<f32>, fuel: f32, laps_rem: Option<f32>, cap: Option<f32>) 
     }
 }
 
-/// Port of Python `build_fuel_snapshot` (history preferred; FuelUsePerHour fallback).
+/// Port of Python `build_fuel_snapshot` (EMA preferred; history / FuelUsePerHour fallback).
 pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcState {
     let level = if inp.level.is_finite() && inp.level >= 0.0 {
         Some(inp.level)
@@ -200,21 +361,49 @@ pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcSta
     let cap = fuel_capacity(inp.level, inp.fuel_max, inp.fuel_pct);
     let lap = if inp.lap > 0 { Some(inp.lap) } else { None };
     let lap_avg = fuel_lap_secs(inp.lap_est, inp.last_lap_s);
-    let (laps_rem, time_rem) = race_remaining(inp.laps_remain, inp.time_remain, lap_avg);
+    let (laps_rem, time_rem) = race_remaining(inp.laps_remain, inp.time_remain, lap_avg, inp);
 
-    let (u_avg, u_max, u_min) = if !inp.fc_use.is_empty() {
+    let caution_mul = if inp.caution {
+        cfg.f64_key("pit_advisor", "caution_fuel_multiplier", 0.55) as f32
+    } else {
+        1.0
+    }
+    .clamp(0.2, 1.0);
+
+    let (u_avg, u_max, u_min) = if let Some(ema) = inp.ema_usage.filter(|u| *u > 0.0) {
+        let ema = ema * caution_mul;
+        let (max, min) = if !inp.fc_use.is_empty() {
+            let max = inp.fc_use.iter().copied().fold(f32::NEG_INFINITY, f32::max) * caution_mul;
+            let min = inp.fc_use.iter().copied().fold(f32::INFINITY, f32::min) * caution_mul;
+            (max.max(ema), min.min(ema))
+        } else {
+            (ema * 1.08, ema * 0.92)
+        };
+        (Some(ema), Some(max), Some(min))
+    } else if !inp.fc_use.is_empty() {
         let sum: f32 = inp.fc_use.iter().sum();
-        let avg = sum / inp.fc_use.len() as f32;
-        let max = inp.fc_use.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        let min = inp.fc_use.iter().copied().fold(f32::INFINITY, f32::min);
+        let avg = (sum / inp.fc_use.len() as f32) * caution_mul;
+        let max = inp.fc_use.iter().copied().fold(f32::NEG_INFINITY, f32::max) * caution_mul;
+        let min = inp.fc_use.iter().copied().fold(f32::INFINITY, f32::min) * caution_mul;
         (Some(avg), Some(max), Some(min))
     } else {
         let est = if inp.fuel_use_per_hour > 0.05 {
-            lap_avg.map(|s| inp.fuel_use_per_hour * (s / 3600.0))
+            lap_avg.map(|s| inp.fuel_use_per_hour * (s / 3600.0) * caution_mul)
         } else {
             None
         };
         (est, est.map(|u| u * 1.08), est.map(|u| u * 0.92))
+    };
+
+    let ema_usage = inp.ema_usage.or(u_avg);
+    let economy_usage = inp
+        .economy_usage
+        .filter(|e| u_avg.map(|a| *e < a * 0.98).unwrap_or(true));
+    let economy_extra_laps = match (economy_usage, ema_usage, level) {
+        (Some(eco), Some(race), Some(fuel)) if eco > 0.0 && race > 0.0 && fuel > 0.0 => {
+            Some((fuel / eco) - (fuel / race))
+        }
+        _ => None,
     };
 
     let live_burn = if cfg.bool_key("fuel_calc", "show_live_burn", false) {
@@ -331,6 +520,9 @@ pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcSta
         alert,
         lap,
         laps_remaining: laps_rem,
+        ema_usage,
+        economy_usage,
+        economy_extra_laps,
     }
 }
 
@@ -350,6 +542,12 @@ pub fn demo_fuel(t: f64, fuel_l: f32, fuel_pct: f32, lap: i32) -> FuelCalcState 
         fuel_use_per_hour: 48.0,
         laps_total: 50,
         fc_use: Vec::new(),
+        ema_usage: None,
+        economy_usage: None,
+        leader_lap: lap,
+        leader_lap_dist_pct: 0.5,
+        leader_lap_s: Some(90.0),
+        caution: false,
     };
     build_fuel_snapshot(&inp, &cfg)
 }
@@ -374,6 +572,7 @@ mod tests {
                 fuel_use_per_hour: 40.0,
                 laps_total: 40,
                 fc_use: Vec::new(),
+                ..Default::default()
             },
             &cfg,
         );
@@ -381,5 +580,96 @@ mod tests {
         assert!(snap.avg.laps.unwrap() > 0.0);
         assert!(snap.add.unwrap() > 0.0);
         assert!(snap.strip.total > 0);
+    }
+
+    #[test]
+    fn ema_ignores_yellow_and_pit_burns() {
+        let mut tr = FuelBurnTracker::default();
+        let green = FuelLapContext {
+            throttle: 0.9,
+            ..Default::default()
+        };
+        let yellow = FuelLapContext {
+            caution: true,
+            throttle: 0.4,
+            ..Default::default()
+        };
+        let pit = FuelLapContext {
+            on_pit: true,
+            throttle: 0.2,
+            ..Default::default()
+        };
+
+        // Lap 1 start
+        tr.tick(&green);
+        tr.observe(1, 60.0, 80.0, 5, 0.35);
+        tr.tick(&green);
+        // Complete lap 1 green: burn 2.0
+        tr.observe(2, 58.0, 80.0, 5, 0.35);
+        assert_eq!(tr.uses.len(), 1);
+        assert!((tr.uses[0] - 2.0).abs() < 1e-3);
+        assert!(tr.ema.is_some());
+
+        // Contaminated yellow lap — should not record
+        tr.tick(&yellow);
+        tr.observe(3, 56.5, 80.0, 5, 0.35);
+        assert_eq!(tr.uses.len(), 1);
+
+        // Pit lap — should not record
+        tr.tick(&pit);
+        tr.observe(4, 55.0, 80.0, 5, 0.35);
+        assert_eq!(tr.uses.len(), 1);
+
+        // First green after pits is an out-lap — still filtered
+        tr.tick(&green);
+        tr.observe(5, 53.0, 80.0, 5, 0.35);
+        assert_eq!(tr.uses.len(), 1);
+
+        // Clean green lap after out-lap — recorded
+        tr.tick(&green);
+        tr.observe(6, 51.0, 80.0, 5, 0.35);
+        assert_eq!(tr.uses.len(), 2);
+    }
+
+    #[test]
+    fn timed_race_projector_uses_leader_fraction() {
+        // Leader on lap 20 at 50% with 90s pace, 180s remain → 2.5 laps to zero
+        // ceil → 3, finish lap = 23, player lap 20 → 3 remain.
+        let rem = project_timed_race_laps_remain(
+            Some(180.0),
+            20,
+            0.5,
+            Some(90.0),
+            20,
+            Some(90.0),
+        );
+        assert!(rem.is_some());
+        let rem = rem.unwrap();
+        assert!((rem - 3.0).abs() < 0.01, "got {rem}");
+    }
+
+    #[test]
+    fn snapshot_uses_ema_over_mean() {
+        let cfg = OverlayConfig::default();
+        let snap = build_fuel_snapshot(
+            &FuelInputs {
+                level: 20.0,
+                fuel_pct: 0.25,
+                fuel_max: 80.0,
+                lap: 10,
+                last_lap_s: Some(90.0),
+                lap_est: 90.0,
+                laps_remain: Some(20.0),
+                time_remain: None,
+                fuel_use_per_hour: 0.0,
+                laps_total: 40,
+                fc_use: vec![3.0, 2.0, 2.0],
+                ema_usage: Some(2.2),
+                ..Default::default()
+            },
+            &cfg,
+        );
+        assert!((snap.avg.usage.unwrap() - 2.2).abs() < 1e-3);
+        assert!((snap.ema_usage.unwrap() - 2.2).abs() < 1e-3);
     }
 }

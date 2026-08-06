@@ -97,6 +97,11 @@ impl SkiaPanelHost {
         self.map_scratch.clear();
     }
 
+    /// True while the user is moving/resizing this panel in edit mode.
+    pub fn is_interacting(&self, key: &str) -> bool {
+        self.drag.as_ref().is_some_and(|d| d.key == key)
+    }
+
     /// Paint due Skia panels. Returns `(presents, ulw_ms, map_painted)`.
     pub fn sync_and_paint(
         &mut self,

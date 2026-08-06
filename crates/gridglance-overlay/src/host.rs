@@ -7,9 +7,10 @@ use crate::settings;
 use crate::state::{fit_panel_size, grow_panel_size, PanelLayout, StateHandle};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
-    demo::DemoFeed, finalize_frame, FuelBurnTracker, IrsdkReader, LapCompareState, LapExtras,
-    LapLogAccum, PitStopTracker, RadioSpeaker, RelativeOrderHysteresis, SectorTimer,
-    TelemetryFrame,
+    best_service_plan, demo::DemoFeed, finalize_frame, project_lap_down, FcyModel, FuelBurnTracker,
+    FuelLapContext, IrsdkReader, LapCompareState, LapExtras, LapLogAccum, LiftCoastTracker,
+    PaceModel, PitLossTracker, PitStopTracker, RadioSpeaker, RelativeOrderHysteresis, SectorTimer,
+    StrategySnapshot, TelemetryFrame, TireEnergyTracker,
 };
 use crate::widgets::{self, MapPaintMode, WidgetCtx};
 use crate::win_click;
@@ -147,7 +148,12 @@ pub struct OverlayApp {
     lap_compare: LapCompareState,
     lap_log: LapLogAccum,
     fuel_burn: FuelBurnTracker,
+    pit_loss: PitLossTracker,
     pit_stops: PitStopTracker,
+    pace_model: PaceModel,
+    tire_energy: TireEnergyTracker,
+    lift_coast: LiftCoastTracker,
+    fcy_model: FcyModel,
     /// Settings form dirty flag (unsaved edits).
     settings_dirty: bool,
     /// Autosave debounce after edits.
@@ -250,7 +256,12 @@ impl OverlayApp {
             lap_compare: LapCompareState::new(),
             lap_log,
             fuel_burn: FuelBurnTracker::default(),
+            pit_loss: PitLossTracker::default(),
             pit_stops: PitStopTracker::default(),
+            pace_model: PaceModel::default(),
+            tire_energy: TireEnergyTracker::default(),
+            lift_coast: LiftCoastTracker::default(),
+            fcy_model: FcyModel::default(),
             settings_dirty: false,
             settings_autosave_at: None,
             settings_ui: settings::SettingsUi::default(),
@@ -649,9 +660,10 @@ impl OverlayApp {
         let cfg = Arc::clone(&self.state.read().config);
 
         let hist_n = cfg
-            .f64_key("fuel_calc", "history_laps", 10.0)
+            .f64_key("fuel_calc", "green_history_laps", 5.0)
             .round()
             .max(1.0) as usize;
+        let ema_alpha = cfg.f64_key("fuel_calc", "fuel_ema_alpha", 0.35) as f32;
         let cap = if frame.fuel_max_l > 0.0 {
             frame.fuel_max_l
         } else if frame.fuel_pct > 0.01 {
@@ -659,10 +671,197 @@ impl OverlayApp {
         } else {
             0.0
         };
-        self.fuel_burn.observe(frame.lap, frame.fuel_l, cap, hist_n);
-        frame.fuel_use_history = self.fuel_burn.uses.clone();
+        let player = frame.cars.iter().find(|c| c.is_player);
+        let caution = matches!(
+            frame.flag.as_deref(),
+            Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
+        );
+        let fuel_ctx = FuelLapContext {
+            caution,
+            on_pit: player.map(|c| c.on_pit).unwrap_or(false),
+            in_pit: player.map(|c| c.in_pit).unwrap_or(false),
+            approaching_pits: player.map(|c| c.approaching_pits).unwrap_or(false),
+            throttle: frame.throttle,
+        };
+        let eligible = !fuel_ctx.caution
+            && !fuel_ctx.on_pit
+            && !fuel_ctx.in_pit
+            && !fuel_ctx.approaching_pits;
 
-        self.pit_stops.observe(&frame.cars, frame.session_time);
+        // Finalize completed laps before folding this tick's contamination in.
+        self.fuel_burn
+            .observe(frame.lap, frame.fuel_l, cap, hist_n, ema_alpha);
+        self.fuel_burn.tick(&fuel_ctx);
+        frame.fuel_use_history = self.fuel_burn.uses.clone();
+        frame.fuel_ema_l = self.fuel_burn.ema;
+
+        let coast_snap = {
+            self.lift_coast.tick(
+                frame.throttle,
+                frame.brake,
+                eligible && frame.in_car,
+            );
+            self.lift_coast
+                .observe_lap(frame.lap, frame.fuel_l, eligible, hist_n)
+        };
+        frame.fuel_economy_l = coast_snap
+            .economy_usage
+            .or(self.fuel_burn.economy_ema);
+
+        let on_pit_road = fuel_ctx.on_pit || fuel_ctx.in_pit;
+        self.pit_loss
+            .observe(on_pit_road, frame.session_time, ema_alpha);
+        frame.measured_pit_loss_s = self.pit_loss.ema_loss_s;
+
+        let splash_max = cfg.f64_key("pit_advisor", "opponent_splash_pit_max_s", 12.0) as f32;
+        self.pit_stops
+            .observe(&frame.cars, frame.session_time, splash_max);
+
+        let mass_s = cfg.f64_key("pit_advisor", "fuel_mass_laptime_s_per_l", 0.02) as f32;
+        let pace_hist = cfg
+            .f64_key("pit_advisor", "pace_window_laps", 6.0)
+            .round()
+            .max(3.0) as usize;
+        let fallback_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0) as f32;
+        let pace_snap = self.pace_model.observe(
+            frame.lap,
+            frame.last_lap_s,
+            frame.fuel_l,
+            eligible,
+            mass_s,
+            pace_hist,
+            frame.measured_pit_loss_s.unwrap_or(fallback_loss),
+            frame.session_laps_remain,
+        );
+
+        let tire_bits = frame.pit_services.iter().any(|s| {
+            s.checked && matches!(s.key.as_str(), "lf_tire" | "rf_tire" | "lr_tire" | "rr_tire")
+        });
+        let wear_min = frame
+            .tire_corners
+            .iter()
+            .filter_map(|c| c.wear)
+            .fold(None, |acc: Option<f32>, w| {
+                Some(acc.map(|a| a.min(w)).unwrap_or(w))
+            });
+        let wet_suppress = cfg.f64_key("pit_advisor", "track_wetness_tire_suppress", 40.0) as f32;
+        let tire_temps = [
+            frame.tire_corners[0].temp.unwrap_or(0.0),
+            frame.tire_corners[1].temp.unwrap_or(0.0),
+            frame.tire_corners[2].temp.unwrap_or(0.0),
+            frame.tire_corners[3].temp.unwrap_or(0.0),
+        ];
+        let tire_snap = self.tire_energy.tick(
+            frame.session_time,
+            player.map(|c| c.on_track).unwrap_or(frame.in_car),
+            on_pit_road,
+            caution,
+            frame.speed_mps,
+            frame.lat_accel,
+            frame.steering,
+            frame.yaw_rate,
+            &tire_temps,
+            wear_min,
+            frame.track_temp,
+            frame.track_wetness,
+            wet_suppress,
+            tire_bits,
+        );
+        if eligible {
+            self.tire_energy.on_lap_complete(true);
+        }
+
+        let fcy_horizon = cfg.f64_key("pit_advisor", "fcy_horizon_laps", 5.0) as f32;
+        let fcy_snap = self
+            .fcy_model
+            .observe(frame.lap, caution, frame.incidents, fcy_horizon);
+
+        let player_idx = player.map(|c| c.car_idx).unwrap_or(-1);
+        let field = self.pit_stops.field_note(
+            &frame.cars,
+            player_idx,
+            cfg.f64_key("pit_advisor", "opponent_stint_due_laps", 18.0)
+                .round() as i32,
+            cfg.bool_key("pit_advisor", "show_field_context", true),
+        );
+
+        // Leader for lap-down (filled after cars present; fuel remain refined in finalize).
+        let leader = frame
+            .cars
+            .iter()
+            .filter(|c| c.is_live_competitor())
+            .max_by(|a, b| {
+                a.lap.cmp(&b.lap).then_with(|| {
+                    a.lap_dist_pct
+                        .partial_cmp(&b.lap_dist_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+        let player_pace = frame
+            .last_lap_s
+            .map(|s| s as f32)
+            .filter(|s| *s > 10.0)
+            .unwrap_or(frame.lap_est_time)
+            .max(10.0);
+        let leader_pace = leader
+            .and_then(|l| l.last_lap_time_s)
+            .filter(|s| *s > 10.0)
+            .unwrap_or(player_pace);
+        let lap_down = if let Some(l) = leader {
+            project_lap_down(
+                frame.lap,
+                frame.player_lap_dist_pct,
+                player_pace,
+                l.lap,
+                l.lap_dist_pct,
+                leader_pace,
+                frame.measured_pit_loss_s.unwrap_or(fallback_loss),
+                frame.session_laps_remain,
+            )
+        } else {
+            Default::default()
+        };
+
+        let fuel_rate = cfg.f64_key("pit_advisor", "fuel_fill_rate_lps", 2.2) as f32;
+        let t2 = cfg.f64_key("pit_advisor", "tire_change_2t_s", 8.0) as f32;
+        let t4 = cfg.f64_key("pit_advisor", "tire_change_4t_s", 12.0) as f32;
+        let transit = frame
+            .measured_pit_loss_s
+            .map(|m| (m - 10.0).clamp(8.0, 40.0))
+            .unwrap_or(18.0);
+        // Fuel add estimate before finalize; refine after snapshot in finalize via service recompute.
+        let fuel_add_est = if frame.fuel_ema_l.unwrap_or(0.0) > 0.0 {
+            frame
+                .session_laps_remain
+                .map(|r| (r * frame.fuel_ema_l.unwrap() - frame.fuel_l).max(0.0))
+                .unwrap_or(0.0)
+        } else {
+            0.0
+        };
+        let wear_low = wear_min.map(|w| w > 0.0 && w < 0.45).unwrap_or(false);
+        let service = best_service_plan(
+            fuel_add_est,
+            tire_snap.tire_urgent,
+            pace_snap.loss_per_lap,
+            frame.session_laps_remain,
+            transit,
+            fuel_rate,
+            t2,
+            t4,
+            wear_low,
+        );
+
+        frame.strategy = StrategySnapshot {
+            lap_down,
+            pace: pace_snap,
+            tire: tire_snap,
+            coast: coast_snap,
+            fcy: fcy_snap,
+            service: Some(service),
+            field_note: field.note,
+            ahead_due: field.ahead_due,
+            ahead_splash: field.ahead_splash,
+        };
 
         // Table focus change: drop sticky relative order so rows don't inherit
         // the previous car's ahead/behind ranking.
@@ -810,6 +1009,18 @@ impl OverlayApp {
             }
             st.mono_secs = mono;
             st.frame = Arc::new(frame);
+            // System panel: grow/shrink to visible rows (no empty band under content).
+            if !self.skia_host.is_interacting("system_panel") {
+                let (_, need_h) = crate::skia_ui::system_panel_content_size(
+                    st.config.as_ref(),
+                    st.frame.as_ref(),
+                );
+                if let Some(lay) = st.layout.get_mut("system_panel") {
+                    if lay.h != need_h {
+                        lay.h = need_h.max(32);
+                    }
+                }
+            }
             switched
         };
         if switched {

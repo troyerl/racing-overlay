@@ -20,3 +20,4 @@ mod tokens;
 mod types;
 
 pub use manager::{is_skia_panel, skia_overlay_enabled, SkiaPanelHost};
+pub use simple_panels::system_panel_content_size;

@@ -1168,7 +1168,7 @@ fn section_values(state: &StateHandle, section: &str) -> HashMap<String, Value> 
 /// Default control value when a schema key is absent from the live section map.
 fn schema_fallback_value(section: &str, key: &str) -> Value {
     match key {
-        "show_icons" => Value::Bool(false),
+        "show_icons" | "show_subtask_music" => Value::Bool(false),
         "title" => Value::String(section.to_uppercase().replace('_', " ")),
         "panel_style" => Value::String("data".into()),
         "row_height_px" => json!(28.0),
@@ -1189,7 +1189,21 @@ fn number_setting_bounds(key: &str) -> (std::ops::RangeInclusive<f32>, f32) {
         "rows" | "rows_ahead" | "rows_behind" => return (0.0..=40.0, 1.0),
         "max_turns" => return (1.0..=8.0, 1.0),
         "sectors" => return (2.0..=12.0, 1.0),
-        "history_laps" => return (1.0..=50.0, 1.0),
+        "history_laps" | "green_history_laps" => return (1.0..=50.0, 1.0),
+        "fuel_ema_alpha" | "caution_pit_loss_factor" | "caution_fuel_multiplier" => {
+            return (0.05..=1.0, 0.05);
+        }
+        "fuel_mass_laptime_s_per_l" => return (0.0..=0.1, 0.005),
+        "fuel_fill_rate_lps" => return (0.5..=5.0, 0.1),
+        "tire_change_4t_s" | "tire_change_2t_s" | "opponent_splash_pit_max_s" => {
+            return (0.0..=60.0, 0.5);
+        }
+        "pace_window_laps" | "fcy_horizon_laps" | "opponent_stint_due_laps" => {
+            return (1.0..=40.0, 1.0);
+        }
+        "race_tire_sets_total" | "tire_sets_reserve" => return (0.0..=10.0, 1.0),
+        "track_wetness_tire_suppress" => return (0.0..=100.0, 1.0),
+        "legal_fuel_buffer_l" | "min_stint_laps" => return (0.0..=20.0, 0.5),
         "shift_segments" | "ring_segments" => return (4.0..=48.0, 1.0),
         "row_height_px" => return (0.0..=80.0, 1.0),
         "asphalt_width" => return (1.0..=40.0, 1.0),

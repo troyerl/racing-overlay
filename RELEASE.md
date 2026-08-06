@@ -5,6 +5,18 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.17 - 2026-08-06
+
+- **Pit Engineer strategy stack.** Stop advice now uses green-flag EMA fuel,
+  timed-race leader lap projection, measured pit-loss (FCY-scaled), lap-down
+  risk, stint pace drop-off, tire energy/thermals, lift-and-coast economy,
+  2T/4T/fuel service tradeoffs, opponent splash/stint-due cues, and FCY
+  probability — scored into PIT NOW / NEXT LAP / STAY OUT with denser stop /
+  loss / context lines.
+- **Pit Advisor settings.** New tunables for EMA, caution pit-loss factor,
+  fuel fill / tire service times, opponent stint thresholds, wetness tire
+  suppress, and related strategy knobs (previously skipped keys wired).
+
 ## 1.69.16 - 2026-08-05
 
 - **Dash metric spacing.** More clearance between the gear ring and side

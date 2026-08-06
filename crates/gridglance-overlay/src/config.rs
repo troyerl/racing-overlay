@@ -79,8 +79,8 @@ pub fn default_geom(key: &str) -> (i32, i32, i32, i32) {
         "leaderboard_strip" => (660, 980, 480, 80),
         "radio_tower" => (1160, 720, 220, 56),
         "ers_hybrid" => (920, 780, 220, 140),
-        "system_panel" => (1160, 940, 220, 180),
-        "pit_advisor" => (660, 1080, 320, 160),
+        "system_panel" => (1160, 940, 220, 160),
+        "pit_advisor" => (660, 1080, 340, 220),
         "pace_caution" => (40, 40, 320, 72),
         _ => (100, 100, 280, 160),
     }
@@ -97,7 +97,7 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
         "radar" => (200, 200),
         "map" => (320, 320),
         "ers_hybrid" => (200, 78),
-        "pit_advisor" => (280, 96),
+        "pit_advisor" => (320, 148),
         "tire_panel" => (240, 128),
         "sector_timing" => {
             let pred = cfg.bool_key(key, "show_predicted_lap", false);
@@ -138,6 +138,7 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
             (240, h.max(56))
         }
         "system_panel" => {
+            // Parent metrics only — live fit adds process subtasks when present.
             let mut n = 0;
             for k in [
                 "show_cpu",
@@ -215,6 +216,10 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
 
 /// Preferred size for the widget's current panel style.
 pub fn preferred_panel_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
+    // System panel always hugs content (Data and Elegant); live fit refines height.
+    if key == "system_panel" {
+        return elegant_content_size(cfg, key);
+    }
     match cfg.panel_style(key) {
         PanelStyle::Elegant => elegant_content_size(cfg, key),
         PanelStyle::Data => {
@@ -1826,6 +1831,8 @@ fn default_cfg() -> Value {
             section.insert("show_low_fuel_alert".into(), Value::Bool(true));
             section.insert("show_pit_compare".into(), Value::Bool(true));
             section.insert("history_laps".into(), json!(10));
+            section.insert("green_history_laps".into(), json!(5));
+            section.insert("fuel_ema_alpha".into(), json!(0.35));
             section.insert("pit_loss_seconds".into(), json!(25.0));
             section.insert("low_fuel_laps_threshold".into(), json!(2.0));
             section.insert("low_fuel_time_threshold".into(), json!(120.0));
@@ -1917,6 +1924,10 @@ fn default_cfg() -> Value {
             section.insert("show_fps".into(), Value::Bool(true));
             section.insert("show_network".into(), Value::Bool(true));
             section.insert("show_ffb".into(), Value::Bool(true));
+            section.insert("show_process_breakdown".into(), Value::Bool(true));
+            section.insert("show_subtask_iracing".into(), Value::Bool(true));
+            section.insert("show_subtask_overlays".into(), Value::Bool(true));
+            section.insert("show_subtask_music".into(), Value::Bool(false));
             section.insert("show_icons".into(), Value::Bool(false));
             section.insert("panel_opacity".into(), json!(1.0));
         }
@@ -2001,9 +2012,27 @@ fn default_cfg() -> Value {
             section.insert("title".into(), Value::String("PIT ENGINEER".into()));
             section.insert("show_only_when_actionable".into(), Value::Bool(true));
             section.insert("pit_loss_seconds".into(), json!(25.0));
+            section.insert("caution_pit_loss_factor".into(), json!(0.4));
             section.insert("undercut_gap_max_s".into(), json!(12.0));
             section.insert("cover_gap_max_s".into(), json!(8.0));
             section.insert("low_fuel_laps_threshold".into(), json!(2.0));
+            section.insert("race_tire_sets_total".into(), json!(3));
+            section.insert("tire_sets_reserve".into(), json!(1));
+            section.insert("min_stint_laps".into(), json!(3.0));
+            section.insert("legal_fuel_buffer_l".into(), json!(0.5));
+            section.insert("caution_fuel_multiplier".into(), json!(0.55));
+            section.insert("track_wetness_tire_suppress".into(), json!(40.0));
+            section.insert("opponent_stint_due_laps".into(), json!(18));
+            section.insert("opponent_splash_pit_max_s".into(), json!(12.0));
+            section.insert("final_laps_optional_suppress".into(), Value::Bool(true));
+            section.insert("show_field_context".into(), Value::Bool(true));
+            section.insert("show_tire_inventory".into(), Value::Bool(false));
+            section.insert("fuel_mass_laptime_s_per_l".into(), json!(0.02));
+            section.insert("fuel_fill_rate_lps".into(), json!(2.2));
+            section.insert("tire_change_4t_s".into(), json!(12.0));
+            section.insert("tire_change_2t_s".into(), json!(8.0));
+            section.insert("pace_window_laps".into(), json!(6));
+            section.insert("fcy_horizon_laps".into(), json!(5.0));
         }
         m.insert((*key).into(), Value::Object(section));
     }

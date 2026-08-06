@@ -8,21 +8,30 @@ mod irsdk;
 mod lap_compare;
 mod lap_log;
 mod pit_advice;
+mod pit_loss;
 mod pit_service;
 mod pit_track;
 mod sector_timer;
+mod strategy;
 mod strategy_hints;
 mod tables;
 
 pub use format::{finite_laps_total, format_car_number};
-pub use fuel::{build_fuel_snapshot, FuelBurnTracker, FuelCalcState, FuelInputs, FuelScenario};
+pub use fuel::{
+    build_fuel_snapshot, FuelBurnTracker, FuelCalcState, FuelInputs, FuelLapContext, FuelScenario,
+};
 pub use irsdk::IrsdkReader;
 pub use lap_compare::{CompareMarker, LapCompareState, LapCompareView, MarkerKind};
 pub use lap_log::{signed_delta_1, LapExtras, LapLogAccum};
-pub use pit_advice::PitAdvice;
+pub use pit_advice::{strategy_context_line, strategy_loss_line, strategy_meta_line, PitAdvice};
+pub use pit_loss::{effective_loss_s, PitLossTracker};
 pub use pit_service::{decode_flags as decode_pit_flags, PitService};
 pub use pit_track::PitStopTracker;
 pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
+pub use strategy::{
+    best_service_plan, project_lap_down, FcyModel, LiftCoastTracker, PaceModel, StrategySnapshot,
+    TireEnergyTracker,
+};
 pub use tables::{
     finalize_frame, slot_label, RadarState, RelativeOrderHysteresis, TableRow, TableSlotItem,
     TableSlots,
@@ -38,6 +47,12 @@ pub struct CarRow {
     pub gap: String,
     pub last_lap: String,
     pub best_lap: String,
+    /// Numeric last lap time (seconds) from CarIdxLastLapTime.
+    #[serde(default)]
+    pub last_lap_time_s: Option<f32>,
+    /// Numeric best lap time (seconds) from CarIdxBestLapTime.
+    #[serde(default)]
+    pub best_lap_time_s: Option<f32>,
     pub irating: i32,
     pub irating_delta: Option<i32>,
     /// CarClassID from DriverInfo (0 when unknown).
@@ -163,6 +178,14 @@ pub struct TelemetryFrame {
     pub brake: f32,
     pub clutch: f32,
     pub steering: f32,
+    #[serde(default)]
+    pub lat_accel: f32,
+    #[serde(default)]
+    pub long_accel: f32,
+    #[serde(default)]
+    pub vert_accel: f32,
+    #[serde(default)]
+    pub yaw_rate: f32,
     pub abs_active: bool,
     pub fuel_l: f32,
     pub fuel_pct: f32,
@@ -194,6 +217,49 @@ pub struct TelemetryFrame {
     pub cpu: Option<String>,
     pub mem: Option<String>,
     pub gpu: Option<String>,
+    /// Per-process breakdown for the system panel (display strings).
+    #[serde(default)]
+    pub cpu_iracing: Option<String>,
+    #[serde(default)]
+    pub cpu_overlay: Option<String>,
+    #[serde(default)]
+    pub cpu_racelab: Option<String>,
+    #[serde(default)]
+    pub cpu_ioverlay: Option<String>,
+    #[serde(default)]
+    pub cpu_spotify: Option<String>,
+    #[serde(default)]
+    pub cpu_apple_music: Option<String>,
+    #[serde(default)]
+    pub cpu_youtube_music: Option<String>,
+    #[serde(default)]
+    pub mem_iracing: Option<String>,
+    #[serde(default)]
+    pub mem_overlay: Option<String>,
+    #[serde(default)]
+    pub mem_racelab: Option<String>,
+    #[serde(default)]
+    pub mem_ioverlay: Option<String>,
+    #[serde(default)]
+    pub mem_spotify: Option<String>,
+    #[serde(default)]
+    pub mem_apple_music: Option<String>,
+    #[serde(default)]
+    pub mem_youtube_music: Option<String>,
+    #[serde(default)]
+    pub gpu_iracing: Option<String>,
+    #[serde(default)]
+    pub gpu_overlay: Option<String>,
+    #[serde(default)]
+    pub gpu_racelab: Option<String>,
+    #[serde(default)]
+    pub gpu_ioverlay: Option<String>,
+    #[serde(default)]
+    pub gpu_spotify: Option<String>,
+    #[serde(default)]
+    pub gpu_apple_music: Option<String>,
+    #[serde(default)]
+    pub gpu_youtube_music: Option<String>,
     pub fps: Option<i32>,
     pub chan_quality: Option<f32>,
     /// Steering wheel FFB torque as % of max (`SteeringWheelPctTorque`); may exceed 100.
@@ -281,6 +347,12 @@ pub struct TelemetryFrame {
     /// Per-lap burn history (litres, newest first).
     #[serde(default)]
     pub fuel_use_history: Vec<f32>,
+    /// Live green-flag burn EMA (L/lap) from FuelBurnTracker.
+    #[serde(default)]
+    pub fuel_ema_l: Option<f32>,
+    /// Low-throttle economy burn EMA (L/lap).
+    #[serde(default)]
+    pub fuel_economy_l: Option<f32>,
     /// DriverCarFuelMaxLtr when known.
     pub fuel_max_l: f32,
     pub fuel_use_per_hour: f32,
@@ -289,6 +361,12 @@ pub struct TelemetryFrame {
     /// Pit engineer recommendation (filled in finalize_frame).
     #[serde(default)]
     pub pit_advice: Option<PitAdvice>,
+    /// Measured player pit-lane loss EMA (seconds), when known.
+    #[serde(default)]
+    pub measured_pit_loss_s: Option<f32>,
+    /// Aggregated predictive strategy signals for pit engineer.
+    #[serde(default)]
+    pub strategy: StrategySnapshot,
     /// Sim clock seconds since midnight (`SessionTimeOfDay`).
     #[serde(default)]
     pub session_time_of_day: Option<f32>,
@@ -558,6 +636,8 @@ pub mod demo {
                     },
                     last_lap: format!("1:{:05.2}", last_s - 60.0),
                     best_lap: format!("1:{:05.2}", last_s - 60.2),
+                    last_lap_time_s: Some(last_s as f32),
+                    best_lap_time_s: Some((last_s - 0.2) as f32),
                     irating: 1800 + i * 80,
                     irating_delta: None,
                     class_id: 0,
@@ -696,6 +776,8 @@ pub mod demo {
                     gap: String::new(),
                     last_lap: String::new(),
                     best_lap: String::new(),
+                    last_lap_time_s: None,
+                    best_lap_time_s: None,
                     irating: 0,
                     irating_delta: None,
                     class_id: 0,
