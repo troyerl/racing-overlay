@@ -23,7 +23,7 @@ design — use only on trusted local networks.
 
 ## Enable on the race PC
 
-1. Open **Settings → App → LAN telemetry API**.
+1. Open **Settings → LAN telemetry**.
 2. Turn **Enable LAN telemetry** on.
 3. Note **Port** (default `19848`) and **Push rate** (default `15` Hz, range 5–30).
 4. Allow **Windows Firewall** if prompted the first time (listens on all interfaces).

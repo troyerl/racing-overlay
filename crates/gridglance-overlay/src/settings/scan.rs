@@ -316,9 +316,12 @@ pub fn paint_track_scan(
             },
         );
     });
+
+    ensure_admin_loaded(ui_state);
+    paint_demo_track_admin(ui, ui_state, accent);
 }
 
-pub fn paint_cloud_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32) {
+pub fn paint_demo_track_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32) {
     if !cloud::can_write() {
         return;
     }
@@ -367,6 +370,12 @@ pub fn paint_cloud_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32
             });
         }
     });
+}
+
+pub fn paint_pro_drivers_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32) {
+    if !cloud::can_write() {
+        return;
+    }
 
     ui.add_space(8.0);
     enable_card(ui, "Professional drivers", accent, |ui| {

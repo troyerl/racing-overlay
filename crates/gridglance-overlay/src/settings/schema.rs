@@ -642,7 +642,7 @@ pub fn default_table_col_width(col: &str) -> f32 {
 /// Per-widget accent (Python `TAB_COLORS`).
 pub fn tab_color(section: &str) -> &'static str {
     match section {
-        "__general__" | "__app__" | "__scan__" => "#9aa3b2",
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__scan__" => "#9aa3b2",
         "__widgets__" => "#9aa3b2",
         "relative" => "#2fe0b0",
         "standings" => "#a98bff",
@@ -671,7 +671,7 @@ pub fn tab_color(section: &str) -> &'static str {
 
 pub fn top_tab_for(section: &str) -> TopTab {
     match section {
-        "__general__" | "__app__" | "__scan__" => TopTab::Settings,
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__scan__" => TopTab::Settings,
         _ => TopTab::Widgets,
     }
 }
@@ -788,6 +788,8 @@ pub fn ordered_sections() -> Vec<(String, String, String)> {
     let mut out = vec![
         ("__general__".into(), "General".into(), String::new()),
         ("__app__".into(), "App".into(), String::new()),
+        ("__drivers__".into(), "Drivers".into(), String::new()),
+        ("__lan__".into(), "LAN telemetry".into(), String::new()),
     ];
     if crate::cloud::can_write() {
         out.push(("__scan__".into(), "Track Scan".into(), String::new()));
@@ -1110,13 +1112,13 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("__app__", "close_settings_to_tray") => Some(
             "Closing the Settings window hides it to the system tray instead of quitting the app. Use Quit to exit fully.",
         ),
-        ("__app__", "lan_telemetry_enabled") => Some(
+        ("__lan__" | "__app__", "lan_telemetry_enabled") => Some(
             "Start a read-only LAN telemetry server so other devices on your Wi‑Fi can subscribe to live iRacing state. Requires ipc_token on every request. Windows may prompt for Firewall access the first time.",
         ),
-        ("__app__", "lan_telemetry_port") => Some(
+        ("__lan__" | "__app__", "lan_telemetry_port") => Some(
             "TCP port for the LAN telemetry API (default 19848). Listens on all interfaces when enabled. Separate from localhost control IPC (19847).",
         ),
-        ("__app__", "lan_telemetry_hz") => Some(
+        ("__lan__" | "__app__", "lan_telemetry_hz") => Some(
             "How often subscribed clients receive telemetry push frames (5–30 Hz).",
         ),
         (_, "show") => Some("Show this panel on the overlay."),

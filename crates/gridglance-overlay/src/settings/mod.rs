@@ -520,7 +520,10 @@ fn paint_nav(ui: &mut Ui, state: &StateHandle, ui_state: &SettingsUi, section: &
 }
 
 fn widget_shown(state: &StateHandle, key: &str) -> bool {
-    if key == "__general__" || key == "__app__" || key == "__widgets__" {
+    if matches!(
+        key,
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__scan__" | "__widgets__"
+    ) {
         return true;
     }
     let st = state.read();
@@ -538,6 +541,8 @@ fn paint_page(
     match section {
         "__general__" => paint_general(ui, state, ui_state, dirty, accent),
         "__app__" => paint_app(ui, state, ui_state, dirty, accent),
+        "__drivers__" => paint_drivers(ui, state, ui_state, dirty, accent),
+        "__lan__" => paint_lan(ui, state, ui_state, dirty, accent),
         "__scan__" => scan::paint_track_scan(ui, state, ui_state, accent),
         other => paint_widget_section(ui, state, ui_state, other, dirty, accent),
     }
@@ -596,32 +601,6 @@ fn paint_general(
                 ui_state,
             );
         }
-
-        let mut start_on = {
-            let st = state.read();
-            st.config
-                .cfg
-                .get("start_overlay_on_launch")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
-        };
-        setting_row(
-            ui,
-            "Start overlay on launch",
-            help_text("__general__", "start_overlay_on_launch"),
-            |ui| {
-                if toggle_switch(ui, &mut start_on, accent, ui.id().with("start_launch")).changed()
-                {
-                    set_global(
-                        state,
-                        "start_overlay_on_launch",
-                        json!(start_on),
-                        dirty,
-                        ui_state,
-                    );
-                }
-            },
-        );
     });
 
     ui.add_space(8.0);
@@ -671,6 +650,26 @@ fn paint_general(
     });
 
     ui.add_space(8.0);
+    enable_card(ui, "Auto-switch presets", accent, |ui| {
+        for (key, label) in [
+            ("auto_switch_by_league", "Switch by league"),
+            ("auto_switch_by_car", "Switch by car"),
+            ("auto_switch_to_default", "Fall back to default preset"),
+        ] {
+            let mut on = state.read().config.auto_switch_flag(key);
+            setting_row(ui, label, None, |ui| {
+                if toggle_switch(ui, &mut on, accent, ui.id().with(("auto_switch", key))).changed()
+                {
+                    if let Some(mut st) = state.try_write() {
+                        Arc::make_mut(&mut st.config).set_auto_switch_flag(key, on);
+                        *dirty = true;
+                    }
+                }
+            });
+        }
+    });
+
+    ui.add_space(8.0);
     enable_card(ui, "Overlay", accent, |ui| {
         let mut running = state.read().running;
         setting_row(ui, "Panels visible", None, |ui| {
@@ -692,7 +691,6 @@ fn paint_app(
 ) {
     ui.label(RichText::new("App").size(16.0).strong().color(TITLE));
     ui.add_space(8.0);
-    scan::ensure_admin_loaded(ui_state);
     scan::paint_about(ui, ui_state, accent);
     ui.add_space(8.0);
     enable_card(ui, "Launch", accent, |ui| {
@@ -816,11 +814,31 @@ fn paint_app(
             },
         );
     });
+}
+
+fn paint_lan(
+    ui: &mut Ui,
+    state: &StateHandle,
+    ui_state: &mut SettingsUi,
+    dirty: &mut bool,
+    accent: Color32,
+) {
+    ui.label(
+        RichText::new("LAN telemetry")
+            .size(16.0)
+            .strong()
+            .color(TITLE),
+    );
+    ui.label(
+        RichText::new("Read-only API for other apps on your Wi‑Fi/LAN.")
+            .size(11.0)
+            .color(MUTED),
+    );
     ui.add_space(8.0);
     enable_card(ui, "LAN telemetry API", accent, |ui| {
         ui.label(
             RichText::new(
-                "Read-only API for other apps on your Wi‑Fi/LAN. Listens on all interfaces when enabled. Clients must send your ipc_token.",
+                "Listens on all interfaces when enabled. Clients must send your ipc_token.",
             )
             .size(11.0)
             .color(MUTED),
@@ -843,8 +861,7 @@ fn paint_app(
             .and_then(|v| v.as_f64())
             .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
             as f32;
-        let connect_endpoint =
-            crate::telemetry_lan::lan_connect_endpoint(port.round() as u16);
+        let connect_endpoint = crate::telemetry_lan::lan_connect_endpoint(port.round() as u16);
         let lan_ip = crate::telemetry_lan::preferred_lan_ipv4();
         setting_row(
             ui,
@@ -862,9 +879,7 @@ fn paint_app(
                 ui.add_space(6.0);
                 if button_kind(ui, "Copy address", ButtonKind::Primary).clicked() {
                     if lan_ip.is_none() {
-                        ui_state.flash(
-                            "Could not detect LAN IP — check Wi‑Fi or run ipconfig",
-                        );
+                        ui_state.flash("Could not detect LAN IP — check Wi‑Fi or run ipconfig");
                     } else {
                         ui.ctx().copy_text(connect_endpoint.clone());
                         ui_state.flash(format!("Copied {connect_endpoint}"));
@@ -922,7 +937,7 @@ fn paint_app(
         setting_row(
             ui,
             "Enable LAN telemetry",
-            help_text("__app__", "lan_telemetry_enabled"),
+            help_text("__lan__", "lan_telemetry_enabled"),
             |ui| {
                 if toggle_switch(ui, &mut lan_on, accent, ui.id().with("lan_telem_on")).changed() {
                     set_global(
@@ -942,7 +957,7 @@ fn paint_app(
             1024.0..=65535.0,
             1.0,
             accent,
-            help_text("__app__", "lan_telemetry_port"),
+            help_text("__lan__", "lan_telemetry_port"),
         ) {
             set_global(
                 state,
@@ -966,7 +981,7 @@ fn paint_app(
             5.0..=30.0,
             1.0,
             accent,
-            help_text("__app__", "lan_telemetry_hz"),
+            help_text("__lan__", "lan_telemetry_hz"),
         ) {
             set_global(
                 state,
@@ -977,27 +992,25 @@ fn paint_app(
             );
         }
     });
+}
+
+fn paint_drivers(
+    ui: &mut Ui,
+    state: &StateHandle,
+    ui_state: &mut SettingsUi,
+    dirty: &mut bool,
+    accent: Color32,
+) {
+    ui.label(RichText::new("Drivers").size(16.0).strong().color(TITLE));
+    ui.label(
+        RichText::new("App-wide groups and professional-driver badges.")
+            .size(11.0)
+            .color(MUTED),
+    );
     ui.add_space(8.0);
-    enable_card(ui, "Auto-switch presets", accent, |ui| {
-        for (key, label) in [
-            ("auto_switch_by_league", "Switch by league"),
-            ("auto_switch_by_car", "Switch by car"),
-            ("auto_switch_to_default", "Fall back to default preset"),
-        ] {
-            let mut on = state.read().config.auto_switch_flag(key);
-            setting_row(ui, label, None, |ui| {
-                if toggle_switch(ui, &mut on, accent, ui.id().with(("auto_switch", key))).changed()
-                {
-                    if let Some(mut st) = state.try_write() {
-                        Arc::make_mut(&mut st.config).set_auto_switch_flag(key, on);
-                        *dirty = true;
-                    }
-                }
-            });
-        }
-    });
+    scan::ensure_admin_loaded(ui_state);
     paint_driver_groups(ui, state, ui_state, dirty, accent);
-    scan::paint_cloud_admin(ui, ui_state, accent);
+    scan::paint_pro_drivers_admin(ui, ui_state, accent);
 }
 
 fn paint_driver_groups(
@@ -1007,7 +1020,6 @@ fn paint_driver_groups(
     dirty: &mut bool,
     accent: Color32,
 ) {
-    ui.add_space(8.0);
     enable_card(ui, "Driver groups", accent, |ui| {
         ui.label(
             RichText::new(

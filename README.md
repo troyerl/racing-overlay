@@ -56,7 +56,7 @@ matching `%LOCALAPPDATA%\GridGlance\ipc_token` (created on first launch).
 ### LAN Telemetry API
 
 Optional read-only API for other apps on the same Wi‑Fi/LAN. Enable in
-**Settings → App → LAN telemetry API**. Default port `19848` (separate from
+**Settings → LAN telemetry**. Default port `19848` (separate from
 control IPC `19847`); use **Copy token** in that card (or
 `%LOCALAPPDATA%\GridGlance\ipc_token`) on the client.
 
