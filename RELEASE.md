@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.19 - 2026-08-07
+
+- **LAN telemetry connect address.** Settings → App → LAN telemetry API shows
+  this PC’s LAN IP and port (e.g. `192.168.1.50:19848`) with a Copy address
+  button so other devices know where to connect.
+
 ## 1.69.18 - 2026-08-06
 
 - **LAN telemetry API.** Optional read-only NDJSON API on port 19848 (Settings →

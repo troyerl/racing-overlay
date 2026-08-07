@@ -12,7 +12,7 @@ use gridglance_ipc::{
 };
 use serde_json::json;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -190,6 +190,26 @@ impl LanTelemetryServer {
 
 pub fn clamp_hz(hz: u32) -> u32 {
     hz.clamp(MIN_HZ, MAX_HZ)
+}
+
+/// Best-effort LAN IPv4 for display (interface used for outbound traffic).
+/// Does not send packets; connect selects a route so `local_addr` is the LAN IP.
+pub fn preferred_lan_ipv4() -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    // Any routable address works; no datagrams are sent.
+    socket.connect("8.8.8.8:80").ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
+/// `host:port` string for LAN clients (falls back to a placeholder host).
+pub fn lan_connect_endpoint(port: u16) -> String {
+    match preferred_lan_ipv4() {
+        Some(ip) => format!("{ip}:{port}"),
+        None => format!("<lan-ip>:{port}"),
+    }
 }
 
 fn handle_client(

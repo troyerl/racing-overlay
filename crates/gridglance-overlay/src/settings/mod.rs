@@ -835,6 +835,44 @@ fn paint_app(
             .color(MUTED),
         );
         ui.add_space(6.0);
+        let mut port = state
+            .read()
+            .config
+            .cfg
+            .get("lan_telemetry_port")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
+            as f32;
+        let connect_endpoint =
+            crate::telemetry_lan::lan_connect_endpoint(port.round() as u16);
+        let lan_ip = crate::telemetry_lan::preferred_lan_ipv4();
+        setting_row(
+            ui,
+            "Connect address",
+            Some(
+                "Host:port for other devices on the same Wi‑Fi. Use this IP — not 127.0.0.1 — from a phone or second PC.",
+            ),
+            |ui| {
+                ui.label(
+                    RichText::new(&connect_endpoint)
+                        .size(13.0)
+                        .monospace()
+                        .color(TITLE),
+                );
+                ui.add_space(6.0);
+                if button_kind(ui, "Copy address", ButtonKind::Primary).clicked() {
+                    if lan_ip.is_none() {
+                        ui_state.flash(
+                            "Could not detect LAN IP — check Wi‑Fi or run ipconfig",
+                        );
+                    } else {
+                        ui.ctx().copy_text(connect_endpoint.clone());
+                        ui_state.flash(format!("Copied {connect_endpoint}"));
+                    }
+                }
+            },
+        );
+        ui.add_space(4.0);
         let lan_token = crate::ipc::ensure_ipc_token().unwrap_or_default();
         setting_row(
             ui,
@@ -897,14 +935,6 @@ fn paint_app(
                 }
             },
         );
-        let mut port = state
-            .read()
-            .config
-            .cfg
-            .get("lan_telemetry_port")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
-            as f32;
         if number_row(
             ui,
             "Port",
