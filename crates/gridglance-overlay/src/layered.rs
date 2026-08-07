@@ -287,13 +287,40 @@ fn draw_car_labels_fonts(
         if text.is_empty() {
             continue;
         }
-        let size_pts = (car.r / ppp * 0.92).clamp(8.0, 16.0);
+        // Shrink multi-digit so they stay inside the dot and read centred.
+        let shrink = match text.chars().count() {
+            0 | 1 => 0.92,
+            2 => 0.78,
+            _ => 0.68,
+        };
+        let size_pts = (car.r / ppp * shrink).clamp(7.0, 16.0);
         let font_id = egui::FontId::new(size_pts, egui::FontFamily::Proportional);
         let galley = fonts.layout_no_wrap(text, font_id, egui::Color32::WHITE);
-        let gw = galley.size().x * ppp;
-        let gh = galley.size().y * ppp;
-        let origin_x = car.x - gw * 0.5;
-        let origin_y = car.y - gh * 0.5;
+        // Centre on ink box (not galley size — ascent padding biases 2-digit labels).
+        let mut ink_min_x = f32::INFINITY;
+        let mut ink_min_y = f32::INFINITY;
+        let mut ink_max_x = f32::NEG_INFINITY;
+        let mut ink_max_y = f32::NEG_INFINITY;
+        for row in &galley.rows {
+            for g in &row.glyphs {
+                let uv = g.uv_rect;
+                if uv.is_nothing() {
+                    continue;
+                }
+                let left_top = g.pos + uv.offset;
+                ink_min_x = ink_min_x.min(left_top.x);
+                ink_min_y = ink_min_y.min(left_top.y);
+                ink_max_x = ink_max_x.max(left_top.x + uv.size.x);
+                ink_max_y = ink_max_y.max(left_top.y + uv.size.y);
+            }
+        }
+        if !ink_min_x.is_finite() {
+            continue;
+        }
+        let ink_cx = (ink_min_x + ink_max_x) * 0.5 * ppp;
+        let ink_cy = (ink_min_y + ink_max_y) * 0.5 * ppp;
+        let origin_x = car.x - ink_cx;
+        let origin_y = car.y - ink_cy;
 
         // Dark halo then white fill — sample atlas with bilinear coverage.
         // Cardinal halo only (8-dir was ~2× the blit cost and spiked ULW stutter).

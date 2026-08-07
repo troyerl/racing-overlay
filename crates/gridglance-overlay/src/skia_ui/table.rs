@@ -298,7 +298,8 @@ fn paint_row_chrome(
     } else if row.in_pit || row.on_pit {
         Some("pit_row")
     } else if row.inactive {
-        Some("inactive_row")
+        // Not in car / garage: greyed text only — no row wash.
+        None
     } else if row.is_speaking {
         Some("speaking_row")
     } else if section == "relative" {
@@ -317,20 +318,19 @@ fn paint_row_chrome(
             "threat" => "#ff505060",
             "lapped" => "#2563eb60",
             "pit_row" => "#6b728040",
-            "inactive_row" => "#6b728048",
             "speaking_row" => "#22c55e50",
             "undercut_row" => "#3aa0ff44",
             "cover_row" => "#ff941644",
             _ => "#ffffff08",
         };
         let mut accent = section_color(cfg, section, key, fallback);
-        if key == "pit_row" || key == "inactive_row" {
+        if key == "pit_row" {
             let warm = accent.r > accent.b.saturating_add(20);
             if accent.a < 0x30 || warm {
                 accent = parse_rgba(fallback);
             }
         }
-        if key == "pit_row" || key == "inactive_row" {
+        if key == "pit_row" {
             c.fill_rect(rect, accent, 0.0);
         } else {
             draw_row_tint(c, rect, accent);

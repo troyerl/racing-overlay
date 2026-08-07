@@ -1014,26 +1014,18 @@ fn draw_car_number_label(
     if text.is_empty() {
         return;
     }
-    let (size, w) = emap::car_label_metrics(is_focus, text_scale);
+    let (size, w) = emap::car_label_metrics(is_focus, text_scale, text);
     let stroke = Rgba::new(0, 0, 0, if is_pace { 160 } else { 220 });
     let offsets: &[(f32, f32)] = if is_focus || is_pace {
         &emap::CAR_LABEL_RICH
     } else {
         &emap::CAR_LABEL_PLAIN
     };
+    let spec = FontSpec::bold(size);
     for &(ox, oy) in offsets {
-        text_at(
-            c,
-            x + ox * w,
-            y + oy * w,
-            text,
-            size,
-            stroke,
-            true,
-            TextAlign::Center,
-        );
+        c.text_ink_centered(text, x + ox * w, y + oy * w, spec, stroke);
     }
-    text_at(c, x, y, text, size, Rgba::WHITE, true, TextAlign::Center);
+    c.text_ink_centered(text, x, y, spec, Rgba::WHITE);
 }
 
 fn draw_traffic_markers(

@@ -1197,11 +1197,9 @@ pub(crate) fn draw_car_number_label(
     if text.is_empty() {
         return;
     }
-    let base = if is_focus { 9.0 } else { 7.5 };
-    let size = (base * text_scale).round().max(6.0);
+    let (size, w) = car_label_metrics(is_focus, text_scale, text);
     let font = FontId::new(size, FontFamily::Proportional);
     let stroke = Color32::from_rgba_unmultiplied(0, 0, 0, if is_pace { 160 } else { 220 });
-    let w = if is_focus { 1.2_f32 } else { 1.0 };
     // Keep the dot's subpixel centre. Qt pixel-snapped here, but that makes the
     // label crawl against the dot now that presents land on every refresh.
     let offsets: &[(f32, f32)] = if is_focus || is_pace {
@@ -1209,17 +1207,23 @@ pub(crate) fn draw_car_number_label(
     } else {
         &CAR_LABEL_PLAIN
     };
+    // Ink-box centre (galley size includes ascent padding that biases multi-digit up).
+    let (ink_ox, ink_oy) = ui.fonts(|fonts| {
+        let galley = fonts.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE);
+        car_label_ink_offset(&galley)
+    });
+    let center = Pos2::new(c.x - ink_ox, c.y - ink_oy);
     let painter = ui.painter();
     for &(ox, oy) in offsets {
         painter.text(
-            Pos2::new(c.x + ox * w, c.y + oy * w),
+            Pos2::new(center.x + ox * w, center.y + oy * w),
             Align2::CENTER_CENTER,
             text,
             font.clone(),
             stroke,
         );
     }
-    painter.text(c, Align2::CENTER_CENTER, text, font, Color32::WHITE);
+    painter.text(center, Align2::CENTER_CENTER, text, font, Color32::WHITE);
 }
 
 /// Corner-label pill: dark cell + 1px border, muted ink (Qt `draw_dark_cell`).
@@ -1241,12 +1245,48 @@ pub(crate) const CAR_LABEL_PLAIN: [(f32, f32); 4] =
     [(-1.0, 0.0), (1.0, 0.0), (0.0, -1.0), (0.0, 1.0)];
 
 /// Font size and halo width for an on-dot number (shared with the Skia path).
-pub(crate) fn car_label_metrics(is_focus: bool, text_scale: f32) -> (f32, f32) {
+/// Multi-digit labels shrink so they sit inside the dot instead of reading off-centre.
+pub(crate) fn car_label_metrics(is_focus: bool, text_scale: f32, text: &str) -> (f32, f32) {
     let base = if is_focus { 9.0 } else { 7.5 };
+    let shrink = match text.chars().count() {
+        0 | 1 => 1.0,
+        2 => 0.84,
+        _ => 0.72,
+    };
     (
-        (base * text_scale).round().max(6.0),
+        (base * text_scale * shrink).round().max(5.5),
         if is_focus { 1.2 } else { 1.0 },
     )
+}
+
+/// Offset from galley centre to ink-box centre (points). Subtract from the draw
+/// anchor so digits sit optically in the middle of the dot.
+pub(crate) fn car_label_ink_offset(galley: &egui::Galley) -> (f32, f32) {
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for row in &galley.rows {
+        for g in &row.glyphs {
+            let uv = g.uv_rect;
+            if uv.is_nothing() {
+                continue;
+            }
+            let left_top = g.pos + uv.offset;
+            min_x = min_x.min(left_top.x);
+            min_y = min_y.min(left_top.y);
+            max_x = max_x.max(left_top.x + uv.size.x);
+            max_y = max_y.max(left_top.y + uv.size.y);
+        }
+    }
+    if !min_x.is_finite() {
+        return (0.0, 0.0);
+    }
+    let ink_cx = (min_x + max_x) * 0.5;
+    let ink_cy = (min_y + max_y) * 0.5;
+    let galley_cx = galley.size().x * 0.5;
+    let galley_cy = galley.size().y * 0.5;
+    (ink_cx - galley_cx, ink_cy - galley_cy)
 }
 
 fn wrap_lap_delta(them: f32, me: f32) -> f32 {

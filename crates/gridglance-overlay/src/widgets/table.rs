@@ -468,7 +468,8 @@ fn paint_row_chrome(
     } else if row.in_pit || row.on_pit {
         Some("pit_row")
     } else if row.inactive {
-        Some("inactive_row")
+        // Not in car / garage: greyed text only — no row wash.
+        None
     } else if row.is_speaking {
         Some("speaking_row")
     } else if section == "relative" {
@@ -486,9 +487,8 @@ fn paint_row_chrome(
             "player_row" => "#ff941670",
             "threat" => "#ff505060",
             "lapped" => "#2563eb60",
-            // Neutral muted wash for pit / away (not yellow — that reads as player/warn).
+            // Neutral muted wash for pit (not yellow — that reads as player/warn).
             "pit_row" => "#6b728040",
-            "inactive_row" => "#6b728048",
             "speaking_row" => "#22c55e50",
             "undercut_row" => "#3aa0ff44",
             "cover_row" => "#ff941644",
@@ -497,7 +497,7 @@ fn paint_row_chrome(
         let accent = cfg.color(section, key, fallback);
         // Old defaults used a near-invisible cool grey (α≈0x18) or the short-lived
         // olive tint — treat both as unset so the neutral disabled wash applies.
-        let accent = if key == "pit_row" || key == "inactive_row" {
+        let accent = if key == "pit_row" {
             let warm = accent.r() > accent.b().saturating_add(20);
             if accent.a() < 0x30 || warm {
                 parse_color_str(fallback)
@@ -507,7 +507,7 @@ fn paint_row_chrome(
         } else {
             accent
         };
-        if key == "pit_row" || key == "inactive_row" {
+        if key == "pit_row" {
             // Even muted fill (not the left accent stripe used for live rows).
             ui.painter().rect_filled(rect, CornerRadius::ZERO, accent);
         } else {
