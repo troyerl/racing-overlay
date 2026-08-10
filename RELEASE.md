@@ -5,6 +5,21 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.21 - 2026-08-10
+
+- **Standings grow with field.** Optional Grow setting sizes the Standings panel
+  to the cars on track (up to your row cap) instead of always padding empty rows.
+- **HTML pit roads.** Members-site track HTML imports pit road / merge paths when
+  present — Iowa’s pit stays on the frontstretch, and bogus infield entry chords
+  are dropped.
+- **Track Scan pit handles.** Select a pit handle on the map and change its type
+  between entry, road, and merge.
+- **Oval map calibration.** Calibrate no longer flips or mirrors oval outlines
+  from dead-reckoned yaw (fixes Iowa left/right and wrong-way dots); map dots
+  track live lap % more directly so they stay with the car.
+- **Driver groups.** Import/merge is more robust: case-insensitive dedupe,
+  cleaner event-result JSON parsing, and CSV member lists.
+
 ## 1.69.20 - 2026-08-07
 
 - **Standings not-in-car rows.** Drivers who aren’t in the car no longer get a
