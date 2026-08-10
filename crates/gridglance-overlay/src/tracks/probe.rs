@@ -598,16 +598,18 @@ mod tests {
     }
 
     #[test]
-    fn oval_wrong_winding_still_reverses() {
+    fn oval_wrong_winding_keeps_authored_outline() {
+        // Calibrate must not bake Reverse from DR yaw — on Iowa that flipped a
+        // correct Members outline. `pct_map` absorbs the mismatch instead.
         let (samples, mut pts) = oval_samples_and_loop();
         calibrate::reverse_loop_keep_sf(&mut pts);
         let before = pts.clone();
         let fix = resolve_loop_fix(&samples, &mut pts, false);
-        assert_eq!(fix, calibrate::LoopFix::Reverse);
-        assert_ne!(pts, before);
-        // Now matches the driven lap — stable.
+        assert_eq!(fix, calibrate::LoopFix::None);
+        assert_eq!(pts, before, "authored winding must survive calibrate");
         let fix2 = resolve_loop_fix(&samples, &mut pts, false);
         assert_eq!(fix2, calibrate::LoopFix::None);
+        assert_eq!(pts, before);
     }
 
     fn driving_frame() -> TelemetryFrame {
