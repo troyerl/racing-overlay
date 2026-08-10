@@ -461,8 +461,34 @@ pub fn paint_pro_drivers_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: C
                     ui_state.pro_aliases.clear();
                 }
             }
+            if button_kind(ui, "Import from results...", ButtonKind::Default).clicked() {
+                if let Some(path) = rfd::FileDialog::new()
+                    .add_filter("JSON", &["json"])
+                    .pick_file()
+                {
+                    match std::fs::read_to_string(&path)
+                        .map_err(|e| e.into())
+                        .and_then(|t| crate::driver_groups::parse_event_result_names(&t))
+                    {
+                        Ok(names) => {
+                            let (merged, added, skipped) =
+                                crate::driver_groups::merge_names_into_members(
+                                    &ui_state.pro_drivers,
+                                    &names,
+                                );
+                            ui_state.pro_drivers = merged;
+                            ui_state.flash(format!(
+                                "Imported +{added}, skipped {skipped} duplicate{}",
+                                if skipped == 1 { "" } else { "s" }
+                            ));
+                        }
+                        Err(e) => ui_state.flash(e.to_string()),
+                    }
+                }
+            }
             if button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked() {
-                let drivers = ui_state.pro_drivers.clone();
+                let drivers = crate::driver_groups::dedupe_members(&ui_state.pro_drivers);
+                ui_state.pro_drivers = drivers.clone();
                 ui_state.flash("Saving pro drivers…");
                 std::thread::spawn(move || {
                     let msg = match cloud::save_app_settings(&json!({ "pro_drivers": drivers })) {

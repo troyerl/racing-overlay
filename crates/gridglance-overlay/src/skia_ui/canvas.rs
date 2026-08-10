@@ -381,41 +381,6 @@ impl Canvas {
         self.surface.canvas().draw_path(&path, &paint);
     }
 
-    /// Fill indexed triangles (`verts` + `tris` from earcut).
-    pub fn fill_triangles(&mut self, verts: &[(f32, f32)], tris: &[[u32; 3]], color: Rgba) {
-        if verts.len() < 3 || tris.is_empty() {
-            return;
-        }
-        let mut path = skia_safe::Path::new();
-        for &[a, b, c] in tris {
-            let ia = a as usize;
-            let ib = b as usize;
-            let ic = c as usize;
-            if ia >= verts.len() || ib >= verts.len() || ic >= verts.len() {
-                continue;
-            }
-            let (ax, ay) = verts[ia];
-            let (bx, by) = verts[ib];
-            let (cx, cy) = verts[ic];
-            path.move_to(Point::new(ax, ay));
-            path.line_to(Point::new(bx, by));
-            path.line_to(Point::new(cx, cy));
-            path.close();
-        }
-        let mut paint = Paint::new(
-            Color4f::new(
-                color.r as f32 / 255.0,
-                color.g as f32 / 255.0,
-                color.b as f32 / 255.0,
-                color.a as f32 / 255.0,
-            ),
-            None,
-        );
-        paint.set_anti_alias(true);
-        paint.set_style(PaintStyle::Fill);
-        self.surface.canvas().draw_path(&path, &paint);
-    }
-
     /// Dashed open polyline with continuous dash phase across segments.
     pub fn dashed_polyline(
         &mut self,

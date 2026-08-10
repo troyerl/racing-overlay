@@ -226,12 +226,16 @@ pub fn calibrate_track(track_id: i32, samples: &[Sample]) -> anyhow::Result<Stri
 
     let original = tp.points.clone();
     let mut loop_pts = original.clone();
-    let fix = resolve_loop_fix(samples, &mut loop_pts);
+    let text = std::fs::read_to_string(&file)?;
+    let mut doc: serde_json::Value = serde_json::from_str(&text)?;
+    let was_mirrored = doc
+        .get("map_mirror")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let fix = resolve_loop_fix(samples, &mut loop_pts, was_mirrored);
     let table =
         calibrate::solve_pct_map(samples, &loop_pts).map_err(|e| anyhow::anyhow!(e))?;
 
-    let text = std::fs::read_to_string(&file)?;
-    let mut doc: serde_json::Value = serde_json::from_str(&text)?;
     let obj = doc
         .as_object_mut()
         .context("track file is not a JSON object")?;
@@ -247,17 +251,26 @@ pub fn calibrate_track(track_id: i32, samples: &[Sample]) -> anyhow::Result<Stri
             calibrate::LoopFix::Reverse => bake_reverse_into_doc(obj, /*skip_points=*/ true),
             calibrate::LoopFix::None => {}
         }
-        obj.insert("map_mirror".into(), serde_json::json!(false));
     }
-    // Oval corner labels are often authored against a backwards SVG. After a
-    // driven-lap solve we know racing direction — rebuild 2–4 turn ovals in
-    // lap-% order so T1..Tn match iRacing.
-    if let Some(n) = obj.get("num_turns").and_then(|v| v.as_i64()) {
-        if (2..=4).contains(&n) {
-            obj.insert(
-                "corners".into(),
-                serde_json::Value::Array(oval_corners_in_lap_order(&loop_pts, n as usize)),
-            );
+    // Persist mirror state so a later calibrate can undo a real mirror bake.
+    // Never invent a mirror from Procrustes alone — that flip-flopped Iowa.
+    let map_mirror = match fix {
+        calibrate::LoopFix::Mirror => true,
+        calibrate::LoopFix::Reverse => false,
+        calibrate::LoopFix::None => was_mirrored && !geom_changed,
+    };
+    obj.insert("map_mirror".into(), serde_json::json!(map_mirror));
+    // Oval corner labels are often authored against a backwards SVG. Rebuild
+    // only when we actually rewrote the outline — angle-quadrant detection on
+    // a D-oval otherwise collapses T1/T2 onto the same spot (Iowa).
+    if geom_changed {
+        if let Some(n) = obj.get("num_turns").and_then(|v| v.as_i64()) {
+            if (2..=4).contains(&n) {
+                obj.insert(
+                    "corners".into(),
+                    serde_json::Value::Array(oval_corners_in_lap_order(&loop_pts, n as usize)),
+                );
+            }
         }
     }
     let rounded: Vec<serde_json::Value> = table
@@ -284,9 +297,17 @@ pub fn calibrate_track(track_id: i32, samples: &[Sample]) -> anyhow::Result<Stri
     ))
 }
 
-/// Apply [`calibrate::choose_loop_fix`], or undo a mistaken mirror-bake when
-/// unmirror+reverse restores the authored outline equally well.
-fn resolve_loop_fix(samples: &[Sample], loop_pts: &mut Vec<(f32, f32)>) -> calibrate::LoopFix {
+/// Apply [`calibrate::choose_loop_fix`], or undo a prior mirror-bake when the
+/// track document still has `map_mirror: true`.
+///
+/// Symmetric ovals make reverse ≅ mirror to Procrustes — never guess an
+/// unmirror from fit alone (that left/right-flipped Iowa on every re-calibrate
+/// and put dots on the wrong side of the D).
+fn resolve_loop_fix(
+    samples: &[Sample],
+    loop_pts: &mut Vec<(f32, f32)>,
+    was_mirrored: bool,
+) -> calibrate::LoopFix {
     match calibrate::choose_loop_fix(samples, loop_pts) {
         calibrate::LoopFix::Reverse => {
             calibrate::reverse_loop_keep_sf(loop_pts);
@@ -296,20 +317,20 @@ fn resolve_loop_fix(samples: &[Sample], loop_pts: &mut Vec<(f32, f32)>) -> calib
             calibrate::mirror_polyline(loop_pts);
             calibrate::LoopFix::Mirror
         }
-        calibrate::LoopFix::None => {
-            // Already fits. If that is only because we previously baked a mirror
-            // onto a reverse-wound SVG, unmirror+reverse restores the Members
-            // outline (same Procrustes error, familiar left/right).
+        calibrate::LoopFix::None if was_mirrored => {
+            // Document says we previously baked a mirror onto a reverse-wound
+            // SVG. Unmirror + reverse restores the Members outline when that
+            // still matches the driven lap.
             let mut unmirrored = loop_pts.clone();
             calibrate::mirror_polyline(&mut unmirrored);
             if calibrate::choose_loop_fix(samples, &unmirrored) == calibrate::LoopFix::Reverse {
                 calibrate::reverse_loop_keep_sf(&mut unmirrored);
                 *loop_pts = unmirrored;
-                // Points already final; do not reverse the on-disk doc again.
                 return calibrate::LoopFix::None;
             }
             calibrate::LoopFix::None
         }
+        calibrate::LoopFix::None => calibrate::LoopFix::None,
     }
 }
 
@@ -522,6 +543,87 @@ impl Drop for PathProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tracks::calibrate::{self, Sample};
+
+    /// Synthetic constant-speed oval lap (same construction as calibrate tests).
+    fn oval_samples_and_loop() -> (Vec<Sample>, Vec<(f32, f32)>) {
+        let n = 400;
+        let dt = 0.02f64;
+        let tau = std::f32::consts::TAU;
+        let loop_pts: Vec<(f32, f32)> = (0..n)
+            .map(|i| {
+                let a = i as f32 / n as f32 * tau;
+                (0.5 + 0.45 * a.cos(), 0.5 + 0.22 * a.sin())
+            })
+            .collect();
+        let mut dist = 0.0f32;
+        for w in loop_pts.windows(2) {
+            let dx = w[1].0 - w[0].0;
+            let dy = w[1].1 - w[0].1;
+            dist += (dx * dx + dy * dy).sqrt();
+        }
+        {
+            let dx = loop_pts[0].0 - loop_pts[n - 1].0;
+            let dy = loop_pts[0].1 - loop_pts[n - 1].1;
+            dist += (dx * dx + dy * dy).sqrt();
+        }
+        let speed = dist / (n as f32 * dt as f32);
+        let mut samples = Vec::new();
+        for i in 0..=n {
+            let frac = (i % n) as f32 / n as f32;
+            let a = frac * tau;
+            let tx = -0.45 * a.sin();
+            let ty = 0.22 * a.cos();
+            samples.push(Sample {
+                t: i as f64 * dt,
+                pct: frac,
+                vx: speed,
+                vy: 0.0,
+                yaw: ty.atan2(tx),
+            });
+        }
+        // Two laps so complete_laps keeps a full flying one.
+        let mut two = samples.clone();
+        let t0 = samples.last().unwrap().t;
+        for s in &samples[1..] {
+            two.push(Sample {
+                t: t0 + s.t,
+                pct: s.pct,
+                vx: s.vx,
+                vy: s.vy,
+                yaw: s.yaw,
+            });
+        }
+        (two, loop_pts)
+    }
+
+    #[test]
+    fn oval_recalibrate_does_not_left_right_flip() {
+        let (samples, loop_pts) = oval_samples_and_loop();
+        let mut pts = loop_pts.clone();
+        let fix = resolve_loop_fix(&samples, &mut pts, false);
+        assert_eq!(fix, calibrate::LoopFix::None);
+        assert_eq!(pts, loop_pts, "correct oval must not be rewritten");
+
+        // Second pass (as if re-running calibrate) stays put — the old Procrustes
+        // "unmirror restore" used to flip the D here.
+        let fix2 = resolve_loop_fix(&samples, &mut pts, false);
+        assert_eq!(fix2, calibrate::LoopFix::None);
+        assert_eq!(pts, loop_pts);
+    }
+
+    #[test]
+    fn oval_wrong_winding_still_reverses() {
+        let (samples, mut pts) = oval_samples_and_loop();
+        calibrate::reverse_loop_keep_sf(&mut pts);
+        let before = pts.clone();
+        let fix = resolve_loop_fix(&samples, &mut pts, false);
+        assert_eq!(fix, calibrate::LoopFix::Reverse);
+        assert_ne!(pts, before);
+        // Now matches the driven lap — stable.
+        let fix2 = resolve_loop_fix(&samples, &mut pts, false);
+        assert_eq!(fix2, calibrate::LoopFix::None);
+    }
 
     fn driving_frame() -> TelemetryFrame {
         TelemetryFrame {

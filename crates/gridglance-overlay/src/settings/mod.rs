@@ -1132,11 +1132,9 @@ fn paint_driver_groups(
             let _ = text_field(ui, &mut ui_state.dg_color, "#5bb8ff", 120.0);
         });
 
-        let member_names: Vec<String> = ui_state
-            .dg_members
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
+        let member_names: Vec<String> = crate::driver_groups::members_from_csv(&ui_state.dg_members)
+            .iter()
+            .filter_map(|e| e.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
             .collect();
         if ui_state
             .dg_member_sel
@@ -1185,6 +1183,15 @@ fn paint_driver_groups(
                                             ui_state.dg_member_edit.clear();
                                         }
                                         ui_state.dg_members = next.join(", ");
+                                        match persist_driver_group_members(
+                                            state,
+                                            ui_state,
+                                            &mut groups,
+                                            dirty,
+                                        ) {
+                                            Ok(()) => ui_state.flash("Member removed"),
+                                            Err(msg) => ui_state.flash(msg),
+                                        }
                                     }
                                 },
                             );
@@ -1212,7 +1219,15 @@ fn paint_driver_groups(
                         next.push(name.clone());
                         ui_state.dg_members = next.join(", ");
                         ui_state.dg_member_sel = Some(name);
-                        ui_state.flash("Member added (Save group to keep)");
+                        match persist_driver_group_members(
+                            state,
+                            ui_state,
+                            &mut groups,
+                            dirty,
+                        ) {
+                            Ok(()) => ui_state.flash("Member added"),
+                            Err(msg) => ui_state.flash(msg),
+                        }
                     } else {
                         ui_state.flash("Already in this group");
                     }
@@ -1234,7 +1249,15 @@ fn paint_driver_groups(
                                 ui_state.dg_members = next.join(", ");
                                 ui_state.dg_member_sel = Some(new_name.clone());
                                 ui_state.dg_member_edit = new_name;
-                                ui_state.flash("Renamed (Save group to keep)");
+                                match persist_driver_group_members(
+                                    state,
+                                    ui_state,
+                                    &mut groups,
+                                    dirty,
+                                ) {
+                                    Ok(()) => ui_state.flash("Member renamed"),
+                                    Err(msg) => ui_state.flash(msg),
+                                }
                             }
                         }
                     }
@@ -1248,13 +1271,8 @@ fn paint_driver_groups(
             if button_kind(ui, "Add / Update", ButtonKind::GhostAccent).clicked() {
                 let name = ui_state.dg_name.trim().to_string();
                 if !name.is_empty() {
-                    let members: Vec<Value> = ui_state
-                        .dg_members
-                        .split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| json!({ "name": s, "aliases": [] }))
-                        .collect();
+                    let members = crate::driver_groups::members_from_csv(&ui_state.dg_members);
+                    ui_state.dg_members = crate::driver_groups::members_to_csv(&members);
                     let entry = json!({
                         "name": name,
                         "icon": ui_state.dg_icon,
@@ -1308,21 +1326,60 @@ fn paint_driver_groups(
                         .and_then(|t| crate::driver_groups::parse_event_result_names(&t))
                     {
                         Ok(names) => {
-                            let existing: Vec<Value> = ui_state
-                                .dg_members
-                                .split(',')
-                                .map(|s| s.trim())
-                                .filter(|s| !s.is_empty())
-                                .map(|s| json!({ "name": s, "aliases": [] }))
-                                .collect();
+                            // Prefer saved group members so a stale/empty UI field
+                            // cannot re-import drivers that are already in the group.
+                            let mut existing = crate::driver_groups::members_from_csv(
+                                &ui_state.dg_members,
+                            );
+                            if let Some(sel) = ui_state.dg_sel.as_deref() {
+                                if let Some(g) = groups.iter().find(|g| {
+                                    g.get("name").and_then(|n| n.as_str()) == Some(sel)
+                                }) {
+                                    if let Some(mem) = g.get("members").and_then(|m| m.as_array())
+                                    {
+                                        let (merged_existing, _, _) =
+                                            crate::driver_groups::merge_names_into_members(
+                                                &existing,
+                                                &mem.iter()
+                                                    .filter_map(|e| {
+                                                        e.get("name")
+                                                            .and_then(|n| n.as_str())
+                                                            .map(|s| s.to_string())
+                                                    })
+                                                    .collect::<Vec<_>>(),
+                                            );
+                                        existing = merged_existing;
+                                    }
+                                }
+                            }
                             let (merged, added, skipped) =
                                 crate::driver_groups::merge_names_into_members(&existing, &names);
-                            ui_state.dg_members = merged
-                                .iter()
-                                .filter_map(|e| e.get("name").and_then(|n| n.as_str()))
-                                .collect::<Vec<_>>()
-                                .join(", ");
-                            ui_state.flash(format!("Imported +{added} (skipped {skipped})"));
+                            ui_state.dg_members =
+                                crate::driver_groups::members_to_csv(&merged);
+                            // Persist immediately when editing a named group.
+                            let gname = ui_state.dg_name.trim().to_string();
+                            if !gname.is_empty() {
+                                let entry = json!({
+                                    "name": gname,
+                                    "icon": ui_state.dg_icon,
+                                    "color": ui_state.dg_color,
+                                    "members": merged,
+                                });
+                                if let Some(pos) = groups.iter().position(|g| {
+                                    g.get("name").and_then(|n| n.as_str()) == Some(gname.as_str())
+                                }) {
+                                    groups[pos] = entry;
+                                } else {
+                                    groups.push(entry);
+                                    ui_state.dg_sel = Some(gname.clone());
+                                    ui_state.dg_new = false;
+                                }
+                                set_driver_groups(state, json!(groups), dirty, ui_state);
+                            }
+                            ui_state.flash(format!(
+                                "Imported +{added}, skipped {skipped} duplicate{}",
+                                if skipped == 1 { "" } else { "s" }
+                            ));
                         }
                         Err(e) => ui_state.flash(e.to_string()),
                     }
@@ -1330,6 +1387,47 @@ fn paint_driver_groups(
             }
         });
     });
+}
+
+/// Write the editor's member list into the selected/named group and persist.
+fn persist_driver_group_members(
+    state: &StateHandle,
+    ui_state: &mut SettingsUi,
+    groups: &mut Vec<Value>,
+    dirty: &mut bool,
+) -> Result<(), String> {
+    let gname = ui_state
+        .dg_sel
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| ui_state.dg_name.trim());
+    if gname.is_empty() {
+        return Err("Enter a group name first".into());
+    }
+    let gname = gname.to_string();
+    if ui_state.dg_name.trim().is_empty() {
+        ui_state.dg_name = gname.clone();
+    }
+    let members = crate::driver_groups::members_from_csv(&ui_state.dg_members);
+    ui_state.dg_members = crate::driver_groups::members_to_csv(&members);
+    let entry = json!({
+        "name": gname,
+        "icon": ui_state.dg_icon,
+        "color": ui_state.dg_color,
+        "members": members,
+    });
+    if let Some(pos) = groups
+        .iter()
+        .position(|g| g.get("name").and_then(|n| n.as_str()) == Some(gname.as_str()))
+    {
+        groups[pos] = entry;
+    } else {
+        groups.push(entry);
+    }
+    ui_state.dg_sel = Some(gname);
+    ui_state.dg_new = false;
+    set_driver_groups(state, json!(groups.clone()), dirty, ui_state);
+    Ok(())
 }
 
 fn load_driver_group_into_ui(ui_state: &mut SettingsUi, groups: &[Value], name: &str) {

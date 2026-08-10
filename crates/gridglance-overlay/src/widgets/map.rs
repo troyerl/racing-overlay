@@ -19,7 +19,7 @@ use std::f32::consts::{PI, TAU};
 const SECTION: &str = "map";
 /// Bump when changing map car motion; shown in `--perf` as `map_motion_rev=`.
 /// Keep in sync with `docs/map-wiki.md`.
-pub const MAP_MOTION_REV: u32 = 34;
+pub const MAP_MOTION_REV: u32 = 35;
 /// Screen ease for pit-route / non-pct modes only (Python `_smooth_marker_point`).
 const SCREEN_EASE_TAU: f32 = 0.09;
 const SCREEN_EASE_SNAP: f32 = 120.0;
@@ -45,6 +45,10 @@ const VEL_DECAY_TAU: f32 = 0.30;
 /// Cap how far ahead of the last sample we predict. Beyond this the sim is
 /// stalled; coasting further just invents position.
 const TELEM_PRED_AGE_MAX: f32 = 0.25;
+/// Instantaneous lap-%/s on a straight exceeds the lap average (corners are
+/// slower). Cap feed-forward at this multiple of `1/lap_est` — at 1×, Iowa
+/// dots started lagging above ~85 mph when pace > average.
+const VEL_CAP_LAP_MULT: f32 = 2.0;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
 #[derive(Clone, Copy)]
@@ -1299,7 +1303,7 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Smooth lap-% for map dots (motion rev 34).
+/// Smooth lap-% for map dots (motion rev 35).
 ///
 /// Every earlier rev mixed free-running coast with conditional corrections
 /// (snap / ahead-pull / asymmetric blends). Each condition is a step change in
@@ -1314,13 +1318,20 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
 /// Position stays C1 (velocity is integrated, never assigned), steady-state
 /// error is zero while the car holds a speed, so the dot neither leads nor
 /// staircases. Only a teleport still snaps.
+///
+/// Rev 35: feed-forward vel cap is `VEL_CAP_LAP_MULT / lap_est`, not `1/lap_est`.
+/// Average lap pace under-limits oval straights and the tracker lagged there.
 fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap<i32, f32> {
     let mut out = HashMap::new();
     let telem_clock = wall_secs;
     let session_now = ctx.frame.session_time;
     let player_pct = ctx.frame.player_lap_dist_pct;
     let lap_est = ctx.frame.lap_est_time;
-    let vel_cap = if lap_est > 10.0 { 1.0 / lap_est } else { 0.042 };
+    let vel_cap = if lap_est > 10.0 {
+        VEL_CAP_LAP_MULT / lap_est
+    } else {
+        0.08
+    };
 
     for car in &ctx.frame.cars {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {

@@ -639,7 +639,7 @@ fn paint_path_status(c: &mut Canvas, ctx: &WidgetCtx<'_>, rect: Rect) {
     );
 }
 
-fn fill_infield(c: &mut Canvas, screen: &[(f32, f32)], fill: Rgba, self_crossing: bool) {
+fn fill_infield(c: &mut Canvas, screen: &[(f32, f32)], fill: Rgba, _self_crossing: bool) {
     if screen.len() < 3 {
         return;
     }
@@ -654,20 +654,10 @@ fn fill_infield(c: &mut Canvas, screen: &[(f32, f32)], fill: Rgba, self_crossing
     if pts.len() < 3 {
         return;
     }
-    if self_crossing {
-        // Bridge layouts are not simple polygons; ear clipping would emit
-        // overlapping triangles at the crossing. Let Skia's winding fill decide.
-        c.fill_closed_path(&pts, fill);
-        return;
-    }
-    // Prefer earcut (matches egui) for concave outlines.
-    let egui_pts: Vec<Pos2> = pts.iter().map(|&(x, y)| Pos2::new(x, y)).collect();
-    let tris = emap::earcut_triangles(&egui_pts);
-    if !tris.is_empty() {
-        c.fill_triangles(&pts, &tris, fill);
-    } else {
-        c.fill_closed_path(&pts, fill);
-    }
+    // Always use Skia's winding fill. Earcut triangles drawn as separate
+    // subpaths leave AA cracks along long diagonals — visible as a black
+    // "tear" across the infield (and looking like it cuts the asphalt).
+    c.fill_closed_path(&pts, fill);
 }
 
 fn draw_pit_lane(

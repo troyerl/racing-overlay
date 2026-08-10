@@ -10,7 +10,7 @@
 //! loop, at each lap %. Feeding lap % through it cancels the distortion without
 //! touching the drawing.
 
-use crate::track_path::point_at;
+use crate::track_path::{nearest_pct_on_loop, point_at};
 
 /// One telemetry sample of the seated car.
 #[derive(Clone, Copy, Debug)]
@@ -73,8 +73,31 @@ pub fn choose_loop_fix(samples: &[Sample], loop_pts: &[(f32, f32)]) -> LoopFix {
     let mirrored = mirrored.unwrap_or(f32::MAX);
     let reversed_rms = reversed_rms.unwrap_or(f32::MAX);
 
-    let reverse_ok = reversed_rms < MAX_FIT_RMS && reversed_rms * 3.0 < plain;
-    let mirror_ok = mirrored < MAX_FIT_RMS && mirrored * 3.0 < plain;
+    // Chirality authority: after fitting the dead-reckoned path onto the loop,
+    // do projected arcs land near LapDistPct (up to a constant phase)?
+    // Delta-of-arc vs delta-of-pct is not enough — a wrong-handed DR path still
+    // advances along whichever loop it was fitted to. Absolute arc↔pct
+    // alignment catches that. Shape-only reverse on Iowa flipped a correct
+    // drawing and made live dots run backwards / sit behind the car.
+    let plain_agree = lap_pct_arc_alignment(lap, &path, loop_pts).unwrap_or(0.0);
+    let rev_agree = lap_pct_arc_alignment(lap, &path, &reversed).unwrap_or(0.0);
+
+    // Already matches LapDistPct — never reverse (even if DR shape prefers it).
+    if plain_agree > 0.7 {
+        return LoopFix::None;
+    }
+
+    // LapDistPct alignment prefers reverse — take it even when mirror RMS is
+    // slightly better (symmetric ovals make the two look alike to Procrustes).
+    if rev_agree > plain_agree + 0.35 && rev_agree > 0.55 {
+        return LoopFix::Reverse;
+    }
+
+    let reverse_ok = reversed_rms < MAX_FIT_RMS
+        && reversed_rms * 3.0 < plain
+        && rev_agree > plain_agree + 0.35
+        && rev_agree > 0.55;
+    let mirror_ok = mirrored < MAX_FIT_RMS && mirrored * 3.0 < plain && plain_agree < 0.25;
     match (reverse_ok, mirror_ok) {
         // Symmetric ovals: reverse ≅ mirror to Procrustes — keep the drawing.
         // Only take mirror when it is clearly better than reversing.
@@ -83,6 +106,53 @@ pub fn choose_loop_fix(samples: &[Sample], loop_pts: &[(f32, f32)]) -> LoopFix {
         (false, true) => LoopFix::Mirror,
         _ => LoopFix::None,
     }
+}
+
+/// +1 when fitted DR positions sit at LapDistPct on `loop_pts` (phase-invariant).
+///
+/// Scores `cos(2π (arc − pct − φ))` at the best phase φ. A reversed drawing
+/// scores near −1 / low here even when both pct and arc advance in time.
+fn lap_pct_arc_alignment(
+    lap: &[Sample],
+    path: &[(f32, f32)],
+    loop_pts: &[(f32, f32)],
+) -> Option<f32> {
+    if lap.len() < 32 || path.len() != lap.len() || loop_pts.len() < 8 {
+        return None;
+    }
+    let shape = resample_by_arc(path, FIT_N);
+    let loop_fit: Vec<(f32, f32)> = (0..FIT_N)
+        .map(|i| point_at(loop_pts, i as f32 / FIT_N as f32))
+        .collect();
+    let (xf, rms) = best_fit_handedness(&shape, &loop_fit, false)?;
+    if rms > MAX_FIT_RMS {
+        return None;
+    }
+    let step = (lap.len() / 120).max(1);
+    let mut deltas = Vec::new();
+    for i in (0..lap.len()).step_by(step) {
+        let p = xf.apply(path[i]);
+        let arc = nearest_pct_on_loop(loop_pts, p.0, p.1);
+        deltas.push((arc - lap[i].pct).rem_euclid(1.0));
+    }
+    if deltas.len() < 16 {
+        return None;
+    }
+    // Best constant phase via circular mean of (arc − pct).
+    let (mut sum_sin, mut sum_cos) = (0.0f32, 0.0f32);
+    for d in &deltas {
+        let (s, c) = (*d * std::f32::consts::TAU).sin_cos();
+        sum_sin += s;
+        sum_cos += c;
+    }
+    let phase = sum_sin.atan2(sum_cos) / std::f32::consts::TAU;
+    let mut score = 0.0f32;
+    for d in &deltas {
+        let err = (*d - phase).rem_euclid(1.0);
+        let err = if err > 0.5 { err - 1.0 } else { err };
+        score += (err * std::f32::consts::TAU).cos();
+    }
+    Some(score / deltas.len() as f32)
 }
 
 /// Reverse winding but keep the S/F sample at index 0.
