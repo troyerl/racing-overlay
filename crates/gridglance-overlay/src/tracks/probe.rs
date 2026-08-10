@@ -308,30 +308,15 @@ fn resolve_loop_fix(
     loop_pts: &mut Vec<(f32, f32)>,
     was_mirrored: bool,
 ) -> calibrate::LoopFix {
-    match calibrate::choose_loop_fix(samples, loop_pts) {
-        calibrate::LoopFix::Reverse => {
-            calibrate::reverse_loop_keep_sf(loop_pts);
-            calibrate::LoopFix::Reverse
-        }
-        calibrate::LoopFix::Mirror => {
-            calibrate::mirror_polyline(loop_pts);
-            calibrate::LoopFix::Mirror
-        }
-        calibrate::LoopFix::None if was_mirrored => {
-            // Document says we previously baked a mirror onto a reverse-wound
-            // SVG. Unmirror + reverse restores the Members outline when that
-            // still matches the driven lap.
-            let mut unmirrored = loop_pts.clone();
-            calibrate::mirror_polyline(&mut unmirrored);
-            if calibrate::choose_loop_fix(samples, &unmirrored) == calibrate::LoopFix::Reverse {
-                calibrate::reverse_loop_keep_sf(&mut unmirrored);
-                *loop_pts = unmirrored;
-                return calibrate::LoopFix::None;
-            }
-            calibrate::LoopFix::None
-        }
-        calibrate::LoopFix::None => calibrate::LoopFix::None,
+    // Never bake Reverse/Mirror from dead-reckoned yaw. On Iowa (559) that
+    // flipped a correct Members/HTML outline and sent live dots the wrong way
+    // (and a follow-up calibrate mirrored the D). Keep the authored winding;
+    // `pct_map` absorbs arc-length distortion. Undo a stale mirror bake only.
+    let _suggested = calibrate::choose_loop_fix(samples, loop_pts);
+    if was_mirrored {
+        calibrate::mirror_polyline(loop_pts);
     }
+    calibrate::LoopFix::None
 }
 
 /// Quadrant extrema ordered by lap %, labelled 1..n in racing direction.

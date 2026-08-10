@@ -51,6 +51,7 @@ const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "center_on_player",
             "pin_podium",
             "rows",
+            "grow",
             "rows_ahead",
             "rows_behind",
             "show_footer",
@@ -831,6 +832,7 @@ pub fn pretty_key(key: &str) -> String {
         "show_subtask_music" => return "Music".into(),
         "show_icons" => return "Icons".into(),
         "car_label" => return "Dot number".into(),
+        "grow" => return "Grow with field".into(),
         _ => {}
     }
     key.split('_')
@@ -1134,7 +1136,10 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
             "Total relative rows including you. Rows ahead + rows behind = total − 1.",
         ),
         ("standings", "rows") => Some(
-            "Exact number of standings rows to show (pads with empty slots when the field is shorter).",
+            "Maximum standings rows. With Grow on, the panel height matches the field up to this cap.",
+        ),
+        ("standings", "grow") => Some(
+            "Grow the panel from the bottom to fit the cars on track (up to Total rows). Off pads empty slots to a fixed height.",
         ),
         ("relative", "rows_ahead") => Some(
             "Cars ahead of you. With rows behind, must equal total rows minus your row.",
@@ -1149,6 +1154,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
             Some("Preferred cars behind when centering on you.")
         }
         (_, "center_on_player") => Some("Keep your row centered in the table."),
+        ("standings", "pin_podium") => Some(
+            "Always keep P1–P3 at the top, then your surrounding cars below a separator.",
+        ),
         ("pace_caution", "show_delta") => {
             Some("Show You−Pace (ΔP) and You−Pit limit (ΔL) columns.")
         }

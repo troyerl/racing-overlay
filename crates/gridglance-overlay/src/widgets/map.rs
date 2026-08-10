@@ -19,36 +19,25 @@ use std::f32::consts::{PI, TAU};
 const SECTION: &str = "map";
 /// Bump when changing map car motion; shown in `--perf` as `map_motion_rev=`.
 /// Keep in sync with `docs/map-wiki.md`.
-pub const MAP_MOTION_REV: u32 = 35;
+pub const MAP_MOTION_REV: u32 = 43;
 /// Screen ease for pit-route / non-pct modes only (Python `_smooth_marker_point`).
 const SCREEN_EASE_TAU: f32 = 0.09;
 const SCREEN_EASE_SNAP: f32 = 120.0;
 /// Keep anim if a car drops out of `frame.cars` briefly.
 const PCT_SEEN_GRACE_SECS: f64 = 2.0;
-/// Teleport / tow: snap instead of easing across the track.
-const PCT_SNAP_ERR: f32 = 0.40;
 /// Ignore micro LapDistPct jitter when measuring vel / refreshing anchor.
 const TELEM_EPS: f32 = 0.00008;
-/// EMA blend for measured lap-%/s.
-const VEL_EMA: f32 = 0.25;
+/// EMA blend for measured lap-%/s (used only to soft-catch toward telem).
+const VEL_EMA: f32 = 0.28;
 const VEL_DT_MIN: f64 = 0.004;
 const VEL_DT_MAX: f64 = 3.5;
-/// Natural frequency (rad/s) of the critically damped position tracker.
-/// ~3.2 Hz: filters the 60 Hz LapDistPct staircase, settles in ~0.2 s.
-const TRACK_OMEGA: f32 = 20.0;
-/// Substep so explicit integration stays stable on long frames.
-const TRACK_MAX_STEP: f32 = 0.01;
 /// Grace before a held LapDistPct is treated as "car stopped".
 const VEL_HOLD_SECS: f64 = 0.10;
 /// Time constant for bleeding feed-forward vel while telem is held.
 const VEL_DECAY_TAU: f32 = 0.30;
-/// Cap how far ahead of the last sample we predict. Beyond this the sim is
-/// stalled; coasting further just invents position.
-const TELEM_PRED_AGE_MAX: f32 = 0.25;
 /// Instantaneous lap-%/s on a straight exceeds the lap average (corners are
-/// slower). Cap feed-forward at this multiple of `1/lap_est` — at 1×, Iowa
-/// dots started lagging above ~85 mph when pace > average.
-const VEL_CAP_LAP_MULT: f32 = 2.0;
+/// slower). Cap measured vel at this multiple of `1/lap_est`.
+const VEL_CAP_LAP_MULT: f32 = 1.5;
 
 /// Aspect-preserving map from path bounds → plot pixels (after model xform).
 #[derive(Clone, Copy)]
@@ -799,7 +788,15 @@ fn pit_path_needs_reverse(lane: &track_path::PitLane) -> bool {
     };
     let p0 = lane.path[0];
     let p1 = *lane.path.last().unwrap();
-    hypot2(p1, handoff) < hypot2(p0, handoff)
+    // With a real entry blend, handoff is entry∩road — reverse if path was stored exit-first.
+    if lane.entry.len() >= 2 {
+        return hypot2(p1, handoff) < hypot2(p0, handoff);
+    }
+    // HTML imports often have no entry; use exit joint when present.
+    if let Some(exit0) = lane.exit.first().copied() {
+        return hypot2(p0, exit0) + 1e-6 < hypot2(p1, exit0);
+    }
+    false
 }
 
 /// Project pit_path endpoints onto the racing loop; prefer authored span when
@@ -898,7 +895,16 @@ pub(crate) fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]
         let pct = car.lap_dist_pct;
         let prev = ctx.map.pit_prev_on.get(&idx).copied().unwrap_or(false);
         if prev && !on && pct >= 0.0 {
-            ctx.map.pit_exit_latch.insert(idx, pct.rem_euclid(1.0));
+            let p = pct.rem_euclid(1.0);
+            if pct_in_interval(p, route_lo, route_hi) {
+                ctx.map.pit_exit_latch.insert(idx, p);
+            } else {
+                // Cleared OnPitRoad outside the authored corridor — no exit blend.
+                ctx.map.pit_route_latch.insert(idx, false);
+                ctx.map.pit_exit_latch.remove(&idx);
+                ctx.map.pit_prev_on.insert(idx, on);
+                continue;
+            }
         }
         ctx.map.pit_prev_on.insert(idx, on);
 
@@ -938,14 +944,11 @@ pub(crate) fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
     if Some(car.car_idx) == focus_car_idx(ctx) && car.approaching_pits && car.lap_dist_pct >= 0.0 {
         let lane = &ctx.map.cached_pit;
         if lane.has_drawable() {
-            let in_pct = lane
-                .in_pct
-                .or(lane.span.map(|(a, _)| a))
-                .unwrap_or(track_path::DEMO_PIT_IN_PCT);
             let lane_lo = lane
                 .span
                 .map(|(a, _)| a)
                 .unwrap_or(track_path::DEMO_PIT_LANE_LO);
+            let in_pct = pit_approach_in_pct(lane, lane_lo);
             if pct_in_interval(car.lap_dist_pct.rem_euclid(1.0), in_pct, lane_lo) {
                 return true;
             }
@@ -955,32 +958,85 @@ pub(crate) fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
 }
 
 /// Seed latches for cars already on the pit route after a mid-session track load.
+///
+/// Only `OnPitRoad` — seeding everyone inside `[in_pct, out_pct]` false-latches
+/// traffic on ovals where that wrap is most of the lap (Iowa).
 pub(crate) fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
     if !ctx.map.pit_latch_seed_pending {
         return;
     }
     ctx.map.pit_latch_seed_pending = false;
-    let lane = ctx.map.cached_pit.clone();
-    if !lane.has_drawable() {
+    if !ctx.map.cached_pit.has_drawable() && !ctx.map.cached_pit2.has_drawable() {
         return;
     }
-    let route_lo = lane
-        .in_pct
-        .or(lane.span.map(|(a, _)| a))
-        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
-    let route_hi = lane
-        .out_pct
-        .or(ctx.map.cached_pit_out_pct)
-        .or(lane.span.map(|(_, b)| b))
-        .unwrap_or(track_path::DEMO_PIT_OUT_PCT);
     for car in &ctx.frame.cars {
-        let pct = car.lap_dist_pct;
-        if pct < 0.0 {
-            continue;
-        }
-        if car.on_pit || pct_in_interval(pct, route_lo, route_hi) {
+        if car.on_pit && car.lap_dist_pct >= 0.0 {
             ctx.map.pit_route_latch.insert(car.car_idx, true);
         }
+    }
+}
+
+/// When HTML left `pit_in` empty, open a short approach window before `lane_lo`.
+fn pit_approach_in_pct(lane: &track_path::PitLane, lane_lo: f32) -> f32 {
+    let authored = lane
+        .in_pct
+        .or(lane.span.map(|(a, _)| a))
+        .unwrap_or(lane_lo);
+    if lane.entry.len() >= 2 {
+        return authored;
+    }
+    // Authored in ≈ lane_lo → zero-length entry; pull back ~2.5% of a lap.
+    let gap = (lane_lo - authored).rem_euclid(1.0);
+    if gap < 0.008 {
+        (lane_lo - 0.025).rem_euclid(1.0)
+    } else {
+        authored
+    }
+}
+
+/// Two-point entry from the racing line at approach-% to the pit-path handoff.
+fn synthetic_entry_seg(
+    ctx: &WidgetCtx<'_>,
+    racing: &[(f32, f32)],
+    lane: &track_path::PitLane,
+    in_pct: f32,
+) -> Option<Vec<(f32, f32)>> {
+    if lane.entry.len() >= 2 || lane.path.len() < 2 || racing.len() < 2 {
+        return None;
+    }
+    let handoff = if pit_path_needs_reverse(lane) {
+        *lane.path.last()?
+    } else {
+        lane.path[0]
+    };
+    let sf = ctx.map.cached_start_finish;
+    let cal = ctx.map.cached_pct_map.as_deref();
+    let track = track_path::point_at(
+        racing,
+        loop_frac_for_pct(in_pct, sf, map_reverse(ctx), cal),
+    );
+    Some(vec![track, handoff])
+}
+
+/// Resolve exit blend start so a late/early OnPitRoad falling edge cannot open
+/// a wrap that covers almost the whole lap (`exit_latch` past `out_pct`).
+fn pit_exit_blend_start(latch: Option<f32>, lane_lo: f32, lane_hi: f32, out_pct: f32) -> f32 {
+    let natural = (out_pct - lane_hi).rem_euclid(1.0).max(1e-4);
+    let Some(lat) = latch else {
+        return lane_hi;
+    };
+    if pct_in_interval(lat, lane_hi, out_pct) {
+        return lat;
+    }
+    if pct_in_interval(lat, lane_lo, lane_hi) {
+        // Cleared while still in the lane — begin the exit poly at lane_hi.
+        return lane_hi;
+    }
+    let span = (out_pct - lat).rem_euclid(1.0);
+    if span > natural + 0.02 {
+        lane_hi
+    } else {
+        lat
     }
 }
 
@@ -1001,10 +1057,6 @@ fn schematic_route_pos(
     if !lane.has_drawable() {
         return None;
     }
-    let in_pct = lane
-        .in_pct
-        .or(lane.span.map(|(a, _)| a))
-        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
     let out_pct = lane
         .out_pct
         .or(ctx.map.cached_pit_out_pct)
@@ -1013,28 +1065,37 @@ fn schematic_route_pos(
     let (lane_lo, lane_hi) = lane
         .span
         .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
+    let in_pct = pit_approach_in_pct(lane, lane_lo);
     let speed = authoring_lane_speed(ctx, lane);
+    let synth_entry = synthetic_entry_seg(ctx, racing, lane, in_pct);
+    let entry_seg: &[(f32, f32)] = if lane.entry.len() >= 2 {
+        &lane.entry
+    } else {
+        synth_entry.as_deref().unwrap_or(&[])
+    };
 
     // Exit blend: pit lane end -> rejoin (off pit road).
     if show_blends && !on_pit && lane.exit.len() >= 2 {
-        let exit_start = ctx
-            .map
-            .pit_exit_latch
-            .get(&car.car_idx)
-            .copied()
-            .unwrap_or(lane_hi);
+        let latch = ctx.map.pit_exit_latch.get(&car.car_idx).copied();
+        let exit_start = pit_exit_blend_start(latch, lane_lo, lane_hi, out_pct);
+        // Still in the lane after OnPitRoad cleared early — stay on pit path.
+        if lane.path.len() >= 2 && pct_in_interval(pct, lane_lo, lane_hi) {
+            let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
+                .or(Some((in_pct, out_pct)))
+                .unwrap_or((lane_lo, lane_hi));
+            return pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed);
+        }
         if pct_in_interval(pct, exit_start, out_pct) {
             return pit_phase_pos(pct, exit_start, out_pct, &lane.exit, racing, speed);
         }
     }
 
     // Entry blend (also while OnPitRoad — telem often asserts before lane_lo).
-    let entry_end = lane_lo;
-    if show_blends && lane.entry.len() >= 2 && pct_in_interval(pct, in_pct, entry_end) {
-        return pit_phase_pos(pct, in_pct, entry_end, &lane.entry, racing, speed);
+    if show_blends && entry_seg.len() >= 2 && pct_in_interval(pct, in_pct, lane_lo) {
+        return pit_phase_pos(pct, in_pct, lane_lo, entry_seg, racing, speed);
     }
 
-    // Pit road while OnPitRoad.
+    // Pit road while OnPitRoad (or latched still in lane — handled above for exit).
     if on_pit && lane.path.len() >= 2 {
         let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
             .or(Some((in_pct, out_pct)))
@@ -1071,10 +1132,6 @@ pub(crate) fn car_model_xy(
         return track;
     };
 
-    let in_pct = lane
-        .in_pct
-        .or(lane.span.map(|(a, _)| a))
-        .unwrap_or(track_path::DEMO_PIT_IN_PCT);
     let out_pct = lane
         .out_pct
         .or(ctx.map.cached_pit_out_pct)
@@ -1083,10 +1140,22 @@ pub(crate) fn car_model_xy(
     let (lane_lo, lane_hi) = lane
         .span
         .unwrap_or((track_path::DEMO_PIT_LANE_LO, track_path::DEMO_PIT_LANE_HI));
+    let in_pct = pit_approach_in_pct(lane, lane_lo);
 
     // Python `_pit_route_phases`: entry/exit false while OnPitRoad.
+    // Exit feather uses the same clamped start as schematic placement.
+    let exit_start = if on_pit {
+        lane_hi
+    } else {
+        pit_exit_blend_start(
+            ctx.map.pit_exit_latch.get(&car.car_idx).copied(),
+            lane_lo,
+            lane_hi,
+            out_pct,
+        )
+    };
     let in_entry = !on_pit && pct_in_interval(pct, in_pct, lane_lo);
-    let in_exit = !on_pit && pct_in_interval(pct, lane_hi, out_pct);
+    let in_exit = !on_pit && pct_in_interval(pct, exit_start, out_pct);
 
     let weight = pit_blend_weight(pct, on_route, on_pit, in_entry, in_exit, in_pct, out_pct);
     if weight <= 0.0 {
@@ -1303,24 +1372,13 @@ fn wrap_lap_delta(them: f32, me: f32) -> f32 {
     delta
 }
 
-/// Smooth lap-% for map dots (motion rev 35).
+/// Smooth lap-% for map dots (motion rev 43).
 ///
-/// Every earlier rev mixed free-running coast with conditional corrections
-/// (snap / ahead-pull / asymmetric blends). Each condition is a step change in
-/// display velocity, and they fire once per telem sample — that *is* the
-/// stutter. Rev 31 drops all of it for one unconditional critically damped
-/// tracker with measured-velocity feed-forward:
-///
-/// ```text
-/// a = ω²·(telem − pct) + 2ω·(vel_telem − vel_disp)
-/// ```
-///
-/// Position stays C1 (velocity is integrated, never assigned), steady-state
-/// error is zero while the car holds a speed, so the dot neither leads nor
-/// staircases. Only a teleport still snaps.
-///
-/// Rev 35: feed-forward vel cap is `VEL_CAP_LAP_MULT / lap_est`, not `1/lap_est`.
-/// Average lap pace under-limits oval straights and the tracker lagged there.
+/// Racing-line dots use **raw LapDistPct** (no coast, no spring). Ahead-on-
+/// straights-while-accelerating was still reported with the rev 40–42 damper;
+/// any filter that integrates `disp_vel` can sit a hair past the sample between
+/// clamps, and that reads worst when pace is rising on long arcs. Pit / demo
+/// still snap. Vel EMA is kept only so teleports / diagnostics have a pace.
 fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap<i32, f32> {
     let mut out = HashMap::new();
     let telem_clock = wall_secs;
@@ -1363,67 +1421,39 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
             continue;
         }
 
-        if dt <= 0.0 {
-            ctx.map.car_anim.insert(car.car_idx, st);
-            out.insert(car.car_idx, st.pct);
-            continue;
-        }
-
-        // —— Feed-forward: measure lap-%/s from real telem deltas ——
-        let d_telem = wrap_lap_delta(telem, st.last_telem);
-        if d_telem.abs() > TELEM_EPS {
-            let sess_dt = session_now - st.last_telem_session;
-            let wall_dt = telem_clock - st.last_telem_secs;
-            let sample_dt =
-                if st.last_telem_session > 0.0 && sess_dt > VEL_DT_MIN && sess_dt < VEL_DT_MAX {
+        if dt > 0.0 {
+            let d_telem = wrap_lap_delta(telem, st.last_telem);
+            if d_telem.abs() > TELEM_EPS {
+                let sess_dt = session_now - st.last_telem_session;
+                let wall_dt = telem_clock - st.last_telem_secs;
+                let sample_dt = if st.last_telem_session > 0.0
+                    && sess_dt > VEL_DT_MIN
+                    && sess_dt < VEL_DT_MAX
+                {
                     sess_dt
-                } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX {
+                } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX
+                {
                     wall_dt
                 } else {
                     0.0
                 };
-            if sample_dt > 0.0 {
-                let inst = d_telem / sample_dt as f32;
-                st.vel += (inst - st.vel) * VEL_EMA;
-                st.vel = st.vel.clamp(-vel_cap, vel_cap);
-            }
-            st.last_telem = telem;
-            st.last_telem_secs = telem_clock;
-            st.last_telem_session = session_now;
-        } else if telem_clock - st.last_telem_secs > VEL_HOLD_SECS {
-            // Held sample = car actually stopped; bleed feed-forward so the
-            // tracker settles on telem instead of hovering ahead of it.
-            st.vel *= (-dt / VEL_DECAY_TAU).exp();
-        }
-
-        // —— Teleport / tow: nothing to smooth across half the track ——
-        if wrap_lap_delta(telem, st.pct).abs() > PCT_SNAP_ERR {
-            st.pct = telem;
-            st.disp_vel = st.vel;
-        } else {
-            // Track the *predicted* lap % (last sample + vel·age), not the held
-            // sample itself. Chasing a held telem with nonzero feed-forward vel
-            // settles at telem + 2·vel/ω — an offset that grows with speed and
-            // vanishes when you brake, which is exactly the Iowa oval symptom.
-            let mut age = ((telem_clock - st.last_telem_secs) as f32).max(0.0);
-            let disp_cap = vel_cap * 3.0;
-            let mut left = dt;
-            while left > 0.0 {
-                let h = left.min(TRACK_MAX_STEP);
-                left -= h;
-                let target =
-                    (st.last_telem + st.vel * age.min(TELEM_PRED_AGE_MAX)).rem_euclid(1.0);
-                let err = wrap_lap_delta(target, st.pct);
-                let accel =
-                    TRACK_OMEGA * TRACK_OMEGA * err + 2.0 * TRACK_OMEGA * (st.vel - st.disp_vel);
-                st.disp_vel = (st.disp_vel + accel * h).clamp(-disp_cap, disp_cap);
-                st.pct = (st.pct + st.disp_vel * h).rem_euclid(1.0);
-                age += h;
+                if sample_dt > 0.0 {
+                    let inst = d_telem / sample_dt as f32;
+                    st.vel += (inst - st.vel) * VEL_EMA;
+                    st.vel = st.vel.clamp(-vel_cap, vel_cap);
+                }
+                st.last_telem = telem;
+                st.last_telem_secs = telem_clock;
+                st.last_telem_session = session_now;
+            } else if telem_clock - st.last_telem_secs > VEL_HOLD_SECS {
+                st.vel *= (-dt / VEL_DECAY_TAU).exp();
             }
         }
 
+        st.pct = telem;
+        st.disp_vel = 0.0;
         ctx.map.car_anim.insert(car.car_idx, st);
-        out.insert(car.car_idx, st.pct);
+        out.insert(car.car_idx, telem);
     }
 
     ctx.map
@@ -1532,10 +1562,12 @@ pub(crate) fn smooth_car_screen_pts(
         let key_changed = prev.map(|st| st.key != key).unwrap_or(true);
         let (pt, moving) = if key_changed && start == target {
             (target, false)
-        } else if is_on_pit_key(key) || is_pct_mode_key(key) {
-            // Pct / pit: position already from eased % or telem — no XY lag.
+        } else if is_pct_mode_key(key) && !is_on_pit_key(key) {
+            // Racing-line pct: already from LapDistPct — no second XY ease.
             (target, false)
         } else {
+            // Pit enter / on-lane / exit: ease in screen space so OnPitRoad
+            // edges and missing entry blends don't teleport the dot.
             smooth_marker_point(start, target, dt, SCREEN_EASE_TAU)
         };
         if moving {
@@ -3021,8 +3053,10 @@ fn draw_pit_edit_drafts(
                 }
                 let (mx, my) = model_point(nx, ny, mirror, rot);
                 let p = xform.map(mx, my);
-                let dragging = ctx.pit_drag == Some((lane_u, phase_code, idx));
-                let fill = if dragging || active {
+                let hit = (lane_u, phase_code, idx);
+                let dragging = ctx.pit_drag == Some(hit);
+                let selected = ctx.pit_sel == Some(hit);
+                let fill = if dragging || selected || active {
                     col
                 } else {
                     Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 170)
@@ -3040,7 +3074,14 @@ fn draw_pit_edit_drafts(
                         ),
                     ),
                 );
-                hits.push((p, (lane_u, phase_code, idx)));
+                if selected {
+                    ui.painter().circle_stroke(
+                        p,
+                        handle_r + 3.0,
+                        Stroke::new(2.0_f32, Color32::WHITE),
+                    );
+                }
+                hits.push((p, hit));
             }
         }
         if has_entry_joint {
@@ -3052,8 +3093,10 @@ fn draw_pit_edit_drafts(
                     entry_col.g().saturating_add(20),
                     entry_col.b().saturating_add(10),
                 );
-                let dragging = ctx.pit_drag == Some((lane_u, 4, 0));
-                let fill = if dragging || active {
+                let hit = (lane_u, 4_u8, 0_usize);
+                let dragging = ctx.pit_drag == Some(hit);
+                let selected = ctx.pit_sel == Some(hit);
+                let fill = if dragging || selected || active {
                     jcol
                 } else {
                     Color32::from_rgba_unmultiplied(jcol.r(), jcol.g(), jcol.b(), 200)
@@ -3061,7 +3104,14 @@ fn draw_pit_edit_drafts(
                 ui.painter().circle_filled(p, handle_r, fill);
                 ui.painter()
                     .circle_stroke(p, handle_r, Stroke::new(1.5_f32, jcol));
-                hits.push((p, (lane_u, 4, 0)));
+                if selected {
+                    ui.painter().circle_stroke(
+                        p,
+                        handle_r + 3.0,
+                        Stroke::new(2.0_f32, Color32::WHITE),
+                    );
+                }
+                hits.push((p, hit));
             }
         }
         if has_joint {
@@ -3073,8 +3123,10 @@ fn draw_pit_edit_drafts(
                 } else {
                     Color32::from_rgb(255, 170, 50)
                 };
-                let dragging = ctx.pit_drag == Some((lane_u, 3, 0));
-                let fill = if dragging || active {
+                let hit = (lane_u, 3_u8, 0_usize);
+                let dragging = ctx.pit_drag == Some(hit);
+                let selected = ctx.pit_sel == Some(hit);
+                let fill = if dragging || selected || active {
                     jcol
                 } else {
                     Color32::from_rgba_unmultiplied(jcol.r(), jcol.g(), jcol.b(), 200)
@@ -3082,7 +3134,14 @@ fn draw_pit_edit_drafts(
                 ui.painter().circle_filled(p, handle_r, fill);
                 ui.painter()
                     .circle_stroke(p, handle_r, Stroke::new(1.5_f32, jcol));
-                hits.push((p, (lane_u, 3, 0)));
+                if selected {
+                    ui.painter().circle_stroke(
+                        p,
+                        handle_r + 3.0,
+                        Stroke::new(2.0_f32, Color32::WHITE),
+                    );
+                }
+                hits.push((p, hit));
             }
         }
     }
@@ -3144,6 +3203,13 @@ fn handle_pit_edit(
         if primary_pressed && !shift {
             if let Some(hit) = pit_handle_at(hits, pos, handle_r) {
                 ctx.map.pit_drag = Some(hit);
+                ctx.map.pit_sel = Some(hit);
+                // Sync Phase / Lane dropdowns to the clicked handle.
+                let (lane_u, phase, _) = hit;
+                ctx.map.lane = if lane_u == 2 { "2".into() } else { "1".into() };
+                if let Some(key) = MapAuthoring::pit_sel_phase_key(phase) {
+                    ctx.map.phase = key.into();
+                }
             }
         }
         if primary_down && !shift {
@@ -3185,10 +3251,11 @@ fn handle_pit_edit(
         }
     }
 
-    // Primary click empty → append (avoid after handle drag).
+    // Primary click empty → append (avoid after handle drag); clear selection.
     if resp.clicked() && ctx.map.pit_drag.is_none() && !shift {
         if let Some(pos) = pointer {
             if pit_handle_at(hits, pos, handle_r).is_none() {
+                ctx.map.pit_sel = None;
                 let (mx, my) = xform.unmap(pos);
                 let (rx, ry) = inverse_model(mx, my, mirror, rot);
                 ctx.map.append_pit_edit_at(rx, ry);
@@ -3371,6 +3438,35 @@ mod tests {
         assert!((r - 0.90).abs() < 0.01, "got {r}");
         // Lap % 0 sits three quarters of the way round from S/F at 0.25.
         assert!((sf_loop_frac(0.25, false, Some(&t)) - 0.778).abs() < 0.02);
+    }
+
+    #[test]
+    fn pit_exit_latch_past_out_does_not_wrap_the_whole_lap() {
+        let lane_lo = 0.79_f32;
+        let lane_hi = 0.20_f32;
+        let out = 0.45_f32;
+        // Falling edge after rejoin — clamp to lane_hi, not a 0.95 wrap.
+        let start = super::pit_exit_blend_start(Some(0.50), lane_lo, lane_hi, out);
+        assert!((start - lane_hi).abs() < 1e-5, "got {start}");
+        // Cleared during exit zone — keep the latch %.
+        let mid = super::pit_exit_blend_start(Some(0.30), lane_lo, lane_hi, out);
+        assert!((mid - 0.30).abs() < 1e-5, "got {mid}");
+        // Cleared while still in the lane — start exit poly at lane_hi.
+        let early = super::pit_exit_blend_start(Some(0.10), lane_lo, lane_hi, out);
+        assert!((early - lane_hi).abs() < 1e-5, "got {early}");
+    }
+
+    #[test]
+    fn pit_approach_opens_window_when_entry_poly_missing() {
+        let lane = crate::track_path::PitLane {
+            path: vec![(0.0, 0.0), (1.0, 0.0)],
+            span: Some((0.79, 0.20)),
+            in_pct: Some(0.79),
+            ..Default::default()
+        };
+        let in_pct = super::pit_approach_in_pct(&lane, 0.79);
+        assert!(super::pct_in_interval(0.78, in_pct, 0.79));
+        assert!((0.79 - in_pct).rem_euclid(1.0) > 0.01);
     }
 
     #[test]

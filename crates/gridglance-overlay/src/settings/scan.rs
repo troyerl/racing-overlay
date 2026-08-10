@@ -115,11 +115,15 @@ pub fn paint_track_scan(
         setting_row(ui, "Enable pit edit", None, |ui| {
             if toggle_switch(ui, &mut editing, accent, ui.id().with("pit_edit")).changed() {
                 if let Some(mut st) = state.try_write() {
+                    st.map.pit_edit = editing;
                     st.map.interactive = editing;
                     st.map.corner_edit = false;
                     st.map.sf_edit = false;
                     if editing {
                         let _ = st.map.load_pit_from_cache(false);
+                    } else {
+                        st.map.pit_sel = None;
+                        st.map.pit_drag = None;
                     }
                 }
             }
@@ -149,6 +153,48 @@ pub fn paint_track_scan(
                 }
             }
         });
+
+        let sel_info = {
+            let st = state.read();
+            st.map.pit_sel.and_then(|(lane_u, phase, idx)| {
+                let key = crate::state::MapAuthoring::pit_sel_phase_key(phase)?;
+                Some((lane_u, key.to_string(), idx))
+            })
+        };
+        if let Some((lane_u, cur_key, idx)) = sel_info {
+            setting_row(
+                ui,
+                "Selected point",
+                Some("Change type to move this handle between entry / road / exit."),
+                |ui| {
+                    ui.label(
+                        RichText::new(format!("L{lane_u} · {cur_key}[{idx}]"))
+                            .size(11.0)
+                            .color(MUTED),
+                    );
+                    let mut typ = cur_key.clone();
+                    if let Some(next) =
+                        styled_choice_combo(ui, "pit_sel_type", &typ, PIT_PHASE_CHOICES, 120.0)
+                    {
+                        typ = next;
+                        if typ != cur_key {
+                            if let Some(mut st) = state.try_write() {
+                                match st.map.retype_selected_point(&typ) {
+                                    Ok(()) => ui_state.flash(format!("Point → {typ}")),
+                                    Err(e) => ui_state.flash(e.to_string()),
+                                }
+                            }
+                        }
+                    }
+                },
+            );
+        } else {
+            ui.label(
+                RichText::new("Click a pit handle on the map to select it, then change its type here.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        }
 
         ui.horizontal(|ui| {
             if button_kind(ui, "Load saved pit", ButtonKind::Default).clicked() {
@@ -271,7 +317,9 @@ pub fn paint_track_scan(
                 if let Some(mut st) = state.try_write() {
                     st.map.corner_edit = corner_edit;
                     st.map.sf_edit = false;
+                    st.map.pit_edit = false;
                     st.map.interactive = corner_edit;
+                    st.map.pit_sel = None;
                 }
             }
         });
@@ -310,7 +358,9 @@ pub fn paint_track_scan(
                     if let Some(mut st) = state.try_write() {
                         st.map.sf_edit = sf_edit;
                         st.map.corner_edit = false;
+                        st.map.pit_edit = false;
                         st.map.interactive = sf_edit;
+                        st.map.pit_sel = None;
                     }
                 }
             },
@@ -661,6 +711,8 @@ fn import_html(state: &StateHandle, path: &str) -> anyhow::Result<String> {
     }
     st.map.invalidate_track_cache();
     st.map.cached_path = doc.points.clone();
+    st.map.cached_self_crossing =
+        crate::track_path::loop_self_crossing(&st.map.cached_path);
     st.map.cached_track_name = doc.name.clone();
     st.map.cached_start_finish = doc.start_finish;
     st.map.cached_corners = doc
@@ -680,20 +732,60 @@ fn import_html(state: &StateHandle, path: &str) -> anyhow::Result<String> {
     } else {
         st.map.num_turns = st.map.cached_corners.len() as i32;
     }
+    // New HTML geometry invalidates lap-% → arc calibration. Restoring the old
+    // `pct_map` (or leaving Ready with a stale table) is what kept Iowa ~ahead
+    // after import — the table was built for a different winding/outline.
+    st.map.cached_pct_map = None;
+    let mut cal_note = " (cal cleared — recalibrate)";
     if let Some(id) = doc.track_id {
         st.map.cached_track_id = Some(id as i32);
         let mut f = (*st.frame).clone();
         f.track_id = Some(id as i32);
         st.frame = Arc::new(f);
+        if let Some(existing) = crate::track_path::load_for_track_id(id as i32) {
+            if loop_points_compatible(&existing.points, &doc.points) {
+                if let Some(pm) = existing.pct_map {
+                    st.map.cached_pct_map = Some(pm);
+                    cal_note = " + cal";
+                }
+            }
+        }
     }
+    // Must be Ready — otherwise ensure_path_cached reloads disk and wipes the import
+    // (Iowa kept the old full-width yellow pit_in from 559.json).
+    st.map.path_status = crate::state::TrackPathStatus::Ready;
+
+    // Seed pit from HTML `#Pitroad` / `#Mergeline` when stitching succeeded.
+    let pit_note = if let Some(pit) = doc.pit.clone() {
+        st.map.cached_pit = pit;
+        st.map.cached_pit_out_pct = st.map.cached_pit.out_pct;
+        st.map.cached_pit2 = crate::track_path::PitLane::default();
+        let _ = st.map.load_pit_from_cache(true);
+        st.map.pit_latch_seed_pending = true;
+        " + pit road"
+    } else {
+        st.map.cached_pit = crate::track_path::PitLane::default();
+        st.map.cached_pit2 = crate::track_path::PitLane::default();
+        st.map.cached_pit_out_pct = None;
+        st.map.entry_pts.clear();
+        st.map.road_pts.clear();
+        st.map.merge_pts.clear();
+        st.map.entry_pts_2.clear();
+        st.map.road_pts_2.clear();
+        st.map.merge_pts_2.clear();
+        " (no usable pit layer)"
+    };
+
     Ok(format!(
-        "Imported {} ({} pts, {} corners){}",
+        "Imported {} ({} pts, {} corners){}{}{}",
         doc.name,
         st.map.cached_path.len(),
         st.map.cached_corners.len(),
         doc.track_id
             .map(|t| format!(" TrackID {t}"))
-            .unwrap_or_default()
+            .unwrap_or_default(),
+        pit_note,
+        cal_note
     ))
 }
 
@@ -833,4 +925,16 @@ fn save_track(state: &StateHandle) -> String {
         }
     }
     r.msg
+}
+
+fn loop_points_compatible(a: &[(f32, f32)], b: &[(f32, f32)]) -> bool {
+    if a.len() != b.len() || a.len() < 3 {
+        return false;
+    }
+    for &i in &[0usize, a.len() / 2, a.len() - 1] {
+        if (a[i].0 - b[i].0).abs() + (a[i].1 - b[i].1).abs() > 1e-4 {
+            return false;
+        }
+    }
+    true
 }

@@ -206,6 +206,10 @@ fn standings_scroll(
     if section != "standings" || !cfg.bool_key(section, "center_on_player", true) {
         return 0.0;
     }
+    // Pin-podium already puts P1–P3 first; any scroll would clip them off-screen.
+    if cfg.bool_key("standings", "pin_podium", false) {
+        return 0.0;
+    }
     if rows.len() <= visible_slots {
         return 0.0;
     }
@@ -771,33 +775,8 @@ fn paint_irating_cell(
     } else {
         section_color(cfg, section, "muted", "#8b93a1")
     };
-    let mut pill_left = cell.left();
-    if cfg.bool_key(section, "irating_show_icon", true) {
-        let ic = cell.height() * 0.48;
-        let iw = super::icons::paint(
-            c,
-            "irating",
-            cell.left(),
-            cell.center().1,
-            ic,
-            muted,
-            TextAlign::Left,
-        );
-        if iw > 0.0 {
-            pill_left = cell.left() + iw + fs * 0.10;
-        } else {
-            c.circle(
-                cell.left() + ic * 0.5,
-                cell.center().1,
-                ic * 0.35,
-                muted,
-                false,
-            );
-            pill_left = cell.left() + ic + fs * 0.10;
-        }
-    }
 
-    let pill = Rect::from_ltrb(pill_left, cell.top(), cell.right(), cell.bottom());
+    let pill = cell;
     if pill.width() < 4.0 {
         return;
     }
@@ -1207,4 +1186,19 @@ fn fmt_ir(ir: i32, abbrev: bool) -> String {
     } else {
         ir.to_string()
     }
+}
+
+/// Content height for standings with `row_count` body rows (header + footer chrome).
+pub fn standings_content_size(cfg: &OverlayConfig, row_count: usize) -> (i32, i32) {
+    let tokens = DesignTokens::for_section(cfg, "standings", 400.0);
+    let n = row_count.max(1) as f32;
+    let show_footer = cfg.bool_key("standings", "show_footer", true);
+    let bottom = if show_footer {
+        tokens.footer_h
+    } else {
+        tokens.pad * 0.5
+    };
+    let h = tokens.header_h + n * tokens.row_height + bottom;
+    let (_, _, w, _) = crate::config::default_geom("standings");
+    (w, h.ceil().max(32.0) as i32)
 }

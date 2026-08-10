@@ -1278,8 +1278,10 @@ fn draw_pit_edit_drafts(
                 }
                 let (mx, my) = emap::model_point(nx, ny, mirror, rot);
                 let (px, py) = xform.map_xy(mx, my);
-                let dragging = map.pit_drag == Some((lane_u, phase_code, idx));
-                let fill = if dragging || active {
+                let hit = (lane_u, phase_code, idx);
+                let dragging = map.pit_drag == Some(hit);
+                let selected = map.pit_sel == Some(hit);
+                let fill = if dragging || selected || active {
                     col
                 } else {
                     col.with_alpha(170)
@@ -1297,6 +1299,9 @@ fn draw_pit_edit_drafts(
                     false,
                     1.5,
                 );
+                if selected {
+                    c.circle_ex(px, py, handle_r + 3.0, Rgba::WHITE, false, 2.0);
+                }
             }
         }
         if has_entry_joint {
@@ -1308,14 +1313,19 @@ fn draw_pit_edit_drafts(
                     entry_col.g.saturating_add(20),
                     entry_col.b.saturating_add(10),
                 );
-                let dragging = map.pit_drag == Some((lane_u, 4, 0));
-                let fill = if dragging || active {
+                let hit = (lane_u, 4_u8, 0_usize);
+                let dragging = map.pit_drag == Some(hit);
+                let selected = map.pit_sel == Some(hit);
+                let fill = if dragging || selected || active {
                     jcol
                 } else {
                     jcol.with_alpha(200)
                 };
                 c.circle(px, py, handle_r, fill, true);
                 c.circle_ex(px, py, handle_r, jcol, false, 1.5);
+                if selected {
+                    c.circle_ex(px, py, handle_r + 3.0, Rgba::WHITE, false, 2.0);
+                }
             }
         }
         if has_joint {
@@ -1327,14 +1337,19 @@ fn draw_pit_edit_drafts(
                 } else {
                     Rgba::rgb(255, 170, 50)
                 };
-                let dragging = map.pit_drag == Some((lane_u, 3, 0));
-                let fill = if dragging || active {
+                let hit = (lane_u, 3_u8, 0_usize);
+                let dragging = map.pit_drag == Some(hit);
+                let selected = map.pit_sel == Some(hit);
+                let fill = if dragging || selected || active {
                     jcol
                 } else {
                     jcol.with_alpha(200)
                 };
                 c.circle(px, py, handle_r, fill, true);
                 c.circle_ex(px, py, handle_r, jcol, false, 1.5);
+                if selected {
+                    c.circle_ex(px, py, handle_r + 3.0, Rgba::WHITE, false, 2.0);
+                }
             }
         }
     }

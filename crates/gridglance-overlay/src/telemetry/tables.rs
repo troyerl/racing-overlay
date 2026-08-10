@@ -646,7 +646,11 @@ fn estimate_lap_est(cars: &[CarRow]) -> f32 {
 /// as a pure spectator, the seated player's ghost entry is omitted — but if you
 /// are still racing and just watching another car, you stay in the field.
 ///
-/// `standings.rows` (Total rows) is the exact number of slots shown.
+/// Pin-podium keeps P1–P3 at the top whenever centering (race or practice;
+/// qualifying already lists from P1).
+///
+/// `standings.rows` (Total rows) is the max slots shown. With `grow` on, the
+/// table only lists real cars (up to that max) so the panel can hug the field.
 pub fn build_standings(
     cars: &[CarRow],
     cfg: &OverlayConfig,
@@ -687,13 +691,14 @@ pub fn build_standings(
         .to_ascii_lowercase()
         .contains("qual");
     let center = !is_qual && cfg.bool_key("standings", "center_on_player", true);
-    let pin_podium =
-        is_race_session(session_type) && cfg.bool_key("standings", "pin_podium", false);
+    // Qual already lists from P1; elsewhere honor the setting whenever we center.
+    let pin_podium = center && cfg.bool_key("standings", "pin_podium", false);
     let rows_ahead = cfg.f64_key("standings", "rows_ahead", 4.0).max(0.0) as usize;
     let _rows_behind = cfg.f64_key("standings", "rows_behind", 5.0).max(0.0) as usize;
     let target = cfg
         .f64_key("standings", "rows", (rows_ahead + _rows_behind) as f64)
         .max(0.0) as usize;
+    let grow = cfg.bool_key("standings", "grow", true);
 
     let leader_f2 = ordered
         .iter()
@@ -757,7 +762,9 @@ pub fn build_standings(
                 let context: Vec<TableRow> =
                     picked.iter().map(|&i| build_at(ordered[i], i)).collect();
                 podium.extend(context);
-                pad_standings_to(&mut podium, target);
+                if !grow {
+                    pad_standings_to(&mut podium, target);
+                }
                 podium
             } else {
                 let take = target.min(ordered.len().max(1));
@@ -770,7 +777,9 @@ pub fn build_standings(
                     .enumerate()
                     .map(|(k, c)| build_at(c, start + k))
                     .collect();
-                pad_standings_to(&mut rows, target);
+                if !grow {
+                    pad_standings_to(&mut rows, target);
+                }
                 rows
             }
         }
@@ -786,7 +795,9 @@ pub fn build_standings(
                 .enumerate()
                 .map(|(i, c)| build_at(c, i))
                 .collect();
-            pad_standings_to(&mut rows, target.max(1));
+            if !grow {
+                pad_standings_to(&mut rows, target.max(1));
+            }
             rows
         }
     };
@@ -1291,14 +1302,21 @@ fn parse_lap_clock(s: &str) -> Option<f64> {
 }
 
 /// CarIdx with the fastest valid best-lap in the field (pace car excluded).
-/// Ties keep the lowest car_idx so only one session-best badge is marked.
+/// Includes garage / off-track drivers — session best is about the time, not
+/// who is currently on circuit. Ties keep the lowest car_idx so only one
+/// session-best badge is marked.
 fn session_best_car_idx(cars: &[CarRow]) -> Option<i32> {
     let mut best: Option<(f64, i32)> = None;
     for c in cars {
-        if c.is_pace_car || c.inactive {
+        if c.is_pace_car {
             continue;
         }
-        let Some(t) = parse_lap_clock(&c.best_lap).filter(|t| *t > 5.0) else {
+        let t = c
+            .best_lap_time_s
+            .map(|s| s as f64)
+            .or_else(|| parse_lap_clock(&c.best_lap))
+            .filter(|t| *t > 5.0);
+        let Some(t) = t else {
             continue;
         };
         match best {
@@ -1697,13 +1715,13 @@ fn format_slot_value(
             })
             .unwrap_or_else(|| "--".into()),
         "session_best" => {
-            let best = frame
-                .cars
-                .iter()
-                .filter(|c| !c.best_lap.is_empty() && c.best_lap != "--")
-                .map(|c| c.best_lap.as_str())
-                .min();
-            best.unwrap_or("--").to_string()
+            // Full field (on/off track) — same rule as the purple session-best badge.
+            match session_best_car_idx(&frame.cars)
+                .and_then(|idx| frame.cars.iter().find(|c| c.car_idx == idx))
+            {
+                Some(c) if !c.best_lap.is_empty() => c.best_lap.clone(),
+                _ => "--".into(),
+            }
         }
         "local_time" => {
             use chrono::{Local, Timelike};
@@ -2045,6 +2063,50 @@ mod tests {
     }
 
     #[test]
+    fn standings_pin_podium_keeps_top3_when_focus_midfield() {
+        let mut cars = Vec::new();
+        for i in 0..16 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 10, // P11
+                on_track: true,
+                best_lap: format!("1:{:05.2}", 30.0 + i as f32 * 0.1),
+                ..Default::default()
+            });
+        }
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["pin_podium"] = serde_json::json!(true);
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
+        cfg.cfg["standings"]["rows"] = serde_json::json!(9.0);
+        cfg.cfg["standings"]["rows_ahead"] = serde_json::json!(4.0);
+        cfg.cfg["standings"]["rows_behind"] = serde_json::json!(5.0);
+        for session in ["Race", "Practice"] {
+            let rows = build_standings(
+                &cars,
+                &cfg,
+                &serde_json::json!({}),
+                &serde_json::json!([]),
+                Some(session),
+                None,
+                None,
+            );
+            let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+            assert_eq!(
+                live.iter().map(|r| r.position).take(3).collect::<Vec<_>>(),
+                vec![1, 2, 3],
+                "{session}: pinned podium must stay P1–P3"
+            );
+            assert!(
+                live.iter().any(|r| r.is_player),
+                "{session}: focus car must remain in the window"
+            );
+        }
+    }
+
+    #[test]
     fn standings_keeps_lap_tints() {
         let mut cars = Vec::new();
         for i in 0..8 {
@@ -2182,6 +2244,7 @@ mod tests {
         ];
         let mut cfg = OverlayConfig::default();
         cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
+        cfg.cfg["standings"]["grow"] = serde_json::json!(false);
         cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
         cfg.cfg["standings"]["rows_ahead"] = serde_json::json!(4.0);
         cfg.cfg["standings"]["rows_behind"] = serde_json::json!(8.0);
@@ -2202,6 +2265,49 @@ mod tests {
         );
         assert_eq!(rows.iter().filter(|r| !r.empty).count(), 3);
         assert!(rows.iter().any(|r| r.empty));
+    }
+
+    #[test]
+    fn standings_grow_hugs_field_up_to_total_rows() {
+        let mut cars = Vec::new();
+        for i in 0..13 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                is_player: i == 6,
+                on_track: true,
+                ..Default::default()
+            });
+        }
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(false);
+        cfg.cfg["standings"]["grow"] = serde_json::json!(true);
+        cfg.cfg["standings"]["rows"] = serde_json::json!(20.0);
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        assert_eq!(rows.len(), 13);
+        assert!(rows.iter().all(|r| !r.empty));
+
+        cfg.cfg["standings"]["rows"] = serde_json::json!(10.0);
+        let capped = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+        );
+        assert_eq!(capped.len(), 10);
+        assert!(capped.iter().all(|r| !r.empty));
     }
 
     #[test]
@@ -2307,6 +2413,7 @@ mod tests {
         ];
         let mut cfg = OverlayConfig::default();
         cfg.cfg["standings"]["rows"] = serde_json::json!(12.0);
+        cfg.cfg["standings"]["grow"] = serde_json::json!(false);
         cfg.cfg["standings"]["center_on_player"] = serde_json::json!(true);
         let rows = build_standings(
             &cars,
@@ -2918,6 +3025,55 @@ mod tests {
         apply_lap_tints(&mut cars, 90.0, Some("Race"), None);
         assert!(!cars[1].lapping, "inactive cars stay untinted");
         assert!(cars[2].lapping && !cars[2].lap_ahead, "off-track still tints");
+    }
+
+    #[test]
+    fn session_best_includes_garage_and_off_track() {
+        // On-track car is slower; garage driver holds the real session best.
+        let mut frame = TelemetryFrame {
+            cars: vec![
+                CarRow {
+                    car_idx: 0,
+                    position: 1,
+                    name: "OnTrack".into(),
+                    best_lap: "1:30.500".into(),
+                    best_lap_time_s: Some(90.5),
+                    is_player: true,
+                    on_track: true,
+                    ..Default::default()
+                },
+                CarRow {
+                    car_idx: 1,
+                    position: 2,
+                    name: "GarageFast".into(),
+                    best_lap: "1:29.100".into(),
+                    best_lap_time_s: Some(89.1),
+                    on_track: false,
+                    inactive: true,
+                    lap_dist_pct: -1.0,
+                    ..Default::default()
+                },
+            ],
+            session_type: Some("Practice".into()),
+            ..Default::default()
+        };
+        let cfg = OverlayConfig::default();
+        let mut sticky = RelativeOrderHysteresis::default();
+        finalize_frame(&mut frame, &cfg, &mut sticky);
+        assert_eq!(session_best_car_idx(&frame.cars), Some(1));
+        assert!(
+            frame
+                .standings_cars
+                .iter()
+                .any(|r| r.key == "1" && r.session_best),
+            "garage driver must keep the purple session-best mark"
+        );
+        assert!(
+            !frame
+                .standings_cars
+                .iter()
+                .any(|r| r.key == "0" && r.session_best)
+        );
     }
 
     #[test]

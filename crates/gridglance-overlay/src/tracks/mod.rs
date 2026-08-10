@@ -5,6 +5,7 @@ mod geom;
 mod html_import;
 mod layers;
 mod path_sample;
+mod pit_import;
 pub mod probe;
 mod ribbon;
 
@@ -104,8 +105,10 @@ pub fn build_manual_pit_lane_fields(
     if road.len() < 2 || merge.len() < 2 {
         return None;
     }
-    let pit_path = geom::resample_open(road, 140);
-    let pit_out_raw = geom::resample_open(merge, 41);
+    let (entry, road, merge) =
+        geom::orient_pit_lane_polylines(loop_pts, entry, road, merge);
+    let pit_path = geom::resample_open(&road, 140);
+    let pit_out_raw = geom::resample_open(&merge, 41);
     let pit_out =
         geom::connect_blend_to_loop(&pit_out_raw, loop_pts, true, 20, None, Some(&pit_path));
     let pit_out = geom::resample_open(&pit_out, 41);
@@ -120,7 +123,7 @@ pub fn build_manual_pit_lane_fields(
     fields.insert("pit_out_pct".into(), json!(round5(pit_out_pct)));
 
     if entry.len() >= 2 {
-        let pit_in_seed = geom::resample_open(entry, 24);
+        let pit_in_seed = geom::resample_open(&entry, 24);
         let mut pit_in =
             geom::connect_blend_to_loop(&pit_in_seed, loop_pts, false, 12, Some(24), None);
         if let Some(first) = pit_path.first() {
@@ -129,14 +132,27 @@ pub fn build_manual_pit_lane_fields(
             }
         }
         let pit_in = geom::resample_open(&pit_in, 24);
-        fields.insert("pit_in".into(), Value::Array(pts_json(&pit_in)));
-        if let Some(p0) = pit_in.first() {
-            fields.insert(
-                "pit_in_pct".into(),
-                json!(round5(geom::pct_on_loop(loop_pts, *p0))),
-            );
+        // Reject infield-spanning entry chords (common HTML false positive).
+        let tip_span = pit_in
+            .first()
+            .zip(pit_in.last())
+            .map(|(a, b)| (a.0 - b.0).hypot(a.1 - b.1))
+            .unwrap_or(0.0);
+        if tip_span > 0.35 || pit_in.len() < 2 {
+            fields.insert("pit_in".into(), Value::Null);
+            fields.insert("pit_in_pct".into(), json!(round5(lane_lo)));
+        } else {
+            fields.insert("pit_in".into(), Value::Array(pts_json(&pit_in)));
+            if let Some(p0) = pit_in.first() {
+                fields.insert(
+                    "pit_in_pct".into(),
+                    json!(round5(geom::pct_on_loop(loop_pts, *p0))),
+                );
+            }
         }
     } else {
+        // Explicit null so save_pit_patch overwrites a stale pit_in in the JSON.
+        fields.insert("pit_in".into(), Value::Null);
         fields.insert("pit_in_pct".into(), json!(round5(lane_lo)));
     }
     Some(fields)
@@ -268,6 +284,7 @@ pub fn save_manual_track(
                 );
             }
         }
+        preserve_pct_map(tracks_dir, &canonical, loop_pts, obj);
     }
     match write_track_json(tracks_dir, &canonical, &doc) {
         Ok(path) => {
@@ -489,4 +506,54 @@ pub fn save_loop_only(
 fn fs_read_json(path: &Path) -> anyhow::Result<Value> {
     let text = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&text)?)
+}
+
+/// Keep an existing lap-% → arc calibration only when the racing loop is unchanged.
+/// HTML re-import often changes winding / samples; reusing the old table then puts
+/// dots ahead of the car even though `pct_map` is present.
+fn preserve_pct_map(
+    tracks_dir: &Path,
+    canonical: &Value,
+    loop_pts: &[(f32, f32)],
+    obj: &mut serde_json::Map<String, Value>,
+) {
+    if obj.contains_key("pct_map") {
+        return;
+    }
+    let path = cloud::track_file_path(tracks_dir, canonical);
+    let Ok(old) = fs_read_json(&path) else {
+        return;
+    };
+    if !loop_points_match(old.get("points"), loop_pts) {
+        return;
+    }
+    if let Some(pm) = old.get("pct_map").cloned() {
+        if pm.as_array().map(|a| a.len() >= 16).unwrap_or(false) {
+            obj.insert("pct_map".into(), pm);
+        }
+    }
+}
+
+fn loop_points_match(old_points: Option<&Value>, loop_pts: &[(f32, f32)]) -> bool {
+    let Some(arr) = old_points.and_then(|v| v.as_array()) else {
+        return false;
+    };
+    if arr.len() != loop_pts.len() || loop_pts.len() < 3 {
+        return false;
+    }
+    // Cheap fingerprint: endpoints + mid + a coarse length check.
+    let sample_idx = [0usize, loop_pts.len() / 2, loop_pts.len() - 1];
+    for &i in &sample_idx {
+        let (x, y) = match arr[i].as_array() {
+            Some(p) if p.len() >= 2 => (
+                p[0].as_f64().unwrap_or(f64::NAN) as f32,
+                p[1].as_f64().unwrap_or(f64::NAN) as f32,
+            ),
+            _ => return false,
+        };
+        if (x - loop_pts[i].0).abs() + (y - loop_pts[i].1).abs() > 1e-4 {
+            return false;
+        }
+    }
+    true
 }

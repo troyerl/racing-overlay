@@ -11,6 +11,9 @@ use super::layers::{
     normalize_loop, oval_corners, parse_turn_numbers,
 };
 use super::path_sample::sample_best_subpath;
+use super::pit_import::{extract_pit_polylines_svg, normalize_pit_polylines};
+use super::build_manual_pit_lane_fields;
+use crate::track_path::PitLane;
 
 static TRACK_MAP_RE: OnceLock<Regex> = OnceLock::new();
 
@@ -36,7 +39,7 @@ pub fn parse_track_id_from_html(html: &str) -> Option<i64> {
     None
 }
 
-/// Full schema-2 import result (loop only; pit authored manually).
+/// Full schema-2 import result (loop + optional HTML pit layer).
 #[derive(Debug, Clone)]
 pub struct ImportDoc {
     pub track_id: Option<i64>,
@@ -45,6 +48,10 @@ pub struct ImportDoc {
     pub corners: Vec<Value>,
     pub num_turns: Option<i64>,
     pub start_finish: f32,
+    /// Built from members `#Pitroad` / `#Mergeline` when stitching succeeds.
+    pub pit: Option<PitLane>,
+    /// Raw JSON pit fields for `to_json` (same shape as Track Scan save).
+    pub pit_fields: Option<serde_json::Map<String, Value>>,
 }
 
 impl ImportDoc {
@@ -59,10 +66,15 @@ impl ImportDoc {
                 ])
             })
             .collect();
+        let pit_source = if self.pit_fields.is_some() {
+            "html"
+        } else {
+            "manual"
+        };
         let mut doc = json!({
             "schema": 2,
             "import_version": 2,
-            "pit_source": "manual",
+            "pit_source": pit_source,
             "start_finish": self.start_finish,
             "points": points,
             "corners": self.corners,
@@ -78,6 +90,13 @@ impl ImportDoc {
                 doc.as_object_mut()
                     .unwrap()
                     .insert("num_turns".into(), json!(n));
+            }
+        }
+        if let Some(fields) = &self.pit_fields {
+            if let Some(obj) = doc.as_object_mut() {
+                for (k, v) in fields {
+                    obj.insert(k.clone(), v.clone());
+                }
             }
         }
         doc
@@ -139,6 +158,20 @@ pub fn import_loop_doc(
         .map(|t| format!("Track {t}"))
         .unwrap_or_else(|| "Imported track".into());
 
+    let (pit, pit_fields) = match layers.pit.as_deref().and_then(extract_pit_polylines_svg) {
+        Some(svg_pit) => {
+            let (road, merge, entry) = normalize_pit_polylines(&svg_pit, norm);
+            match build_manual_pit_lane_fields(&normalized, &entry, &road, &merge) {
+                Some(fields) => {
+                    let pit = pit_lane_from_fields(&fields);
+                    (Some(pit), Some(fields))
+                }
+                None => (None, None),
+            }
+        }
+        None => (None, None),
+    };
+
     Ok(ImportDoc {
         track_id: tid,
         name,
@@ -146,7 +179,50 @@ pub fn import_loop_doc(
         corners,
         num_turns: n_turns,
         start_finish,
+        pit,
+        pit_fields,
     })
+}
+
+fn pit_lane_from_fields(fields: &serde_json::Map<String, Value>) -> PitLane {
+    let poly = |key: &str| -> Vec<(f32, f32)> {
+        fields
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|p| {
+                        let a = p.as_array()?;
+                        Some((a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let span = fields.get("pit_span").and_then(|v| {
+        let a = v.as_array()?;
+        Some((
+            a.first()?.as_f64()? as f32,
+            a.get(1)?.as_f64()? as f32,
+        ))
+    });
+    PitLane {
+        path: poly("pit_path"),
+        entry: poly("pit_in"),
+        exit: poly("pit_out"),
+        in_pct: fields
+            .get("pit_in_pct")
+            .and_then(|v| v.as_f64())
+            .map(|p| p as f32),
+        out_pct: fields
+            .get("pit_out_pct")
+            .and_then(|v| v.as_f64())
+            .map(|p| p as f32),
+        span,
+        speed_ms: None,
+        lane_speed_pct: 1.0,
+        source: Some("html".into()),
+    }
 }
 
 /// Import from a `.html` / `.htm` / `.svg` file path.
@@ -383,8 +459,101 @@ mod tests {
         let j = doc.to_json();
         assert_eq!(j["schema"], 2);
         assert_eq!(j["import_version"], 2);
-        assert_eq!(j["pit_source"], "manual");
-        assert!(j.get("pit_path").is_none());
         assert!(j["points"].as_array().unwrap().len() == 80);
+        // Compound oval fixture has a stitchable pit layer.
+        assert_eq!(j["pit_source"], "html");
+        assert!(
+            j.get("pit_path")
+                .and_then(|p| p.as_array())
+                .map(|a| a.len() >= 8)
+                .unwrap_or(false),
+            "expected pit_path from HTML"
+        );
+        assert!(
+            j.get("pit_out")
+                .and_then(|p| p.as_array())
+                .map(|a| a.len() >= 4)
+                .unwrap_or(false),
+            "expected pit_out from HTML"
+        );
+    }
+
+    #[test]
+    fn rudskogen_imports_pit_road() {
+        let html = fixture("rudskogen_pit.html");
+        let doc = import_loop_doc(&html, 80, 4, 0.0).expect("import");
+        let pit = doc.pit.as_ref().expect("rudskogen should stitch a pit road");
+        assert!(pit.path.len() >= 8, "pit_path len={}", pit.path.len());
+        assert!(pit.exit.len() >= 4, "pit_out len={}", pit.exit.len());
+        assert_eq!(doc.to_json()["pit_source"], "html");
+    }
+
+    #[test]
+    fn iowa_oval_pit_stays_on_frontstretch() {
+        let html = fixture("iowa_oval.html");
+        let doc = import_loop_doc(&html, 120, 4, 0.0).expect("import");
+        assert_eq!(doc.track_id, Some(559));
+        let pit = doc.pit.as_ref().expect("iowa should import pit");
+        assert!(pit.path.len() >= 8);
+        assert!(pit.exit.len() >= 2);
+        // No infield-spanning entry chord.
+        assert!(
+            pit.entry.len() < 2,
+            "iowa should not invent a full-width pit_in, got {}",
+            pit.entry.len()
+        );
+        let xs: Vec<f32> = pit.path.iter().map(|p| p.0).collect();
+        let ys: Vec<f32> = pit.path.iter().map(|p| p.1).collect();
+        let xspan = xs.iter().cloned().fold(f32::MIN, f32::max)
+            - xs.iter().cloned().fold(f32::MAX, f32::min);
+        let yspan = ys.iter().cloned().fold(f32::MIN, f32::max)
+            - ys.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            xspan > yspan * 1.5,
+            "pit road should run along the frontstretch, xspan={xspan} yspan={yspan}"
+        );
+        // No single segment should chord across the infield.
+        let max_seg = pit
+            .path
+            .windows(2)
+            .chain(pit.exit.windows(2))
+            .map(|w| (w[0].0 - w[1].0).hypot(w[0].1 - w[1].1))
+            .fold(0.0f32, f32::max);
+        assert!(max_seg < 0.35, "infield chord segment={max_seg}");
+        assert_eq!(doc.to_json()["pit_source"], "html");
+    }
+
+    #[test]
+    fn charlotte_imports_pit_road_without_mergeline() {
+        // Charlotte draws merge ticks inside `#Pitroad` (no `#Mergeline`).
+        let html = fixture("charlotte_roval.html");
+        let doc = import_loop_doc(&html, 80, 4, 0.0).expect("import");
+        assert!(doc.points.len() >= 40);
+        let pit = doc.pit.as_ref().expect("charlotte should stitch pit from ticks");
+        assert!(pit.path.len() >= 8, "pit_path len={}", pit.path.len());
+        assert!(pit.exit.len() >= 4, "pit_out len={}", pit.exit.len());
+        assert_eq!(doc.to_json()["pit_source"], "html");
+
+        let p0 = pit.path[0];
+        let p1 = *pit.path.last().unwrap();
+        let e0 = pit.exit[0];
+        let d_end = (p1.0 - e0.0).hypot(p1.1 - e0.1);
+        let d_start = (p0.0 - e0.0).hypot(p0.1 - e0.1);
+        // Exit blend should attach at the road end (travel direction).
+        assert!(
+            d_end < d_start + 0.05,
+            "merge should meet road end, d_end={d_end} d_start={d_start}"
+        );
+        let (lo, hi) = pit.span.expect("span");
+        let pct0 = super::super::geom::pct_on_loop(&doc.points, p0);
+        let pct1 = super::super::geom::pct_on_loop(&doc.points, p1);
+        assert!(
+            (pct0 - lo).abs() < 0.05 || (pct0 - lo).rem_euclid(1.0) < 0.05,
+            "span lo should match path start: lo={lo} pct0={pct0}"
+        );
+        assert!(
+            (pct1 - hi).abs() < 0.05 || (pct1 - hi).rem_euclid(1.0) < 0.05,
+            "span hi should match path end: hi={hi} pct1={pct1}"
+        );
     }
 }

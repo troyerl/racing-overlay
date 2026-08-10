@@ -107,18 +107,137 @@ fn pit_lane_straight_points(pit_path: &[(f32, f32)]) -> Vec<(f32, f32)> {
     }
 }
 
+/// Pit span in **travel order**: `path[0]` → `path[last]` (not numeric min/max).
+/// Dot mapping uses `(pct - lo).rem_euclid(1) / (hi - lo).rem_euclid(1)`, so a
+/// reversed min/max span puts cars on the wrong end of the lane.
 pub fn pit_span_on_loop(loop_pts: &[(f32, f32)], pit_path: &[(f32, f32)]) -> (f32, f32) {
+    if pit_path.len() < 2 {
+        return (0.0, 0.0);
+    }
+    let lo = pct_on_loop(loop_pts, pit_path[0]);
+    let hi = pct_on_loop(loop_pts, *pit_path.last().unwrap());
+    if (hi - lo).rem_euclid(1.0) >= 0.02 {
+        return (lo, hi);
+    }
+    // Degenerate endpoints: fall back to straight-section extremes.
     let pts = pit_lane_straight_points(pit_path);
     let pcts: Vec<f32> = pts.iter().map(|p| pct_on_loop(loop_pts, *p)).collect();
-    let mut lo = pcts.iter().cloned().fold(f32::MAX, f32::min);
-    let mut hi = pcts.iter().cloned().fold(f32::MIN, f32::max);
-    if (hi - lo).rem_euclid(1.0) < 0.02 {
-        let p0 = pct_on_loop(loop_pts, pit_path[0]);
-        let p1 = pct_on_loop(loop_pts, *pit_path.last().unwrap());
-        lo = p0.min(p1);
-        hi = p0.max(p1);
+    let mut a = pcts.iter().cloned().fold(f32::MAX, f32::min);
+    let mut b = pcts.iter().cloned().fold(f32::MIN, f32::max);
+    if (b - a).rem_euclid(1.0) < 0.02 {
+        a = lo.min(hi);
+        b = lo.max(hi);
     }
-    (lo, hi)
+    // Keep travel sense from oriented path endpoints when possible.
+    if (hi - lo).rem_euclid(1.0) <= 0.5 {
+        (a, b)
+    } else {
+        (b, a)
+    }
+}
+
+/// Orient entry/road/merge so travel is entry → road → merge tip on the loop.
+///
+/// Iowa-style ovals keep `#Mergeline` in a separate cluster from `#Pitroad`.
+/// Snapping the merge/entry joint across that gap used to draw a chord through
+/// the infield (yellow/red dashed lines). Bridge only when the gap is small.
+pub fn orient_pit_lane_polylines(
+    loop_pts: &[(f32, f32)],
+    entry: &[(f32, f32)],
+    road: &[(f32, f32)],
+    merge: &[(f32, f32)],
+) -> (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>) {
+    let mut entry = entry.to_vec();
+    let mut road = road.to_vec();
+    let mut merge = merge.to_vec();
+    let diag = poly_bbox_diag(loop_pts).max(poly_bbox_diag(&road)).max(1.0);
+    let max_joint_gap = diag * 0.12;
+
+    if road.len() >= 2 && merge.len() >= 2 {
+        // Exit end of the road = end nearer the merge *cluster*, not merge[0]
+        // (merge[0] may still be the far tip before orientation).
+        let mc = poly_centroid(&merge);
+        if dist(road[0], mc) + 1e-6 < dist(*road.last().unwrap(), mc) {
+            road.reverse();
+        }
+        let exit = *road.last().unwrap();
+
+        // Merge start nearer road exit; tip nearer the racing loop.
+        if dist(*merge.last().unwrap(), exit) + 1e-6 < dist(merge[0], exit) {
+            merge.reverse();
+        }
+        let d0_loop = min_dist_to_poly(merge[0], loop_pts);
+        let d1_loop = min_dist_to_poly(*merge.last().unwrap(), loop_pts);
+        if d0_loop + 1e-3 < d1_loop
+            && dist(merge[0], exit) + max_joint_gap * 0.25
+                >= dist(*merge.last().unwrap(), exit)
+        {
+            merge.reverse();
+        }
+
+        let gap = dist(merge[0], exit);
+        if gap <= max_joint_gap {
+            if let Some(m0) = merge.first_mut() {
+                *m0 = exit;
+            }
+        } else {
+            // Keep merge geometry; prepend a short bridge from the road end.
+            let mut bridged = Vec::with_capacity(merge.len() + 1);
+            bridged.push(exit);
+            bridged.extend(merge.iter().copied());
+            merge = bridged;
+        }
+    } else if road.len() >= 2 && loop_pts.len() >= 2 {
+        // No merge: prefer increasing lap-% along the short arc.
+        let p0 = pct_on_loop(loop_pts, road[0]);
+        let p1 = pct_on_loop(loop_pts, *road.last().unwrap());
+        if (p0 - p1).rem_euclid(1.0) + 1e-6 < (p1 - p0).rem_euclid(1.0) {
+            road.reverse();
+        }
+    }
+
+    if entry.len() >= 2 && road.len() >= 2 {
+        let r0 = road[0];
+        if dist(entry[0], r0) + 1e-6 < dist(*entry.last().unwrap(), r0) {
+            entry.reverse();
+        }
+        let gap = dist(*entry.last().unwrap(), r0);
+        let tip_span = dist(entry[0], r0);
+        // Drop bogus HTML "entry" strokes that would span the infield.
+        // tip_span catches full-width chords whose joint end is already near r0.
+        if gap > max_joint_gap || tip_span > max_joint_gap {
+            entry.clear();
+        } else if let Some(e) = entry.last_mut() {
+            *e = r0;
+        }
+    }
+
+    (entry, road, merge)
+}
+
+fn poly_centroid(pts: &[(f32, f32)]) -> (f32, f32) {
+    let n = pts.len().max(1) as f32;
+    let (sx, sy) = pts
+        .iter()
+        .fold((0.0f32, 0.0f32), |(ax, ay), p| (ax + p.0, ay + p.1));
+    (sx / n, sy / n)
+}
+
+fn poly_bbox_diag(pts: &[(f32, f32)]) -> f32 {
+    if pts.is_empty() {
+        return 1.0;
+    }
+    let min_x = pts.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+    let max_x = pts.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+    let min_y = pts.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+    let max_y = pts.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+    (max_x - min_x).hypot(max_y - min_y).max(1.0)
+}
+
+fn min_dist_to_poly(pt: (f32, f32), poly: &[(f32, f32)]) -> f32 {
+    poly.iter()
+        .map(|p| dist(pt, *p))
+        .fold(f32::MAX, f32::min)
 }
 
 pub fn connect_blend_to_loop(
@@ -204,4 +323,47 @@ fn signed_area(loop_pts: &[(f32, f32)]) -> f32 {
 
 fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn orients_merge_tip_toward_loop_and_span_follows_path() {
+        // Unit square loop.
+        let loop_pts = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        // Road drawn exit→entry (reversed), merge tip currently at road.
+        let road = [(0.8, 0.1), (0.2, 0.1)];
+        let merge = [(0.8, 0.1), (0.9, 0.0)]; // tip near loop bottom
+        let (entry, road, merge) = orient_pit_lane_polylines(&loop_pts, &[], &road, &merge);
+        assert!(entry.is_empty());
+        // Road should end at merge joint (higher x).
+        assert!(road.last().unwrap().0 > road[0].0);
+        assert!((merge[0].0 - road.last().unwrap().0).abs() < 1e-5);
+        // Merge tip nearer loop than joint.
+        assert!(min_dist_to_poly(*merge.last().unwrap(), &loop_pts) <= min_dist_to_poly(merge[0], &loop_pts) + 1e-5);
+        let (lo, hi) = pit_span_on_loop(&loop_pts, &road);
+        let p0 = pct_on_loop(&loop_pts, road[0]);
+        let p1 = pct_on_loop(&loop_pts, *road.last().unwrap());
+        assert!((lo - p0).abs() < 1e-4);
+        assert!((hi - p1).abs() < 1e-4);
+    }
+
+    #[test]
+    fn does_not_snap_merge_across_infield_gap() {
+        // Oval-ish loop; pit along bottom; merge cluster on the right (Iowa-like).
+        let mut loop_pts = Vec::new();
+        for i in 0..40 {
+            let t = i as f32 / 40.0 * std::f32::consts::TAU;
+            loop_pts.push((0.5 + 0.45 * t.cos(), 0.5 + 0.35 * t.sin()));
+        }
+        let road: Vec<_> = (0..20).map(|i| (0.15 + i as f32 * 0.035, 0.78)).collect();
+        let merge = vec![(0.88, 0.55), (0.92, 0.40), (0.94, 0.25)];
+        let (_, road, merge) = orient_pit_lane_polylines(&loop_pts, &[], &road, &merge);
+        assert!(road.last().unwrap().0 > 0.7, "exit should be right end");
+        // First merge segment must not jump across most of the pit width.
+        let seg = dist(merge[0], merge[1]);
+        assert!(seg < 0.35, "merge bridge too long: {seg}");
+    }
 }

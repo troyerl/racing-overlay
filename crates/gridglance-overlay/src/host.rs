@@ -4,7 +4,9 @@ use crate::chrome::color_with_alpha;
 use crate::config::{ConfigContext, WIDGET_KEYS};
 use crate::layered;
 use crate::settings;
-use crate::state::{fit_panel_size, grow_panel_size, PanelLayout, StateHandle};
+use crate::state::{
+    fit_panel_height_from_bottom, fit_panel_size, grow_panel_size, PanelLayout, StateHandle,
+};
 use crate::sysstats::SysStats;
 use crate::telemetry::{
     best_service_plan, demo::DemoFeed, finalize_frame, project_lap_down, FcyModel, FuelBurnTracker,
@@ -350,18 +352,23 @@ impl OverlayApp {
         } else {
             0.0
         };
-        let (track_id, sf, reverse, sess) = {
+        let (track_id, sf, reverse, sess, cal_n) = {
             let st = self.state.read();
             (
                 st.frame.track_id.unwrap_or(-1),
                 st.map.cached_start_finish,
                 st.config.bool_key("map", "reverse_path", false),
                 st.frame.session_state,
+                st.map
+                    .cached_pct_map
+                    .as_ref()
+                    .map(|t| t.len())
+                    .unwrap_or(0),
             )
         };
         let telem_ms = acc.telem_ms / fps;
         eprintln!(
-            "perf fps={fps:.0} frame={frame_ms:.1}ms telem={telem_ms:.1}ms readbacks={}/{} paints={}/{} (map={:.1}ms other={:.1}ms) presents={} ulw={:.1}ms map_dt={map_dt:.3} max={:.3} late={}/{} map_motion_rev={} track_id={} sf={:.3} rev={} sess={}",
+            "perf fps={fps:.0} frame={frame_ms:.1}ms telem={telem_ms:.1}ms readbacks={}/{} paints={}/{} (map={:.1}ms other={:.1}ms) presents={} ulw={:.1}ms map_dt={map_dt:.3} max={:.3} late={}/{} map_motion_rev={} track_id={} sf={:.3} rev={} sess={} cal={}",
             acc.readbacks,
             acc.panel_slots,
             acc.paint_on,
@@ -378,6 +385,7 @@ impl OverlayApp {
             sf,
             if reverse { 1 } else { 0 },
             sess,
+            cal_n,
         );
         self.perf_acc = PerfAccum::default();
         self.perf_emit_at = Instant::now();
@@ -1022,6 +1030,25 @@ impl OverlayApp {
                     if lay.h != need_h {
                         lay.h = need_h.max(32);
                     }
+                }
+            }
+            // Standings: grow from the bottom to fit the field (up to Total rows).
+            if st.config.bool_key("standings", "grow", true)
+                && !self.skia_host.is_interacting("standings")
+            {
+                let max_rows = st
+                    .config
+                    .f64_key("standings", "rows", 9.0)
+                    .max(1.0) as usize;
+                let n = st.frame.standings_cars.len().clamp(1, max_rows);
+                let (_, need_h) =
+                    crate::skia_ui::standings_content_size(st.config.as_ref(), n);
+                if st
+                    .layout
+                    .get("standings")
+                    .is_some_and(|lay| lay.h != need_h)
+                {
+                    fit_panel_height_from_bottom(&mut st.layout, "standings", need_h);
                 }
             }
             switched

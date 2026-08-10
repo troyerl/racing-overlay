@@ -211,9 +211,14 @@ fn run_import_track(args: &Args) -> Result<()> {
     let text = serde_json::to_string_pretty(&json)?;
     std::fs::write(&out_path, format!("{text}\n"))?;
     println!(
-        "Wrote {} — {} loop pts (pit: draw manually in Track Scan)",
+        "Wrote {} — {} loop pts{}",
         out_path.display(),
-        doc.points.len()
+        doc.points.len(),
+        if doc.pit.is_some() {
+            " + pit road from HTML"
+        } else {
+            " (pit: draw manually in Track Scan)"
+        }
     );
     Ok(())
 }

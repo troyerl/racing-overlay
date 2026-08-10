@@ -87,8 +87,8 @@ pub fn choose_loop_fix(samples: &[Sample], loop_pts: &[(f32, f32)]) -> LoopFix {
         return LoopFix::None;
     }
 
-    // LapDistPct alignment prefers reverse — take it even when mirror RMS is
-    // slightly better (symmetric ovals make the two look alike to Procrustes).
+    // Diagnostic only for synthetic/fixture tests. Live calibrate must not bake
+    // this — see `probe::resolve_loop_fix` (Iowa reverse/mirror flip-flops).
     if rev_agree > plain_agree + 0.35 && rev_agree > 0.55 {
         return LoopFix::Reverse;
     }
@@ -99,8 +99,6 @@ pub fn choose_loop_fix(samples: &[Sample], loop_pts: &[(f32, f32)]) -> LoopFix {
         && rev_agree > 0.55;
     let mirror_ok = mirrored < MAX_FIT_RMS && mirrored * 3.0 < plain && plain_agree < 0.25;
     match (reverse_ok, mirror_ok) {
-        // Symmetric ovals: reverse ≅ mirror to Procrustes — keep the drawing.
-        // Only take mirror when it is clearly better than reversing.
         (true, true) if mirrored * 3.0 < reversed_rms => LoopFix::Mirror,
         (true, _) => LoopFix::Reverse,
         (false, true) => LoopFix::Mirror,

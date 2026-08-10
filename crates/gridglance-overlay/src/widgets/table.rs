@@ -62,6 +62,10 @@ fn standings_paint_scroll(
     if section != "standings" || !cfg.bool_key(section, "center_on_player", true) {
         return 0.0;
     }
+    // Pin-podium already puts P1–P3 first; any scroll would clip them off-screen.
+    if cfg.bool_key("standings", "pin_podium", false) {
+        return 0.0;
+    }
     if rows.len() <= visible_slots {
         return 0.0;
     }
@@ -948,36 +952,13 @@ fn paint_irating_cell(
     dim_text: Color32,
 ) {
     let cell = Rect::from_min_size(Pos2::new(cx, cy - rh * 0.3), Vec2::new(cw, rh * 0.6));
-    let show_icon = cfg.bool_key(section, "irating_show_icon", true);
     let muted = if dim {
         dim_text
     } else {
         cfg.color(section, "muted", "#8b93a1")
     };
-    let mut pill_left = cell.left();
-    if show_icon {
-        if let Some(g) = icons::glyph("irating") {
-            let ic_px = cell.height() * 0.48;
-            let font = icons::font_id(ic_px);
-            let ic_w = ui
-                .fonts(|f| f.layout_no_wrap(g.clone(), font.clone(), Color32::WHITE))
-                .size()
-                .x;
-            ui.painter().text(
-                Pos2::new(cell.left(), cell.center().y),
-                Align2::LEFT_CENTER,
-                g,
-                font,
-                muted,
-            );
-            pill_left = cell.left() + ic_w + fs * 0.10;
-        }
-    }
 
-    let pill = Rect::from_min_max(
-        Pos2::new(pill_left, cell.top()),
-        Pos2::new(cell.right(), cell.bottom()),
-    );
+    let pill = cell;
     if pill.width() < 4.0 {
         return;
     }

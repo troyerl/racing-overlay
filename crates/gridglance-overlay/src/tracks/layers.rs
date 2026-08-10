@@ -19,6 +19,7 @@ pub fn extract_layers_from_html(html: &str) -> Layers {
     Layers {
         turns: layer_svg(html, "turn-numbers"),
         start_finish: layer_svg(html, "start-finish"),
+        pit: layer_svg(html, "pit"),
     }
 }
 
@@ -26,6 +27,18 @@ pub fn extract_layers_from_html(html: &str) -> Layers {
 pub struct Layers {
     pub turns: Option<String>,
     pub start_finish: Option<String>,
+    /// Members `track-svg pit` layer (`#Pitroad` / `#Mergeline`).
+    pub pit: Option<String>,
+}
+
+/// Apply loop normalization to SVG-space points (same bbox as the racing line).
+pub fn apply_norm(pts: &[(f32, f32)], norm: NormParams) -> Vec<(f32, f32)> {
+    if norm.scale <= 1e-12 {
+        return pts.to_vec();
+    }
+    pts.iter()
+        .map(|(x, y)| ((x - norm.min_x) / norm.scale, (y - norm.min_y) / norm.scale))
+        .collect()
 }
 
 fn layer_svg(html: &str, class_token: &str) -> Option<String> {

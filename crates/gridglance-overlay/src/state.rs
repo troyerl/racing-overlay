@@ -99,6 +99,9 @@ pub struct MapAuthoring {
     /// Active handle drag: (lane 1|2, phase code, idx).
     /// Phase: 0=entry 1=road 2=merge 3=joint 4=entry_joint.
     pub pit_drag: Option<(u8, u8, usize)>,
+    /// Selected handle after click (same encoding as `pit_drag`). Survives
+    /// release so Track Scan can retype Entry / Road / Merge.
+    pub pit_sel: Option<(u8, u8, usize)>,
     /// Hold-before-switch state for ahead/behind/leader markers.
     pub marker_hold: crate::map_markers::HoldStates,
     /// Predict-to-now lap_dist_pct per car_idx.
@@ -163,6 +166,7 @@ impl Default for MapAuthoring {
             pit_edit_zoom: 1.0,
             pit_edit_pan: (0.0, 0.0),
             pit_drag: None,
+            pit_sel: None,
             marker_hold: crate::map_markers::fresh_hold_states(),
             car_anim: HashMap::new(),
             car_screen: HashMap::new(),
@@ -307,6 +311,113 @@ impl MapAuthoring {
         self.pit_edit_zoom = 1.0;
         self.pit_edit_pan = (0.0, 0.0);
         self.pit_drag = None;
+        self.pit_sel = None;
+    }
+
+    pub fn pit_sel_phase_key(phase: u8) -> Option<&'static str> {
+        match phase {
+            0 => Some("entry"),
+            1 => Some("road"),
+            2 => Some("merge"),
+            _ => None, // joints stay shared
+        }
+    }
+
+    /// Move a selected non-joint handle to another phase (entry / road / merge).
+    pub fn retype_selected_point(&mut self, to_phase: &str) -> Result<(), &'static str> {
+        let Some((lane_u, from_phase, idx)) = self.pit_sel else {
+            return Err("no point selected");
+        };
+        let Some(from_key) = Self::pit_sel_phase_key(from_phase) else {
+            return Err("joint points stay shared — select an entry, road, or merge handle");
+        };
+        let to_phase = match to_phase {
+            "entry" => "entry",
+            "merge" => "merge",
+            "road" | "pit" | "pit_road" => "road",
+            _ => return Err("unknown phase"),
+        };
+        if from_key == to_phase {
+            return Ok(());
+        }
+        let lane2 = lane_u == 2;
+        let (entry, road, merge) = self.bufs_mut(lane2);
+        let xy = match from_phase {
+            0 if idx < entry.len() => entry.remove(idx),
+            1 if idx < road.len() => road.remove(idx),
+            2 if idx < merge.len() => merge.remove(idx),
+            _ => return Err("selected point is gone"),
+        };
+        // Drop empty merge joint stub left behind when removing the only free point.
+        if from_phase == 2 && merge.len() == 1 {
+            if let Some(&r) = road.last() {
+                if Self::pts_coincide(merge[0], r) {
+                    merge.clear();
+                }
+            }
+        }
+        let new_phase: u8;
+        let new_idx: usize;
+        match to_phase {
+            "entry" => {
+                if !road.is_empty() && !entry.is_empty() {
+                    // Keep road[0] as the joint end.
+                    let joint = road[0];
+                    if entry
+                        .last()
+                        .is_some_and(|&e| Self::pts_coincide(e, joint))
+                    {
+                        let at = entry.len() - 1;
+                        entry.insert(at, xy);
+                        new_idx = at;
+                    } else {
+                        entry.push(xy);
+                        entry.push(joint);
+                        new_idx = entry.len() - 2;
+                    }
+                } else if !road.is_empty() && entry.is_empty() {
+                    entry.push(xy);
+                    entry.push(road[0]);
+                    new_idx = 0;
+                } else {
+                    entry.push(xy);
+                    new_idx = entry.len() - 1;
+                }
+                new_phase = 0;
+            }
+            "merge" => {
+                if merge.is_empty() {
+                    if let Some(&r) = road.last() {
+                        merge.push(r);
+                    }
+                }
+                merge.push(xy);
+                new_idx = merge.len() - 1;
+                new_phase = 2;
+            }
+            _ => {
+                if road.is_empty() {
+                    if let Some(&e) = entry.last() {
+                        road.push(e);
+                    }
+                }
+                road.push(xy);
+                new_idx = road.len() - 1;
+                new_phase = 1;
+            }
+        }
+        self.sync_joints(lane2);
+        // Re-link entry end ↔ road start when both exist.
+        let (entry, road, _) = self.bufs_mut(lane2);
+        if let (Some(e), Some(r0)) = (entry.last().copied(), road.first_mut()) {
+            if entry.len() >= 2 {
+                *r0 = e;
+            }
+        }
+        self.pit_sel = Some((lane_u, new_phase, new_idx));
+        self.phase = to_phase.to_string();
+        self.lane = if lane2 { "2".into() } else { "1".into() };
+        Ok(())
     }
 
     fn bufs_mut(&mut self, lane2: bool) -> PitLaneBufs<'_> {
@@ -508,12 +619,33 @@ mod pit_edit_tests {
         m.pit_edit_zoom = 2.5;
         m.pit_edit_pan = (10.0, 20.0);
         m.pit_drag = Some((1, 1, 0));
+        m.pit_sel = Some((1, 1, 0));
         m.reset_pit_edit_view();
         assert_eq!(m.pit_edit_zoom, 1.0);
         assert_eq!(m.pit_edit_pan, (0.0, 0.0));
         assert!(m.pit_drag.is_none());
+        assert!(m.pit_sel.is_none());
         assert_eq!(MapAuthoring::clamp_pit_zoom(0.1), PIT_EDIT_ZOOM_MIN);
         assert_eq!(MapAuthoring::clamp_pit_zoom(99.0), PIT_EDIT_ZOOM_MAX);
+    }
+
+    #[test]
+    fn retype_road_point_to_entry_and_merge() {
+        let mut m = MapAuthoring {
+            road_pts: vec![(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)],
+            pit_sel: Some((1, 1, 1)), // middle road point
+            ..Default::default()
+        };
+        m.retype_selected_point("entry").unwrap();
+        assert_eq!(m.entry_pts, vec![(1.0, 0.0), (0.0, 0.0)]);
+        assert_eq!(m.road_pts, vec![(0.0, 0.0), (2.0, 0.0)]);
+        assert_eq!(m.pit_sel, Some((1, 0, 0)));
+        assert_eq!(m.phase, "entry");
+
+        m.pit_sel = Some((1, 1, 1)); // road end (2,0)
+        m.retype_selected_point("merge").unwrap();
+        assert!(m.merge_pts.iter().any(|p| *p == (2.0, 0.0)));
+        assert_eq!(m.phase, "merge");
     }
 }
 
@@ -639,6 +771,21 @@ pub fn fit_panel_size(layout: &mut HashMap<String, PanelLayout>, key: &str, w: i
     });
     lay.w = w.max(80);
     lay.h = h.max(32);
+}
+
+/// Set panel height while keeping the bottom edge fixed (grows/shrinks upward).
+pub fn fit_panel_height_from_bottom(
+    layout: &mut HashMap<String, PanelLayout>,
+    key: &str,
+    h: i32,
+) {
+    let lay = layout.entry(key.to_string()).or_insert_with(|| {
+        let (x, y, w, h0) = default_geom(key);
+        PanelLayout { x, y, w, h: h0 }
+    });
+    let bottom = lay.y + lay.h;
+    lay.h = h.max(32);
+    lay.y = bottom - lay.h;
 }
 
 /// Expand a panel to at least `(w, h)` without shrinking user geometry.

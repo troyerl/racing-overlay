@@ -1732,7 +1732,7 @@ fn default_cfg() -> Value {
             section.insert("pit_mode".into(), Value::String("laps_since".into()));
             section.insert("show_irating_projection".into(), Value::Bool(false));
             section.insert("irating_abbreviate".into(), Value::Bool(true));
-            section.insert("irating_show_icon".into(), Value::Bool(true));
+            section.insert("irating_show_icon".into(), Value::Bool(false));
             section.insert(
                 "column_order".into(),
                 json!(["badge", "position", "name", "license", "irating", "gap"]),
@@ -1772,6 +1772,7 @@ fn default_cfg() -> Value {
             }
             if *key == "standings" {
                 section.insert("rows".into(), json!(9));
+                section.insert("grow".into(), Value::Bool(true));
                 section.insert("pin_podium".into(), Value::Bool(false));
                 section.insert("title".into(), Value::String("Standings".into()));
                 if let Some(Value::Object(colors)) = section.get_mut("colors") {
