@@ -5,6 +5,21 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.22 - 2026-08-11
+
+- **Country flags.** Relative / Standings can show a Country column, and Radio
+  can show the speaker’s flag, from iRacing FlairID (then flair / club name).
+  Bundled flag art is included for common regions.
+- **Driver groups.** More group icons (including bad / dirty tags), plus a real
+  color picker for the group accent instead of a hex-only field.
+- **Dash position.** Dash P# follows the same live Standings order (including
+  mid-pass updates), not raw iRacing `PlayerCarPosition`.
+- **Track Scan pit edit.** Ctrl+scroll zooms while editing pit lane; Skia map
+  pit handles can be dragged again (pan with middle-drag or Shift+drag).
+- **Map traffic markers.** Default hold is shorter (0.75s); ahead/behind locks
+  clear immediately after a clear pass or start/finish wrap so markers reacquire
+  faster.
+
 ## 1.69.21 - 2026-08-10
 
 - **Standings grow with field.** Optional Grow setting sizes the Standings panel
