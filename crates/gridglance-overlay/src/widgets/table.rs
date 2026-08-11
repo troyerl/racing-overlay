@@ -866,6 +866,25 @@ fn paint_row_cols(
                     false,
                 );
             }
+            "country" => {
+                if let Some(code) = row.country_code.as_deref() {
+                    crate::country_flags::paint_egui(
+                        ui,
+                        code,
+                        Rect::from_min_size(Pos2::new(cx, rect.top()), Vec2::new(cw, rh - 2.0)),
+                    );
+                } else if !row.empty {
+                    label(
+                        ui,
+                        Pos2::new(cx + cw * 0.5, cy),
+                        Align2::CENTER_CENTER,
+                        "—",
+                        fs * 0.85,
+                        if dim { dim_text } else { text },
+                        false,
+                    );
+                }
+            }
             "laps" => {
                 label(
                     ui,
@@ -1596,6 +1615,7 @@ fn default_width(col: &str) -> f32 {
         "license" => 1.35,
         "pit" => 2.10,
         "last_lap" | "best_lap" => 2.90,
+        "country" => 1.3,
         "class_pos" | "status" | "car_flag" | "laps" => 1.35,
         "closing" => 1.80,
         "team" | "nickname" => 2.20,

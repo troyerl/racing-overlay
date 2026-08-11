@@ -275,6 +275,7 @@ fn default_width(col: &str) -> f32 {
         "license" => 1.35,
         "pit" => 2.10,
         "last_lap" | "best_lap" => 2.90,
+        "country" => 1.3,
         "class_pos" | "status" | "car_flag" | "laps" => 1.35,
         "closing" => 1.80,
         "team" | "nickname" => 2.20,
@@ -662,6 +663,24 @@ fn paint_cols(
                     false,
                     TextAlign::Center,
                 );
+            }
+            "country" => {
+                if let Some(code) = row.country_code.as_deref() {
+                    if let Some(png) = crate::country_flags::flag_png_bytes(code) {
+                        c.draw_png_fit(png, Rect::from_xywh(cx, rect.top(), cw, rh - 2.0));
+                    }
+                } else if !row.empty {
+                    label(
+                        c,
+                        cx + cw * 0.5,
+                        cy,
+                        "—",
+                        fs * 0.85,
+                        if dim { dim_text } else { text },
+                        false,
+                        TextAlign::Center,
+                    );
+                }
             }
             "laps" => {
                 label(

@@ -1862,7 +1862,7 @@ fn default_cfg() -> Value {
             section.insert("pit_lane_opacity".into(), json!(1.0));
             section.insert("car_label".into(), Value::String("number".into()));
             section.insert("show_traffic_markers".into(), Value::Bool(true));
-            section.insert("marker_hold_seconds".into(), json!(3.0));
+            section.insert("marker_hold_seconds".into(), json!(0.75));
             section.insert("show_car_status".into(), Value::Bool(true));
             section.insert("show_drs_zones".into(), Value::Bool(false));
             section.insert("show_p2p_zones".into(), Value::Bool(false));
@@ -1952,6 +1952,7 @@ fn default_cfg() -> Value {
             section.insert("show_position".into(), Value::Bool(true));
             section.insert("show_car_number".into(), Value::Bool(true));
             section.insert("show_name".into(), Value::Bool(true));
+            section.insert("show_country".into(), Value::Bool(false));
             section.insert("highlight_player".into(), Value::Bool(true));
             section.insert("text_scale".into(), json!(1.0));
             section.insert("row_height_px".into(), json!(0));

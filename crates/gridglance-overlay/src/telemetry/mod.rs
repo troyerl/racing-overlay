@@ -88,6 +88,9 @@ pub struct CarRow {
     /// Per-car session flag label for the table `car_flag` column (blue/meatball/…).
     #[serde(default)]
     pub car_flag: Option<String>,
+    /// ISO2 country code from iRacing ClubName (e.g. `"us"`, `"br"`).
+    #[serde(default)]
+    pub country_code: Option<String>,
 }
 
 impl CarRow {
@@ -401,6 +404,9 @@ pub struct RadioSpeaker {
     pub is_pro: bool,
     pub group_icon: String,
     pub group_color: String,
+    /// ISO2 country code from iRacing ClubName (e.g. `"us"`), when known.
+    #[serde(default)]
+    pub country_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -683,6 +689,12 @@ pub mod demo {
                     } else {
                         None
                     },
+                    country_code: Some(
+                        [
+                            "us", "gb", "de", "br", "au", "jp", "fr", "it", "ca", "es", "nl", "mx",
+                        ][(i as usize) % 12]
+                            .into(),
+                    ),
                 });
             }
             let player_pos = cars
@@ -801,6 +813,7 @@ pub mod demo {
                     speed_mps: 24.5 + 1.2 * (t as f32 * 0.5).sin(),
                     status_kind: None,
                     car_flag: None,
+                    country_code: None,
                 });
             }
             let secondary = if incident_warn {
@@ -827,6 +840,7 @@ pub mod demo {
                     is_pro: c.irating >= 4000,
                     group_icon: String::new(),
                     group_color: String::new(),
+                    country_code: c.country_code.clone(),
                 });
 
             let lead_lap = cars

@@ -42,6 +42,9 @@ pub struct TableRow {
     /// Session flag label (blue / meatball / black / ...) for the `car_flag` column.
     #[serde(default)]
     pub car_flag: Option<String>,
+    /// ISO2 country code for the `country` column (club-region flag).
+    #[serde(default)]
+    pub country_code: Option<String>,
     pub closing: Option<f32>,
     pub team: String,
     pub nickname: String,
@@ -180,6 +183,7 @@ impl TableRow {
             class_position: c.class_position,
             status_kind: c.status_kind.clone(),
             car_flag: c.car_flag.clone(),
+            country_code: c.country_code.clone(),
             closing: None,
             team: String::new(),
             nickname: String::new(),
@@ -211,10 +215,24 @@ pub struct RelativeOrderHysteresis {
     /// Last projected iRating deltas (car_idx → delta), held through cooldown.
     irating_deltas: HashMap<i32, i32>,
     irating_player_delta: Option<i32>,
+    /// Damped live Standings order (race progress with pit freeze).
+    pub standings: StandingsOrderHysteresis,
+}
+
+/// Committed Standings order so passes update before iRacing Position, without
+/// Relative-style pit-lane reshuffles.
+#[derive(Debug, Clone, Default)]
+pub struct StandingsOrderHysteresis {
+    /// car_idx order, index 0 = display P1.
+    committed: Vec<i32>,
+    /// Focus/player lap % for S/F soft re-sync.
+    focus_prev_pct: Option<f32>,
 }
 
 /// Seconds of gap required to overturn the previous Relative order.
 const REL_ORDER_MARGIN_S: f32 = 0.25;
+/// Race-progress gap (fraction of a lap) required to swap Standings neighbors.
+const STANDINGS_PROGRESS_MARGIN: f64 = 0.015;
 
 fn sticky_sort_by_delta(items: &mut Vec<(f32, &CarRow)>, prev: &[i32], ascending: bool) {
     items.sort_by(|a, b| {
@@ -659,6 +677,7 @@ pub fn build_standings(
     session_type: Option<&str>,
     camera_car_idx: Option<i32>,
     seated_car_idx: Option<i32>,
+    standings_sticky: Option<&mut StandingsOrderHysteresis>,
 ) -> Vec<TableRow> {
     let spectating = matches!(
         (camera_car_idx, seated_car_idx),
@@ -678,11 +697,25 @@ pub fn build_standings(
         })
         .collect();
 
-    // Race: always live race order (match iRacing Results). Qual/practice: best lap.
-    // Do NOT use the sparse-position heuristic during race — retired/garage cars
-    // leave holes in CarIdxPosition and that was re-sorting the field by best lap.
+    // Race: damped live progress (passes update early; pits stay frozen).
+    // Qual/practice: best lap. Do NOT use the sparse-position heuristic during
+    // race — retired/garage cars leave holes in CarIdxPosition and that was
+    // re-sorting the field by best lap.
     let timing_order = !is_race_session(session_type);
-    let ordered = standings_field_order(&field, timing_order);
+    let focus_pct = field
+        .iter()
+        .find(|c| c.is_player)
+        .map(|c| c.lap_dist_pct)
+        .or_else(|| field.first().map(|c| c.lap_dist_pct));
+    // Live damped order (and qual timing) use list index as P#. Official race
+    // order without sticky keeps CarIdxPosition holes (P5 after P2, etc.).
+    let (ordered, list_display_pos) = if timing_order {
+        (standings_field_order(&field, true), true)
+    } else if let Some(sticky) = standings_sticky {
+        (standings_live_order(&field, sticky, focus_pct), true)
+    } else {
+        (standings_field_order(&field, false), false)
+    };
 
     // Qualifying: always list from P1 (timing board). Race/practice: window
     // around the focus car when center_on_player is on.
@@ -701,14 +734,12 @@ pub fn build_standings(
     let grow = cfg.bool_key("standings", "grow", true);
 
     let leader_f2 = ordered
-        .iter()
-        .find(|c| c.position == 1)
+        .first()
         .map(|c| c.f2_time)
-        .or_else(|| ordered.first().map(|c| c.f2_time))
         .unwrap_or(0.0);
 
     let build_at = |c: &CarRow, ord: usize| -> TableRow {
-        let display_pos = if timing_order || c.position <= 0 {
+        let display_pos = if list_display_pos || c.position <= 0 {
             (ord + 1) as i32
         } else {
             c.position
@@ -846,6 +877,98 @@ fn standings_field_order<'a>(cars: &[&'a CarRow], by_best_lap: bool) -> Vec<&'a 
     ranked
 }
 
+/// On-track race progress for Standings (excludes pit lane — that is Relative).
+fn standings_racing_progress(car: &CarRow) -> Option<f64> {
+    if car.is_pace_car || car.on_pit || car.in_pit || !car.on_track {
+        return None;
+    }
+    if car.lap_dist_pct < 0.0 {
+        return None;
+    }
+    let laps = car.laps_completed.max(0) as f64;
+    let pct = (car.lap_dist_pct as f64).clamp(0.0, 1.0);
+    Some(laps + pct)
+}
+
+/// Damped live Standings order: race progress with swap margin + pit freeze.
+fn standings_live_order<'a>(
+    field: &[&'a CarRow],
+    sticky: &mut StandingsOrderHysteresis,
+    focus_pct: Option<f32>,
+) -> Vec<&'a CarRow> {
+    let by_idx: HashMap<i32, &CarRow> = field.iter().map(|c| (c.car_idx, *c)).collect();
+    let official = standings_field_order(field, false);
+
+    let sf_wrap = match (sticky.focus_prev_pct, focus_pct) {
+        (Some(prev), Some(now)) if prev >= 0.0 && now >= 0.0 => (prev - now) > 0.5,
+        _ => false,
+    };
+    if let Some(pct) = focus_pct.filter(|p| *p >= 0.0) {
+        sticky.focus_prev_pct = Some(pct);
+    }
+    if sf_wrap || sticky.committed.is_empty() {
+        sticky.committed = official.iter().map(|c| c.car_idx).collect();
+        // S/F soft re-sync: keep official this frame. First seed still bubbles
+        // below so a clear mid-lap pass is not delayed a tick.
+        if sf_wrap {
+            return official;
+        }
+    } else {
+        // Drop cars that left; append newcomers in official order.
+        sticky.committed.retain(|idx| by_idx.contains_key(idx));
+        for c in &official {
+            if !sticky.committed.contains(&c.car_idx) {
+                let pos = c.position;
+                let insert_at = sticky
+                    .committed
+                    .iter()
+                    .position(|idx| {
+                        by_idx
+                            .get(idx)
+                            .map(|o| o.position <= 0 || (pos > 0 && o.position > pos))
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(sticky.committed.len());
+                sticky.committed.insert(insert_at, c.car_idx);
+            }
+        }
+    }
+
+    // Adjacent swaps only between two racing cars when progress clears the margin.
+    let n = sticky.committed.len();
+    if n >= 2 {
+        let mut order = sticky.committed.clone();
+        let mut swapped = true;
+        while swapped {
+            swapped = false;
+            for i in 0..n.saturating_sub(1) {
+                let a_idx = order[i];
+                let b_idx = order[i + 1];
+                let (Some(a), Some(b)) = (by_idx.get(&a_idx), by_idx.get(&b_idx)) else {
+                    continue;
+                };
+                let (Some(pa), Some(pb)) =
+                    (standings_racing_progress(a), standings_racing_progress(b))
+                else {
+                    // Pit / garage freeze: do not move on pit-lane %.
+                    continue;
+                };
+                if pb > pa + STANDINGS_PROGRESS_MARGIN {
+                    order.swap(i, i + 1);
+                    swapped = true;
+                }
+            }
+        }
+        sticky.committed = order;
+    }
+
+    sticky
+        .committed
+        .iter()
+        .filter_map(|idx| by_idx.get(idx).copied())
+        .collect()
+}
+
 fn car_number_sort_key(num: &str) -> (i32, String) {
     let digits: String = num.chars().filter(|c| c.is_ascii_digit()).collect();
     let n = digits.parse::<i32>().unwrap_or(i32::MAX);
@@ -929,6 +1052,53 @@ fn sync_practice_overlay_position(frame: &mut TelemetryFrame) {
         })
     {
         frame.position = pos;
+    }
+}
+
+/// Dash P# must match Standings display order (live damped ranks in race,
+/// best-lap ranks in practice) — not raw `PlayerCarPosition`, and not only
+/// when the player happens to be inside the visible standings window.
+fn sync_dash_position_with_standings(
+    frame: &mut TelemetryFrame,
+    sticky: &StandingsOrderHysteresis,
+    table_focus_car_idx: Option<i32>,
+) {
+    let target = table_focus_car_idx
+        .or_else(|| {
+            frame
+                .standings_cars
+                .iter()
+                .find(|r| r.is_player && !r.empty)
+                .and_then(|r| r.key.parse().ok())
+        })
+        .or_else(|| frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx));
+    let Some(car_idx) = target else {
+        return;
+    };
+
+    if is_race_session(frame.session_type.as_deref()) {
+        if let Some(ord) = sticky.committed.iter().position(|&i| i == car_idx) {
+            frame.position = (ord + 1) as i32;
+            return;
+        }
+    }
+
+    if let Some(p) = frame
+        .standings_cars
+        .iter()
+        .find(|r| !r.empty && r.key.parse::<i32>().ok() == Some(car_idx))
+    {
+        if p.position > 0 {
+            frame.position = p.position;
+            return;
+        }
+    }
+    if let Some(p) = frame
+        .standings_cars
+        .iter()
+        .find(|r| r.is_player && !r.empty && r.position > 0)
+    {
+        frame.position = p.position;
     }
 }
 
@@ -1190,6 +1360,7 @@ pub fn finalize_frame(
         frame.session_type.as_deref(),
         frame.camera_car_idx,
         seated_car_idx,
+        Some(&mut rel_sticky.standings),
     );
     let fl_idx = session_best_car_idx(&focused_cars);
     mark_session_best(&mut rel, fl_idx);
@@ -1198,9 +1369,24 @@ pub fn finalize_frame(
     frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
     frame.relative_cars = rel;
     frame.standings_cars = std;
-    // Practice/qual: dash POS must match table best-lap ranks (not raw
-    // PlayerCarPosition, which often disagrees by several spots).
-    sync_practice_overlay_position(frame);
+    // Dash P# follows the same ranks Standings paints (live damped in race,
+    // best-lap in practice) — including when the player is outside the window.
+    if is_race_session(frame.session_type.as_deref()) {
+        sync_dash_position_with_standings(frame, &rel_sticky.standings, table_focus);
+        if let Some(radio) = frame.radio.as_mut() {
+            if let Some(c) = frame.standings_cars.iter().find(|r| {
+                (!radio.car_number.is_empty() && r.car_number == radio.car_number)
+                    || (!radio.name.is_empty() && r.name == radio.name)
+            }) {
+                if c.position > 0 {
+                    radio.position = c.position;
+                }
+            }
+        }
+    } else {
+        sync_practice_overlay_position(frame);
+        sync_dash_position_with_standings(frame, &rel_sticky.standings, table_focus);
+    }
 
     // Merge proximity / side-pos from lap % when IRSDK only set L/R bools (or demo).
     let enriched = build_radar(
@@ -1988,6 +2174,164 @@ mod tests {
     }
 
     #[test]
+    fn standings_keeps_official_order_while_player_in_pits() {
+        // In pits, LapDistPct can look like Relative track order. Standings must
+        // freeze the committed slot (P3 here), not reshuffle by pit-lane %.
+        let mut cars = Vec::new();
+        for i in 0..6 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 2, // official P3
+                on_track: i != 2,
+                on_pit: i == 2,
+                in_pit: i == 2,
+                laps_completed: 10,
+                // Pit lane % would put the player "ahead" of P1/P2 on progress.
+                lap_dist_pct: if i == 2 { 0.95 } else { 0.10 + i as f32 * 0.05 },
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let mut sticky = StandingsOrderHysteresis::default();
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+            Some(&mut sticky),
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        let player = live.iter().find(|r| r.is_player).expect("player row");
+        assert_eq!(player.position, 3);
+        let positions: Vec<i32> = live.iter().map(|r| r.position).collect();
+        let mut sorted = positions.clone();
+        sorted.sort();
+        assert_eq!(positions, sorted, "standings rows must stay official order");
+    }
+
+    #[test]
+    fn standings_live_pass_updates_before_official_position() {
+        // Official still P3; on-track progress has already passed P2.
+        let mut cars = Vec::new();
+        for i in 0..4 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 2,
+                on_track: true,
+                laps_completed: 5,
+                lap_dist_pct: match i {
+                    0 => 0.80,
+                    1 => 0.40, // official P2, now behind player
+                    2 => 0.55, // player
+                    _ => 0.20,
+                },
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let mut sticky = StandingsOrderHysteresis::default();
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+            Some(&mut sticky),
+        );
+        let player = rows.iter().find(|r| r.is_player).expect("player");
+        assert_eq!(player.position, 2, "live pass should show P2");
+        let p2 = rows.iter().find(|r| r.car_number == "1").expect("old P2");
+        assert_eq!(p2.position, 3);
+    }
+
+    #[test]
+    fn standings_sub_margin_progress_does_not_swap() {
+        let mut cars = Vec::new();
+        for i in 0..3 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 1,
+                on_track: true,
+                laps_completed: 2,
+                // Player only 0.5% ahead of P1 — under 1.5% margin.
+                lap_dist_pct: match i {
+                    0 => 0.500,
+                    1 => 0.505,
+                    _ => 0.100,
+                },
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let mut sticky = StandingsOrderHysteresis::default();
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Race"),
+            None,
+            None,
+            Some(&mut sticky),
+        );
+        let player = rows.iter().find(|r| r.is_player).expect("player");
+        assert_eq!(player.position, 2, "bobble under margin must not swap");
+    }
+
+    #[test]
+    fn standings_qual_ignores_live_progress_dampener() {
+        let mut cars = Vec::new();
+        for i in 0..3 {
+            cars.push(CarRow {
+                car_idx: i,
+                position: 3 - i, // reverse official
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 0,
+                on_track: true,
+                best_lap: match i {
+                    0 => "1:20.00".into(),
+                    1 => "1:19.00".into(), // fastest
+                    _ => "1:21.00".into(),
+                },
+                laps_completed: 10,
+                lap_dist_pct: 0.99, // would dominate race live order
+                ..Default::default()
+            });
+        }
+        let cfg = OverlayConfig::default();
+        let mut sticky = StandingsOrderHysteresis::default();
+        let rows = build_standings(
+            &cars,
+            &cfg,
+            &serde_json::json!({}),
+            &serde_json::json!([]),
+            Some("Qualifying"),
+            None,
+            None,
+            Some(&mut sticky),
+        );
+        let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
+        assert_eq!(live[0].name, "D1", "qual must stay best-lap order");
+        assert_eq!(live[0].position, 1);
+        assert!(sticky.committed.is_empty(), "qual must not seed race sticky");
+    }
+
+    #[test]
     fn standings_near_front_keeps_cars_behind_focus() {
         // Spectating P5 with 4 ahead / 5 behind must still include P6+.
         let mut cars = Vec::new();
@@ -2009,6 +2353,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -2044,6 +2389,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -2092,6 +2438,7 @@ mod tests {
                 Some(session),
                 None,
                 None,
+                None,
             );
             let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
             assert_eq!(
@@ -2131,6 +2478,7 @@ mod tests {
             Some("Race"),
             None,
             None,
+            None,
         );
         let d2 = rows.iter().find(|r| r.name == "D2").unwrap();
         let d3 = rows.iter().find(|r| r.name == "D3").unwrap();
@@ -2159,6 +2507,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -2199,6 +2548,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Qualifying"),
+            None,
             None,
             None,
         );
@@ -2256,6 +2606,7 @@ mod tests {
             Some("Race"),
             None,
             None,
+            None,
         );
         assert_eq!(
             rows.len(),
@@ -2292,6 +2643,7 @@ mod tests {
             Some("Race"),
             None,
             None,
+            None,
         );
         assert_eq!(rows.len(), 13);
         assert!(rows.iter().all(|r| !r.empty));
@@ -2303,6 +2655,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -2355,6 +2708,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -2423,6 +2777,7 @@ mod tests {
             Some("Qualifying"),
             None,
             None,
+            None,
         );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert_eq!(live[0].name, "Fast");
@@ -2474,6 +2829,7 @@ mod tests {
             Some("Qualifying"),
             Some(2),
             Some(99),
+            None,
         );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert!(
@@ -2527,6 +2883,7 @@ mod tests {
             Some("Race"),
             Some(2),
             Some(5),
+            None,
         );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert!(
@@ -2641,6 +2998,7 @@ mod tests {
             Some("Race"),
             None,
             None,
+            None,
         );
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert_eq!(live[0].name, "RaceLeader");
@@ -2673,6 +3031,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -2834,6 +3193,7 @@ mod tests {
             Some("Practice"),
             None,
             None,
+            None,
         );
         assert!(
             rows.iter().any(|r| r.is_player && !r.empty),
@@ -2916,6 +3276,7 @@ mod tests {
             &serde_json::json!({}),
             &serde_json::json!([]),
             Some("Race"),
+            None,
             None,
             None,
         );
@@ -3259,5 +3620,55 @@ mod tests {
             .find(|r| r.is_player && !r.empty)
             .expect("player should appear in standings window");
         assert_eq!(std_player.position, frame.position);
+    }
+
+    #[test]
+    fn race_dash_position_matches_live_standings_pass() {
+        // Official still P5; on-track progress already passed P4 — Standings
+        // would show P4. Dash must follow that, not raw PlayerCarPosition (5),
+        // even when the visible standings window is only P1–P2.
+        let mut frame = TelemetryFrame {
+            session_type: Some("Race".into()),
+            position: 5,
+            cars: (0..6)
+                .map(|i| CarRow {
+                    car_idx: i,
+                    position: i + 1,
+                    name: format!("D{i}"),
+                    car_number: format!("{i}"),
+                    is_player: i == 4,
+                    on_track: true,
+                    laps_completed: 5,
+                    lap_dist_pct: match i {
+                        0 => 0.90,
+                        1 => 0.80,
+                        2 => 0.70,
+                        3 => 0.40, // official P4, now behind player
+                        4 => 0.55, // player (official P5)
+                        _ => 0.20,
+                    },
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["standings"]["center_on_player"] = serde_json::json!(false);
+        cfg.cfg["standings"]["rows"] = serde_json::json!(2.0);
+        cfg.cfg["standings"]["grow"] = serde_json::json!(false);
+        let mut sticky = RelativeOrderHysteresis::default();
+        finalize_frame(&mut frame, &cfg, &mut sticky);
+        assert_eq!(
+            frame.position, 4,
+            "dash POS should follow live standings pass, got {}",
+            frame.position
+        );
+        assert!(
+            !frame
+                .standings_cars
+                .iter()
+                .any(|r| r.is_player && !r.empty),
+            "test setup: player must be outside the visible standings window"
+        );
     }
 }

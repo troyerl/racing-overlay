@@ -10,6 +10,7 @@ mod autostart;
 mod chrome;
 mod cloud;
 mod config;
+mod country_flags;
 mod driver_groups;
 mod host;
 mod icons;

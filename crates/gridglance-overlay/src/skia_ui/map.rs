@@ -248,6 +248,8 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
                     show1_road,
                     show1_exit,
                     text_scale,
+                    ctx.frame.pit_speed_limit_mps,
+                    ctx.map.pit_speed_ms,
                 );
             }
             if pit2.has_drawable() {
@@ -271,6 +273,8 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
                         show2_road,
                         show2_exit,
                         text_scale,
+                        ctx.frame.pit_speed_limit_mps,
+                        ctx.map.pit_speed_ms,
                     );
                 }
             }
@@ -387,8 +391,10 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
     let car_label_mode = ctx.cfg.str_key(SECTION, "car_label", "number");
     let map_text_scale = text_scale;
     let show_markers = ctx.cfg.bool_key(SECTION, "show_traffic_markers", true);
-    let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 3.0);
+    let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 0.75);
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
+    let is_race = map_markers::session_is_race(ctx.frame.session_type.as_deref());
+    let live_ranks = map_markers::live_map_ranks(&ctx.frame.cars, is_race);
 
     let screen_dt = anim_dt(ctx.mono_secs, &mut ctx.map.last_screen_secs);
     let eased: HashMap<i32, f32> = ctx
@@ -406,6 +412,8 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
             hold_sec,
             focus_idx,
             &car_label_mode,
+            is_race,
+            &mut ctx.map.marker_focus_prev_pct,
         )
     } else {
         HashMap::new()
@@ -426,7 +434,8 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
         }
-        let pct = if ctx.demo || car.on_pit {
+        let on_pit = emap::car_on_pit_surface(car);
+        let pct = if ctx.demo || on_pit {
             car.lap_dist_pct.rem_euclid(1.0)
         } else {
             eased.get(&car.car_idx).copied().unwrap_or(car.lap_dist_pct)
@@ -438,7 +447,7 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
         let (nx, ny) = emap::car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
         let (mx, my) = emap::model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
-        let key = emap::car_motion_key(on_route, car.on_pit);
+        let key = emap::car_motion_key(on_route, on_pit);
         targets.insert(car.car_idx, (p, key));
     }
     let (car_pts, screen_animating) = emap::smooth_car_screen_pts(ctx, &targets, screen_dt);
@@ -460,7 +469,7 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
         } else {
             9.0 * other_scale
         };
-        if is_focus && (car.on_pit || on_route) {
+        if is_focus && (emap::car_on_pit_surface(car) || on_route) {
             r *= 1.15;
         }
         if let Some(slot) = marker_slots.get(&car.car_idx) {
@@ -492,7 +501,7 @@ fn paint_inner(c: &mut Canvas, ctx: &mut WidgetCtx<'_>) {
         }
         let show_label = is_focus || car.is_pace_car || !marker_slots.contains_key(&car.car_idx);
         if show_label {
-            let label_text = emap::car_label_text(car, &car_label_mode);
+            let label_text = emap::car_label_text(car, &car_label_mode, &live_ranks);
             draw_car_number_label(
                 c,
                 p.x,
@@ -672,6 +681,8 @@ fn draw_pit_lane(
     show_road: bool,
     show_exit: bool,
     text_scale: f32,
+    live_pit_mps: Option<f32>,
+    authored_pit_ms: f64,
 ) {
     if !lane.has_drawable() {
         return;
@@ -712,7 +723,9 @@ fn draw_pit_lane(
         c.dashed_polyline(&s, pit_col, 2.2, 4.0, 3.0);
 
         if show_speed {
-            if let Some(ms) = lane.speed_ms.filter(|v| *v > 0.0) {
+            if let Some(ms) =
+                track_path::resolve_pit_speed_mps(live_pit_mps, lane, authored_pit_ms)
+            {
                 let (val, unit) = (cfg.conv_speed(ms), cfg.speed_unit());
                 let anchor = s[s.len() / 2];
                 let txt = format!("PIT {val:.0} {unit}");

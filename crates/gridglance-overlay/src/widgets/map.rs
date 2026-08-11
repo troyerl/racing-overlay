@@ -19,7 +19,7 @@ use std::f32::consts::{PI, TAU};
 const SECTION: &str = "map";
 /// Bump when changing map car motion; shown in `--perf` as `map_motion_rev=`.
 /// Keep in sync with `docs/map-wiki.md`.
-pub const MAP_MOTION_REV: u32 = 43;
+pub const MAP_MOTION_REV: u32 = 45;
 /// Screen ease for pit-route / non-pct modes only (Python `_smooth_marker_point`).
 const SCREEN_EASE_TAU: f32 = 0.09;
 const SCREEN_EASE_SNAP: f32 = 120.0;
@@ -136,6 +136,9 @@ fn apply_loaded_track(ctx: &mut WidgetCtx<'_>, id: i32, tp: track_path::TrackPat
     ctx.map.cached_corners = tp.corners;
     if ctx.map.cached_pit.lane_speed_pct > 0.0 {
         ctx.map.pit_lane_speed_pct = ctx.map.cached_pit.lane_speed_pct as f64;
+    }
+    if let Some(ms) = ctx.map.cached_pit.speed_ms.filter(|v| *v > 0.0) {
+        ctx.map.pit_speed_ms = ms as f64;
     }
 }
 
@@ -579,7 +582,11 @@ fn draw_pit_lane(
         stroke_open_dashed(ui, &s, 2.2, pit_col, 4.0, 3.0);
 
         if show_speed {
-            if let Some(ms) = lane.speed_ms.filter(|v| *v > 0.0) {
+            if let Some(ms) = track_path::resolve_pit_speed_mps(
+                ctx.frame.pit_speed_limit_mps,
+                lane,
+                ctx.map.pit_speed_ms,
+            ) {
                 let (val, unit) = (ctx.cfg.conv_speed(ms), ctx.cfg.speed_unit());
                 let anchor = s[s.len() / 2];
                 let txt = format!("PIT {val:.0} {unit}");
@@ -839,16 +846,38 @@ fn pit_lane_mapping_interval(
     Some((lane_lo, lane_hi))
 }
 
-/// Python `_pit_path_pos_for_route_pct` (linear * speed; no tip-pin).
+/// OnPitRoad or stopped in a stall (`TrackSurface == InPitStall`).
+/// ApproachingPits alone is not enough — that uses the entry blend path.
+pub(crate) fn car_on_pit_surface(car: &CarRow) -> bool {
+    car.on_pit || (car.in_pit && !car.approaching_pits)
+}
+
+/// Place an OnPitRoad car on `pit_path` beside the racing-line point for this
+/// lap-% (`loop_frac` already includes S/F, reverse, and pct calibration).
+///
+/// Schematic `pit_span` is only an approximation of iRacing's LapDistPct along
+/// the pit corridor; projecting the calibrated loop position onto the pit
+/// polyline keeps dots aligned with traffic on the frontstretch. Falls back to
+/// span-linear × `lane_speed_pct` when the racing loop is missing.
 fn pit_path_pos_for_route_pct(
     lane: &track_path::PitLane,
     pct: f32,
     lo: f32,
     hi: f32,
     speed: f32,
+    racing: &[(f32, f32)],
+    loop_frac: f32,
 ) -> Option<(f32, f32)> {
     if lane.path.len() < 2 {
         return None;
+    }
+    if racing.len() >= 2 {
+        let track = track_path::point_at(racing, loop_frac);
+        return Some(track_path::nearest_point_on_open(
+            &lane.path,
+            track.0,
+            track.1,
+        ));
     }
     let span = (hi - lo).rem_euclid(1.0);
     if span <= 1e-6 {
@@ -890,8 +919,8 @@ pub(crate) fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]
     for car in cars {
         let idx = car.car_idx;
         seen.insert(idx);
-        // Latch on CarIdxOnPitRoad only — not ApproachingPits / stall.
-        let on = car.on_pit;
+        // Latch on OnPitRoad or InPitStall — not ApproachingPits alone.
+        let on = car_on_pit_surface(car);
         let pct = car.lap_dist_pct;
         let prev = ctx.map.pit_prev_on.get(&idx).copied().unwrap_or(false);
         if prev && !on && pct >= 0.0 {
@@ -899,7 +928,7 @@ pub(crate) fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]
             if pct_in_interval(p, route_lo, route_hi) {
                 ctx.map.pit_exit_latch.insert(idx, p);
             } else {
-                // Cleared OnPitRoad outside the authored corridor — no exit blend.
+                // Cleared pit surface outside the authored corridor — no exit blend.
                 ctx.map.pit_route_latch.insert(idx, false);
                 ctx.map.pit_exit_latch.remove(&idx);
                 ctx.map.pit_prev_on.insert(idx, on);
@@ -928,7 +957,7 @@ pub(crate) fn update_pit_route_latches(ctx: &mut WidgetCtx<'_>, cars: &[&CarRow]
 }
 
 pub(crate) fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
-    if car.on_pit
+    if car_on_pit_surface(car)
         || ctx
             .map
             .pit_route_latch
@@ -959,8 +988,8 @@ pub(crate) fn car_on_route(ctx: &WidgetCtx<'_>, car: &CarRow) -> bool {
 
 /// Seed latches for cars already on the pit route after a mid-session track load.
 ///
-/// Only `OnPitRoad` — seeding everyone inside `[in_pct, out_pct]` false-latches
-/// traffic on ovals where that wrap is most of the lap (Iowa).
+/// Only OnPitRoad / InPitStall — seeding everyone inside `[in_pct, out_pct]`
+/// false-latches traffic on ovals where that wrap is most of the lap (Iowa).
 pub(crate) fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
     if !ctx.map.pit_latch_seed_pending {
         return;
@@ -970,7 +999,7 @@ pub(crate) fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
         return;
     }
     for car in &ctx.frame.cars {
-        if car.on_pit && car.lap_dist_pct >= 0.0 {
+        if car_on_pit_surface(car) && car.lap_dist_pct >= 0.0 {
             ctx.map.pit_route_latch.insert(car.car_idx, true);
         }
     }
@@ -1049,7 +1078,7 @@ fn schematic_route_pos(
     lane: &track_path::PitLane,
     show_blends: bool,
 ) -> Option<(f32, f32)> {
-    let on_pit = car.on_pit;
+    let on_pit = car_on_pit_surface(car);
     let on_route = car_on_route(ctx, car);
     if !on_route {
         return None;
@@ -1074,17 +1103,10 @@ fn schematic_route_pos(
         synth_entry.as_deref().unwrap_or(&[])
     };
 
-    // Exit blend: pit lane end -> rejoin (off pit road).
+    // Exit blend: pit lane end -> rejoin (off pit road / stall).
     if show_blends && !on_pit && lane.exit.len() >= 2 {
         let latch = ctx.map.pit_exit_latch.get(&car.car_idx).copied();
         let exit_start = pit_exit_blend_start(latch, lane_lo, lane_hi, out_pct);
-        // Still in the lane after OnPitRoad cleared early — stay on pit path.
-        if lane.path.len() >= 2 && pct_in_interval(pct, lane_lo, lane_hi) {
-            let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
-                .or(Some((in_pct, out_pct)))
-                .unwrap_or((lane_lo, lane_hi));
-            return pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed);
-        }
         if pct_in_interval(pct, exit_start, out_pct) {
             return pit_phase_pos(pct, exit_start, out_pct, &lane.exit, racing, speed);
         }
@@ -1095,12 +1117,16 @@ fn schematic_route_pos(
         return pit_phase_pos(pct, in_pct, lane_lo, entry_seg, racing, speed);
     }
 
-    // Pit road while OnPitRoad (or latched still in lane — handled above for exit).
-    if on_pit && lane.path.len() >= 2 {
+    // Pit road while OnPitRoad/stall, or latched still inside the lane span
+    // (independent of whether exit blends are drawn).
+    if lane.path.len() >= 2 && (on_pit || pct_in_interval(pct, lane_lo, lane_hi)) {
         let (rlo, rhi) = pit_lane_mapping_interval(racing, lane)
             .or(Some((in_pct, out_pct)))
             .unwrap_or((lane_lo, lane_hi));
-        return pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed);
+        let sf = ctx.map.cached_start_finish;
+        let cal = ctx.map.cached_pct_map.as_deref();
+        let loop_frac = loop_frac_for_pct(pct, sf, map_reverse(ctx), cal);
+        return pit_path_pos_for_route_pct(lane, pct, rlo, rhi, speed, racing, loop_frac);
     }
     None
 }
@@ -1115,7 +1141,7 @@ pub(crate) fn car_model_xy(
     pit2: &track_path::PitLane,
     show_blends: bool,
 ) -> (f32, f32) {
-    let on_pit = car.on_pit;
+    let on_pit = car_on_pit_surface(car);
     let on_route = car_on_route(ctx, car);
     let sf = ctx.map.cached_start_finish;
     let cal = ctx.map.cached_pct_map.as_deref();
@@ -1214,8 +1240,8 @@ pub(crate) fn car_fill(
     if car.is_pace_car {
         return cfg.color(SECTION, "pace_car", "#0b0e12");
     }
-    // Python `_car_dot_style`: grey when on_pit or on_route (non-player).
-    if (car.on_pit || on_route) && !is_focus {
+    // Python `_car_dot_style`: grey when on pit surface or on_route (non-player).
+    if (car_on_pit_surface(car) || on_route) && !is_focus {
         let pit = cfg.color(SECTION, "pit_car", "#6e747d");
         return color_with_alpha(pit, (pit_opacity.clamp(0.05, 1.0) * 255.0) as u8);
     }
@@ -1249,8 +1275,12 @@ fn draw_other_dot(ui: &mut Ui, c: Pos2, r: f32, fill: Color32) {
     ui.painter().circle_stroke(c, r, Stroke::new(1.0_f32, ring));
 }
 
-pub(crate) fn car_label_text(car: &CarRow, mode: &str) -> String {
-    map_markers::car_dot_label(car, mode)
+pub(crate) fn car_label_text(
+    car: &CarRow,
+    mode: &str,
+    ranks: &std::collections::HashMap<i32, i32>,
+) -> String {
+    map_markers::car_dot_label(car, mode, ranks.get(&car.car_idx).copied())
 }
 
 /// Stroked centered label (Python `_draw_stroked_center_text`).
@@ -1412,7 +1442,7 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
             .unwrap_or_else(|| fresh_pct_anim(telem, telem_clock, session_now));
         st.last_seen_secs = telem_clock;
 
-        let pin = car.on_pit || ctx.demo;
+        let pin = car_on_pit_surface(car) || ctx.demo;
         if pin {
             st = fresh_pct_anim(telem, telem_clock, session_now);
             st.last_seen_secs = telem_clock;
@@ -1469,7 +1499,7 @@ pub(crate) fn cars_pct_animating(ctx: &WidgetCtx<'_>) -> bool {
         return false;
     }
     for car in &ctx.frame.cars {
-        if car.on_pit || car.lap_dist_pct < 0.0 {
+        if car_on_pit_surface(car) || car.lap_dist_pct < 0.0 {
             continue;
         }
         return true;
@@ -2275,8 +2305,10 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let car_label_mode = ctx.cfg.str_key(SECTION, "car_label", "number");
     let map_text_scale = text_scale;
     let show_markers = ctx.cfg.bool_key(SECTION, "show_traffic_markers", true);
-    let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 3.0);
+    let hold_sec = ctx.cfg.f64_key(SECTION, "marker_hold_seconds", 0.75);
     let show_status = ctx.cfg.bool_key(SECTION, "show_car_status", true);
+    let is_race = map_markers::session_is_race(ctx.frame.session_type.as_deref());
+    let live_ranks = map_markers::live_map_ranks(&ctx.frame.cars, is_race);
 
     // Pct coast (idempotent if host already ticked). Screen ease uses its own clock
     // so a same-mono re-entry does not freeze dots at dt=0.
@@ -2298,6 +2330,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
             hold_sec,
             focus_idx,
             &car_label_mode,
+            is_race,
+            &mut ctx.map.marker_focus_prev_pct,
         )
     } else {
         HashMap::new()
@@ -2331,8 +2365,9 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
         }
-        // OnPitRoad / demo: raw telem (coast is for sparse live SDK samples).
-        let pct = if ctx.demo || car.on_pit {
+        // OnPitRoad / stall / demo: raw telem (coast is for sparse live SDK samples).
+        let on_pit = car_on_pit_surface(car);
+        let pct = if ctx.demo || on_pit {
             car.lap_dist_pct.rem_euclid(1.0)
         } else {
             eased.get(&car.car_idx).copied().unwrap_or(car.lap_dist_pct)
@@ -2344,7 +2379,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let (nx, ny) = car_model_xy(ctx, car, pct, &path, &pit_lane, &pit_lane2, show_blends);
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
-        let key = car_motion_key(on_route, car.on_pit);
+        let key = car_motion_key(on_route, on_pit);
         targets.insert(car.car_idx, (p, key));
     }
     let (car_pts, screen_animating) = smooth_car_screen_pts(ctx, &targets, screen_dt);
@@ -2366,7 +2401,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         } else {
             9.0 * other_scale
         };
-        if is_focus && (car.on_pit || on_route) {
+        if is_focus && (car_on_pit_surface(car) || on_route) {
             r *= 1.15;
         }
         if let Some(slot) = marker_slots.get(&car.car_idx) {
@@ -2394,7 +2429,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         // Hide on-dot number when a traffic marker already labels the car.
         let show_label = is_focus || car.is_pace_car || !marker_slots.contains_key(&car.car_idx);
         if show_label {
-            let label_text = car_label_text(car, &car_label_mode);
+            let label_text = car_label_text(car, &car_label_mode, &live_ranks);
             draw_car_number_label(
                 ui,
                 p,
@@ -2591,7 +2626,7 @@ pub fn bg_fingerprint(
     w.hash(&mut hasher);
     h.hash(&mut hasher);
     // Bust static BG when path sampling / alignment semantics change.
-    11u32.hash(&mut hasher);
+    12u32.hash(&mut hasher);
     map.cached_track_id.hash(&mut hasher);
     map.path_status.hash(&mut hasher);
     map.cached_path.len().hash(&mut hasher);
@@ -2618,6 +2653,20 @@ pub fn bg_fingerprint(
         .to_bits()
         .hash(&mut hasher);
     cfg.bool_key(SECTION, "show_pit", true).hash(&mut hasher);
+    cfg.bool_key(SECTION, "show_pit_speed", true)
+        .hash(&mut hasher);
+    // PIT badge uses live TrackPitSpeedLimit over authored lane speed.
+    frame
+        .pit_speed_limit_mps
+        .map(|v| v.to_bits())
+        .unwrap_or(0)
+        .hash(&mut hasher);
+    map.cached_pit
+        .speed_ms
+        .map(|v| v.to_bits())
+        .unwrap_or(0)
+        .hash(&mut hasher);
+    map.pit_speed_ms.to_bits().hash(&mut hasher);
     cfg.bool_key(SECTION, "show_drs_zones", false)
         .hash(&mut hasher);
     cfg.bool_key(SECTION, "show_p2p_zones", false)
@@ -2663,6 +2712,8 @@ pub fn build_car_sprites(
     let pad_px = layout_pad(ctx.cfg, asphalt_w, text_scale);
     let show_pit = ctx.cfg.bool_key(SECTION, "show_pit", true);
     let car_label_mode = ctx.cfg.str_key(SECTION, "car_label", "number");
+    let is_race = map_markers::session_is_race(ctx.frame.session_type.as_deref());
+    let live_ranks = map_markers::live_map_ranks(&ctx.frame.cars, is_race);
 
     let fit_key = {
         use std::hash::{Hash, Hasher};
@@ -2739,7 +2790,8 @@ pub fn build_car_sprites(
         if car.is_pace_car && car.lap_dist_pct < 0.0 {
             continue;
         }
-        let pct = if ctx.demo || car.on_pit {
+        let on_pit = car_on_pit_surface(car);
+        let pct = if ctx.demo || on_pit {
             car.lap_dist_pct.rem_euclid(1.0)
         } else {
             eased.get(&car.car_idx).copied().unwrap_or(car.lap_dist_pct)
@@ -2759,7 +2811,7 @@ pub fn build_car_sprites(
         );
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let p = xform.map(mx, my);
-        let key = car_motion_key(on_route, car.on_pit);
+        let key = car_motion_key(on_route, on_pit);
         targets.insert(car.car_idx, (p, key));
     }
     // Python parity: racing-line dots use eased % only (no second XY lag).
@@ -2795,18 +2847,20 @@ pub fn build_car_sprites(
         } else {
             9.0 * other_scale
         };
-        if is_focus && (car.on_pit || on_route) {
+        if is_focus && (car_on_pit_surface(car) || on_route) {
             r *= 1.15;
         }
         let fill = car_fill(ctx.cfg, car, pit_opacity, on_route, is_focus);
-        let label = car_label_text(car, &car_label_mode);
-        let place = if car.position > 0 {
-            car.position
-        } else if car.class_position > 0 {
-            car.class_position
-        } else {
-            9999
-        };
+        let label = car_label_text(car, &car_label_mode, &live_ranks);
+        let place = live_ranks.get(&car.car_idx).copied().unwrap_or_else(|| {
+            if car.position > 0 {
+                car.position
+            } else if car.class_position > 0 {
+                car.class_position
+            } else {
+                9999
+            }
+        });
         cands.push(Cand {
             car_idx: car.car_idx,
             p,
@@ -2979,7 +3033,145 @@ fn draw_corners(
 }
 
 /// Hit target: lane(1|2), phase(0=entry,1=road,2=merge,3=joint,4=entry_joint), idx.
-type PitHit = (u8, u8, usize);
+pub(crate) type PitHit = (u8, u8, usize);
+
+/// Collect pit-edit handle hit targets (screen positions) without painting.
+pub(crate) fn collect_pit_edit_hits(
+    map: &MapAuthoring,
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+) -> Vec<(Pos2, PitHit)> {
+    let mut hits = Vec::new();
+    for lane_i in 0..2 {
+        let lane2 = lane_i == 1;
+        let lane_u = if lane2 { 2_u8 } else { 1_u8 };
+        let (entry, road, merge) = if lane2 {
+            (&map.entry_pts_2, &map.road_pts_2, &map.merge_pts_2)
+        } else {
+            (&map.entry_pts, &map.road_pts, &map.merge_pts)
+        };
+        if entry.is_empty() && road.is_empty() && merge.is_empty() {
+            continue;
+        }
+        let has_joint = map.has_joint(lane2);
+        let has_entry_joint = map.has_entry_joint(lane2);
+        let phases: [(&str, u8, &[(f32, f32)]); 3] =
+            [("entry", 0, entry), ("road", 1, road), ("merge", 2, merge)];
+        for (_name, phase_code, pts) in phases {
+            for (idx, &(nx, ny)) in pts.iter().enumerate() {
+                if has_entry_joint
+                    && ((phase_code == 0 && idx + 1 == pts.len()) || (phase_code == 1 && idx == 0))
+                {
+                    continue;
+                }
+                if has_joint
+                    && ((phase_code == 1 && idx + 1 == pts.len()) || (phase_code == 2 && idx == 0))
+                {
+                    continue;
+                }
+                let (mx, my) = model_point(nx, ny, mirror, rot);
+                hits.push((xform.map(mx, my), (lane_u, phase_code, idx)));
+            }
+        }
+        if has_entry_joint {
+            if let Some(&(nx, ny)) = entry.last() {
+                let (mx, my) = model_point(nx, ny, mirror, rot);
+                hits.push((xform.map(mx, my), (lane_u, 4_u8, 0_usize)));
+            }
+        }
+        if has_joint {
+            if let Some(&(nx, ny)) = road.last() {
+                let (mx, my) = model_point(nx, ny, mirror, rot);
+                hits.push((xform.map(mx, my), (lane_u, 3_u8, 0_usize)));
+            }
+        }
+    }
+    hits
+}
+
+/// Button edges for Skia (or any non-egui) pit-edit pointer handling.
+pub(crate) struct PitEditButtons {
+    pub primary_down: bool,
+    pub primary_pressed: bool,
+    pub primary_released: bool,
+    pub secondary_pressed: bool,
+    pub middle_down: bool,
+    pub shift: bool,
+}
+
+/// Drive pit-edit selection / drag / pan / append from raw pointer state.
+///
+/// `allow_click_append`: true on primary release when the press was not on a
+/// handle and the cursor did not move past the drag threshold (caller-owned).
+pub(crate) fn tick_pit_edit_pointer(
+    map: &mut MapAuthoring,
+    xform: &PlotXform,
+    mirror: bool,
+    rot: i32,
+    handle_r: f32,
+    plot: Rect,
+    local_pos: Option<Pos2>,
+    cursor_delta: (f32, f32),
+    buttons: &PitEditButtons,
+    allow_click_append: bool,
+) -> bool {
+    let hits = collect_pit_edit_hits(map, xform, mirror, rot);
+    let Some(pos) = local_pos.filter(|p| plot.contains(*p)) else {
+        if !buttons.primary_down {
+            map.pit_drag = None;
+        }
+        return false;
+    };
+
+    let mut pressed_handle = false;
+    if buttons.primary_pressed && !buttons.shift {
+        if let Some(hit) = pit_handle_at(&hits, pos, handle_r) {
+            pressed_handle = true;
+            map.pit_drag = Some(hit);
+            map.pit_sel = Some(hit);
+            let (lane_u, phase, _) = hit;
+            map.lane = if lane_u == 2 { "2".into() } else { "1".into() };
+            if let Some(key) = MapAuthoring::pit_sel_phase_key(phase) {
+                map.phase = key.into();
+            }
+        }
+    }
+
+    if buttons.primary_down && !buttons.shift {
+        if let Some((lane_u, phase, idx)) = map.pit_drag {
+            let (mx, my) = xform.unmap(pos);
+            let (rx, ry) = inverse_model(mx, my, mirror, rot);
+            map.set_point_with_joints(lane_u == 2, phase, idx, rx, ry);
+        }
+    }
+
+    if map.pit_drag.is_some() && !buttons.primary_down {
+        map.pit_drag = None;
+    }
+
+    let panning =
+        buttons.middle_down || (buttons.primary_down && buttons.shift && map.pit_drag.is_none());
+    if panning && (cursor_delta.0 != 0.0 || cursor_delta.1 != 0.0) {
+        map.pit_edit_pan.0 += cursor_delta.0;
+        map.pit_edit_pan.1 += cursor_delta.1;
+    }
+
+    if allow_click_append && buttons.primary_released && !buttons.shift {
+        if pit_handle_at(&hits, pos, handle_r).is_none() {
+            map.pit_sel = None;
+            let (mx, my) = xform.unmap(pos);
+            let (rx, ry) = inverse_model(mx, my, mirror, rot);
+            map.append_pit_edit_at(rx, ry);
+        }
+    }
+
+    if buttons.secondary_pressed {
+        map.active_pts_mut().pop();
+    }
+
+    pressed_handle
+}
 
 fn draw_pit_edit_drafts(
     ui: &mut Ui,
@@ -3160,6 +3352,67 @@ fn pit_handle_at(hits: &[(Pos2, PitHit)], pos: Pos2, r: f32) -> Option<PitHit> {
     None
 }
 
+/// Zoom pit-edit view toward `screen_pos` by egui-style `scroll_y` delta.
+pub(crate) fn apply_pit_edit_wheel_zoom(
+    map: &mut MapAuthoring,
+    base_xform: &PlotXform,
+    xform: &PlotXform,
+    screen_pos: Pos2,
+    scroll_y: f32,
+) {
+    if scroll_y.abs() < f32::EPSILON {
+        return;
+    }
+    let (wx, wy) = xform.unmap(screen_pos);
+    let factor = (1.0015_f32).powf(scroll_y);
+    let new_zoom = MapAuthoring::clamp_pit_zoom(map.pit_edit_zoom * factor);
+    let new_scale = base_xform.scale * new_zoom;
+    map.pit_edit_pan = (
+        screen_pos.x - base_xform.origin.x - (wx - base_xform.min.0) * new_scale,
+        screen_pos.y - base_xform.origin.y - (wy - base_xform.min.1) * new_scale,
+    );
+    map.pit_edit_zoom = new_zoom;
+}
+
+/// Fit + current pit-edit view transforms for a panel-sized plot (Skia wheel zoom).
+pub(crate) fn pit_edit_view_xforms(
+    cfg: &OverlayConfig,
+    map: &MapAuthoring,
+    plot: Rect,
+) -> (PlotXform, PlotXform) {
+    let asphalt_w = cfg.f64_key(SECTION, "asphalt_width", 12.0) as f32;
+    let mirror = cfg.bool_key(SECTION, "mirror", false);
+    let rot = cfg.f64_key(SECTION, "rotation", 0.0) as i32;
+    let pad_px = layout_pad(cfg, asphalt_w, cfg.text_scale(SECTION));
+    let mut modeled: Vec<(f32, f32)> = map
+        .cached_path
+        .iter()
+        .map(|&(x, y)| model_point(x, y, mirror, rot))
+        .collect();
+    if cfg.bool_key(SECTION, "show_pit", true) {
+        for lane in [&map.cached_pit, &map.cached_pit2] {
+            for &(x, y) in &lane.all_points() {
+                modeled.push(model_point(x, y, mirror, rot));
+            }
+        }
+    }
+    for pts in [
+        &map.entry_pts,
+        &map.road_pts,
+        &map.merge_pts,
+        &map.entry_pts_2,
+        &map.road_pts_2,
+        &map.merge_pts_2,
+    ] {
+        for &(x, y) in pts {
+            modeled.push(model_point(x, y, mirror, rot));
+        }
+    }
+    let base = PlotXform::fit(plot, &modeled, pad_px);
+    let view = base.with_view(map.pit_edit_zoom, map.pit_edit_pan);
+    (base, view)
+}
+
 fn handle_pit_edit(
     ui: &mut Ui,
     ctx: &mut WidgetCtx<'_>,
@@ -3171,22 +3424,19 @@ fn handle_pit_edit(
     handle_r: f32,
     hits: &[(Pos2, PitHit)],
 ) {
-    // Scroll zoom toward pointer (Python wheelEvent).
-    let scroll = ui.input(|i| i.smooth_scroll_delta);
-    if scroll.y.abs() > 0.0 {
+    // Ctrl/Cmd + scroll zooms toward the pointer.
+    let (scroll, ctrl) = ui.input(|i| {
+        (
+            i.smooth_scroll_delta,
+            i.modifiers.ctrl || i.modifiers.command,
+        )
+    });
+    if ctrl && scroll.y.abs() > 0.0 {
         if let Some(pos) = ui
             .input(|i| i.pointer.hover_pos())
             .filter(|p| plot.contains(*p))
         {
-            let (wx, wy) = xform.unmap(pos);
-            let factor = (1.0015_f32).powf(scroll.y);
-            let new_zoom = MapAuthoring::clamp_pit_zoom(ctx.map.pit_edit_zoom * factor);
-            let new_scale = base_xform.scale * new_zoom;
-            ctx.map.pit_edit_pan = (
-                pos.x - base_xform.origin.x - (wx - base_xform.min.0) * new_scale,
-                pos.y - base_xform.origin.y - (wy - base_xform.min.1) * new_scale,
-            );
-            ctx.map.pit_edit_zoom = new_zoom;
+            apply_pit_edit_wheel_zoom(ctx.map, base_xform, xform, pos, scroll.y);
             ui.ctx().request_repaint();
         }
     }
@@ -3343,7 +3593,7 @@ fn handle_corner_edit(
     }
 }
 
-fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
+pub(crate) fn inverse_model(x: f32, y: f32, mirror: bool, rot: i32) -> (f32, f32) {
     // Undo rotation first (inverse of rot), then undo mirror.
     let (mut x, y) = match rot.rem_euclid(360) {
         90 => (-y, x), // inverse of (y, -x)
@@ -3467,6 +3717,151 @@ mod tests {
         let in_pct = super::pit_approach_in_pct(&lane, 0.79);
         assert!(super::pct_in_interval(0.78, in_pct, 0.79));
         assert!((0.79 - in_pct).rem_euclid(1.0) > 0.01);
+    }
+
+    #[test]
+    fn car_on_pit_surface_includes_stall_not_approach() {
+        let stall = CarRow {
+            on_pit: false,
+            in_pit: true,
+            approaching_pits: false,
+            ..Default::default()
+        };
+        assert!(super::car_on_pit_surface(&stall));
+        let approach = CarRow {
+            on_pit: false,
+            in_pit: true,
+            approaching_pits: true,
+            ..Default::default()
+        };
+        assert!(!super::car_on_pit_surface(&approach));
+        let road = CarRow {
+            on_pit: true,
+            in_pit: false,
+            approaching_pits: false,
+            ..Default::default()
+        };
+        assert!(super::car_on_pit_surface(&road));
+    }
+
+    #[test]
+    fn pit_path_pos_aligns_beside_racing_line() {
+        // Unit square loop. At loop_frac=0.125 the racing line is mid bottom
+        // edge (0.5, 0); the parallel pit path should place beside it.
+        let racing = vec![
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (1.0, 1.0),
+            (0.0, 1.0),
+        ];
+        let lane = crate::track_path::PitLane {
+            path: vec![(0.1, -0.1), (1.1, -0.1)],
+            span: Some((0.0, 0.25)),
+            lane_speed_pct: 1.0,
+            ..Default::default()
+        };
+        let mid = super::pit_path_pos_for_route_pct(&lane, 0.125, 0.0, 0.25, 1.0, &racing, 0.125)
+            .expect("pos");
+        assert!((mid.0 - 0.5).abs() < 1e-3, "got {mid:?}");
+        assert!((mid.1 - (-0.1)).abs() < 1e-3, "got {mid:?}");
+        // Empty racing → span-linear fallback (mid-span → mid path).
+        let fallback =
+            super::pit_path_pos_for_route_pct(&lane, 0.125, 0.0, 0.25, 1.0, &[], 0.125)
+                .expect("fallback");
+        assert!((fallback.0 - 0.6).abs() < 1e-3, "got {fallback:?}");
+    }
+
+    #[test]
+    fn latched_mid_lane_stays_on_path_without_exit_blend() {
+        let cfg = crate::config::OverlayConfig::default();
+        let frame = crate::telemetry::TelemetryFrame {
+            cars: vec![CarRow {
+                car_idx: 1,
+                on_pit: false,
+                in_pit: false,
+                lap_dist_pct: 0.10,
+                position: 1,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let lane = crate::track_path::PitLane {
+            path: vec![(0.0, 0.0), (1.0, 0.0)],
+            span: Some((0.0, 0.2)),
+            in_pct: Some(0.0),
+            out_pct: Some(0.25),
+            lane_speed_pct: 1.0,
+            ..Default::default()
+        };
+        let mut map = crate::state::MapAuthoring {
+            cached_pit: lane.clone(),
+            pit_lane_speed_pct: 1.0,
+            ..Default::default()
+        };
+        map.pit_route_latch.insert(1, true);
+        let mut animating = false;
+        let ctx = super::super::WidgetCtx {
+            cfg: &cfg,
+            frame: &frame,
+            edit_mode: false,
+            demo: false,
+            map: &mut map,
+            mono_secs: 0.0,
+            panel_animating: &mut animating,
+            map_paint_mode: super::super::MapPaintMode::Full,
+        };
+        let racing = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        assert!(super::car_on_route(&ctx, &frame.cars[0]));
+        let pos = super::schematic_route_pos(&ctx, &frame.cars[0], 0.10, &racing, &lane, false)
+            .expect("latched mid-lane should stay on pit_path without exit");
+        // Must sample the pit path (y=0), not fall back to None/racing line.
+        // loop_frac 0.10 on the unit square ≈ (0.4, 0) → beside on pit at (0.4, 0).
+        assert!((pos.0 - 0.4).abs() < 0.05, "expected beside racing line, got {pos:?}");
+        assert!(pos.1.abs() < 1e-4, "expected y on pit path, got {pos:?}");
+    }
+
+    #[test]
+    fn stall_without_on_pit_stays_on_route() {
+        let cfg = crate::config::OverlayConfig::default();
+        let frame = crate::telemetry::TelemetryFrame {
+            cars: vec![CarRow {
+                car_idx: 3,
+                on_pit: false,
+                in_pit: true,
+                approaching_pits: false,
+                lap_dist_pct: 0.12,
+                position: 2,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let lane = crate::track_path::PitLane {
+            path: vec![(0.0, 0.0), (1.0, 0.0)],
+            span: Some((0.0, 0.2)),
+            lane_speed_pct: 1.0,
+            ..Default::default()
+        };
+        let mut map = crate::state::MapAuthoring {
+            cached_pit: lane.clone(),
+            pit_lane_speed_pct: 1.0,
+            ..Default::default()
+        };
+        let mut animating = false;
+        let ctx = super::super::WidgetCtx {
+            cfg: &cfg,
+            frame: &frame,
+            edit_mode: false,
+            demo: false,
+            map: &mut map,
+            mono_secs: 0.0,
+            panel_animating: &mut animating,
+            map_paint_mode: super::super::MapPaintMode::Full,
+        };
+        assert!(super::car_on_route(&ctx, &frame.cars[0]));
+        let racing = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
+        let pos = super::schematic_route_pos(&ctx, &frame.cars[0], 0.12, &racing, &lane, true)
+            .expect("stall car should place on pit_path");
+        assert!(pos.0 >= 0.0 && pos.0 <= 1.0);
     }
 
     #[test]

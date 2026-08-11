@@ -65,23 +65,11 @@ fn pace_car_speed_mps(f: &TelemetryFrame) -> Option<f32> {
 }
 
 fn pit_limit_mps(ctx: &WidgetCtx<'_>) -> Option<f32> {
-    ctx.frame
-        .pit_speed_limit_mps
-        .filter(|v| v.is_finite() && *v > 0.5)
-        .or_else(|| {
-            ctx.map
-                .cached_pit
-                .speed_ms
-                .filter(|v| v.is_finite() && *v > 0.5)
-        })
-        .or_else(|| {
-            let v = ctx.map.pit_speed_ms as f32;
-            if v.is_finite() && v > 0.5 {
-                Some(v)
-            } else {
-                None
-            }
-        })
+    crate::track_path::resolve_pit_speed_mps(
+        ctx.frame.pit_speed_limit_mps,
+        &ctx.map.cached_pit,
+        ctx.map.pit_speed_ms,
+    )
 }
 
 pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {

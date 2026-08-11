@@ -220,6 +220,11 @@ pub fn paint_track_scan(
                 }
             }
         });
+        ui.label(
+            RichText::new("Ctrl+scroll to zoom · Middle-drag or Shift+drag to pan")
+                .size(11.0)
+                .color(MUTED),
+        );
         ui.horizontal(|ui| {
             if button_kind(ui, "Clear selected", ButtonKind::Default).clicked() {
                 if let Some(mut st) = state.try_write() {
@@ -250,14 +255,31 @@ pub fn paint_track_scan(
     ui.add_space(8.0);
     enable_card(ui, "Track metadata", accent, |ui| {
         let mut speed = pit_speed;
+        // Seed from live SDK/YAML when the authoring field is still unset so a
+        // stale default (22 m/s ≈ 49 mph) is not what gets saved/shown.
+        if speed <= 0.5 {
+            if let Some(live) = state.read().frame.pit_speed_limit_mps {
+                if live.is_finite() && live > 0.5 {
+                    speed = live;
+                }
+            }
+        }
+        let speed_hint = if speed > 0.5 {
+            let st = state.read();
+            let shown = st.config.conv_speed(speed);
+            let unit = st.config.speed_unit();
+            Some(format!("≈ {shown:.0} {unit}"))
+        } else {
+            None
+        };
         if super::widgets::number_row(
             ui,
             "Pit speed limit (m/s)",
             &mut speed,
-            5.0..=40.0,
+            0.0..=40.0,
             0.5,
             accent,
-            None,
+            speed_hint.as_deref(),
         ) {
             if let Some(mut st) = state.try_write() {
                 st.map.pit_speed_ms = speed as f64;

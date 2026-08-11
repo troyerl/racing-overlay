@@ -57,6 +57,12 @@ mod win {
         class_color: String,
         class_id: i32,
         is_pace_car: bool,
+        /// DriverInfo ClubName from session YAML.
+        club_name: String,
+        /// DriverInfo FlairID (profile country flag); 0 = unset.
+        flair_id: i32,
+        /// DriverInfo FlairName when present.
+        flair_name: String,
     }
 
     #[derive(Clone, Default)]
@@ -749,6 +755,14 @@ mod win {
                 .filter(|&p| p > 0)
                 .unwrap_or(0)
         };
+        let country_code = if is_pace {
+            None
+        } else {
+            cache
+                .drivers
+                .get(&radio_idx)
+                .and_then(driver_country_code)
+        };
         Some(RadioSpeaker {
             position,
             car_number,
@@ -758,6 +772,7 @@ mod win {
             is_pro: false,
             group_icon: String::new(),
             group_color: String::new(),
+            country_code,
         })
     }
 
@@ -1228,27 +1243,30 @@ mod win {
                 }
             }
 
-            let (name, number, ir, lic, class_color, class_id, is_pace) = if let Some(d) = di {
-                (
-                    d.name.clone(),
-                    d.car_number.clone(),
-                    d.irating,
-                    d.license.clone(),
-                    d.class_color.clone(),
-                    d.class_id,
-                    d.is_pace_car || is_pace_idx,
-                )
-            } else {
-                (
-                    format!("Car {i}"),
-                    format!("{i}"),
-                    0,
-                    String::new(),
-                    String::new(),
-                    0,
-                    is_pace_idx,
-                )
-            };
+            let (name, number, ir, lic, class_color, class_id, is_pace, country_code) =
+                if let Some(d) = di {
+                    (
+                        d.name.clone(),
+                        d.car_number.clone(),
+                        d.irating,
+                        d.license.clone(),
+                        d.class_color.clone(),
+                        d.class_id,
+                        d.is_pace_car || is_pace_idx,
+                        driver_country_code(d),
+                    )
+                } else {
+                    (
+                        format!("Car {i}"),
+                        format!("{i}"),
+                        0,
+                        String::new(),
+                        String::new(),
+                        0,
+                        is_pace_idx,
+                        None,
+                    )
+                };
 
             let lap_delta = if player_lap > 0 && car_lap > 0 {
                 car_lap - player_lap
@@ -1308,6 +1326,7 @@ mod win {
                 speed_mps,
                 status_kind,
                 car_flag,
+                country_code,
             });
             seen.insert(i as i32);
         }
@@ -1348,6 +1367,7 @@ mod win {
                 inactive: true,
                 lap_dist_pct: -1.0,
                 status_kind: Some("garage".into()),
+                country_code: driver_country_code(d),
                 ..Default::default()
             });
         }
@@ -1357,35 +1377,42 @@ mod win {
         if let Some(idx) = radio_idx {
             if idx >= 0 && !out.iter().any(|c| c.car_idx == idx) {
                 let di = cache.drivers.get(&idx);
-                let (name, number, ir, lic, class_color, class_id, is_pace) = if let Some(d) = di {
-                    (
-                        if d.is_pace_car {
-                            "Race Control".into()
-                        } else {
-                            d.name.clone()
-                        },
-                        if d.is_pace_car {
-                            String::new()
-                        } else {
-                            d.car_number.clone()
-                        },
-                        d.irating,
-                        d.license.clone(),
-                        d.class_color.clone(),
-                        d.class_id,
-                        d.is_pace_car,
-                    )
-                } else {
-                    (
-                        format!("Car {idx}"),
-                        format!("{idx}"),
-                        0,
-                        String::new(),
-                        String::new(),
-                        0,
-                        false,
-                    )
-                };
+                let (name, number, ir, lic, class_color, class_id, is_pace, country_code) =
+                    if let Some(d) = di {
+                        (
+                            if d.is_pace_car {
+                                "Race Control".into()
+                            } else {
+                                d.name.clone()
+                            },
+                            if d.is_pace_car {
+                                String::new()
+                            } else {
+                                d.car_number.clone()
+                            },
+                            d.irating,
+                            d.license.clone(),
+                            d.class_color.clone(),
+                            d.class_id,
+                            d.is_pace_car,
+                            if d.is_pace_car {
+                                None
+                            } else {
+                                driver_country_code(d)
+                            },
+                        )
+                    } else {
+                        (
+                            format!("Car {idx}"),
+                            format!("{idx}"),
+                            0,
+                            String::new(),
+                            String::new(),
+                            0,
+                            false,
+                            None,
+                        )
+                    };
                 let live_pos = positions
                     .as_ref()
                     .and_then(|a| a.get(idx as usize).copied())
@@ -1413,6 +1440,7 @@ mod win {
                     } else {
                         "garage".into()
                     }),
+                    country_code,
                     ..Default::default()
                 });
             }
@@ -2078,10 +2106,21 @@ mod win {
                 }
             } else if let Some(v) = kv(t, "CarIsPaceCar") {
                 d.is_pace_car = v == "1" || v.eq_ignore_ascii_case("true");
+            } else if let Some(v) = kv(t, "ClubName") {
+                d.club_name = unquote(v);
+            } else if let Some(v) = kv(t, "FlairID") {
+                d.flair_id = v.parse().unwrap_or(0);
+            } else if let Some(v) = kv(t, "FlairName") {
+                d.flair_name = unquote(v);
             }
         }
         flush(&mut cur, &mut out);
         out
+    }
+
+    fn driver_country_code(d: &DriverInfo) -> Option<String> {
+        crate::country_flags::resolve_country_code(d.flair_id, &d.flair_name, &d.club_name)
+            .map(|c| c.to_string())
     }
 
     fn kv<'a>(line: &'a str, key: &str) -> Option<&'a str> {
@@ -2467,6 +2506,36 @@ SessionInfo:
                 !prefer_grid_positions(Some(&live), 1, &grid, 4, 12),
                 "spectating during a race must use live CarIdxPosition"
             );
+        }
+
+        #[test]
+        fn parse_drivers_reads_flair_and_club() {
+            let yaml = r#"
+DriverInfo:
+  DriverCarIdx: 0
+  Drivers:
+  - CarIdx: 0
+    UserName: Alice
+    ClubName: Florida
+    FlairID: 223
+    FlairName: United States
+  - CarIdx: 1
+    UserName: Bob
+    ClubName: Brazil
+    FlairID: 31
+    FlairName: Brazil
+  - CarIdx: 2
+    UserName: Cara
+    ClubName: International
+    FlairID: 1
+    FlairName: Unaffiliated
+"#;
+            let drivers = parse_drivers(yaml);
+            assert_eq!(drivers.get(&0).map(|d| d.flair_id), Some(223));
+            assert_eq!(drivers.get(&0).and_then(driver_country_code).as_deref(), Some("us"));
+            assert_eq!(drivers.get(&1).and_then(driver_country_code).as_deref(), Some("br"));
+            // Unaffiliated flair, International club → no country.
+            assert_eq!(drivers.get(&2).and_then(driver_country_code), None);
         }
     }
 }

@@ -873,8 +873,8 @@ impl OverlayApp {
             ahead_splash: field.ahead_splash,
         };
 
-        // Table focus change: drop sticky relative order so rows don't inherit
-        // the previous car's ahead/behind ranking.
+        // Table focus change: drop sticky Relative + Standings order so rows
+        // don't inherit the previous car's ranking.
         let table_focus =
             crate::telemetry::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
         if table_focus != self.last_table_focus {

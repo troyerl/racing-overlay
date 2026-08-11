@@ -19,6 +19,7 @@ fn preview_row() -> RadioSpeaker {
         is_pro: false,
         group_icon: "league".into(),
         group_color: "#5bb8ff".into(),
+        country_code: Some("us".into()),
     }
 }
 
@@ -108,6 +109,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let show_pos = ctx.cfg.bool_key(SECTION, "show_position", true);
     let show_num = ctx.cfg.bool_key(SECTION, "show_car_number", true);
     let show_name = ctx.cfg.bool_key(SECTION, "show_name", true);
+    let show_country = ctx.cfg.bool_key(SECTION, "show_country", false);
     let highlight = ctx.cfg.bool_key(SECTION, "highlight_player", true);
 
     let body_h = (card.bottom() - pad - y).max(18.0);
@@ -143,7 +145,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 
     let text = row_text(&row, show_pos, show_name, show_num);
-    if text.is_empty() {
+    if text.is_empty() && !(show_country && row.country_code.is_some()) {
         return;
     }
 
@@ -165,6 +167,25 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         );
         text_x += gw + gap;
         text_w = (text_w - (gw + gap)).max(0.0);
+    }
+
+    if show_country {
+        if let Some(code) = row.country_code.as_deref() {
+            let fw = (row_h * 0.92).clamp(13.0, 26.0);
+            let fh = (row_h - 5.0).max(11.0);
+            let flag_rect = Rect::from_min_size(
+                Pos2::new(text_x, row_rect.center().y - fh * 0.5),
+                Vec2::new(fw, fh),
+            );
+            crate::country_flags::paint_egui(ui, code, flag_rect);
+            let gap = ((row_h - 2.0) * 0.08).max(2.0);
+            text_x += fw + gap;
+            text_w = (text_w - (fw + gap)).max(0.0);
+        }
+    }
+
+    if text.is_empty() {
+        return;
     }
 
     let text_col = if row.is_pro && !row.active {

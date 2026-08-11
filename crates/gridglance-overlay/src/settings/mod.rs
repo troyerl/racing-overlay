@@ -1124,12 +1124,36 @@ fn paint_driver_groups(
             {
                 ui_state.dg_icon = "league".into();
             }
-            if let Some(next) = widgets::icon_combo(ui, "dg_icon", &ui_state.dg_icon, 180.0) {
+            if ui_state.dg_color.trim().is_empty() {
+                ui_state.dg_color = "#5bb8ff".into();
+            }
+            let icon_col = parse_color_str(&ui_state.dg_color);
+            if let Some(next) =
+                widgets::icon_combo(ui, "dg_icon", &ui_state.dg_icon, 180.0, icon_col)
+            {
                 ui_state.dg_icon = next;
+                if !ui_state.dg_new {
+                    let _ = persist_driver_group_members(state, ui_state, &mut groups, dirty);
+                }
             }
         });
         setting_row(ui, "Color", None, |ui| {
-            let _ = text_field(ui, &mut ui_state.dg_color, "#5bb8ff", 120.0);
+            if ui_state.dg_color.trim().is_empty() {
+                ui_state.dg_color = "#5bb8ff".into();
+            }
+            let col = parse_color_str(&ui_state.dg_color);
+            let mut rgba = [
+                col.r() as f32 / 255.0,
+                col.g() as f32 / 255.0,
+                col.b() as f32 / 255.0,
+                col.a() as f32 / 255.0,
+            ];
+            if color_button(ui, "dg_color", &ui_state.dg_color, &mut rgba) {
+                ui_state.dg_color = rgba_to_hex(rgba);
+                if !ui_state.dg_new {
+                    let _ = persist_driver_group_members(state, ui_state, &mut groups, dirty);
+                }
+            }
         });
 
         let member_names: Vec<String> = crate::driver_groups::members_from_csv(&ui_state.dg_members)
@@ -2427,7 +2451,7 @@ fn paint_ordered_columns(
         ui.horizontal(|ui| {
             ui.scope(|ui| {
                 ui.set_min_width(120.0);
-                ui.label(RichText::new(pretty_key(&col)).color(TITLE));
+                ui.label(RichText::new(choice_label(&col)).color(TITLE));
             });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if !locked {
@@ -2489,16 +2513,16 @@ fn paint_ordered_columns(
         .collect();
     // List by friendly name so the add picker is easy to scan.
     hidden.sort_by(|a, b| {
-        pretty_key(a)
+        choice_label(a)
             .to_ascii_lowercase()
-            .cmp(&pretty_key(b).to_ascii_lowercase())
+            .cmp(&choice_label(b).to_ascii_lowercase())
     });
     if !hidden.is_empty() {
         ui.add_space(6.0);
         ui.label(RichText::new("Add column").size(11.0).color(MUTED));
         for col in hidden {
             let mut on = false;
-            setting_row(ui, &pretty_key(col), None, |ui| {
+            setting_row(ui, &choice_label(col), None, |ui| {
                 if toggle_switch(
                     ui,
                     &mut on,
@@ -2850,7 +2874,7 @@ fn paint_table_widths(
             .clamp(0.4, 4.0);
         if number_row(
             ui,
-            &pretty_key(col),
+            &choice_label(col),
             &mut v,
             0.4..=4.0,
             0.05,

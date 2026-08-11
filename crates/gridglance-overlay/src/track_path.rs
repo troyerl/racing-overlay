@@ -22,6 +22,23 @@ pub struct PitLane {
     pub source: Option<String>,
 }
 
+/// Pit-road limit for display / pace: live SDK/YAML first, then authored lane,
+/// then the Track Scan field. Avoids stale track-JSON defaults (e.g. 22 m/s ≈
+/// 49 mph) masking the session's real limit.
+pub fn resolve_pit_speed_mps(
+    live_mps: Option<f32>,
+    lane: &PitLane,
+    authored_ms: f64,
+) -> Option<f32> {
+    live_mps
+        .filter(|v| v.is_finite() && *v > 0.5)
+        .or_else(|| lane.speed_ms.filter(|v| v.is_finite() && *v > 0.5))
+        .or_else(|| {
+            let v = authored_ms as f32;
+            (v.is_finite() && v > 0.5).then_some(v)
+        })
+}
+
 impl PitLane {
     pub fn has_drawable(&self) -> bool {
         self.path.len() >= 2 || self.entry.len() >= 2 || self.exit.len() >= 2
@@ -485,6 +502,40 @@ pub fn point_on_open(pts: &[(f32, f32)], t: f32) -> (f32, f32) {
     sample_at_dist(pts, &cum, target, false)
 }
 
+/// Closest point on an open polyline to `(x, y)` (clamped to the segment chain).
+pub fn nearest_point_on_open(pts: &[(f32, f32)], x: f32, y: f32) -> (f32, f32) {
+    if pts.is_empty() {
+        return (0.5, 0.5);
+    }
+    if pts.len() == 1 {
+        return pts[0];
+    }
+    let mut best_d = f32::MAX;
+    let mut best = pts[0];
+    for w in pts.windows(2) {
+        let a = w[0];
+        let b = w[1];
+        let abx = b.0 - a.0;
+        let aby = b.1 - a.1;
+        let apx = x - a.0;
+        let apy = y - a.1;
+        let ab2 = abx * abx + aby * aby;
+        let t = if ab2 > 1e-12 {
+            ((apx * abx + apy * aby) / ab2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let px = a.0 + abx * t;
+        let py = a.1 + aby * t;
+        let d2 = (x - px) * (x - px) + (y - py) * (y - py);
+        if d2 < best_d {
+            best_d = d2;
+            best = (px, py);
+        }
+    }
+    best
+}
+
 /// Map lap% through a wrapping [in_pct, out_pct] span onto 0..1 along the route.
 #[allow(dead_code)]
 pub fn route_t_for_pct(pct: f32, in_pct: f32, out_pct: f32) -> f32 {
@@ -777,5 +828,23 @@ mod tests {
         assert!(route.len() > pit.path.len());
         let t = route_t_for_pct(0.0, DEMO_PIT_IN_PCT, DEMO_PIT_OUT_PCT);
         assert!((0.0..=1.0).contains(&t));
+    }
+
+    #[test]
+    fn resolve_pit_speed_prefers_live_over_stale_lane() {
+        // 40 mph ≈ 17.88 m/s; stale track JSON default was 22 m/s ≈ 49 mph.
+        let lane = PitLane {
+            speed_ms: Some(22.0),
+            ..Default::default()
+        };
+        let live = Some(40.0_f32 / 2.236_936_3);
+        let got = resolve_pit_speed_mps(live, &lane, 22.0).unwrap();
+        assert!((got * 2.236_936_3 - 40.0).abs() < 0.05, "got {got} m/s");
+        assert_eq!(resolve_pit_speed_mps(None, &lane, 0.0), Some(22.0));
+        assert_eq!(
+            resolve_pit_speed_mps(None, &PitLane::default(), 17.9),
+            Some(17.9)
+        );
+        assert_eq!(resolve_pit_speed_mps(None, &PitLane::default(), 0.0), None);
     }
 }

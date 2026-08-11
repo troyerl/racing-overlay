@@ -478,6 +478,7 @@ fn preview_radio_row() -> RadioSpeaker {
         is_pro: false,
         group_icon: "league".into(),
         group_color: "#5bb8ff".into(),
+        country_code: Some("us".into()),
     }
 }
 
@@ -600,6 +601,7 @@ pub fn paint_radio(
     let show_pos = cfg.bool_key(section, "show_position", true);
     let show_num = cfg.bool_key(section, "show_car_number", true);
     let show_name = cfg.bool_key(section, "show_name", true);
+    let show_country = cfg.bool_key(section, "show_country", false);
     let highlight = cfg.bool_key(section, "highlight_player", true);
 
     let body_h = (rect.bottom() - pad - y).max(18.0);
@@ -630,7 +632,7 @@ pub fn paint_radio(
     }
 
     let text = radio_row_text(&row, show_pos, show_name, show_num);
-    if text.is_empty() {
+    if text.is_empty() && !(show_country && row.country_code.is_some()) {
         return true;
     }
 
@@ -654,6 +656,24 @@ pub fn paint_radio(
             .max(ic_px * 0.6);
         text_x += gw + gap;
         text_width_avail = (text_width_avail - (gw + gap)).max(0.0);
+    }
+
+    if show_country {
+        if let Some(code) = row.country_code.as_deref() {
+            if let Some(png) = crate::country_flags::flag_png_bytes(code) {
+                let fw = (row_h * 0.92).clamp(13.0, 26.0);
+                let fh = (row_h - 5.0).max(11.0);
+                let flag_rect = Rect::from_xywh(text_x, row_rect.center().1 - fh * 0.5, fw, fh);
+                c.draw_png_fit(png, flag_rect);
+                let gap = ((row_h - 2.0) * 0.08).max(2.0);
+                text_x += fw + gap;
+                text_width_avail = (text_width_avail - (fw + gap)).max(0.0);
+            }
+        }
+    }
+
+    if text.is_empty() {
+        return true;
     }
 
     let text_col = if row.is_pro && !row.active {
@@ -896,21 +916,11 @@ fn pace_car_speed_mps(f: &TelemetryFrame) -> Option<f32> {
 }
 
 fn pace_pit_limit_mps(f: &TelemetryFrame, map: &MapAuthoring) -> Option<f32> {
-    f.pit_speed_limit_mps
-        .filter(|v| v.is_finite() && *v > 0.5)
-        .or_else(|| {
-            map.cached_pit
-                .speed_ms
-                .filter(|v| v.is_finite() && *v > 0.5)
-        })
-        .or_else(|| {
-            let v = map.pit_speed_ms as f32;
-            if v.is_finite() && v > 0.5 {
-                Some(v)
-            } else {
-                None
-            }
-        })
+    crate::track_path::resolve_pit_speed_mps(
+        f.pit_speed_limit_mps,
+        &map.cached_pit,
+        map.pit_speed_ms,
+    )
 }
 
 /// Paint the pace/caution helper. Static content — always returns false.

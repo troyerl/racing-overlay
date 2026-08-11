@@ -434,6 +434,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                     "show_position",
                     "show_car_number",
                     "show_name",
+                    "show_country",
                     "highlight_player",
                     "text_scale",
                 ],
@@ -603,6 +604,7 @@ pub const TABLE_DATA_COLUMNS: &[&str] = &[
     "badge",
     "position",
     "car_number",
+    "country",
     "name",
     "license",
     "irating",
@@ -632,6 +634,7 @@ pub fn default_table_col_width(col: &str) -> f32 {
         "license" => 1.35,
         "pit" => 2.10,
         "last_lap" | "best_lap" => 2.90,
+        "country" => 1.15,
         "class_pos" | "status" | "car_flag" | "laps" => 1.35,
         "closing" => 1.80,
         "team" | "nickname" => 2.20,
@@ -958,6 +961,8 @@ pub fn choice_label(value: &str) -> String {
         "lap_count" => "Lap count".into(),
         "laps_left" => "Laps left".into(),
         "car_number" => "Car number".into(),
+        "car_flag" => "Session flag".into(),
+        "country" => "Country".into(),
         "fuel_laps" => "Fuel laps".into(),
         "fuel_stack" => "Fuel stack".into(),
         "cur_lap" => "Current lap".into(),
@@ -1159,6 +1164,9 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ),
         ("pace_caution", "show_delta") => {
             Some("Show You−Pace (ΔP) and You−Pit limit (ΔL) columns.")
+        }
+        ("radio_tower", "show_country") => {
+            Some("Show the speaker's country flag (from iRacing club region).")
         }
         ("dash", "start_go_text") => Some("Title on the dash flag bar for StartGo (green light)."),
         ("dash", "start_set_text") => Some("Title on the dash flag bar for StartSet."),

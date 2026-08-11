@@ -52,6 +52,14 @@ pub struct SkiaPanelHost {
     map_scratch: Vec<u8>,
     /// Edit-mode drag
     drag: Option<DragState>,
+    /// Pit-edit pointer edges (Skia HWND has no egui input).
+    pit_prev_left: bool,
+    pit_prev_right: bool,
+    pit_last_cursor: Option<(i32, i32)>,
+    /// Primary press started on a handle (suppress click-append).
+    pit_press_on_handle: bool,
+    /// Cursor moved past drag threshold during this primary press.
+    pit_press_moved: bool,
 }
 
 struct DragState {
@@ -83,6 +91,11 @@ impl SkiaPanelHost {
             map_canvas: None,
             map_scratch: Vec::new(),
             drag: None,
+            pit_prev_left: false,
+            pit_prev_right: false,
+            pit_last_cursor: None,
+            pit_press_on_handle: false,
+            pit_press_moved: false,
         }
     }
 
@@ -91,6 +104,11 @@ impl SkiaPanelHost {
             hwnd::destroy(p.hwnd.hwnd);
         }
         self.drag = None;
+        self.pit_prev_left = false;
+        self.pit_prev_right = false;
+        self.pit_last_cursor = None;
+        self.pit_press_on_handle = false;
+        self.pit_press_moved = false;
         self.map_bg = None;
         self.map_bg_fp = 0;
         self.map_canvas = None;
@@ -222,6 +240,9 @@ impl SkiaPanelHost {
 
         let w = geom.2;
         let h = geom.3;
+
+        // Pit-edit input (Skia HWND — egui never sees map pointer events).
+        self.handle_pit_edit_input(state, geom, w, h);
 
         let (force_full, path_ready, fp) = {
             let mut st = state.write();
@@ -483,6 +504,110 @@ impl SkiaPanelHost {
             p.animating = animating;
         }
         Some((ulw_ms, false))
+    }
+
+    fn handle_pit_edit_input(
+        &mut self,
+        state: &StateHandle,
+        geom: (i32, i32, i32, i32),
+        w: i32,
+        h: i32,
+    ) {
+        let left = hwnd::left_button_down();
+        let right = hwnd::right_button_down();
+        let middle = hwnd::middle_button_down();
+        let shift = hwnd::shift_down();
+        let cursor = hwnd::cursor_pos();
+        let primary_pressed = left && !self.pit_prev_left;
+        let primary_released = !left && self.pit_prev_left;
+        let secondary_pressed = right && !self.pit_prev_right;
+
+        let cursor_delta = match (cursor, self.pit_last_cursor) {
+            (Some((cx, cy)), Some((px, py))) => ((cx - px) as f32, (cy - py) as f32),
+            _ => (0.0, 0.0),
+        };
+
+        // Ctrl+scroll zoom.
+        let wheel = hwnd::take_ctrl_wheel_delta();
+
+        let pit_edit = state.read().map.pit_edit;
+        if !pit_edit {
+            self.pit_prev_left = left;
+            self.pit_prev_right = right;
+            self.pit_last_cursor = cursor;
+            self.pit_press_on_handle = false;
+            self.pit_press_moved = false;
+            if state.read().map.pit_drag.is_some() {
+                state.write().map.pit_drag = None;
+            }
+            return;
+        }
+
+        let plot = egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(w as f32, h as f32),
+        );
+        let local_pos = cursor.map(|(cx, cy)| {
+            egui::pos2((cx - geom.0) as f32, (cy - geom.1) as f32)
+        });
+
+        if primary_pressed {
+            self.pit_press_on_handle = false;
+            self.pit_press_moved = false;
+        }
+        if left && (cursor_delta.0.abs() > 3.0 || cursor_delta.1.abs() > 3.0) {
+            self.pit_press_moved = true;
+        }
+
+        {
+            let mut st = state.write();
+            let cfg = st.config.clone();
+            let (base, view) = widgets::map::pit_edit_view_xforms(cfg.as_ref(), &st.map, plot);
+            let mirror = cfg.bool_key("map", "mirror", false);
+            let rot = cfg.f64_key("map", "rotation", 0.0) as i32;
+            let asphalt_w = cfg.f64_key("map", "asphalt_width", 12.0) as f32;
+            let handle_r =
+                ((asphalt_w * 0.35).max(4.0) * st.map.pit_edit_zoom.max(1.0).sqrt()).max(8.0);
+
+            if wheel != 0 {
+                if let Some(pos) = local_pos.filter(|p| plot.contains(*p)) {
+                    let scroll_y = wheel as f32 * (40.0 / 120.0);
+                    widgets::map::apply_pit_edit_wheel_zoom(
+                        &mut st.map, &base, &view, pos, scroll_y,
+                    );
+                }
+            }
+
+            let buttons = widgets::map::PitEditButtons {
+                primary_down: left,
+                primary_pressed,
+                primary_released,
+                secondary_pressed,
+                middle_down: middle,
+                shift,
+            };
+            let allow_append =
+                primary_released && !self.pit_press_on_handle && !self.pit_press_moved;
+            let pressed_handle = widgets::map::tick_pit_edit_pointer(
+                &mut st.map,
+                &view,
+                mirror,
+                rot,
+                handle_r,
+                plot,
+                local_pos,
+                cursor_delta,
+                &buttons,
+                allow_append,
+            );
+            if pressed_handle {
+                self.pit_press_on_handle = true;
+            }
+        }
+
+        self.pit_prev_left = left;
+        self.pit_prev_right = right;
+        self.pit_last_cursor = cursor;
     }
 
     fn handle_edit_input(

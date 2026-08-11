@@ -42,7 +42,11 @@ pub fn extract_pit_polylines_svg(pit_svg: &str) -> Option<PitPolylinesSvg> {
 
     let (road, merge) = if let Some(m) = mergeline.as_deref() {
         let merge_subs = collect_subpaths(m);
+        // Sparse Mergeline ticks (Lime Rock: 3 chevrons) can sit just outside
+        // the default NN jump cap; fall back to axis-sorted midpoints before
+        // synthesizing a stub from the road end (which picks the wrong exit).
         let merge = stitch_dash_midpoints(&merge_subs, MIN_MERGE_DASHES)
+            .or_else(|| sort_midpoints_along_axis(&merge_subs, MIN_MERGE_DASHES))
             .or_else(|| {
                 // Leftover paths in the pit SVG (not in Pitroad).
                 let all = collect_subpaths(pit_svg);
@@ -51,6 +55,7 @@ pub fn extract_pit_polylines_svg(pit_svg: &str) -> Option<PitPolylinesSvg> {
                     .filter(|s| !road_subs.iter().any(|r| approx_same_poly(r, s)))
                     .collect();
                 stitch_dash_midpoints(&rest, MIN_MERGE_DASHES)
+                    .or_else(|| sort_midpoints_along_axis(&rest, MIN_MERGE_DASHES))
             })
             .or_else(|| synthesize_merge_from_road(&stitched))?;
         (stitched, merge)
@@ -381,7 +386,43 @@ fn adaptive_max_jump(dashes: &[Dash], diag: f32) -> f32 {
     } else {
         nn[nn.len() / 2]
     };
-    (median * 3.0).max(diag * 0.08).min(diag * 0.35).max(1.0)
+    // Sparse merge ticks (e.g. Lime Rock Mergeline) often sit at ~0.35·diag
+    // spacing; the old 0.35 cap rejected the next tick by a fraction of a
+    // pixel and fell through to a synthesized stub on the wrong road end.
+    let cap = if dashes.len() <= 6 {
+        diag * 0.55
+    } else {
+        diag * 0.35
+    };
+    (median * 3.0).max(diag * 0.08).min(cap).max(1.0)
+}
+
+/// Sort dash midpoints along the cluster's long axis (fallback when NN stitch
+/// fails on a short, evenly spaced Mergeline).
+fn sort_midpoints_along_axis(subs: &[Vec<(f32, f32)>], min_dashes: usize) -> Option<Vec<(f32, f32)>> {
+    let mut mids: Vec<(f32, f32)> = subs.iter().filter_map(|s| dash_mid(s)).collect();
+    if mids.len() < min_dashes {
+        return None;
+    }
+    let cx = mids.iter().map(|p| p.0).sum::<f32>() / mids.len() as f32;
+    let cy = mids.iter().map(|p| p.1).sum::<f32>() / mids.len() as f32;
+    let mut var_x = 0.0f32;
+    let mut var_y = 0.0f32;
+    for p in &mids {
+        var_x += (p.0 - cx).powi(2);
+        var_y += (p.1 - cy).powi(2);
+    }
+    if var_x >= var_y {
+        mids.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    } else {
+        mids.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    }
+    let chain_len = polyline_length(&mids);
+    let diag = bbox_diag(subs);
+    if chain_len < diag * MIN_CHAIN_FRAC {
+        return None;
+    }
+    Some(mids)
 }
 
 /// Greedy nearest-neighbor chain grown forward, then backward from the start.
@@ -531,6 +572,30 @@ mod tests {
 </svg>"#;
         let pit = extract_pit_polylines_svg(svg).expect("pit despite broken cubic");
         assert!(pit.merge.len() >= 3);
+    }
+
+    #[test]
+    fn stitches_sparse_mergeline_near_jump_cap() {
+        // Three merge ticks spaced at ~0.35·diag — previously rejected by the
+        // adaptive jump cap and replaced with a wrong-end synthesized stub.
+        let svg = r#"<svg>
+<g id="Pitroad">
+<path d="M600,100 L610,100"/><path d="M660,100 L670,100"/><path d="M720,100 L730,100"/>
+<path d="M780,100 L790,100"/><path d="M840,100 L850,100"/><path d="M900,100 L910,100"/>
+<path d="M960,100 L970,100"/><path d="M1020,100 L1030,100"/>
+</g>
+<g id="Mergeline">
+<path d="M450,100 L460,100"/><path d="M510,100 L520,100"/><path d="M570,100 L580,100"/>
+</g>
+</svg>"#;
+        let pit = extract_pit_polylines_svg(svg).expect("pit");
+        assert!(pit.merge.len() >= 3, "merge={}", pit.merge.len());
+        let merge_x: f32 = pit.merge.iter().map(|p| p.0).sum::<f32>() / pit.merge.len() as f32;
+        let road_x: f32 = pit.road.iter().map(|p| p.0).sum::<f32>() / pit.road.len() as f32;
+        assert!(
+            merge_x < road_x,
+            "merge should sit left of pit road, merge_x={merge_x} road_x={road_x}"
+        );
     }
 
     #[test]

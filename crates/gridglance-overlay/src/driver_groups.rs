@@ -2,7 +2,26 @@
 
 use serde_json::{json, Value};
 
-pub const DRIVER_GROUP_ICONS: &[&str] = &["league", "flag", "trophy", "shield", "crown", "bolt"];
+pub const DRIVER_GROUP_ICONS: &[&str] = &[
+    "league",
+    "flag",
+    "trophy",
+    "shield",
+    "crown",
+    "bolt",
+    // Negative / caution tags
+    "skull",        // bad / dangerous driver
+    "thumbs_down",  // clearly negative
+    "ban",          // banned / avoid
+    "user_slash",   // blocked
+    "biohazard",    // dirty / toxic racing
+    "smog",         // dirty air metaphor
+    "bomb",         // liability
+    "angry",        // hot-headed
+    "ghost",        // invisible / offline vibe
+    "fire",         // dumpster-fire energy
+    "poop",         // tongue-in-cheek dirty
+];
 const DEFAULT_COLOR: &str = "#5bb8ff";
 const DEFAULT_ICON: &str = "league";
 

@@ -524,6 +524,42 @@ mod tests {
     }
 
     #[test]
+    fn lime_rock_gp_pit_exits_via_mergeline() {
+        // Lime Rock puts `#Mergeline` on the left of the frontstretch. A tight
+        // dash-jump cap used to drop it and synthesize an exit on the right
+        // bend, baking a ~0.86 lap pit_span (long way around).
+        let html = fixture("lime_rock_gp.html");
+        let doc = import_loop_doc(&html, 120, 4, 0.0).expect("import");
+        assert_eq!(doc.track_id, Some(353));
+        let pit = doc.pit.as_ref().expect("lime rock should import pit");
+        assert!(pit.path.len() >= 8);
+        assert!(pit.exit.len() >= 2);
+
+        let p0 = pit.path[0];
+        let p1 = *pit.path.last().unwrap();
+        let tip = *pit.exit.last().unwrap();
+        // Exit/merge belongs on the left side of the pit road.
+        assert!(
+            tip.0 < 0.45 && tip.0 <= p0.0.max(p1.0),
+            "merge tip should be on the left, tip={tip:?} path=({p0:?}->{p1:?})"
+        );
+        assert!(
+            (p1.0 - tip.0).abs() + 1e-3 < (p0.0 - tip.0).abs()
+                || (p1.0 - tip.0).hypot(p1.1 - tip.1) + 0.02
+                    < (p0.0 - tip.0).hypot(p0.1 - tip.1),
+            "exit should attach near path end, tip={tip:?} p0={p0:?} p1={p1:?}"
+        );
+
+        let (lo, hi) = pit.span.expect("span");
+        let travel = (hi - lo).rem_euclid(1.0);
+        assert!(
+            travel < 0.35,
+            "pit span should be the short frontstretch arc, travel={travel} span=({lo},{hi})"
+        );
+        assert_eq!(doc.to_json()["pit_source"], "html");
+    }
+
+    #[test]
     fn charlotte_imports_pit_road_without_mergeline() {
         // Charlotte draws merge ticks inside `#Pitroad` (no `#Mergeline`).
         let html = fixture("charlotte_roval.html");

@@ -3,6 +3,8 @@
 use crate::win_click;
 
 #[cfg(windows)]
+use std::sync::atomic::{AtomicI32, Ordering};
+#[cfg(windows)]
 use std::sync::Once;
 
 #[derive(Clone, Debug)]
@@ -12,6 +14,10 @@ pub struct PanelHwnd {
 
 #[cfg(windows)]
 static REGISTER: Once = Once::new();
+
+/// Accumulated WM_MOUSEWHEEL delta (WHEEL_DELTA units) while Ctrl is held.
+#[cfg(windows)]
+static CTRL_WHEEL_ACCUM: AtomicI32 = AtomicI32::new(0);
 
 #[cfg(windows)]
 const CLASS_NAME: &str = "GridGlanceSkiaPanel";
@@ -23,14 +29,37 @@ unsafe extern "system" fn wnd_proc(
     wparam: windows::Win32::Foundation::WPARAM,
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> windows::Win32::Foundation::LRESULT {
-    use windows::Win32::UI::WindowsAndMessaging::{DefWindowProcW, HTTRANSPARENT, WM_NCHITTEST};
+    use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_CONTROL};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DefWindowProcW, HTTRANSPARENT, WM_MOUSEWHEEL, WM_NCHITTEST,
+    };
     // Default: never activate; click-through is controlled via WS_EX_TRANSPARENT.
     if msg == WM_NCHITTEST {
         // When not transparent, allow client hits for edit drag (host polls cursor).
         return windows::Win32::Foundation::LRESULT(1); // HTCLIENT
     }
+    if msg == WM_MOUSEWHEEL {
+        // Ctrl+wheel → pit-edit zoom (consumed so the page behind doesn't scroll).
+        let ctrl_down = GetKeyState(VK_CONTROL.0 as i32) < 0;
+        if ctrl_down {
+            let delta = ((wparam.0 >> 16) as i16) as i32;
+            CTRL_WHEEL_ACCUM.fetch_add(delta, Ordering::Relaxed);
+            return windows::Win32::Foundation::LRESULT(0);
+        }
+    }
     let _ = (wparam, HTTRANSPARENT);
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+/// Take and clear accumulated Ctrl+wheel delta (WHEEL_DELTA units; typically ±120).
+#[cfg(windows)]
+pub fn take_ctrl_wheel_delta() -> i32 {
+    CTRL_WHEEL_ACCUM.swap(0, Ordering::Relaxed)
+}
+
+#[cfg(not(windows))]
+pub fn take_ctrl_wheel_delta() -> i32 {
+    0
 }
 
 #[cfg(windows)]
@@ -194,12 +223,51 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
 }
 
 #[cfg(windows)]
+fn key_down(vk: windows::Win32::UI::Input::KeyboardAndMouse::VIRTUAL_KEY) -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+    unsafe { GetAsyncKeyState(vk.0 as i32) as u16 & 0x8000 != 0 }
+}
+
+#[cfg(windows)]
 pub fn left_button_down() -> bool {
-    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
-    unsafe { GetAsyncKeyState(VK_LBUTTON.0 as i32) as u16 & 0x8000 != 0 }
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_LBUTTON;
+    key_down(VK_LBUTTON)
 }
 
 #[cfg(not(windows))]
 pub fn left_button_down() -> bool {
+    false
+}
+
+#[cfg(windows)]
+pub fn middle_button_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_MBUTTON;
+    key_down(VK_MBUTTON)
+}
+
+#[cfg(not(windows))]
+pub fn middle_button_down() -> bool {
+    false
+}
+
+#[cfg(windows)]
+pub fn right_button_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_RBUTTON;
+    key_down(VK_RBUTTON)
+}
+
+#[cfg(not(windows))]
+pub fn right_button_down() -> bool {
+    false
+}
+
+#[cfg(windows)]
+pub fn shift_down() -> bool {
+    use windows::Win32::UI::Input::KeyboardAndMouse::VK_SHIFT;
+    key_down(VK_SHIFT)
+}
+
+#[cfg(not(windows))]
+pub fn shift_down() -> bool {
     false
 }

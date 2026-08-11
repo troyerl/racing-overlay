@@ -104,6 +104,8 @@ pub struct MapAuthoring {
     pub pit_sel: Option<(u8, u8, usize)>,
     /// Hold-before-switch state for ahead/behind/leader markers.
     pub marker_hold: crate::map_markers::HoldStates,
+    /// Focus car lap % from the previous marker resolve (S/F wrap detection).
+    pub marker_focus_prev_pct: Option<f32>,
     /// Predict-to-now lap_dist_pct per car_idx.
     pub car_anim: HashMap<i32, CarPctAnim>,
     /// Screen-space eased car dots (Python `_car_anim` screen pts).
@@ -168,6 +170,7 @@ impl Default for MapAuthoring {
             pit_drag: None,
             pit_sel: None,
             marker_hold: crate::map_markers::fresh_hold_states(),
+            marker_focus_prev_pct: None,
             car_anim: HashMap::new(),
             car_screen: HashMap::new(),
             last_paint_secs: 0.0,
@@ -841,7 +844,9 @@ impl SharedState {
             map: MapAuthoring {
                 phase: "road".into(),
                 lane: "primary".into(),
-                pit_speed_ms: 22.0,
+                // 0 = unset; display prefers live TrackPitSpeedLimit. A prior
+                // default of 22 m/s (~49 mph) was getting baked into track JSON.
+                pit_speed_ms: 0.0,
                 pit_lane_speed_pct: 1.0,
                 ..Default::default()
             },

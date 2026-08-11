@@ -605,6 +605,44 @@ impl Canvas {
         self.surface.canvas().restore();
     }
 
+    /// Decode a PNG and draw it centered inside `dest` (aspect-fit, rounded).
+    pub fn draw_png_fit(&mut self, png: &[u8], dest: Rect) {
+        use skia_safe::{AlphaType, ColorType, Data, Image, ImageInfo, RRect};
+        // Prefer Skia decode; fall back through `image` for palette PNGs Skia rejects.
+        let img = Image::from_encoded(Data::new_copy(png)).or_else(|| {
+            let rgba = image::load_from_memory(png).ok()?.into_rgba8();
+            let w = rgba.width() as i32;
+            let h = rgba.height() as i32;
+            let info = ImageInfo::new((w, h), ColorType::RGBA8888, AlphaType::Unpremul, None);
+            let row_bytes = (w as usize) * 4;
+            skia_safe::images::raster_from_data(&info, Data::new_copy(rgba.as_raw()), row_bytes)
+        });
+        let Some(img) = img else {
+            return;
+        };
+        let iw = img.width() as f32;
+        let ih = img.height() as f32;
+        if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
+            return;
+        }
+        let max_h = dest.height() * 0.64;
+        let max_w = dest.width() * 0.88;
+        let scale = (max_w / iw).min(max_h / ih);
+        let w = iw * scale;
+        let h = ih * scale;
+        let x = dest.left() + (dest.width() - w) * 0.5;
+        let y = dest.top() + (dest.height() - h) * 0.5;
+        let dst = skia_safe::Rect::from_xywh(x, y, w, h);
+        let radius = (h * 0.18).clamp(1.5, 3.5);
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        let canvas = self.surface.canvas();
+        canvas.save();
+        canvas.clip_rrect(RRect::new_rect_xy(dst, radius, radius), None, true);
+        canvas.draw_image_rect(&img, None, dst, &paint);
+        canvas.restore();
+    }
+
     /// Overwrite the whole surface with top-down premul BGRA pixels.
     /// Used to seed the hot map path with its cached static track.
     pub fn write_bgra(&mut self, bgra: &[u8]) -> bool {

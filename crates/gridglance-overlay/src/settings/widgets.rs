@@ -592,7 +592,13 @@ pub fn styled_choice_combo(
 }
 
 /// Driver-group icon picker: Font Awesome glyph + friendly label.
-pub fn icon_combo(ui: &mut Ui, id_source: &str, selected_key: &str, width: f32) -> Option<String> {
+pub fn icon_combo(
+    ui: &mut Ui,
+    id_source: &str,
+    selected_key: &str,
+    width: f32,
+    icon_color: Color32,
+) -> Option<String> {
     let options = crate::driver_groups::DRIVER_GROUP_ICONS;
     let id = ui.make_persistent_id(id_source);
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(width, 34.0), Sense::click());
@@ -612,6 +618,7 @@ pub fn icon_combo(ui: &mut Ui, id_source: &str, selected_key: &str, width: f32) 
         ui,
         rect.left_center() + Vec2::new(11.0, 0.0),
         selected_key,
+        icon_color,
         theme::TEXT,
     );
     let cx = rect.right() - 15.0;
@@ -644,7 +651,7 @@ pub fn icon_combo(ui: &mut Ui, id_source: &str, selected_key: &str, width: f32) 
                 .show(ui, |ui| {
                     for &key in options {
                         let selected_row = key == selected_key;
-                        let row_resp = icon_nav_row(ui, key, selected_row);
+                        let row_resp = icon_nav_row(ui, key, selected_row, icon_color);
                         if row_resp.clicked() {
                             picked = Some(key.to_string());
                             ui.memory_mut(|mem| mem.close_popup());
@@ -656,7 +663,13 @@ pub fn icon_combo(ui: &mut Ui, id_source: &str, selected_key: &str, width: f32) 
     picked
 }
 
-fn paint_icon_label(ui: &mut Ui, origin: Pos2, key: &str, color: Color32) {
+fn paint_icon_label(
+    ui: &mut Ui,
+    origin: Pos2,
+    key: &str,
+    icon_color: Color32,
+    label_color: Color32,
+) {
     let mut x = origin.x;
     if let Some(g) = crate::icons::glyph(key) {
         ui.painter().text(
@@ -664,7 +677,7 @@ fn paint_icon_label(ui: &mut Ui, origin: Pos2, key: &str, color: Color32) {
             egui::Align2::LEFT_CENTER,
             g,
             crate::icons::font_id(14.0),
-            color,
+            icon_color,
         );
         x += 22.0;
     }
@@ -673,11 +686,11 @@ fn paint_icon_label(ui: &mut Ui, origin: Pos2, key: &str, color: Color32) {
         egui::Align2::LEFT_CENTER,
         crate::icons::label(key),
         FontId::proportional(12.0),
-        color,
+        label_color,
     );
 }
 
-fn icon_nav_row(ui: &mut Ui, key: &str, selected: bool) -> Response {
+fn icon_nav_row(ui: &mut Ui, key: &str, selected: bool, icon_color: Color32) -> Response {
     let (rect, resp) =
         ui.allocate_exact_size(Vec2::new(ui.available_width(), 28.0), Sense::click());
     if selected || resp.hovered() {
@@ -688,8 +701,14 @@ fn icon_nav_row(ui: &mut Ui, key: &str, selected: bool) -> Response {
         };
         ui.painter().rect_filled(rect, 7.0, fill);
     }
-    let color = if selected { TITLE } else { theme::TEXT };
-    paint_icon_label(ui, rect.left_center() + Vec2::new(10.0, 0.0), key, color);
+    let label_color = if selected { TITLE } else { theme::TEXT };
+    paint_icon_label(
+        ui,
+        rect.left_center() + Vec2::new(10.0, 0.0),
+        key,
+        icon_color,
+        label_color,
+    );
     resp
 }
 
@@ -972,7 +991,7 @@ pub fn color_button(
     hex: &str,
     rgba: &mut [f32; 4],
 ) -> bool {
-    let col = Color32::from_rgba_unmultiplied(
+    let mut col = Color32::from_rgba_unmultiplied(
         (rgba[0] * 255.0) as u8,
         (rgba[1] * 255.0) as u8,
         (rgba[2] * 255.0) as u8,
@@ -1016,7 +1035,20 @@ pub fn color_button(
                 .corner_radius(FIELD_RADIUS)
                 .inner_margin(egui::Margin::same(8))
                 .show(ui, |ui| {
-                    changed = ui.color_edit_button_rgba_unmultiplied(rgba).changed();
+                    // Embed the full picker here — nesting color_edit_button
+                    // opens a second popup that closes this one on click.
+                    ui.spacing_mut().slider_width = 220.0;
+                    if egui::widgets::color_picker::color_picker_color32(
+                        ui,
+                        &mut col,
+                        egui::widgets::color_picker::Alpha::OnlyBlend,
+                    ) {
+                        rgba[0] = col.r() as f32 / 255.0;
+                        rgba[1] = col.g() as f32 / 255.0;
+                        rgba[2] = col.b() as f32 / 255.0;
+                        rgba[3] = col.a() as f32 / 255.0;
+                        changed = true;
+                    }
                 });
         },
     );
