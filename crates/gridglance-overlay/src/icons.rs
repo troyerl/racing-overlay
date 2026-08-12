@@ -133,6 +133,7 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("irating", 0xF201), // chart-line
     ("irating_up", 0xF062),
     ("irating_down", 0xF063),
+    ("license", 0xF3ED), // shield-halved — Safety Rating / license
     // car controls / warnings
     ("dc_brake_bias", 0xF1DE), // sliders
     ("dc_tc", 0xF3ED),
@@ -246,6 +247,7 @@ mod tests {
             "irating",
             "irating_up",
             "irating_down",
+            "license",
             "leader",
             "car_ahead",
             "car_behind",

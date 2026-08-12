@@ -46,14 +46,6 @@ fn paint_data(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame) {
     let inner = w - 2.0 * m;
     let d = &frame.fuel;
 
-    // Accent top bar.
-    let bar_h = (h * 0.018).max(3.0);
-    c.fill_rect(
-        Rect::from_xywh(bounds.left() + m, bounds.top() + h * 0.012, inner, bar_h),
-        section_color(cfg, SECTION, "accent", "#e23b3b"),
-        2.0,
-    );
-
     let show_pill = cfg.bool_key(SECTION, "show_pill", true);
     let show_add = cfg.bool_key(SECTION, "show_add", true);
     let show_gauge = cfg.bool_key(SECTION, "show_gauge", true);
@@ -84,7 +76,7 @@ fn paint_data(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame) {
         return;
     }
 
-    let content_top = bounds.top() + h * 0.012 + bar_h + h * 0.015;
+    let content_top = bounds.top() + h * 0.02;
     let content_bottom = bounds.top() + h * 0.985;
     let gap = (h * 0.02).max(4.0);
     let sumw: f32 = blocks.iter().map(|(_, wt)| wt).sum();
@@ -545,31 +537,52 @@ fn draw_gauge(
     }
 }
 
+/// Desired stats header/row heights from settings (before fitting into a slot).
+fn stats_desired_metrics(cfg: &OverlayConfig) -> (f32, f32) {
+    let fixed_rh = cfg.f64_key(SECTION, "row_height_px", 28.0) as f32;
+    if fixed_rh > 0.0 {
+        let row = fixed_rh.max(12.0);
+        let head = (row * 1.1).clamp(14.0, 40.0);
+        (head, row)
+    } else {
+        (20.0, 18.0)
+    }
+}
+
 fn stats_row_metrics(cfg: &OverlayConfig, h: f32) -> (f32, f32) {
     let n = STAT_ROWS.len() as f32;
-    let fixed_rh = cfg.f64_key(SECTION, "row_height_px", 0.0) as f32;
-    if fixed_rh > 0.0 {
-        let head = (fixed_rh * 1.1).min(h * 0.3);
-        let row = ((h - head) / n).min(fixed_rh).max(1.0);
-        return (head, row);
+    let fixed_rh = cfg.f64_key(SECTION, "row_height_px", 28.0) as f32;
+    let max_frac = cfg.f64_key(SECTION, "max_row_height_frac", 0.14) as f32;
+
+    let (mut head, mut row) = if fixed_rh > 0.0 {
+        stats_desired_metrics(cfg)
+    } else {
+        // Auto: fill the allocated slot, capped by max_row_height_frac.
+        let head = (h * 0.22).clamp(1.0, h * 0.4);
+        let mut row = ((h - head) / n).max(1.0);
+        if max_frac > 0.0 {
+            row = row.min((h * max_frac).max(1.0));
+        }
+        (head, row)
+    };
+
+    // Never overflow the stats slot into the PIT strip.
+    let need = head + n * row;
+    if need > h && h > 1.0 {
+        let s = h / need;
+        head = (head * s).max(1.0);
+        row = (row * s).max(1.0);
     }
-    // Always fit within allocated height — never overflow into the PIT strip.
-    let head_h = (h * 0.22).min(h * 0.28).max(1.0).min(h * 0.4);
-    let row_h = ((h - head_h) / n).max(1.0);
-    (head_h, row_h)
+    (head, row)
 }
 
 fn stats_content_height(cfg: &OverlayConfig, allocated_h: f32) -> f32 {
-    let (head_h, row_h) = stats_row_metrics(cfg, allocated_h);
     let n = STAT_ROWS.len() as f32;
-    let min_row = 18.0_f32;
-    let min_head = 20.0_f32;
-    let comfortable = min_head + n * min_row;
-    if comfortable <= allocated_h {
-        comfortable
-    } else {
-        head_h + n * row_h
-    }
+    let (head, row) = stats_desired_metrics(cfg);
+    let need = head + n * row;
+    // Shrink-wrap to the configured size when the proportional slot is larger;
+    // otherwise keep the slot (rows scale down in `stats_row_metrics`).
+    need.min(allocated_h.max(0.0))
 }
 
 fn scenario_for<'a>(d: &'a FuelCalcState, key: &str) -> &'a FuelScenario {

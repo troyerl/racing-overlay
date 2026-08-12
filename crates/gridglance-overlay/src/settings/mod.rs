@@ -991,6 +991,32 @@ fn paint_lan(
                 ui_state,
             );
         }
+        ui.add_space(8.0);
+        let mut upload_laps = state
+            .read()
+            .config
+            .cfg
+            .get("upload_race_laps")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        setting_row(
+            ui,
+            "Upload race laps after finish",
+            help_text("__lan__", "upload_race_laps"),
+            |ui| {
+                if toggle_switch(ui, &mut upload_laps, accent, ui.id().with("upload_race_laps"))
+                    .changed()
+                {
+                    set_global(
+                        state,
+                        "upload_race_laps",
+                        json!(upload_laps),
+                        dirty,
+                        ui_state,
+                    );
+                }
+            },
+        );
     });
 }
 

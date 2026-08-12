@@ -85,6 +85,19 @@ pub fn paint_table(
 
     let visible_slots = (inner.height() / rh).floor().max(1.0) as usize;
     let scroll = standings_scroll(cfg, section, rows, visible_slots);
+    // Relative anim targets are already packed (non-empty only). Center that
+    // live block in the body so spare panel height splits above and below.
+    let live_count = rows.iter().filter(|r| !r.empty).count();
+    let body_y0 = if section == "relative" {
+        let content_h = live_count as f32 * rh;
+        if content_h > 0.0 && content_h < inner.height() - 0.5 {
+            inner.top() + (inner.height() - content_h) * 0.5
+        } else {
+            inner.top()
+        }
+    } else {
+        inner.top()
+    };
 
     let mut draw_order: Vec<usize> = (0..rows.len()).collect();
     draw_order.sort_by(|&a, &b| {
@@ -97,12 +110,17 @@ pub fn paint_table(
     c.clip_rect(inner, |c| {
         for &i in &draw_order {
             let row = &rows[i];
+            // Empty relative pads only reserved slot indices in the data model;
+            // they must not consume vertical space (keeps the live block centered).
+            if section == "relative" && row.empty {
+                continue;
+            }
             let slot = if row.empty {
                 i as f32
             } else {
                 slot_idx(anim, row, i)
             } - scroll;
-            let ry = inner.top() + slot * rh;
+            let ry = body_y0 + slot * rh;
             let row_rect = Rect::from_xywh(inner.left(), ry, inner.width(), rh);
             if row_rect.bottom() < inner.top() - rh || row_rect.top() > inner.bottom() + rh {
                 continue;
@@ -523,9 +541,23 @@ fn paint_cols(
                 let tw = c.measure_text(&txt, FontSpec::bold(font_sz));
                 let pad_x = fs * 0.28;
                 let pill_h = rh * 0.54;
-                let pill_w = (tw + 2.0 * pad_x).min(cw);
+                let show_sr = cfg.bool_key(section, "show_sr_projection", false)
+                    && row.sr_delta.is_some_and(|d| d != 0);
+                let delta = row.sr_delta.unwrap_or(0);
+                let dtxt = format!("{:.2}", (delta.abs() as f32) / 100.0);
+                let d_sz = font_sz * 0.90;
+                let icon_slot = if show_sr { fs * 0.38 } else { 0.0 };
+                let d_w = if show_sr {
+                    icon_slot + fs * 0.08 + c.measure_text(&dtxt, FontSpec::new(d_sz))
+                } else {
+                    0.0
+                };
+                let gap = if show_sr { fs * 0.22 } else { 0.0 };
+                let pill_w = (tw + 2.0 * pad_x).min((cw - gap - d_w).max(4.0));
+                let total = pill_w + gap + d_w;
+                let left = cx + (cw - total).max(0.0) * 0.5;
                 let pill =
-                    Rect::from_xywh(cx, rect.center().1 - pill_h * 0.5, pill_w.max(4.0), pill_h);
+                    Rect::from_xywh(left, rect.center().1 - pill_h * 0.5, pill_w.max(4.0), pill_h);
                 let edge_a = ((bg.a as f32 * 0.55) as u16 + 60).min(255) as u8;
                 c.fill_rect(pill, bg, 4.0);
                 c.stroke_rect(pill, bg.with_alpha(edge_a), 4.0, 1.0);
@@ -539,6 +571,30 @@ fn paint_cols(
                     true,
                     TextAlign::Center,
                 );
+                if show_sr {
+                    let dcol = if delta > 0 {
+                        section_color(cfg, section, "irating_delta_up", "#46df7a")
+                    } else {
+                        section_color(cfg, section, "irating_delta_down", "#ff5050")
+                    };
+                    let mut x = pill.right() + gap;
+                    let arrow = if delta > 0 {
+                        "irating_up"
+                    } else {
+                        "irating_down"
+                    };
+                    super::icons::paint(
+                        c,
+                        arrow,
+                        x + icon_slot * 0.5,
+                        cy,
+                        fs * 0.50,
+                        dcol,
+                        TextAlign::Center,
+                    );
+                    x += icon_slot + fs * 0.06;
+                    label(c, x, cy, &dtxt, d_sz, dcol, true, TextAlign::Left);
+                }
             }
             "irating" => {
                 paint_irating_cell(c, cfg, section, row, cx, cy, cw, rh, fs, dim, dim_text);

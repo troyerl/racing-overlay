@@ -161,6 +161,57 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         y += gh + if elegant { 2.0 } else { pad * 0.4 };
     }
 
+    // Steering delta vs reference
+    if ctx.cfg.bool_key(SECTION, "show_steer_delta", true) && !view.session_extra.steer_spark.is_empty()
+    {
+        let gh = h * 0.08;
+        let graph = Rect::from_min_size(Pos2::new(card.left() + pad, y), egui::vec2(iw, gh));
+        draw_spark(ui, ctx, graph, &view.session_extra.steer_spark, &[]);
+        label(
+            ui,
+            Pos2::new(graph.left() + 2.0, graph.top() + 2.0),
+            Align2::LEFT_TOP,
+            "STEER",
+            8.0,
+            ctx.cfg.color(SECTION, "muted", "#8b93a1"),
+            false,
+        );
+        y += gh + 2.0;
+    }
+
+    // Top-3 summary vs ref / PB
+    if ctx.cfg.bool_key(SECTION, "show_top3", true) && !view.session_extra.top3.is_empty() {
+        let rows = &view.session_extra.top3;
+        let rh = (h * 0.055).clamp(12.0, 16.0);
+        for (i, row) in rows.iter().enumerate() {
+            let gap = row
+                .delta_to_ref_s
+                .or(row.delta_to_pb_s)
+                .map(|d| format!("{d:+.2}"))
+                .unwrap_or_else(|| "--".into());
+            label(
+                ui,
+                Pos2::new(card.left() + pad, y + rh * 0.5),
+                Align2::LEFT_CENTER,
+                &format!("#{i}  {:.3}", row.lap_time_s),
+                (rh * 0.7).clamp(9.0, 12.0),
+                ctx.cfg.color(SECTION, "text", "#f4f6f8"),
+                false,
+            );
+            label(
+                ui,
+                Pos2::new(card.right() - pad, y + rh * 0.5),
+                Align2::RIGHT_CENTER,
+                &gap,
+                (rh * 0.7).clamp(9.0, 12.0),
+                delta_color(ctx, row.delta_to_ref_s.or(row.delta_to_pb_s)),
+                true,
+            );
+            y += rh;
+        }
+        y += 2.0;
+    }
+
     // Turn losses
     let turns = &view.turns;
     if turns.is_empty() {

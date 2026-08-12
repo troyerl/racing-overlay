@@ -214,11 +214,20 @@ pub fn paint_table(
         anim.last_paint_secs = now;
 
         let mut still = false;
+        // Relative: animate in packed live-row space (empty pads don't take slots).
+        // Standings: keep full-array indices so empty pads preserve window layout.
+        let mut live_i = 0usize;
         for (i, row) in rows.iter().enumerate() {
             if row.empty {
                 continue;
             }
-            let target = i as f32;
+            let target = if section == "relative" {
+                let t = live_i as f32;
+                live_i += 1;
+                t
+            } else {
+                i as f32
+            };
             // Start visible — under race-load ULW throttling a 0→1 fade could
             // leave the whole table invisible if paints are sparse.
             let st = anim.slots.entry(row.key.clone()).or_insert(RowAnimState {
@@ -318,12 +327,28 @@ pub fn paint_table(
     // When the panel is shorter than the row window, scroll so the focus car
     // stays on-screen with configured behind rows (fixes spectating near P1–P5
     // where the window starts at the leader and clips everyone behind).
-    let visible_slots = ((body_bottom - body_top) / rh).floor().max(1.0) as usize;
+    let body_h = body_bottom - body_top;
+    let visible_slots = (body_h / rh).floor().max(1.0) as usize;
     let scroll = standings_paint_scroll(cfg, section, rows, visible_slots);
+    // Relative: pack live rows and center that block when the panel is taller.
+    let live_count = rows.iter().filter(|r| !r.empty).count();
+    let body_y0 = if section == "relative" {
+        let content_h = live_count as f32 * rh;
+        if content_h > 0.0 && content_h < body_h - 0.5 {
+            body_top + (body_h - content_h) * 0.5
+        } else {
+            body_top
+        }
+    } else {
+        body_top
+    };
 
     let mut prev_draw_idx: Option<f32> = None;
     for &i in &draw_order {
         let row = &rows[i];
+        if section == "relative" && row.empty {
+            continue;
+        }
         let st = anim.slots.get(&row.key);
         // Empty pads keep a fixed slot index so the configured window stays filled.
         let slot_idx = if row.empty {
@@ -336,7 +361,7 @@ pub fn paint_table(
         } else {
             st.map(|s| s.opacity).unwrap_or(1.0)
         };
-        let ry = body_top + slot_idx * rh;
+        let ry = body_y0 + slot_idx * rh;
         let row_rect = Rect::from_min_size(Pos2::new(left, ry), Vec2::new(inner_w, rh));
         // Skip rows wholly outside the body (scrolled away).
         if row_rect.bottom() < body_top - rh || row_rect.top() > body_bottom + rh {
@@ -723,9 +748,25 @@ fn paint_row_cols(
                 let tw = text_advance(ui, &txt, font_sz);
                 let pad_x = fs * 0.28;
                 let pill_h = rh * 0.54;
-                let pill_w = (tw + 2.0 * pad_x).min(cw);
+                let show_sr = cfg.bool_key(section, "show_sr_projection", false)
+                    && row.sr_delta.is_some_and(|d| d != 0);
+                let delta = row.sr_delta.unwrap_or(0);
+                let dtxt = format!("{:.2}", (delta.abs() as f32) / 100.0);
+                let d_sz = font_sz * 0.90;
+                let icon_slot = if show_sr { fs * 0.38 } else { 0.0 };
+                let d_w = if show_sr {
+                    icon_slot
+                        + fs * 0.08
+                        + text_advance(ui, &dtxt, d_sz)
+                } else {
+                    0.0
+                };
+                let gap = if show_sr { fs * 0.22 } else { 0.0 };
+                let pill_w = (tw + 2.0 * pad_x).min((cw - gap - d_w).max(4.0));
+                let total = pill_w + gap + d_w;
+                let left = cx + (cw - total).max(0.0) * 0.5;
                 let pill = Rect::from_min_size(
-                    Pos2::new(cx, cy - pill_h * 0.5),
+                    Pos2::new(left, cy - pill_h * 0.5),
                     Vec2::new(pill_w.max(4.0), pill_h),
                 );
                 let edge_a = ((bg.a() as f32 * 0.55) as u16 + 60).min(255) as u8;
@@ -746,6 +787,38 @@ fn paint_row_cols(
                     if dim { dim_text } else { contrast_text(bg) },
                     true,
                 );
+                if show_sr {
+                    let dcol = if delta > 0 {
+                        cfg.color(section, "irating_delta_up", "#46df7a")
+                    } else {
+                        cfg.color(section, "irating_delta_down", "#ff5050")
+                    };
+                    let mut x = pill.right() + gap;
+                    let arrow = if delta > 0 {
+                        "irating_up"
+                    } else {
+                        "irating_down"
+                    };
+                    if let Some(g) = icons::glyph(arrow) {
+                        ui.painter().text(
+                            Pos2::new(x + icon_slot * 0.5, cy),
+                            Align2::CENTER_CENTER,
+                            g,
+                            icons::font_id(fs * 0.50),
+                            dcol,
+                        );
+                        x += icon_slot + fs * 0.06;
+                    }
+                    label(
+                        ui,
+                        Pos2::new(x, cy),
+                        Align2::LEFT_CENTER,
+                        &dtxt,
+                        d_sz,
+                        dcol,
+                        true,
+                    );
+                }
             }
             "irating" => {
                 paint_irating_cell(ui, cfg, section, row, cx, cy, cw, rh, fs, dim, dim_text);

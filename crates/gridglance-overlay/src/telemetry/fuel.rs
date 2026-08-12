@@ -112,7 +112,38 @@ pub struct FuelBurnTracker {
     pub economy_ema: Option<f32>,
 }
 
+/// Typical full-tank stint length used as a pre-drive seed when iRacing's
+/// `FuelUsePerHour` is still idling (garage / grid) and would imply hundreds of laps.
+const SEED_STINT_LAPS: f32 = 22.0;
+
 impl FuelBurnTracker {
+    /// Extrapolate burn for the lap in progress (L/lap) before a green lap completes.
+    /// Returns `None` when too early, contaminated, or not on a clean green lap.
+    pub fn provisional_usage(&self, fuel_now: f32, lap_dist_pct: f32) -> Option<f32> {
+        if self.prev_lap.is_none() || self.lap_contaminated || self.left_pits_this_lap {
+            return None;
+        }
+        if !fuel_now.is_finite() || !self.lap_start_fuel.is_finite() {
+            return None;
+        }
+        let used = self.lap_start_fuel - fuel_now;
+        if used <= 0.08 {
+            return None;
+        }
+        let pct = lap_dist_pct;
+        if !(0.18..=0.995).contains(&pct) {
+            return None;
+        }
+        let proj = used / pct;
+        if !proj.is_finite() || proj < 0.25 || proj > 12.0 {
+            return None;
+        }
+        if is_burn_outlier(proj, self.ema) {
+            return None;
+        }
+        Some(proj)
+    }
+
     /// Sample continuous state every tick (throttle + pit/caution contamination).
     pub fn tick(&mut self, ctx: &FuelLapContext) {
         if ctx.caution || ctx.on_pit || ctx.in_pit || ctx.approaching_pits {
@@ -231,6 +262,36 @@ fn fuel_capacity(level: f32, fuel_max: f32, fuel_pct: f32) -> Option<f32> {
         return Some(level / fuel_pct);
     }
     None
+}
+
+/// Pre-drive L/lap estimate: race-pace `FuelUsePerHour` when plausible, else tank/stint seed.
+fn seed_usage_l_per_lap(cap: Option<f32>, lap_avg: Option<f32>, fuph: f32) -> Option<f32> {
+    if let Some(lap_s) = lap_avg.filter(|s| *s > 10.0) {
+        if fuph >= 12.0 {
+            let u = fuph * (lap_s / 3600.0);
+            if fuph_usage_plausible(u, fuph, cap) {
+                return Some(u);
+            }
+        }
+    }
+    cap.filter(|c| *c > 5.0).map(|c| (c / SEED_STINT_LAPS).clamp(0.5, 10.0))
+}
+
+fn fuph_usage_plausible(u: f32, fuph: f32, cap: Option<f32>) -> bool {
+    if !(u.is_finite() && fuph.is_finite()) {
+        return false;
+    }
+    // Idle / grid FuelUsePerHour is a few L/h and yields absurd lap counts.
+    if fuph < 12.0 || u < 0.35 || u > 12.0 {
+        return false;
+    }
+    if let Some(c) = cap.filter(|c| *c > 5.0) {
+        let laps = c / u;
+        if !(4.0..=70.0).contains(&laps) {
+            return false;
+        }
+    }
+    true
 }
 
 fn fuel_lap_secs(est_lap: f32, last_lap: Option<f64>) -> Option<f32> {
@@ -387,11 +448,10 @@ pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcSta
         let min = inp.fc_use.iter().copied().fold(f32::INFINITY, f32::min) * caution_mul;
         (Some(avg), Some(max), Some(min))
     } else {
-        let est = if inp.fuel_use_per_hour > 0.05 {
-            lap_avg.map(|s| inp.fuel_use_per_hour * (s / 3600.0) * caution_mul)
-        } else {
-            None
-        };
+        // No completed green burns yet: prefer a race-plausible FuelUsePerHour
+        // estimate, else a typical full-tank stint seed (avoids 800+ lap garage idle).
+        let est = seed_usage_l_per_lap(cap, lap_avg, inp.fuel_use_per_hour)
+            .map(|u| u * caution_mul);
         (est, est.map(|u| u * 1.08), est.map(|u| u * 0.92))
     };
 
@@ -671,5 +731,74 @@ mod tests {
         );
         assert!((snap.avg.usage.unwrap() - 2.2).abs() < 1e-3);
         assert!((snap.ema_usage.unwrap() - 2.2).abs() < 1e-3);
+    }
+
+    #[test]
+    fn idle_fuel_use_per_hour_uses_tank_seed_not_hundreds_of_laps() {
+        let cfg = OverlayConfig::default();
+        // Garage idle ~4 L/h used to imply ~800 laps on an 80L tank.
+        let snap = build_fuel_snapshot(
+            &FuelInputs {
+                level: 80.0,
+                fuel_pct: 1.0,
+                fuel_max: 80.0,
+                lap: 0,
+                last_lap_s: None,
+                lap_est: 90.0,
+                laps_remain: Some(30.0),
+                time_remain: Some(2700.0),
+                fuel_use_per_hour: 4.0,
+                laps_total: 40,
+                fc_use: Vec::new(),
+                ..Default::default()
+            },
+            &cfg,
+        );
+        let laps = snap.laps_empty.expect("seeded laps");
+        assert!(
+            (18.0..=28.0).contains(&laps),
+            "expected ~{SEED_STINT_LAPS} lap seed, got {laps}"
+        );
+        assert!(laps < 100.0, "idle FUPH must not produce absurd lap counts");
+    }
+
+    #[test]
+    fn race_pace_fuel_use_per_hour_still_used_pre_drive() {
+        let cfg = OverlayConfig::default();
+        // 72 L/h @ 90s → 1.8 L/lap → 80/1.8 ≈ 44.4 laps.
+        let snap = build_fuel_snapshot(
+            &FuelInputs {
+                level: 80.0,
+                fuel_pct: 1.0,
+                fuel_max: 80.0,
+                lap: 0,
+                last_lap_s: None,
+                lap_est: 90.0,
+                laps_remain: Some(30.0),
+                time_remain: None,
+                fuel_use_per_hour: 72.0,
+                laps_total: 40,
+                fc_use: Vec::new(),
+                ..Default::default()
+            },
+            &cfg,
+        );
+        let usage = snap.avg.usage.expect("usage");
+        assert!((usage - 1.8).abs() < 0.05, "got {usage}");
+    }
+
+    #[test]
+    fn provisional_usage_extrapolates_mid_lap() {
+        let mut tr = FuelBurnTracker::default();
+        let green = FuelLapContext {
+            throttle: 0.9,
+            ..Default::default()
+        };
+        tr.tick(&green);
+        tr.observe(1, 60.0, 80.0, 5, 0.35);
+        // Halfway, burned 1.2L → project 2.4 L/lap.
+        let proj = tr.provisional_usage(58.8, 0.5).expect("provisional");
+        assert!((proj - 2.4).abs() < 0.05, "got {proj}");
+        assert!(tr.provisional_usage(59.9, 0.05).is_none());
     }
 }

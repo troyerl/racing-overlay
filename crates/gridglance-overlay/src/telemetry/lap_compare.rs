@@ -29,6 +29,9 @@ pub struct LapCompareView {
     pub ref_label: String,
     #[serde(default)]
     pub markers: Vec<CompareMarker>,
+    /// Session-line extras (top-3, steer delta, corners) when using race/PB refs.
+    #[serde(default)]
+    pub session_extra: crate::telemetry::session_line::SessionLineViewExtra,
 }
 
 /// Ring of (pct, time, brake, throttle) samples for the current lap vs a reference.
@@ -256,6 +259,7 @@ impl LapCompareState {
             turns,
             ref_label,
             markers,
+            session_extra: Default::default(),
         }
     }
 }

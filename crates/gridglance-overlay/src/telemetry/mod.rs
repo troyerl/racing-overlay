@@ -7,6 +7,7 @@ mod fuel;
 mod irsdk;
 mod lap_compare;
 mod lap_log;
+pub mod session_line;
 mod pit_advice;
 mod pit_loss;
 mod pit_service;
@@ -22,6 +23,7 @@ pub use fuel::{
 };
 pub use irsdk::IrsdkReader;
 pub use lap_compare::{CompareMarker, LapCompareState, LapCompareView, MarkerKind};
+pub use session_line::{RaceDoc, SessionLineState, StoredLap, TrackPbDoc};
 pub use lap_log::{signed_delta_1, LapExtras, LapLogAccum};
 pub use pit_advice::{strategy_context_line, strategy_loss_line, strategy_meta_line, PitAdvice};
 pub use pit_loss::{effective_loss_s, PitLossTracker};
@@ -91,6 +93,12 @@ pub struct CarRow {
     /// ISO2 country code from iRacing ClubName (e.g. `"us"`, `"br"`).
     #[serde(default)]
     pub country_code: Option<String>,
+    /// `CarIdxSteer` (rad); 0 when unknown.
+    #[serde(default)]
+    pub steer_rad: f32,
+    /// `CarIdxGear` (-1..n); 0 when unknown.
+    #[serde(default)]
+    pub gear: i32,
 }
 
 impl CarRow {
@@ -206,6 +214,15 @@ pub struct TelemetryFrame {
     pub cur_lap_s: Option<f64>,
     pub irating: i32,
     pub irating_delta: Option<i32>,
+    /// Projected Safety Rating change for this session (hundredths, e.g. 16 = +0.16).
+    #[serde(default)]
+    pub sr_delta: Option<i32>,
+    /// Player license string from DriverInfo (`"A 3.42"`).
+    #[serde(default)]
+    pub license: String,
+    /// WeekendInfo `TrackNumTurns` (SR corner multiplier); 0 when unknown.
+    #[serde(default)]
+    pub track_num_turns: i32,
     pub tire_wear_l: f32,
     pub tire_wear_r: f32,
     pub track_temp: Option<f32>,
@@ -376,6 +393,9 @@ pub struct TelemetryFrame {
     /// Active session type label (Practice / Qualifying / Race).
     #[serde(default)]
     pub session_type: Option<String>,
+    /// iRacing SubSessionID when known.
+    #[serde(default)]
+    pub subsession_id: Option<i32>,
     /// Registration split number when known (1-based).
     #[serde(default)]
     pub race_split: Option<i32>,
@@ -695,6 +715,8 @@ pub mod demo {
                         ][(i as usize) % 12]
                             .into(),
                     ),
+                    steer_rad: 0.15 * ((t as f32 * 0.7) + i as f32).sin(),
+                    gear: 3 + (i % 3),
                 });
             }
             let player_pos = cars
@@ -814,6 +836,8 @@ pub mod demo {
                     status_kind: None,
                     car_flag: None,
                     country_code: None,
+                    steer_rad: 0.0,
+                    gear: 0,
                 });
             }
             let secondary = if incident_warn {
@@ -890,6 +914,9 @@ pub mod demo {
                 cur_lap_s,
                 irating: 2500,
                 irating_delta: None,
+                sr_delta: None,
+                license: "A 3.42".into(),
+                track_num_turns: 11,
                 tire_wear_l: 0.90,
                 tire_wear_r: 0.86,
                 track_temp: Some(32.0 + (t * 0.05).sin() as f32),
@@ -926,6 +953,7 @@ pub mod demo {
                 track_name: Some("Demo Speedpark".into()),
                 session_time_of_day: Some(14.0 * 3600.0 + (t as f32 * 2.0) % 3600.0),
                 session_type: Some("Race".into()),
+                subsession_id: Some(9_001_001),
                 race_split: Some(2),
                 race_split_total: Some(5),
                 pit_repairs_used: Some(0),

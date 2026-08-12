@@ -1121,6 +1121,24 @@ impl OverlayConfig {
             .any(|k| self.str_key("dash", k, "") == "irating")
     }
 
+    /// Dash slot keys that may hold `"license"` (SR projection).
+    pub fn dash_uses_license(&self) -> bool {
+        const SLOTS: &[&str] = &[
+            "top_left",
+            "top_right",
+            "primary_left",
+            "primary_right",
+            "stat_left",
+            "stat_right",
+            "strip_left",
+            "strip_center",
+            "strip_right",
+        ];
+        SLOTS
+            .iter()
+            .any(|k| self.str_key("dash", k, "") == "license")
+    }
+
     pub fn conv_temp(&self, celsius: f32) -> f32 {
         if self.imperial_units() {
             celsius * 9.0 / 5.0 + 32.0
@@ -1731,6 +1749,7 @@ fn default_cfg() -> Value {
             section.insert("text_scale".into(), json!(1.0));
             section.insert("pit_mode".into(), Value::String("laps_since".into()));
             section.insert("show_irating_projection".into(), Value::Bool(false));
+            section.insert("show_sr_projection".into(), Value::Bool(false));
             section.insert("irating_abbreviate".into(), Value::Bool(true));
             section.insert("irating_show_icon".into(), Value::Bool(false));
             section.insert(
@@ -1828,6 +1847,7 @@ fn default_cfg() -> Value {
             section.insert("ring_segments".into(), json!(16));
             section.insert("delta_bar_range".into(), json!(1.0));
             section.insert("show_irating_projection".into(), Value::Bool(false));
+            section.insert("show_sr_projection".into(), Value::Bool(false));
             section.insert("irating_abbreviate".into(), Value::Bool(true));
             section.insert("irating_show_icon".into(), Value::Bool(true));
         }
@@ -2142,7 +2162,10 @@ fn default_cfg() -> Value {
             section.insert("max_row_height_frac".into(), json!(0.14));
         }
         if *key == "lap_compare" {
-            section.insert("reference_mode".into(), Value::String("best".into()));
+            section.insert("reference_mode".into(), Value::String("race_best".into()));
+            section.insert("review_top3".into(), Value::String("-1".into()));
+            section.insert("show_steer_delta".into(), Value::Bool(true));
+            section.insert("show_top3".into(), Value::Bool(true));
             section.insert("show_graph".into(), Value::Bool(true));
             section.insert("show_brake_markers".into(), Value::Bool(true));
             section.insert("show_lift_markers".into(), Value::Bool(true));
@@ -2188,6 +2211,7 @@ fn default_cfg() -> Value {
         json!(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT),
     );
     m.insert("lan_telemetry_hz".into(), json!(15));
+    m.insert("upload_race_laps".into(), Value::Bool(false));
     m.insert("driver_groups".into(), json!([]));
     m.insert("units".into(), Value::String("imperial".into()));
     m.insert("text_scale".into(), json!(1.20));

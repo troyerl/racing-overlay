@@ -54,6 +54,10 @@ mod win {
         car_path: String,
         irating: i32,
         license: String,
+        /// DriverInfo LicLevel (1–4 Rookie … 21+ Pro); 0 when unknown.
+        lic_level: i32,
+        /// DriverInfo LicSubLevel (SR × 100); 0 when unknown.
+        lic_sub_level: i32,
         class_color: String,
         class_id: i32,
         is_pace_car: bool,
@@ -97,6 +101,10 @@ mod win {
         pit_speed_limit_mps: Option<f32>,
         /// WeekendInfo `TrackLength` (meters) for pace-car speed estimate.
         track_length_m: Option<f32>,
+        /// WeekendInfo `TrackNumTurns` — SR corner multiplier per lap.
+        track_num_turns: i32,
+        /// Player `LicString` from DriverInfo.
+        license: String,
         /// `DriverInfo:PaceCarIdx` when known.
         pace_car_idx: Option<i32>,
         /// Last pace-car sample: (session_time, lap_dist_pct).
@@ -559,6 +567,9 @@ mod win {
             cur_lap_s: positive_opt(cur_lap as f64),
             irating: cache.irating,
             irating_delta: None,
+            sr_delta: None,
+            license: cache.license.clone(),
+            track_num_turns: cache.track_num_turns,
             tire_wear_l: ((lf + lr) * 0.5).clamp(0.0, 1.0),
             tire_wear_r: ((rf + rr) * 0.5).clamp(0.0, 1.0),
             track_temp,
@@ -608,6 +619,7 @@ mod win {
             pace_car_speed_mps,
             session_time_of_day,
             session_type,
+            subsession_id: (cache.subsession_id > 0).then_some(cache.subsession_id),
             race_split,
             race_split_total,
             ..Default::default()
@@ -1133,6 +1145,8 @@ mod win {
         let laps = int_arr(session, "CarIdxLap");
         let laps_done = int_arr(session, "CarIdxLapCompleted");
         let speeds = float_arr(session, "CarIdxSpeed");
+        let steers = float_arr(session, "CarIdxSteer");
+        let gears = int_arr(session, "CarIdxGear");
         let surface = int_arr(session, "CarIdxTrackSurface");
         let session_flags = int_arr(session, "CarIdxSessionFlags");
         let player_idx = cache.player_idx;
@@ -1222,6 +1236,15 @@ mod win {
                 .and_then(|a| a.get(i).copied())
                 .filter(|v| v.is_finite() && *v > 0.0)
                 .unwrap_or(0.0);
+            let steer_rad = steers
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .filter(|v| v.is_finite())
+                .unwrap_or(0.0);
+            let gear = gears
+                .as_ref()
+                .and_then(|a| a.get(i).copied())
+                .unwrap_or(0);
 
             // Keep DriverInfo entries with a grid/qual position even when they
             // haven't joined (NOT_IN_WORLD / invalid LapDistPct).
@@ -1327,6 +1350,8 @@ mod win {
                 status_kind,
                 car_flag,
                 country_code,
+                steer_rad,
+                gear,
             });
             seen.insert(i as i32);
         }
@@ -1833,6 +1858,11 @@ mod win {
         if let Some(v) = yaml_i32(yaml, "TrackID") {
             cache.track_id = Some(v);
         }
+        if let Some(v) = yaml_i32(yaml, "TrackNumTurns") {
+            if v > 0 && v < 500 {
+                cache.track_num_turns = v;
+            }
+        }
         if let Some(v) = yaml_i32(yaml, "LeagueID") {
             cache.league_id = if v > 0 { Some(v) } else { None };
         }
@@ -1899,6 +1929,9 @@ mod win {
             }
             if !d.car_path.is_empty() {
                 cache.car_path = Some(d.car_path.clone());
+            }
+            if !d.license.is_empty() {
+                cache.license = d.license.clone();
             }
         }
     }
@@ -2097,6 +2130,10 @@ mod win {
                 d.class_id = v.parse().unwrap_or(0);
             } else if let Some(v) = kv(t, "LicString") {
                 d.license = unquote(v);
+            } else if let Some(v) = kv(t, "LicLevel") {
+                d.lic_level = v.parse().unwrap_or(0);
+            } else if let Some(v) = kv(t, "LicSubLevel") {
+                d.lic_sub_level = v.parse().unwrap_or(0);
             } else if let Some(v) = kv(t, "CarClassColor") {
                 // iRacing packs RGB in the low 24 bits (sometimes with high bits set).
                 if let Ok(n) = v.parse::<u32>() {

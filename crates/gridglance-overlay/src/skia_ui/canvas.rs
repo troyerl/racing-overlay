@@ -606,6 +606,10 @@ impl Canvas {
     }
 
     /// Decode a PNG and draw it centered inside `dest` (aspect-fit, rounded).
+    ///
+    /// Country flags use a shared display footprint ([`crate::country_flags::FLAG_DISPLAY_ASPECT`])
+    /// so wide (US) and square (CH) assets read the same size. The image is
+    /// scaled to cover that box (center-cropped) rather than letterboxed.
     pub fn draw_png_fit(&mut self, png: &[u8], dest: Rect) {
         use skia_safe::{AlphaType, ColorType, Data, Image, ImageInfo, RRect};
         // Prefer Skia decode; fall back through `image` for palette PNGs Skia rejects.
@@ -625,21 +629,27 @@ impl Canvas {
         if iw <= 0.0 || ih <= 0.0 || dest.width() <= 0.0 || dest.height() <= 0.0 {
             return;
         }
-        let max_h = dest.height() * 0.64;
-        let max_w = dest.width() * 0.88;
-        let scale = (max_w / iw).min(max_h / ih);
-        let w = iw * scale;
-        let h = ih * scale;
-        let x = dest.left() + (dest.width() - w) * 0.5;
-        let y = dest.top() + (dest.height() - h) * 0.5;
-        let dst = skia_safe::Rect::from_xywh(x, y, w, h);
-        let radius = (h * 0.18).clamp(1.5, 3.5);
+        let (box_w, box_h) = crate::country_flags::flag_display_box(dest.width(), dest.height());
+        if box_w <= 0.0 || box_h <= 0.0 {
+            return;
+        }
+        // Cover: scale so the image fills the box, then center-crop.
+        let scale = (box_w / iw).max(box_h / ih);
+        let src_w = box_w / scale;
+        let src_h = box_h / scale;
+        let src_x = (iw - src_w) * 0.5;
+        let src_y = (ih - src_h) * 0.5;
+        let src = skia_safe::Rect::from_xywh(src_x, src_y, src_w, src_h);
+        let x = dest.left() + (dest.width() - box_w) * 0.5;
+        let y = dest.top() + (dest.height() - box_h) * 0.5;
+        let dst = skia_safe::Rect::from_xywh(x, y, box_w, box_h);
+        let radius = (box_h * 0.18).clamp(1.5, 3.5);
         let mut paint = Paint::default();
         paint.set_anti_alias(true);
         let canvas = self.surface.canvas();
         canvas.save();
         canvas.clip_rrect(RRect::new_rect_xy(dst, radius, radius), None, true);
-        canvas.draw_image_rect(&img, None, dst, &paint);
+        canvas.draw_image_rect(&img, Some((&src, skia_safe::canvas::SrcRectConstraint::Strict)), dst, &paint);
         canvas.restore();
     }
 

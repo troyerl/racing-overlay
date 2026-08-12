@@ -158,6 +158,26 @@ fn name_to_country_code(name: &str) -> Option<&'static str> {
     COUNTRY_NAME_TO_ISO.get(key.as_str()).copied()
 }
 
+/// Shared outer footprint for every country flag (width ÷ height).
+///
+/// Bundled PNGs vary (US ~1.9:1, CH 1:1). Fitting into this box keeps icons
+/// the same on-screen size regardless of source aspect.
+pub const FLAG_DISPLAY_ASPECT: f32 = 3.0 / 2.0;
+
+/// Max flag box that fits in `cell_w` × `cell_h` at [`FLAG_DISPLAY_ASPECT`].
+pub fn flag_display_box(cell_w: f32, cell_h: f32) -> (f32, f32) {
+    let max_h = cell_h * 0.64;
+    let max_w = cell_w * 0.88;
+    if max_w <= 0.0 || max_h <= 0.0 {
+        return (0.0, 0.0);
+    }
+    if max_w / max_h > FLAG_DISPLAY_ASPECT {
+        (max_h * FLAG_DISPLAY_ASPECT, max_h)
+    } else {
+        (max_w, max_w / FLAG_DISPLAY_ASPECT)
+    }
+}
+
 /// PNG bytes for an ISO2 code (lowercase), if bundled.
 pub fn flag_png_bytes(code: &str) -> Option<&'static [u8]> {
     match code.to_ascii_lowercase().as_str() {
@@ -228,9 +248,12 @@ pub fn paint_egui(ui: &mut Ui, code: &str, rect: Rect) {
     if size.x <= 0.0 || size.y <= 0.0 {
         return;
     }
-    let max_h = rect.height() * 0.64;
-    let max_w = rect.width() * 0.88;
-    let scale = (max_w / size.x).min(max_h / size.y);
+    let (box_w, box_h) = flag_display_box(rect.width(), rect.height());
+    if box_w <= 0.0 || box_h <= 0.0 {
+        return;
+    }
+    // Contain within the shared footprint so wide assets (US) match others.
+    let scale = (box_w / size.x).min(box_h / size.y);
     let w = size.x * scale;
     let h = size.y * scale;
     let dest = Rect::from_center_size(rect.center(), Vec2::new(w, h));

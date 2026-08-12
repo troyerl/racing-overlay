@@ -12,7 +12,7 @@ use crate::telemetry::{
     best_service_plan, demo::DemoFeed, finalize_frame, project_lap_down, FcyModel, FuelBurnTracker,
     FuelLapContext, IrsdkReader, LapCompareState, LapExtras, LapLogAccum, LiftCoastTracker,
     PaceModel, PitLossTracker, PitStopTracker, RadioSpeaker, RelativeOrderHysteresis, SectorTimer,
-    StrategySnapshot, TelemetryFrame, TireEnergyTracker,
+    SessionLineState, StrategySnapshot, TelemetryFrame, TireEnergyTracker,
 };
 use crate::widgets::{self, MapPaintMode, WidgetCtx};
 use crate::win_click;
@@ -148,6 +148,13 @@ pub struct OverlayApp {
     gl: Option<Arc<glow::Context>>,
     sector_timer: SectorTimer,
     lap_compare: LapCompareState,
+    session_line: SessionLineState,
+    /// Last track/car used to load track PB (avoid thrashing disk).
+    session_line_pb_key: Option<(i32, String)>,
+    /// Local race/PB writes waiting for post-race Mongo upload.
+    session_line_cloud_pending: bool,
+    /// Subsession already cloud-uploaded after finish (avoid repeat upserts).
+    session_line_cloud_uploaded_sid: Option<i32>,
     lap_log: LapLogAccum,
     fuel_burn: FuelBurnTracker,
     pit_loss: PitLossTracker,
@@ -257,6 +264,10 @@ impl OverlayApp {
             gl,
             sector_timer: SectorTimer::new(),
             lap_compare: LapCompareState::new(),
+            session_line: SessionLineState::new(),
+            session_line_pb_key: None,
+            session_line_cloud_pending: false,
+            session_line_cloud_uploaded_sid: None,
             lap_log,
             fuel_burn: FuelBurnTracker::default(),
             pit_loss: PitLossTracker::default(),
@@ -703,7 +714,16 @@ impl OverlayApp {
             .observe(frame.lap, frame.fuel_l, cap, hist_n, ema_alpha);
         self.fuel_burn.tick(&fuel_ctx);
         frame.fuel_use_history = self.fuel_burn.uses.clone();
-        frame.fuel_ema_l = self.fuel_burn.ema;
+        // Prefer completed-lap EMA; while the first green lap is underway,
+        // extrapolate so laps-until-empty starts updating before lap 1 finishes.
+        frame.fuel_ema_l = self.fuel_burn.ema.or_else(|| {
+            if eligible {
+                self.fuel_burn
+                    .provisional_usage(frame.fuel_l, frame.player_lap_dist_pct)
+            } else {
+                None
+            }
+        });
 
         let coast_snap = {
             self.lift_coast.tick(
@@ -908,19 +928,112 @@ impl OverlayApp {
             show_delta,
         );
 
-        let ref_mode = cfg.str_key("lap_compare", "reference_mode", "best");
-        self.lap_compare.update(
-            frame.player_lap_dist_pct,
-            frame.cur_lap_s,
-            frame.last_lap_s,
-            frame.brake,
-            frame.throttle,
-            &ref_mode,
-        );
+        let ref_mode = cfg.str_key("lap_compare", "reference_mode", "race_best");
+        let upload_laps = cfg
+            .cfg
+            .get("upload_race_laps")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let review_top3 = cfg.str_key("lap_compare", "review_top3", "-1");
+        let selected_top3 = match review_top3.as_str() {
+            "0" => Some(0),
+            "1" => Some(1),
+            "2" => Some(2),
+            _ => None,
+        };
+        self.session_line.set_selected_top3(selected_top3);
+
+        // Load track PB when track/car changes.
+        let tid = frame.track_id.unwrap_or(0);
+        let car = frame.car_path.clone().unwrap_or_default();
+        if tid > 0 && !car.is_empty() {
+            let key = (tid, car.clone());
+            if self.session_line_pb_key.as_ref() != Some(&key) {
+                self.session_line_pb_key = Some(key);
+                if let Some(pb) = crate::race_store::load_track_pb(tid, &car) {
+                    self.session_line.set_track_pb(Some(pb));
+                }
+            }
+        }
+
+        self.session_line.update(&frame);
+
+        // Always save locally during the session. Mongo upload is opt-in via
+        // Settings → Upload race laps after finish (and only after checkered/cooldown).
+        if self.session_line.dirty_race {
+            if let Some(doc) = self.session_line.to_race_doc() {
+                if let Err(e) = crate::race_store::save_race_doc(&doc, false) {
+                    eprintln!("[gridglance] race save: {e}");
+                } else if upload_laps {
+                    self.session_line_cloud_pending = true;
+                }
+            }
+            self.session_line.dirty_race = false;
+        }
+        if self.session_line.dirty_pb {
+            if let Some(doc) = self.session_line.to_track_pb_doc() {
+                if let Err(e) = crate::race_store::save_track_pb_doc(&doc, false) {
+                    eprintln!("[gridglance] track PB save: {e}");
+                } else if upload_laps {
+                    self.session_line_cloud_pending = true;
+                }
+            }
+            self.session_line.dirty_pb = false;
+        }
+
+        let sid = frame.subsession_id.unwrap_or(0);
+        if sid > 0
+            && self
+                .session_line_cloud_uploaded_sid
+                .is_some_and(|prev| prev != sid)
+        {
+            // New subsession — clear the prior upload latch.
+            self.session_line_cloud_uploaded_sid = None;
+        }
+        let session_finished = frame.session_state >= 5
+            || matches!(frame.flag.as_deref(), Some("checkered"));
+        let already_uploaded = sid > 0 && self.session_line_cloud_uploaded_sid == Some(sid);
+        if session_finished && self.session_line_cloud_pending && !already_uploaded {
+            if upload_laps {
+                if let Some(doc) = self.session_line.to_race_doc() {
+                    if let Err(e) = crate::race_store::save_race_doc(&doc, true) {
+                        eprintln!("[gridglance] race cloud upload: {e}");
+                    }
+                }
+                if let Some(doc) = self.session_line.to_track_pb_doc() {
+                    if let Err(e) = crate::race_store::save_track_pb_doc(&doc, true) {
+                        eprintln!("[gridglance] track PB cloud upload: {e}");
+                    }
+                }
+                if sid > 0 {
+                    self.session_line_cloud_uploaded_sid = Some(sid);
+                }
+            }
+            // Clear pending whether uploaded or skipped so a later toggle-on
+            // doesn't push an old session unexpectedly.
+            self.session_line_cloud_pending = false;
+        }
+
         let allow_demo_compare = self.demo_only || edit_mode;
-        frame.lap_compare =
-            self.lap_compare
-                .view(frame.session_time, &ref_mode, allow_demo_compare);
+        let corners = corner_pcts_for_track(frame.track_id);
+        if let Some(view) =
+            self.session_line
+                .view(&frame, &ref_mode, &corners, allow_demo_compare)
+        {
+            frame.lap_compare = view;
+        } else {
+            self.lap_compare.update(
+                frame.player_lap_dist_pct,
+                frame.cur_lap_s,
+                frame.last_lap_s,
+                frame.brake,
+                frame.throttle,
+                &ref_mode,
+            );
+            frame.lap_compare =
+                self.lap_compare
+                    .view(frame.session_time, &ref_mode, allow_demo_compare);
+        }
 
         self.lap_log.observe(
             frame.lap,
@@ -2292,4 +2405,38 @@ impl eframe::App for OverlayApp {
             self.perf_maybe_emit();
         }
     }
+}
+
+fn corner_pcts_for_track(track_id: Option<i32>) -> Vec<(String, f32)> {
+    let Some(tid) = track_id.filter(|t| *t > 0) else {
+        return Vec::new();
+    };
+    let Some(path) = crate::track_path::find_track_file(tid) else {
+        return Vec::new();
+    };
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return Vec::new();
+    };
+    let Some(arr) = v.get("corners").and_then(|c| c.as_array()) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .filter_map(|c| {
+            let label = c
+                .get("label")
+                .or_else(|| c.get("name"))
+                .and_then(|x| x.as_str())
+                .unwrap_or("T?")
+                .to_string();
+            let pct = c
+                .get("pct")
+                .or_else(|| c.get("lap_pct"))
+                .and_then(|x| x.as_f64())
+                .map(|x| x as f32)?;
+            Some((label, pct))
+        })
+        .collect()
 }

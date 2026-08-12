@@ -69,6 +69,19 @@ control IPC `19847`); use **Copy token** in that card (or
 Full connect guide (protocol, PowerShell/Python examples, troubleshooting):
 [`docs/lan-telemetry-wiki.md`](docs/lan-telemetry-wiki.md).
 
+### Race lines / lap compare
+
+The overlay samples every car’s lap % (+ steering/gear) and your pedals/XY path.
+It keeps the **session’s fastest lap**, your **top 3** from that race, and a
+**track+car personal best**. Lap Compare can reference race best or track PB
+(Settings → Lap compare). Completed races / PBs save under
+`%LOCALAPPDATA%\GridGlance\races` and `track_pbs`, and upload to Mongo when
+`GRIDGLANCE_MONGODB_URI` is set and **Upload race laps after finish** is enabled
+(uploads once at checkered/cooldown; local saves still happen during the race).
+The upload toggle defaults **off** — turn it on in Settings when you want cloud race review.
+Local JSON also lands under `%LOCALAPPDATA%\GridGlance\races` and `track_pbs`
+for a separate viewer app.
+
 ## Project layout
 
 ```

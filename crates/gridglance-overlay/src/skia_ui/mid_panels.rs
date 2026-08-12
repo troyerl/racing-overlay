@@ -1279,6 +1279,45 @@ pub fn paint_lap_compare(
         y += gh + pad * 0.4;
     }
 
+    if cfg.bool_key(LAPCMP_SECTION, "show_steer_delta", true)
+        && !view.session_extra.steer_spark.is_empty()
+    {
+        let gh = h * 0.08;
+        let graph = Rect::from_xywh(card.left() + pad, y, iw, gh);
+        draw_spark(c, cfg, graph, &view.session_extra.steer_spark, &[]);
+        y += gh + 2.0;
+    }
+
+    if cfg.bool_key(LAPCMP_SECTION, "show_top3", true) && !view.session_extra.top3.is_empty() {
+        let rh = (h * 0.055).clamp(12.0, 16.0);
+        let fs = (rh * 0.7).clamp(9.0, 12.0);
+        for (i, row) in view.session_extra.top3.iter().enumerate() {
+            let gap = row
+                .delta_to_ref_s
+                .or(row.delta_to_pb_s)
+                .map(signed_delta_lap)
+                .unwrap_or_else(|| "--".into());
+            c.text(
+                &format!("#{i}  {:.3}", row.lap_time_s),
+                card.left() + pad,
+                mid(y + rh * 0.5, fs),
+                FontSpec::new(fs),
+                section_color(cfg, LAPCMP_SECTION, "text", "#f4f6f8"),
+                TextAlign::Left,
+            );
+            c.text(
+                &gap,
+                card.right() - pad,
+                mid(y + rh * 0.5, fs),
+                FontSpec::bold(fs),
+                lapcmp_delta_color(cfg, row.delta_to_ref_s.or(row.delta_to_pb_s)),
+                TextAlign::Right,
+            );
+            y += rh;
+        }
+        y += 2.0;
+    }
+
     let turns = &view.turns;
     if turns.is_empty() {
         let fs = (h * 0.06).clamp(11.0, 16.0);

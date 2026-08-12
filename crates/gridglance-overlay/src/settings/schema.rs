@@ -69,6 +69,7 @@ const TABLE_GROUPS: &[(&str, &[&str])] = &[
             "name_font_bold",
             "irating_abbreviate",
             "show_irating_projection",
+            "show_sr_projection",
         ],
     ),
     (
@@ -275,6 +276,7 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 "iRating",
                 &["irating_abbreviate", "show_irating_projection"],
             ),
+            ("Safety Rating", &["show_sr_projection"]),
             ("Colors", &["colors"]),
         ],
         "inputs" => vec![
@@ -331,8 +333,11 @@ pub fn setting_groups(section: &str) -> Vec<(&'static str, &'static [&'static st
                 &[
                     "panel_style",
                     "reference_mode",
+                    "review_top3",
                     "max_turns",
                     "show_graph",
+                    "show_steer_delta",
+                    "show_top3",
                     "show_brake_markers",
                     "show_lift_markers",
                 ],
@@ -1027,9 +1032,18 @@ pub fn string_choices(section: &str, key: &str) -> Option<&'static [(&'static st
             ("best", "Best lap"),
             ("personal_best", "Personal best"),
         ]),
-        ("lap_compare", "reference_mode") => {
-            Some(&[("best", "Best lap"), ("last", "Last lap")])
-        }
+        ("lap_compare", "reference_mode") => Some(&[
+            ("race_best", "Race / session best"),
+            ("track_pb", "Track personal best"),
+            ("best", "My best (session)"),
+            ("last", "My last lap"),
+        ]),
+        ("lap_compare", "review_top3") => Some(&[
+            ("-1", "Live lap"),
+            ("0", "My #1 lap"),
+            ("1", "My #2 lap"),
+            ("2", "My #3 lap"),
+        ]),
         (
             "dash",
             "top_left"
@@ -1066,6 +1080,7 @@ pub const DASH_SLOT_CHOICES: &[(&str, &str)] = &[
     ("cur_lap", "Current lap"),
     ("delta", "Delta"),
     ("irating", "iRating"),
+    ("license", "License / SR"),
     ("air_temp", "Air temp"),
     ("track_temp", "Track temp"),
 ];
@@ -1128,9 +1143,30 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("__lan__" | "__app__", "lan_telemetry_hz") => Some(
             "How often subscribed clients receive telemetry push frames (5–30 Hz).",
         ),
+        ("__lan__" | "__app__", "upload_race_laps") => Some(
+            "Off by default. When enabled and a Mongo write URI is set, upload race best / your top-3 / track PB once after the race finishes (checkered / cooldown). Laps still save locally during the session.",
+        ),
+        ("lap_compare", "reference_mode") => Some(
+            "Race/session best compares you to the fastest lap in this session. Track PB compares to your all-time best on this track and car.",
+        ),
+        ("lap_compare", "review_top3") => Some(
+            "Review one of your three fastest laps from this race instead of the live lap.",
+        ),
+        ("lap_compare", "show_steer_delta") => {
+            Some("Show steering difference vs the reference along the lap.")
+        }
+        ("lap_compare", "show_top3") => {
+            Some("List your three fastest laps and their gap to the reference / track PB.")
+        }
         (_, "show") => Some("Show this panel on the overlay."),
         (_, "text_scale") => Some("Per-panel text scale (multiplies global)."),
         (_, "show_panel") => Some("Draw the card background behind this panel."),
+        (_, "show_sr_projection") => Some(
+            "Estimate Safety Rating change from corners completed and incidents this session (approximate — iRacing's exact history is private).",
+        ),
+        (_, "show_irating_projection") => {
+            Some("Show projected iRating change from the current race order.")
+        }
         (_, "panel_style") => Some(
             "Data: dense telemetry layout. Elegant: softer minimal visual layout.",
         ),

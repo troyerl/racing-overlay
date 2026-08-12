@@ -13,6 +13,8 @@ pub use dotenv::load_dotenv;
 
 const DB_NAME: &str = "gridglance";
 const TRACKS_COLL: &str = "tracks";
+const RACES_COLL: &str = "races";
+const TRACK_PBS_COLL: &str = "track_pbs";
 const SETTINGS_COLL: &str = "app_settings";
 const SETTINGS_DOC_ID: &str = "global";
 const APP_SETTINGS_CACHE: &str = "_app_settings.json";
@@ -555,6 +557,94 @@ pub fn fetch_app_settings_async() {
         Ok(_) => {}
         Err(e) => eprintln!("[gridglance] app settings: {e}"),
     });
+}
+
+pub fn upsert_race(doc: &Value) -> anyhow::Result<()> {
+    if !can_write() {
+        anyhow::bail!("no write credential");
+    }
+    let sid = doc
+        .get("subsession_id")
+        .and_then(|v| v.as_i64().or_else(|| v.as_u64().map(|u| u as i64)))
+        .unwrap_or(0);
+    let tid = doc
+        .get("track_id")
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("missing track_id"))?;
+    let filter = if sid > 0 {
+        doc! { "subsession_id": sid }
+    } else {
+        doc! {
+            "track_id": tid_as_i64(&tid).unwrap_or(0),
+            "recorded_at": doc.get("recorded_at").and_then(|v| v.as_str()).unwrap_or(""),
+        }
+    };
+    block_on(async {
+        let col = collection(RACES_COLL, true).await?;
+        let bson_doc = match value_to_bson(doc) {
+            Bson::Document(d) => d,
+            _ => anyhow::bail!("race doc must be an object"),
+        };
+        let opts = mongodb::options::ReplaceOptions::builder()
+            .upsert(true)
+            .build();
+        col.replace_one(filter, bson_doc, opts).await?;
+        Ok(())
+    })
+}
+
+pub fn upsert_track_pb(doc: &Value) -> anyhow::Result<()> {
+    if !can_write() {
+        anyhow::bail!("no write credential");
+    }
+    let tid = doc
+        .get("track_id")
+        .and_then(tid_as_i64)
+        .ok_or_else(|| anyhow::anyhow!("missing track_id"))?;
+    let car = doc
+        .get("car_path")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if car.is_empty() {
+        anyhow::bail!("missing car_path");
+    }
+    block_on(async {
+        let col = collection(TRACK_PBS_COLL, true).await?;
+        let bson_doc = match value_to_bson(doc) {
+            Bson::Document(d) => d,
+            _ => anyhow::bail!("track_pb doc must be an object"),
+        };
+        let filter = doc! { "track_id": tid, "car_path": &car };
+        let opts = mongodb::options::ReplaceOptions::builder()
+            .upsert(true)
+            .build();
+        col.replace_one(filter, bson_doc, opts).await?;
+        Ok(())
+    })
+}
+
+pub fn fetch_track_pb(track_id: i32, car_path: &str) -> anyhow::Result<Option<crate::telemetry::TrackPbDoc>> {
+    if !read_available() || track_id <= 0 || car_path.is_empty() {
+        return Ok(None);
+    }
+    block_on(async {
+        let col = collection(TRACK_PBS_COLL, false).await?;
+        let filter = doc! { "track_id": track_id as i64, "car_path": car_path };
+        let doc = col.find_one(filter, None).await?;
+        let Some(d) = doc else {
+            // Also try Int32 track_id.
+            let filter32 = doc! { "track_id": track_id, "car_path": car_path };
+            let doc32 = col.find_one(filter32, None).await?;
+            let Some(d) = doc32 else {
+                return Ok(None);
+            };
+            let v = doc_to_value(d);
+            return Ok(serde_json::from_value(v).ok());
+        };
+        let v = doc_to_value(d);
+        Ok(serde_json::from_value(v).ok())
+    })
 }
 
 pub fn is_pro_driver(name: &str, settings: &Value) -> bool {

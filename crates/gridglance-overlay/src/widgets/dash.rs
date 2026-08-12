@@ -138,6 +138,18 @@ fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
                 format!("{ir}")
             }
         }
+        "license" => {
+            if !f.license.is_empty() {
+                f.license.clone()
+            } else {
+                f.cars
+                    .iter()
+                    .find(|c| c.is_player)
+                    .map(|c| c.license.clone())
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or_else(|| "--".into())
+            }
+        }
         "air_temp" => f
             .air_temp
             .map(|t| {
@@ -575,6 +587,10 @@ fn draw_status(
         draw_irating_pair(ui, cfg, rect, f, rect.height() * 0.34 * text_scale);
         return;
     }
+    if key == "license" {
+        draw_license_pair(ui, cfg, rect, f, rect.height() * 0.34 * text_scale);
+        return;
+    }
     let val = metric_str(cfg, f, key);
     let h = rect.height();
     let mut ic_px = h * 0.46 * text_scale;
@@ -767,6 +783,20 @@ fn draw_stats(
             draw_irating_pair(ui, cfg, pair_rect, f, pair_h);
             continue;
         }
+        if key == "license" {
+            let pair_h = cell.height() * 0.24 * text_scale;
+            let pair_w = license_pair_width(ui, cfg, f, pair_h, cell.height());
+            let pair_rect = if both && i == 1 {
+                Rect::from_min_size(
+                    Pos2::new(cell.right() - pair_w, cell.top()),
+                    Vec2::new(pair_w.min(cell.width()), cell.height()),
+                )
+            } else {
+                cell
+            };
+            draw_license_pair(ui, cfg, pair_rect, f, pair_h);
+            continue;
+        }
         let lines = metric_lines(cfg, f, key);
         let h = cell.height();
         let mut ic_px = h * 0.40 * text_scale;
@@ -901,6 +931,19 @@ fn draw_strip(
             );
             continue;
         }
+        if key == "license" {
+            let val_px = sh * 0.34 * text_scale;
+            let pair_w = license_pair_width(ui, cfg, f, val_px, sh);
+            let tx = cx0 + i as f32 * cell + (cell - pair_w) * 0.5;
+            draw_license_pair(
+                ui,
+                cfg,
+                Rect::from_min_size(Pos2::new(tx, pill.top()), Vec2::new(pair_w, sh)),
+                f,
+                val_px,
+            );
+            continue;
+        }
         let val = metric_str(cfg, f, key);
         let g = icons::glyph(key);
         let ic_px = sh * 0.42 * text_scale;
@@ -962,6 +1005,31 @@ fn irating_pair_width(
     w
 }
 
+fn license_pair_width(
+    ui: &Ui,
+    cfg: &OverlayConfig,
+    f: &TelemetryFrame,
+    val_px: f32,
+    sh: f32,
+) -> f32 {
+    let base = metric_str(cfg, f, "license");
+    let mut w = text_w(ui, &FontId::proportional(val_px), &base);
+    w += text_w(
+        ui,
+        &icons::font_id(sh * 0.42),
+        &icons::glyph("license").unwrap_or_default(),
+    ) + sh * 0.18;
+    if cfg.bool_key(SECTION, "show_sr_projection", false) {
+        if let Some(d) = f.sr_delta {
+            if d != 0 {
+                let dtxt = format!("{:.2}", (d.abs() as f32) / 100.0);
+                w += text_w(ui, &FontId::proportional(val_px * 0.75), &dtxt) + val_px * 0.7;
+            }
+        }
+    }
+    w
+}
+
 fn draw_irating_pair(
     ui: &mut Ui,
     cfg: &OverlayConfig,
@@ -1014,6 +1082,67 @@ fn draw_irating_pair(
                     Pos2::new(x, rect.center().y),
                     Align2::LEFT_CENTER,
                     &format!("{}", d.abs()),
+                    val_px * 0.75,
+                    col,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+fn draw_license_pair(
+    ui: &mut Ui,
+    cfg: &OverlayConfig,
+    rect: Rect,
+    f: &TelemetryFrame,
+    val_px: f32,
+) {
+    let sh = rect.height();
+    let ic_px = sh * 0.42;
+    let mut x = rect.left();
+    if icons::glyph("license").is_some() {
+        icon_paint(
+            ui,
+            Pos2::new(x, rect.center().y),
+            ic_px,
+            "license",
+            cfg.color(SECTION, "label", "#8b93a1"),
+        );
+        x += text_w(
+            ui,
+            &icons::font_id(ic_px),
+            &icons::glyph("license").unwrap(),
+        ) + sh * 0.18;
+    }
+    let base = metric_str(cfg, f, "license");
+    label(
+        ui,
+        Pos2::new(x, rect.center().y),
+        Align2::LEFT_CENTER,
+        &base,
+        val_px,
+        cfg.color(SECTION, "value", "#f4f6f8"),
+        true,
+    );
+    x += text_w(ui, &FontId::proportional(val_px), &base) + val_px * 0.15;
+    if cfg.bool_key(SECTION, "show_sr_projection", false) {
+        if let Some(d) = f.sr_delta {
+            if d != 0 {
+                let up = d > 0;
+                let col = if up {
+                    cfg.color(SECTION, "irating_delta_up", "#46df7a")
+                } else {
+                    cfg.color(SECTION, "irating_delta_down", "#ff5050")
+                };
+                let gname = if up { "irating_up" } else { "irating_down" };
+                icon_paint(ui, Pos2::new(x, rect.center().y), val_px * 0.55, gname, col);
+                x += val_px * 0.55;
+                label(
+                    ui,
+                    Pos2::new(x, rect.center().y),
+                    Align2::LEFT_CENTER,
+                    &format!("{:.2}", (d.abs() as f32) / 100.0),
                     val_px * 0.75,
                     col,
                     true,

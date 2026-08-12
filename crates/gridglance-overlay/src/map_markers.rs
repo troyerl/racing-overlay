@@ -1,9 +1,9 @@
 //! Map traffic-marker selection and hold-before-switch (Python `map_markers.py`).
 //!
-//! During a race, ahead/behind/leader and position labels follow **live race
-//! progress** (`laps_completed + lap_dist_pct`) so a pass updates immediately.
-//! Official `CarIdxPosition` is the fallback (qual/practice, missing pct) and
-//! the S/F re-sync safety net.
+//! Ahead/behind/leader **targets** follow live race progress
+//! (`laps_completed + lap_dist_pct`) so a pass updates immediately.
+//! Position **labels** on dots use the shared standings ranks written onto
+//! `CarRow.position` in `finalize_frame` (sticky race order / best-lap practice).
 
 use crate::telemetry::CarRow;
 use std::collections::HashMap;
@@ -102,17 +102,17 @@ pub fn live_map_ranks(cars: &[CarRow], is_race: bool) -> HashMap<i32, i32> {
 
 /// Text drawn on map dots / traffic-marker pills (`map.car_label`).
 ///
-/// When `live_rank` is set (race progress order), position mode prefers it over
-/// official `CarRow.position`.
+/// Position mode uses shared `CarRow.position` / `class_position` (same source as
+/// standings/dash). `live_rank` is only a fallback when those are unset.
 pub fn car_dot_label(car: &CarRow, mode: &str, live_rank: Option<i32>) -> String {
     if car.is_pace_car {
         return "PC".into();
     }
     if mode.eq_ignore_ascii_case("position") {
-        if let Some(r) = live_rank.filter(|r| *r > 0) {
+        if let Some(r) = official_rank(car) {
             return r.to_string();
         }
-        if let Some(r) = official_rank(car) {
+        if let Some(r) = live_rank.filter(|r| *r > 0) {
             return r.to_string();
         }
     }
@@ -569,11 +569,15 @@ mod tests {
         let mut c = car(5, 3, false);
         c.car_number = "48".into();
         assert_eq!(car_dot_label(&c, "position", None), "3");
-        assert_eq!(car_dot_label(&c, "position", Some(2)), "2");
+        // Shared standings position wins over undamped live rank.
+        assert_eq!(car_dot_label(&c, "position", Some(2)), "3");
         assert_eq!(car_dot_label(&c, "number", Some(2)), "48");
         c.position = 0;
         c.class_position = 2;
         assert_eq!(car_dot_label(&c, "position", None), "2");
+        assert_eq!(car_dot_label(&c, "position", Some(4)), "2");
+        c.class_position = 0;
+        assert_eq!(car_dot_label(&c, "position", Some(4)), "4");
     }
 
     #[test]
