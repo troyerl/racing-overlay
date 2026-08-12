@@ -5,6 +5,19 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.23 - 2026-08-12
+
+- **Shared live positions.** Dash, Relative, Standings, leaderboard, radio, and
+  map position labels all use one standings order so P# never disagrees between
+  widgets. On-track passes update immediately (no wait for iRacing Position).
+- **Relative row centering.** When the Relative panel is taller than the cars
+  shown, the live rows sit vertically centered with even space above and below.
+- **Country flags.** Shared display footprint so wide flags (US) match other
+  countries; US art refreshed to the same pack size.
+- **Fuel calculator.** Row height setting works again; red accent strip removed;
+  laps-until-empty starts from a realistic tank seed (not garage idle burn that
+  showed hundreds of laps), then updates mid-lap and from measured green burns.
+
 ## 1.69.22 - 2026-08-11
 
 - **Country flags.** Relative / Standings can show a Country column, and Radio
