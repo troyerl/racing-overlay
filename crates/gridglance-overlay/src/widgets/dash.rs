@@ -31,12 +31,14 @@ fn gear_label(ui: &mut Ui, cx: f32, cy: f32, text: &str, size: f32, color: Color
     let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, color));
     let mesh = galley.mesh_bounds;
     if mesh.width() > 0.0 && mesh.height() > 0.0 {
+        // Optical centre: geometric ink mid sits slightly low for bold digits.
+        let cy = cy - size * 0.05;
         let pos = Pos2::new(cx - mesh.center().x, cy - mesh.center().y);
         ui.painter().galley(pos, galley, color);
     } else {
         label(
             ui,
-            Pos2::new(cx, cy),
+            Pos2::new(cx, cy - size * 0.05),
             Align2::CENTER_CENTER,
             text,
             size,

@@ -9,7 +9,7 @@ use crate::state::{MapAuthoring, TrackPathStatus};
 use crate::telemetry::CarRow;
 use crate::track_path;
 use egui::{
-    epaint::{PathShape, PathStroke},
+    epaint::{PathShape, PathStroke, TextShape},
     Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, PointerButton, Pos2, Rect,
     Sense, Shape, Stroke, Ui, Vec2,
 };
@@ -1946,25 +1946,27 @@ fn draw_wind(
         FontId::new(nsz, FontFamily::Proportional),
         Color32::from_rgb(170, 178, 188),
     );
-    let b = wind_dir_radians(wind_dir) + PI;
-    let ux = b.sin();
-    let uy = -b.cos();
-    let px = -uy;
-    let py = ux;
-    let tip = Pos2::new(center.x + ux * r * 0.78, center.y + uy * r * 0.78);
-    let tail = Pos2::new(center.x - ux * r * 0.70, center.y - uy * r * 0.70);
-    ui.painter()
-        .line_segment([tail, tip], Stroke::new((r * 0.14).max(1.5), col));
-    let hl = r * 0.42;
-    let hw = r * 0.26;
-    let base = Pos2::new(tip.x - ux * hl, tip.y - uy * hl);
-    let head = vec![
-        tip,
-        Pos2::new(base.x + px * hw, base.y + py * hw),
-        Pos2::new(base.x - px * hw, base.y - py * hw),
-    ];
-    ui.painter()
-        .add(Shape::convex_polygon(head, col, Stroke::NONE));
+    // FA location-arrow points NE when upright; rotate so tip matches wind bearing
+    // (same convention as the old vector arrow: WindDir + π, 0 = screen north).
+    if let Some(g) = icons::glyph("wind_dir") {
+        let bearing = wind_dir_radians(wind_dir) + PI;
+        let angle = bearing - std::f32::consts::FRAC_PI_4;
+        let sz = (r * 1.15).max(9.0);
+        let galley = ui.fonts(|f| {
+            f.layout_no_wrap(g, icons::font_id(sz), Color32::PLACEHOLDER)
+        });
+        let half = galley.size() * 0.5;
+        let (cos, sin) = (angle.cos(), angle.sin());
+        // Clockwise rotation around galley top-left; place so center stays put.
+        let rx = half.x * cos + half.y * sin;
+        let ry = -half.x * sin + half.y * cos;
+        let pos = Pos2::new(center.x - rx, center.y - ry);
+        ui.painter().add(
+            TextShape::new(pos, galley, col)
+                .with_override_text_color(col)
+                .with_angle(angle),
+        );
+    }
 
     let spd = cfg.conv_speed(wind_vel).round();
     let spd_text = format!("{spd:.0} {}", cfg.speed_unit());

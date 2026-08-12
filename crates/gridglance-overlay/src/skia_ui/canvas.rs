@@ -476,7 +476,10 @@ impl Canvas {
         rect.width()
     }
 
-    /// Draw `text` so its ink box is centred on `(cx, cy)`.
+    /// Draw `text` so its tight ink box is centred on `(cx, cy)`.
+    ///
+    /// Uses the same paint + TextBlob bounds that are drawn (not loose font
+    /// metrics). A small upward optical nudge keeps digits from looking low.
     pub fn text_ink_centered(
         &mut self,
         text: &str,
@@ -499,12 +502,22 @@ impl Canvas {
             None,
         );
         paint.set_anti_alias(true);
-        let (_, rect) = font.measure_str(text, None);
-        let draw_x = cx - (rect.left + rect.right) * 0.5;
-        let baseline = cy - (rect.top + rect.bottom) * 0.5;
         let Some(blob) = TextBlob::from_str(text, &font) else {
             return;
         };
+        // Prefer blob bounds (matches draw); fall back to measured string box.
+        let mut rect = *blob.bounds();
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            let (_, m) = font.measure_str(text, Some(&paint));
+            rect = m;
+        }
+        if rect.width() <= 0.0 || rect.height() <= 0.0 {
+            return;
+        }
+        // Optical centre: geometric ink mid sits slightly low for bold digits.
+        let cy = cy - spec.size * 0.05;
+        let draw_x = cx - (rect.left + rect.right) * 0.5;
+        let baseline = cy - (rect.top + rect.bottom) * 0.5;
         self.surface
             .canvas()
             .draw_text_blob(&blob, (draw_x, baseline), &paint);
@@ -596,6 +609,29 @@ impl Canvas {
                 .draw_text_blob(&blob, (draw_x, baseline), &paint);
         }
         width
+    }
+
+    /// Draw a Font Awesome glyph rotated clockwise by `angle_rad` around `(cx, cy)`.
+    pub fn icon_rotated(
+        &mut self,
+        glyph: &str,
+        cx: f32,
+        cy: f32,
+        size: f32,
+        color: Rgba,
+        angle_rad: f32,
+    ) {
+        if glyph.is_empty() {
+            return;
+        }
+        {
+            let canvas = self.surface.canvas();
+            canvas.save();
+            canvas.translate(Point::new(cx, cy));
+            canvas.rotate(angle_rad.to_degrees(), None);
+        }
+        self.icon(glyph, 0.0, 0.0, size, color, TextAlign::Center);
+        self.surface.canvas().restore();
     }
 
     pub fn clip_rect(&mut self, rect: Rect, f: impl FnOnce(&mut Self)) {

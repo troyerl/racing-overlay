@@ -1,0 +1,17 @@
+{
+  "subsession_id": 87886371,
+  "corners_per_lap": 9,
+  "track": "Lime Rock Park",
+  "driver": {
+    "display_name": "Logan Troyer",
+    "cust_id": 526227,
+    "laps_complete": 11,
+    "incidents": 7,
+    "old_sub_level": 342,
+    "new_sub_level": 337,
+    "old_license_level": 7,
+    "new_license_level": 7,
+    "old_cpi": 20.857986,
+    "new_cpi": 20.270473
+  }
+}

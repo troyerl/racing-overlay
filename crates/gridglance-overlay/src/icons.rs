@@ -70,6 +70,8 @@ const CODEPOINTS: &[(&str, u32)] = &[
     // environment
     ("track_temp", 0xF2C9),    // temperature-half
     ("air_temp", 0xF72E),      // wind
+    ("wind", 0xF72E),          // wind
+    ("wind_dir", 0xF124),      // location-arrow — map wind compass
     ("weather", 0xF0C2),       // cloud
     ("track_wetness", 0xF043), // droplet
     ("water_temp", 0xF043),

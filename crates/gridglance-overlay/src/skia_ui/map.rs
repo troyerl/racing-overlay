@@ -1130,23 +1130,19 @@ fn draw_wind(
         false,
         TextAlign::Center,
     );
-    let b = emap::wind_dir_radians(wind_dir) + PI;
-    let ux = b.sin();
-    let uy = -b.cos();
-    let px = -uy;
-    let py = ux;
-    let tip = (center.x + ux * r * 0.78, center.y + uy * r * 0.78);
-    let tail = (center.x - ux * r * 0.70, center.y - uy * r * 0.70);
-    c.line(tail.0, tail.1, tip.0, tip.1, col, (r * 0.14).max(1.5));
-    let hl = r * 0.42;
-    let hw = r * 0.26;
-    let base = (tip.0 - ux * hl, tip.1 - uy * hl);
-    let head = [
-        tip,
-        (base.0 + px * hw, base.1 + py * hw),
-        (base.0 - px * hw, base.1 - py * hw),
-    ];
-    c.fill_closed_path(&head, col);
+    // FA location-arrow points NE when upright; rotate so tip matches wind bearing
+    // (same convention as the old vector arrow: WindDir + π, 0 = screen north).
+    let bearing = emap::wind_dir_radians(wind_dir) + PI;
+    let icon_angle = bearing - std::f32::consts::FRAC_PI_4;
+    icons::paint_rotated(
+        c,
+        "wind_dir",
+        center.x,
+        center.y,
+        (r * 1.15).max(9.0),
+        col,
+        icon_angle,
+    );
 
     let spd = cfg.conv_speed(wind_vel).round();
     let spd_text = format!("{spd:.0} {}", cfg.speed_unit());
