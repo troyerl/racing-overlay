@@ -53,3 +53,43 @@ pub fn set_click_through(hwnd: isize, enabled: bool) {
 
 #[cfg(not(windows))]
 pub fn set_click_through(_hwnd: isize, _enabled: bool) {}
+
+/// Work area (x, y, w, h) of the monitor that contains this panel.
+#[cfg(windows)]
+pub fn monitor_work_area(x: i32, y: i32, w: i32, h: i32) -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    };
+    unsafe {
+        let rc = RECT {
+            left: x,
+            top: y,
+            right: x.saturating_add(w.max(1)),
+            bottom: y.saturating_add(h.max(1)),
+        };
+        let mon = MonitorFromRect(&rc, MONITOR_DEFAULTTONEAREST);
+        if mon.is_invalid() {
+            return None;
+        }
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(mon, &mut info).as_bool() {
+            return None;
+        }
+        let wr = info.rcWork;
+        Some((
+            wr.left,
+            wr.top,
+            (wr.right - wr.left).max(1),
+            (wr.bottom - wr.top).max(1),
+        ))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn monitor_work_area(_x: i32, _y: i32, _w: i32, _h: i32) -> Option<(i32, i32, i32, i32)> {
+    None
+}

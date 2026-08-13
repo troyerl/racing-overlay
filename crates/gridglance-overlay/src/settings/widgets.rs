@@ -504,6 +504,51 @@ pub fn button_kind(ui: &mut Ui, label: &str, kind: ButtonKind) -> Response {
     resp
 }
 
+/// Mini-monitor snap cell. `col`/`row` 0..=2; `None` stretches that axis (center H/V).
+pub fn snap_preview_button(
+    ui: &mut Ui,
+    col: Option<usize>,
+    row: Option<usize>,
+    size: Vec2,
+    id: egui::Id,
+) -> Response {
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let resp = ui.interact(rect, id, Sense::click());
+    let fill = if resp.hovered() {
+        theme::button_hover_bg()
+    } else {
+        theme::button_bg()
+    };
+    let ink = if resp.hovered() { ACCENT } else { ROW_LABEL };
+    ui.painter().rect_filled(rect, BTN_RADIUS, fill);
+    ui.painter().rect_stroke(
+        rect,
+        BTN_RADIUS,
+        Stroke::new(1.0_f32, BTN_BORDER),
+        StrokeKind::Inside,
+    );
+    let screen = rect.shrink(7.0);
+    ui.painter().rect_stroke(
+        screen,
+        2.0,
+        Stroke::new(1.0_f32, ink),
+        StrokeKind::Inside,
+    );
+    let gw = screen.width() / 3.0;
+    let gh = screen.height() / 3.0;
+    let (hx, hw) = match col {
+        Some(c) => (screen.left() + gw * c as f32, gw),
+        None => (screen.left(), screen.width()),
+    };
+    let (hy, hh) = match row {
+        Some(r) => (screen.top() + gh * r as f32, gh),
+        None => (screen.top(), screen.height()),
+    };
+    let hi = Rect::from_min_size(Pos2::new(hx, hy), Vec2::new(hw, hh)).shrink(1.5);
+    ui.painter().rect_filled(hi, 1.5, ink);
+    resp
+}
+
 pub fn styled_combo(
     ui: &mut Ui,
     id_source: impl std::hash::Hash,

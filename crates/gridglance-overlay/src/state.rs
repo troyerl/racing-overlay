@@ -671,6 +671,54 @@ impl Default for PanelLayout {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignH {
+    Left,
+    Center,
+    Right,
+    Keep,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlignV {
+    Top,
+    Center,
+    Bottom,
+    Keep,
+}
+
+const ALIGN_MARGIN: i32 = 24;
+
+/// Place a panel inside `screen` (x, y, w, h), keeping size. `Keep` leaves that axis.
+pub fn aligned_xy(
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    screen: (i32, i32, i32, i32),
+    horiz: AlignH,
+    vert: AlignV,
+    margin: i32,
+) -> (i32, i32) {
+    let (sx, sy, sw, sh) = screen;
+    let m = margin.max(0);
+    let nx = match horiz {
+        AlignH::Left => sx + m,
+        AlignH::Center => sx + (sw - w) / 2,
+        AlignH::Right => sx + sw - m - w,
+        AlignH::Keep => x,
+    };
+    let ny = match vert {
+        AlignV::Top => sy + m,
+        AlignV::Center => sy + (sh - h) / 2,
+        AlignV::Bottom => sy + sh - m - h,
+        AlignV::Keep => y,
+    };
+    let max_x = (sx + sw - w).max(sx);
+    let max_y = (sy + sh - h).max(sy);
+    (nx.clamp(sx, max_x), ny.clamp(sy, max_y))
+}
+
 fn layout_from_value(value: &Value) -> HashMap<String, PanelLayout> {
     let mut layout = HashMap::new();
     if let Some(map) = value.as_object() {
@@ -886,6 +934,23 @@ impl SharedState {
         self.save_layout();
     }
 
+    /// Snap `key` on the monitor it currently occupies.
+    pub fn align_widget(&mut self, key: &str, horiz: AlignH, vert: AlignV) {
+        let (dx, dy, dw, dh) = default_geom(key);
+        let lay = self.layout.entry(key.to_string()).or_insert(PanelLayout {
+            x: dx,
+            y: dy,
+            w: dw,
+            h: dh,
+        });
+        let screen = crate::win_click::monitor_work_area(lay.x, lay.y, lay.w, lay.h)
+            .unwrap_or((0, 0, 1920, 1080));
+        let (nx, ny) = aligned_xy(lay.x, lay.y, lay.w, lay.h, screen, horiz, vert, ALIGN_MARGIN);
+        lay.x = nx;
+        lay.y = ny;
+        self.save_layout_to_preset();
+    }
+
     /// Persist live widget settings + layout for a specific profile before
     /// reloading another garage/on-track context from disk.
     pub fn persist_profile(&mut self, context: ConfigContext) {
@@ -1071,4 +1136,53 @@ pub type StateHandle = Arc<RwLock<SharedState>>;
 
 pub fn new_state(config: OverlayConfig, click_through: bool, demo: bool) -> StateHandle {
     Arc::new(RwLock::new(SharedState::new(config, click_through, demo)))
+}
+
+#[cfg(test)]
+mod layout_align_tests {
+    use super::{aligned_xy, AlignH, AlignV};
+
+    const SCREEN: (i32, i32, i32, i32) = (0, 0, 1920, 1080);
+
+    #[test]
+    fn snaps_nine_points() {
+        let (w, h, m) = (200, 100, 24);
+        assert_eq!(
+            aligned_xy(9, 9, w, h, SCREEN, AlignH::Left, AlignV::Top, m),
+            (24, 24)
+        );
+        assert_eq!(
+            aligned_xy(9, 9, w, h, SCREEN, AlignH::Center, AlignV::Top, m),
+            ((1920 - 200) / 2, 24)
+        );
+        assert_eq!(
+            aligned_xy(9, 9, w, h, SCREEN, AlignH::Right, AlignV::Top, m),
+            (1920 - 24 - 200, 24)
+        );
+        assert_eq!(
+            aligned_xy(9, 9, w, h, SCREEN, AlignH::Left, AlignV::Center, m),
+            (24, (1080 - 100) / 2)
+        );
+        assert_eq!(
+            aligned_xy(9, 9, w, h, SCREEN, AlignH::Center, AlignV::Center, m),
+            ((1920 - 200) / 2, (1080 - 100) / 2)
+        );
+        assert_eq!(
+            aligned_xy(9, 9, w, h, SCREEN, AlignH::Right, AlignV::Bottom, m),
+            (1920 - 24 - 200, 1080 - 24 - 100)
+        );
+    }
+
+    #[test]
+    fn keep_preserves_one_axis() {
+        let (x, y, w, h, m) = (400, 200, 200, 100, 24);
+        assert_eq!(
+            aligned_xy(x, y, w, h, SCREEN, AlignH::Center, AlignV::Keep, m),
+            ((1920 - 200) / 2, 200)
+        );
+        assert_eq!(
+            aligned_xy(x, y, w, h, SCREEN, AlignH::Keep, AlignV::Center, m),
+            (400, (1080 - 100) / 2)
+        );
+    }
 }

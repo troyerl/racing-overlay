@@ -12,7 +12,7 @@ pub use schema::{
 };
 
 use crate::config::{parse_color_str, ConfigContext};
-use crate::state::StateHandle;
+use crate::state::{AlignH, AlignV, StateHandle};
 use egui::{self, Color32, RichText, ScrollArea, Ui, UiBuilder, Vec2b};
 use schema::group_default_open;
 use serde_json::{json, Value};
@@ -22,6 +22,7 @@ use std::time::{Duration, Instant};
 use theme::{paint_background, MUTED, NAV_SECTION, NAV_WIDTH, TITLE};
 use widgets::{
     accordion, button_kind, color_button, enable_card, enable_card_row, icon_button, nav_item,
+    snap_preview_button,
     number_row, preset_button, search_field, setting_row, status_line, styled_choice_combo,
     styled_combo, text_field, toggle_switch, top_tab_button, top_tabs_frame, ButtonKind,
 };
@@ -1514,6 +1515,98 @@ fn load_driver_group_into_ui(ui_state: &mut SettingsUi, groups: &[Value], name: 
     ui_state.dg_member_sel = None;
 }
 
+fn paint_widget_position(
+    ui: &mut Ui,
+    state: &StateHandle,
+    ui_state: &mut SettingsUi,
+    section: &str,
+    accent: Color32,
+) {
+    enable_card(ui, "Position on screen", accent, |ui| {
+        ui.label(
+            RichText::new("Snap to the monitor this widget is on. Size stays the same.")
+                .size(11.0)
+                .color(MUTED),
+        );
+        ui.add_space(8.0);
+        let gap = 4.0;
+        let cell = egui::vec2(36.0, 36.0);
+        let grid: [[(&str, Option<usize>, Option<usize>, AlignH, AlignV); 3]; 3] = [
+            [
+                ("Top left", Some(0), Some(0), AlignH::Left, AlignV::Top),
+                ("Top", Some(1), Some(0), AlignH::Center, AlignV::Top),
+                ("Top right", Some(2), Some(0), AlignH::Right, AlignV::Top),
+            ],
+            [
+                ("Left", Some(0), Some(1), AlignH::Left, AlignV::Center),
+                ("Center", Some(1), Some(1), AlignH::Center, AlignV::Center),
+                ("Right", Some(2), Some(1), AlignH::Right, AlignV::Center),
+            ],
+            [
+                ("Bottom left", Some(0), Some(2), AlignH::Left, AlignV::Bottom),
+                ("Bottom", Some(1), Some(2), AlignH::Center, AlignV::Bottom),
+                ("Bottom right", Some(2), Some(2), AlignH::Right, AlignV::Bottom),
+            ],
+        ];
+        for (ri, row) in grid.iter().enumerate() {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = gap;
+                for (ci, (tip, col, row, h, v)) in row.iter().enumerate() {
+                    let id = ui.id().with((section, "pos", ri, ci));
+                    if snap_preview_button(ui, *col, *row, cell, id)
+                        .on_hover_text(*tip)
+                        .clicked()
+                    {
+                        snap_widget(state, ui_state, section, *h, *v);
+                    }
+                }
+            });
+            ui.add_space(4.0);
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            if snap_preview_button(
+                ui,
+                None,
+                Some(1),
+                cell,
+                ui.id().with((section, "pos_h")),
+            )
+            .on_hover_text("Center horizontally (keep vertical)")
+            .clicked()
+            {
+                snap_widget(state, ui_state, section, AlignH::Center, AlignV::Keep);
+            }
+            if snap_preview_button(
+                ui,
+                Some(1),
+                None,
+                cell,
+                ui.id().with((section, "pos_v")),
+            )
+            .on_hover_text("Center vertically (keep horizontal)")
+            .clicked()
+            {
+                snap_widget(state, ui_state, section, AlignH::Keep, AlignV::Center);
+            }
+        });
+    });
+}
+
+fn snap_widget(
+    state: &StateHandle,
+    ui_state: &mut SettingsUi,
+    section: &str,
+    horiz: AlignH,
+    vert: AlignV,
+) {
+    if let Some(mut st) = state.try_write() {
+        st.align_widget(section, horiz, vert);
+    }
+    ui_state.flash("Widget moved");
+}
+
 fn paint_widget_section(
     ui: &mut Ui,
     state: &StateHandle,
@@ -1557,6 +1650,8 @@ fn paint_widget_section(
     ) {
         set_section_key(state, section, "show", json!(show), dirty, ui_state);
     }
+    ui.add_space(8.0);
+    paint_widget_position(ui, state, ui_state, section, accent);
     ui.add_space(6.0);
     if !show {
         ui.label(
