@@ -31,24 +31,45 @@ fn full_bounds(c: &Canvas) -> Rect {
 }
 
 fn size_frac(cfg: &OverlayConfig, key: &str, default: f32) -> f32 {
-    cfg.section(SECTION)
+    let v = cfg
+        .section(SECTION)
         .get("sizes")
         .and_then(|s| s.get(key))
         .and_then(|v| v.as_f64())
         .map(|v| v as f32)
-        .unwrap_or(default)
+        .unwrap_or(default);
+    match key {
+        "car_w" if (v - 0.20).abs() < 1e-4 || (v - 0.13).abs() < 1e-4 => default,
+        "car_h" if (v - 0.26).abs() < 1e-4 || (v - 0.20).abs() < 1e-4 => default,
+        _ => v,
+    }
+}
+
+fn punch_alert(c: Rgba) -> Rgba {
+    let max = c.r.max(c.g).max(c.b).max(1) as f32;
+    let scale = 255.0 / max;
+    Rgba::new(
+        (c.r as f32 * scale).round().min(255.0) as u8,
+        (c.g as f32 * scale).round().min(255.0) as u8,
+        (c.b as f32 * scale).round().min(255.0) as u8,
+        c.a,
+    )
 }
 
 fn prox_color(cfg: &OverlayConfig, closeness: f32, alpha: u8) -> Rgba {
     let t = closeness.clamp(0.0, 1.0);
-    let yellow = section_color(cfg, SECTION, "yellow", "#ffd23a");
-    let red = section_color(cfg, SECTION, "red", "#ff5050");
+    let yellow = punch_alert(section_color(cfg, SECTION, "yellow", "#ffe033"));
+    let red = punch_alert(section_color(cfg, SECTION, "red", "#ff2424"));
     Rgba::new(
         (yellow.r as f32 + (red.r as f32 - yellow.r as f32) * t) as u8,
         (yellow.g as f32 + (red.g as f32 - yellow.g as f32) * t) as u8,
         (yellow.b as f32 + (red.b as f32 - yellow.b as f32) * t) as u8,
         alpha,
     )
+}
+
+fn alert_red(cfg: &OverlayConfig) -> Rgba {
+    punch_alert(section_color(cfg, SECTION, "red", "#ff2424"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -69,19 +90,25 @@ fn side_marker(
     let right = x0.max(x1);
     let w = (right - left).max(1.0);
     let h = marker_h.max(1.0);
-    let peak = ((if strong { 235.0 } else { 195.0 }) * opacity.clamp(0.0, 1.0)) as u8;
+    let peak = ((if strong { 255.0 } else { 230.0 }) * opacity.clamp(0.0, 1.0)) as u8;
     let base = if let Some(cl) = closeness {
         prox_color(cfg, cl, 255)
     } else {
-        section_color(cfg, SECTION, "red", "#ff5050")
+        alert_red(cfg)
     };
-    // Smooth tent × linear fade (replaces coarse rect grid that looked pixelated).
-    // Opaque toward the car: right edge when to_left, left edge otherwise.
-    c.fill_tent_horizontal_fade(
-        Rect::from_xywh(left, yc - h * 0.5, w, h),
-        base.with_alpha(peak),
-        !to_left,
+    let core = Rect::from_xywh(left, yc - h * 0.5, w, h);
+    // Wide, filled bloom first so the warning is visible without looking at it.
+    let bloom_h = h * 1.7;
+    let bloom_w = w * 1.18;
+    let bloom = Rect::from_xywh(
+        left + (w - bloom_w) * 0.5,
+        yc - bloom_h * 0.5,
+        bloom_w,
+        bloom_h,
     );
+    c.fill_tent_horizontal_fade(bloom, base.with_alpha((peak as f32 * 0.55) as u8), !to_left);
+    // Smooth tent × linear fade. Opaque toward the car: right edge when to_left.
+    c.fill_tent_horizontal_fade(core, base.with_alpha(peak), !to_left);
     if !label_txt.is_empty() {
         text_at(
             c,
@@ -110,14 +137,18 @@ fn v_glow(
     let bottom = y_inner.max(y_outer);
     let h = (bottom - top).max(1.0);
     let w = (half_w * 2.0).max(1.0);
-    let peak = (80.0 + 130.0 * closeness.clamp(0.0, 1.0)) as u8;
+    let peak = (170.0 + 85.0 * closeness.clamp(0.0, 1.0)) as u8;
     let base = prox_color(cfg, closeness, 255);
-    // Inner→outer fade × horizontal tent (smooth gradients, not rect tiles).
+    let core = Rect::from_xywh(cx - half_w, top, w, h);
+    let bloom_w = w * 1.85;
+    let bloom = Rect::from_xywh(cx - bloom_w * 0.5, top, bloom_w, h);
     c.fill_tent_vertical_fade(
-        Rect::from_xywh(cx - half_w, top, w, h),
-        base.with_alpha(peak),
+        bloom,
+        base.with_alpha((peak as f32 * 0.50) as u8),
         y_inner <= y_outer,
     );
+    // Inner→outer fade × horizontal tent (smooth gradients, not rect tiles).
+    c.fill_tent_vertical_fade(core, base.with_alpha(peak), y_inner <= y_outer);
 }
 
 /// Paint the radar HUD. Returns `true` while any eased value is still moving
@@ -141,10 +172,12 @@ pub fn paint_radar(
     let h = bounds.height();
     let (cx, cy) = bounds.center();
 
-    let car_w = (w * size_frac(cfg, "car_w", 0.13)).max(12.0);
-    let car_h = (h * size_frac(cfg, "car_h", 0.20)).max(24.0);
+    let car_w = (w * size_frac(cfg, "car_w", 0.36)).max(18.0);
+    let car_h = (h * size_frac(cfg, "car_h", 0.48)).max(36.0);
+    let kind = crate::widgets::radar::radar_car_kind(frame.car_path.as_deref());
+    let (sprite_w, _) = crate::widgets::radar::car_sprite_fit(kind, car_w, car_h);
     let bar_h = car_h * size_frac(cfg, "bar_h", 0.78);
-    let inner = car_w * 0.75;
+    let inner = sprite_w * 0.5 + (w * 0.032).max(7.0);
     let nose_len = h * size_frac(cfg, "nose_len", 0.16);
     let glow_w = w * size_frac(cfg, "glow_w", 0.17);
 
@@ -293,23 +326,18 @@ pub fn paint_radar(
     }
     if cfg.bool_key(SECTION, "show_nose", true) {
         let nose = section_color(cfg, SECTION, "nose", "#f4f6f8");
+        let tip_y = cy - car_h * 0.50;
         c.line(
             cx,
-            cy - car_h * 0.5,
+            tip_y,
             cx,
-            cy - car_h * 0.5 - nose_len,
+            tip_y - nose_len,
             nose,
             (w * 0.012).max(1.5),
         );
     }
 
-    // Center car silhouette.
-    let car = Rect::from_xywh(cx - car_w * 0.5, cy - car_h * 0.5, car_w, car_h);
-    c.fill_rect(
-        car,
-        section_color(cfg, SECTION, "car", "#f4f6f8"),
-        car_w * 0.4,
-    );
+    c.draw_radar_car(cx, cy, car_w, car_h, kind);
 
     still_animating
 }

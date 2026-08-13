@@ -20,7 +20,7 @@ pub use pace_caution::{
 };
 mod pit_advisor;
 mod pit_board;
-mod radar;
+pub(crate) mod radar;
 mod radio_tower;
 mod relative;
 mod scoreboard_digits;

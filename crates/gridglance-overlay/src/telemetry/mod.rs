@@ -735,23 +735,23 @@ pub mod demo {
                 .map(|c| c.lap_dist_pct)
                 .unwrap_or(0.0);
 
-            let mut radar = RadarState {
-                left: (t * 0.4).sin() > 0.55,
-                right: (t * 0.37).cos() > 0.55,
-                left2: false,
-                right2: false,
-                left_pos: 0.35,
-                right_pos: 0.62,
+            let left_pos = (t * 0.45).sin() as f32;
+            let right_pos = (t * 0.33 + 1.8).sin() as f32;
+            let ahead_c = (0.5 + 0.5 * (t * 0.55).sin() as f32).clamp(0.0, 1.0);
+            let behind_c = (0.5 + 0.5 * (t * 0.48 + 1.1).cos() as f32).clamp(0.0, 1.0);
+            let radar = RadarState {
+                left: true,
+                right: true,
+                left2: left_pos.abs() < 0.28,
+                right2: right_pos.abs() < 0.22,
+                left_pos,
+                right_pos,
                 left_label: "#19".into(),
                 right_label: "#5".into(),
-                ahead: Some(1.4),
-                behind: Some(0.9),
+                ahead: Some(ahead_c),
+                behind: Some(behind_c),
                 clear_secs: None,
             };
-            if radar.left && radar.right {
-                radar.left2 = (t as i32 % 9) < 3;
-                radar.right2 = (t as i32 % 11) < 3;
-            }
 
             let speed_mps = 55.0 + 8.0 * (t * 0.7).sin() as f32;
             let rpm = 5200.0 + 800.0 * (t * 1.3).sin() as f32;
@@ -876,6 +876,17 @@ pub mod demo {
             let laps_total = 50;
             let session_laps_remain = Some((laps_total - lead_lap).max(0) as f32);
 
+            let demo_cars = [
+                "dallara f3",
+                "porsche 963 gtp",
+                "ferrari 296 gt3",
+                "mx5 cup",
+                "nascar cup series next gen chevrolet camaro z l 1",
+                "nascar truck",
+                "dirt sprint car",
+            ];
+            let car_path = demo_cars[(t / 6.0).floor() as usize % demo_cars.len()];
+
             TelemetryFrame {
                 connected: true,
                 in_car: true,
@@ -951,6 +962,7 @@ pub mod demo {
                 lap_est_time: lap_est,
                 track_id: Some(1),
                 track_name: Some("Demo Speedpark".into()),
+                car_path: Some(car_path.into()),
                 session_time_of_day: Some(14.0 * 3600.0 + (t as f32 * 2.0) % 3600.0),
                 session_type: Some("Race".into()),
                 subsession_id: Some(9_001_001),
@@ -1066,6 +1078,18 @@ pub mod demo {
                 delta > 0.0 && delta < 0.01,
                 "lap_dist_pct should nudge continuously, got delta={delta} ({pct_a} -> {pct_b})"
             );
+        }
+
+        #[test]
+        fn demo_car_path_cycles_radar_designs() {
+            let feed = DemoFeed::new();
+            let a = feed.tick_at(0.0).car_path;
+            let b = feed.tick_at(6.0).car_path;
+            let c = feed.tick_at(12.0).car_path;
+            assert!(a.as_ref().is_some_and(|s| !s.is_empty()));
+            assert_ne!(a, b);
+            assert_ne!(b, c);
+            assert_eq!(a, feed.tick_at(42.0).car_path); // 7 slots × 6s
         }
     }
 }

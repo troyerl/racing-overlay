@@ -1951,10 +1951,10 @@ fn default_cfg() -> Value {
             section.insert(
                 "sizes".into(),
                 json!({
-                    "car_w": 0.13,
-                    "car_h": 0.20,
+                    "car_w": 0.36,
+                    "car_h": 0.48,
                     "bar_h": 0.78,
-                    "glow_w": 0.17,
+                    "glow_w": 0.24,
                     "nose_len": 0.16
                 }),
             );
@@ -1962,8 +1962,8 @@ fn default_cfg() -> Value {
                 colors.insert("car".into(), Value::String("#f4f6f8".into()));
                 colors.insert("axis".into(), Value::String("#46df7a3a".into()));
                 colors.insert("nose".into(), Value::String("#46df7ae6".into()));
-                colors.insert("red".into(), Value::String("#e23b3b".into()));
-                colors.insert("yellow".into(), Value::String("#ffd23a".into()));
+                colors.insert("red".into(), Value::String("#ff2424".into()));
+                colors.insert("yellow".into(), Value::String("#ffe033".into()));
             }
         }
         if *key == "radio_tower" {

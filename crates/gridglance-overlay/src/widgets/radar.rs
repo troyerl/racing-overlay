@@ -3,7 +3,7 @@
 use super::WidgetCtx;
 use crate::chrome::{anim_dt, color_with_alpha, ease, full_rect, label, panel_card, still_easing};
 use egui::{
-    epaint::Vertex, Align2, Color32, CornerRadius, Mesh, Pos2, Rect, Shape, Stroke, Ui, Vec2,
+    epaint::Vertex, Align2, Color32, Mesh, Pos2, Rect, Shape, Stroke, Ui, Vec2,
 };
 
 const SECTION: &str = "radar";
@@ -30,10 +30,12 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let cx = rect.center().x;
     let cy = rect.center().y;
 
-    let car_w = (w * size_frac(ctx, "car_w", 0.13)).max(12.0);
-    let car_h = (h * size_frac(ctx, "car_h", 0.20)).max(24.0);
+    let car_w = (w * size_frac(ctx, "car_w", 0.36)).max(18.0);
+    let car_h = (h * size_frac(ctx, "car_h", 0.48)).max(36.0);
+    let kind = radar_car_kind(ctx.frame.car_path.as_deref());
+    let (sprite_w, _) = car_sprite_fit(kind, car_w, car_h);
     let bar_h = car_h * size_frac(ctx, "bar_h", 0.78);
-    let inner = car_w * 0.75;
+    let inner = sprite_w * 0.5 + (w * 0.032).max(7.0);
     let nose_len = h * size_frac(ctx, "nose_len", 0.16);
     let glow_w = w * size_frac(ctx, "glow_w", 0.17);
 
@@ -188,32 +190,241 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
     if ctx.cfg.bool_key(SECTION, "show_nose", true) {
         let nose = ctx.cfg.color(SECTION, "nose", "#f4f6f8");
+        let tip_y = cy - car_h * 0.50;
         ui.painter().line_segment(
             [
-                Pos2::new(cx, cy - car_h * 0.5),
-                Pos2::new(cx, cy - car_h * 0.5 - nose_len),
+                Pos2::new(cx, tip_y),
+                Pos2::new(cx, tip_y - nose_len),
             ],
             Stroke::new((w * 0.012).max(1.5), nose),
         );
     }
 
-    // Center car silhouette
-    let car = Rect::from_center_size(Pos2::new(cx, cy), Vec2::new(car_w, car_h));
-    ui.painter().rect_filled(
-        car,
-        CornerRadius::same((car_w * 0.4) as u8),
-        ctx.cfg.color(SECTION, "car", "#f4f6f8"),
+    paint_car_sprite(ui, Pos2::new(cx, cy), car_w, car_h, kind);
+}
+
+const CAR_SPRITE_MAX_SIDE: u32 = 512;
+
+/// Top-down radar body family, inferred from iRacing `CarPath`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RadarCarKind {
+    Formula,
+    Prototype,
+    Gt,
+    Touring,
+    Stock,
+    Truck,
+    Sprint,
+}
+
+impl RadarCarKind {
+    fn png_bytes(self) -> &'static [u8] {
+        match self {
+            Self::Formula => include_bytes!("../../../../assets/cars/formula.png"),
+            Self::Prototype => include_bytes!("../../../../assets/cars/prototype.png"),
+            Self::Gt => include_bytes!("../../../../assets/cars/gt.png"),
+            Self::Touring => include_bytes!("../../../../assets/cars/touring.png"),
+            Self::Stock => include_bytes!("../../../../assets/cars/nascar.png"),
+            Self::Truck => include_bytes!("../../../../assets/cars/truck.png"),
+            Self::Sprint => include_bytes!("../../../../assets/cars/sprint.png"),
+        }
+    }
+
+    /// GT and sprint art is authored nose-down; rotate so ahead is up.
+    pub(crate) fn sprite_rot_deg(self) -> f32 {
+        match self {
+            Self::Gt | Self::Sprint => 180.0,
+            _ => 0.0,
+        }
+    }
+}
+
+fn decode_car_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
+    let mut img = image::load_from_memory(bytes).ok()?.into_rgba8();
+    let long = img.width().max(img.height());
+    if long > CAR_SPRITE_MAX_SIDE {
+        let scale = CAR_SPRITE_MAX_SIDE as f32 / long as f32;
+        let nw = (img.width() as f32 * scale).round().max(1.0) as u32;
+        let nh = (img.height() as f32 * scale).round().max(1.0) as u32;
+        img = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle);
+    }
+    let (w, h) = img.dimensions();
+    Some((w, h, img.into_raw()))
+}
+
+/// Cached RGBA8 (unpremultiplied), downscaled for the HUD. Art is nose-up.
+pub(crate) fn car_sprite_rgba(kind: RadarCarKind) -> Option<&'static (u32, u32, Vec<u8>)> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<[OnceLock<Option<(u32, u32, Vec<u8>)>>; 7]> = OnceLock::new();
+    let slots = CACHE.get_or_init(|| std::array::from_fn(|_| OnceLock::new()));
+    slots[kind as usize]
+        .get_or_init(|| decode_car_png(kind.png_bytes()))
+        .as_ref()
+}
+
+/// Drawn size of the sprite contain-fit into the radar car box.
+pub(crate) fn car_sprite_fit(kind: RadarCarKind, box_w: f32, box_h: f32) -> (f32, f32) {
+    let Some((iw, ih, _)) = car_sprite_rgba(kind) else {
+        return (box_w, box_h);
+    };
+    let scale = (box_w / *iw as f32).min(box_h / *ih as f32);
+    (*iw as f32 * scale, *ih as f32 * scale)
+}
+
+pub(crate) fn radar_car_kind(car_path: Option<&str>) -> RadarCarKind {
+    let p = car_path.unwrap_or("").to_ascii_lowercase();
+    let has = |n: &str| p.contains(n);
+    if has("sprint") || has("midget") || has("winged") {
+        RadarCarKind::Sprint
+    } else if has("truck") || has("silverado") || has("tundra") || has("f150") || has("f-150") {
+        RadarCarKind::Truck
+    } else if has("nascar")
+        || has("nextgen")
+        || has("next gen")
+        || has("latemodel")
+        || has("late model")
+        || has("streetstock")
+        || has("street stock")
+        || has("arca")
+        || has("modified")
+        || has("legends")
+    {
+        RadarCarKind::Stock
+    } else if has("ir18") || has("dw12") || has("indycar") || has("indy car") {
+        RadarCarKind::Formula
+    } else if has("lmp")
+        || has("gtp")
+        || has("prototype")
+        || has("arx")
+        || has("jsp")
+        || has("p217")
+        || has("963")
+        || has("vseries")
+        || has("v-series")
+        || has("hybrid v8")
+        || has("lmh")
+        || has("lm dh")
+    {
+        RadarCarKind::Prototype
+    } else if has("formula")
+        || has("formulavee")
+        || has("usf")
+        || has("ir-04")
+        || has("ir04")
+        || has("ir-01")
+        || has("ir01")
+        || has("sf23")
+        || has("fw31")
+        || has("mp4")
+        || p.contains("f3")
+        || p.contains("f4")
+        || has("superformula")
+        || has("super formula")
+        || has("ff1600")
+        || has("formula ford")
+    {
+        RadarCarKind::Formula
+    } else if has("gt3") || has("gt4") || has("gte") || has("gtd") || has("gt1") {
+        RadarCarKind::Gt
+    } else if has("mx5")
+        || has("mx-5")
+        || has("gr86")
+        || has("tcr")
+        || has("touring")
+        || has("civic")
+        || has("globalmazda")
+    {
+        RadarCarKind::Touring
+    } else {
+        RadarCarKind::Gt
+    }
+}
+
+fn radar_car_texture(ui: &mut Ui, kind: RadarCarKind) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new(("radar_car_tex", kind as u8));
+    if let Some(tex) = ui.ctx().data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(tex);
+    }
+    let (w, h, rgba) = car_sprite_rgba(kind)?;
+    let color = egui::ColorImage::from_rgba_unmultiplied([*w as usize, *h as usize], rgba);
+    let tex = ui.ctx().load_texture(
+        format!("radar_car_{}", kind as u8),
+        color,
+        egui::TextureOptions::LINEAR,
     );
+    ui.ctx().data_mut(|d| d.insert_temp(id, tex.clone()));
+    Some(tex)
+}
+
+/// Source PNGs are portrait, nose up. Contain-fit into the radar car box.
+fn paint_car_sprite(ui: &mut Ui, c: Pos2, box_w: f32, box_h: f32, kind: RadarCarKind) {
+    let Some(tex) = radar_car_texture(ui, kind) else {
+        return;
+    };
+    let size = tex.size_vec2();
+    if size.x <= 0.0 || size.y <= 0.0 || box_w <= 0.0 || box_h <= 0.0 {
+        return;
+    }
+    let scale = (box_w / size.x).min(box_h / size.y);
+    let vis = Vec2::new(size.x * scale, size.y * scale);
+    let rect = Rect::from_center_size(c, vis);
+    let mut mesh = Mesh::with_texture(tex.id());
+    let white = Color32::WHITE;
+    let uvs = if kind.sprite_rot_deg() == 180.0 {
+        [
+            Pos2::new(1.0, 1.0),
+            Pos2::new(0.0, 1.0),
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+        ]
+    } else {
+        [
+            Pos2::new(0.0, 0.0),
+            Pos2::new(1.0, 0.0),
+            Pos2::new(1.0, 1.0),
+            Pos2::new(0.0, 1.0),
+        ]
+    };
+    mesh.vertices.extend_from_slice(&[
+        Vertex {
+            pos: rect.left_top(),
+            uv: uvs[0],
+            color: white,
+        },
+        Vertex {
+            pos: rect.right_top(),
+            uv: uvs[1],
+            color: white,
+        },
+        Vertex {
+            pos: rect.right_bottom(),
+            uv: uvs[2],
+            color: white,
+        },
+        Vertex {
+            pos: rect.left_bottom(),
+            uv: uvs[3],
+            color: white,
+        },
+    ]);
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(Shape::mesh(mesh));
 }
 
 fn size_frac(ctx: &WidgetCtx<'_>, key: &str, default: f32) -> f32 {
-    ctx.cfg
+    let v = ctx.cfg
         .section(SECTION)
         .get("sizes")
         .and_then(|s| s.get(key))
         .and_then(|v| v.as_f64())
         .map(|v| v as f32)
-        .unwrap_or(default)
+        .unwrap_or(default);
+    match key {
+        "car_w" if (v - 0.20).abs() < 1e-4 || (v - 0.13).abs() < 1e-4 => default,
+        "car_h" if (v - 0.26).abs() < 1e-4 || (v - 0.20).abs() < 1e-4 => default,
+        _ => v,
+    }
 }
 
 fn unpremultiply(c: Color32) -> (u8, u8, u8) {
@@ -228,16 +439,37 @@ fn unpremultiply(c: Color32) -> (u8, u8, u8) {
     )
 }
 
+fn punch_alert(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+    // Push hue toward neon so saved muted reds/ambers still pop off-axis.
+    let max = r.max(g).max(b).max(1) as f32;
+    let scale = 255.0 / max;
+    (
+        (r as f32 * scale).round().min(255.0) as u8,
+        (g as f32 * scale).round().min(255.0) as u8,
+        (b as f32 * scale).round().min(255.0) as u8,
+    )
+}
+
 fn prox_color(ctx: &WidgetCtx<'_>, closeness: f32, alpha: u8) -> Color32 {
     let c = closeness.clamp(0.0, 1.0);
-    let (yr, yg, yb) = unpremultiply(ctx.cfg.color(SECTION, "yellow", "#ffd23a"));
-    let (rr, rg, rb) = unpremultiply(ctx.cfg.color(SECTION, "red", "#ff5050"));
+    let (yr, yg, yb) = punch_alert_unpremul(ctx.cfg.color(SECTION, "yellow", "#ffe033"));
+    let (rr, rg, rb) = punch_alert_unpremul(ctx.cfg.color(SECTION, "red", "#ff2424"));
     Color32::from_rgba_unmultiplied(
         (yr as f32 + (rr as f32 - yr as f32) * c) as u8,
         (yg as f32 + (rg as f32 - yg as f32) * c) as u8,
         (yb as f32 + (rb as f32 - yb as f32) * c) as u8,
         alpha,
     )
+}
+
+fn punch_alert_unpremul(c: Color32) -> (u8, u8, u8) {
+    let (r, g, b) = unpremultiply(c);
+    punch_alert(r, g, b)
+}
+
+fn alert_red(ctx: &WidgetCtx<'_>) -> Color32 {
+    let (r, g, b) = punch_alert_unpremul(ctx.cfg.color(SECTION, "red", "#ff2424"));
+    Color32::from_rgba_unmultiplied(r, g, b, 255)
 }
 
 /// Tent map 0→1→0 across [0, 1] (Python `_feather_mask` edge dissolve).
@@ -267,19 +499,33 @@ fn side_marker(
     let right = x0.max(x1);
     let w = (right - left).max(1.0);
     let h = marker_h.max(1.0);
-    let peak = ((if strong { 235.0 } else { 195.0 }) * opacity.clamp(0.0, 1.0)) as u8;
+    let peak = ((if strong { 255.0 } else { 230.0 }) * opacity.clamp(0.0, 1.0)) as u8;
     let base = if let Some(c) = closeness {
         prox_color(ctx, c, 255)
     } else {
-        ctx.cfg.color(SECTION, "red", "#ff5050")
+        alert_red(ctx)
     };
+    let core = Rect::from_min_max(
+        Pos2::new(left, yc - h * 0.5),
+        Pos2::new(right, yc + h * 0.5),
+    );
+    let bloom_h = h * 1.7;
+    let extra_w = w * 0.09;
+    let bloom = Rect::from_min_max(
+        Pos2::new(left - extra_w, yc - bloom_h * 0.5),
+        Pos2::new(right + extra_w, yc + bloom_h * 0.5),
+    );
+    paint_feather_mesh(
+        ui,
+        bloom,
+        base,
+        (peak as f32 * 0.55) as u8,
+        FeatherKind::HorizontalTowardCar { to_left },
+    );
     // Smooth tent × linear fade via vertex-colored mesh (GPU interpolates).
     paint_feather_mesh(
         ui,
-        Rect::from_min_max(
-            Pos2::new(left, yc - h * 0.5),
-            Pos2::new(right, yc + h * 0.5),
-        ),
+        core,
         base,
         peak,
         FeatherKind::HorizontalTowardCar { to_left },
@@ -309,8 +555,21 @@ fn v_glow(
 ) {
     let top = y_inner.min(y_outer);
     let bottom = y_inner.max(y_outer);
-    let peak = (80.0 + 130.0 * closeness.clamp(0.0, 1.0)) as u8;
+    let peak = (170.0 + 85.0 * closeness.clamp(0.0, 1.0)) as u8;
     let base = prox_color(ctx, closeness, 255);
+    let kind = FeatherKind::VerticalFromInner {
+        opaque_at_top: y_inner <= y_outer,
+    };
+    paint_feather_mesh(
+        ui,
+        Rect::from_min_max(
+            Pos2::new(cx - half_w * 1.85, top),
+            Pos2::new(cx + half_w * 1.85, bottom),
+        ),
+        base,
+        (peak as f32 * 0.50) as u8,
+        kind,
+    );
     paint_feather_mesh(
         ui,
         Rect::from_min_max(
@@ -319,12 +578,11 @@ fn v_glow(
         ),
         base,
         peak,
-        FeatherKind::VerticalFromInner {
-            opaque_at_top: y_inner <= y_outer,
-        },
+        kind,
     );
 }
 
+#[derive(Clone, Copy)]
 enum FeatherKind {
     VerticalFromInner { opaque_at_top: bool },
     HorizontalTowardCar { to_left: bool },
@@ -377,4 +635,43 @@ fn paint_feather_mesh(ui: &mut Ui, rect: Rect, base: Color32, peak: u8, kind: Fe
         }
     }
     ui.painter().add(Shape::mesh(mesh));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{car_sprite_rgba, radar_car_kind, RadarCarKind};
+
+    #[test]
+    fn car_pngs_decode_portrait() {
+        for kind in [
+            RadarCarKind::Formula,
+            RadarCarKind::Prototype,
+            RadarCarKind::Gt,
+            RadarCarKind::Touring,
+            RadarCarKind::Stock,
+            RadarCarKind::Truck,
+            RadarCarKind::Sprint,
+        ] {
+            let (w, h, rgba) = car_sprite_rgba(kind).unwrap_or_else(|| panic!("{kind:?} png"));
+            assert!(*w > 8 && *h > 8, "{kind:?}");
+            assert_eq!(rgba.len(), (*w as usize) * (*h as usize) * 4, "{kind:?}");
+            assert!(*h > *w, "{kind:?} should be nose-up portrait");
+        }
+    }
+
+    #[test]
+    fn classifies_session_car_paths() {
+        assert_eq!(radar_car_kind(Some("dallara f3")), RadarCarKind::Formula);
+        assert_eq!(radar_car_kind(Some("dallarair18")), RadarCarKind::Formula);
+        assert_eq!(radar_car_kind(Some("ferrari 296 gt3")), RadarCarKind::Gt);
+        assert_eq!(radar_car_kind(Some("mx5 cup")), RadarCarKind::Touring);
+        assert_eq!(
+            radar_car_kind(Some("nASCAR cup series next gen chevrolet camaro z l 1")),
+            RadarCarKind::Stock
+        );
+        assert_eq!(radar_car_kind(Some("porsche 963 gtp")), RadarCarKind::Prototype);
+        assert_eq!(radar_car_kind(Some("dirt sprint car")), RadarCarKind::Sprint);
+        assert_eq!(radar_car_kind(Some("nascar truck")), RadarCarKind::Truck);
+        assert_eq!(radar_car_kind(None), RadarCarKind::Gt);
+    }
 }

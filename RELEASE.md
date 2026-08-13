@@ -5,6 +5,14 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.25 - 2026-08-13
+
+- **Radar car sprites.** The center car is a top-down PNG for the session
+  class (formula, prototype, GT, touring, NASCAR, truck, sprint) instead of a
+  drawn silhouette. GT and sprint art are rotated so the nose points ahead.
+- **Radar layout.** The car is larger; side yellow/red blurs sit just off the
+  body. Demo traffic slides along the sides and the front/rear glows pulse.
+
 ## 1.69.24 - 2026-08-12
 
 - **Dash centering.** Gear in the ring and the P# badge sit on glyph ink, so

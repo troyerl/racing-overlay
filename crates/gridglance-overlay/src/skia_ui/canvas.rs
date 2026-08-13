@@ -765,6 +765,56 @@ impl Canvas {
         canvas.restore();
     }
 
+    /// Cached radar car sprite for `kind`. Source art is nose-up portrait.
+    pub fn draw_radar_car(
+        &mut self,
+        cx: f32,
+        cy: f32,
+        box_w: f32,
+        box_h: f32,
+        kind: crate::widgets::radar::RadarCarKind,
+    ) {
+        use skia_safe::{AlphaType, ColorType, Data, ImageInfo};
+        use std::sync::OnceLock;
+        static CACHE: OnceLock<[OnceLock<Option<skia_safe::Image>>; 7]> = OnceLock::new();
+        let slots = CACHE.get_or_init(|| std::array::from_fn(|_| OnceLock::new()));
+        let Some(img) = slots[kind as usize]
+            .get_or_init(|| {
+                let (w, h, rgba) = crate::widgets::radar::car_sprite_rgba(kind)?;
+                let info = ImageInfo::new(
+                    (*w as i32, *h as i32),
+                    ColorType::RGBA8888,
+                    AlphaType::Unpremul,
+                    None,
+                );
+                skia_safe::images::raster_from_data(&info, Data::new_copy(rgba), (*w as usize) * 4)
+            })
+            .clone()
+        else {
+            return;
+        };
+        let iw = img.width() as f32;
+        let ih = img.height() as f32;
+        if iw <= 0.0 || ih <= 0.0 || box_w <= 0.0 || box_h <= 0.0 {
+            return;
+        }
+        let scale = (box_w / iw).min(box_h / ih);
+        let draw_w = iw * scale;
+        let draw_h = ih * scale;
+        let mut paint = Paint::default();
+        paint.set_anti_alias(true);
+        let canvas = self.surface.canvas();
+        canvas.save();
+        canvas.translate(Point::new(cx, cy));
+        let rot = kind.sprite_rot_deg();
+        if rot != 0.0 {
+            canvas.rotate(rot, None);
+        }
+        let dst = skia_safe::Rect::from_xywh(-draw_w * 0.5, -draw_h * 0.5, draw_w, draw_h);
+        canvas.draw_image_rect(&img, None, dst, &paint);
+        canvas.restore();
+    }
+
     /// Overwrite the whole surface with top-down premul BGRA pixels.
     /// Used to seed the hot map path with its cached static track.
     pub fn write_bgra(&mut self, bgra: &[u8]) -> bool {
