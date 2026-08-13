@@ -117,6 +117,21 @@ pub fn download_installer(url: &str) -> anyhow::Result<std::path::PathBuf> {
     Ok(tmp)
 }
 
+/// True when this is an installed Windows build with `unins000.exe` beside the exe.
+pub fn uninstaller_available() -> bool {
+    #[cfg(windows)]
+    {
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(|d| d.join("unins000.exe")))
+            .is_some_and(|p| p.is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
 /// Launch Inno uninstaller when installed; no-op in a cargo run checkout.
 pub fn launch_uninstaller() -> anyhow::Result<()> {
     #[cfg(windows)]

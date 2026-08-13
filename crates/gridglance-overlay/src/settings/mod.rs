@@ -7,8 +7,9 @@ mod widgets;
 
 pub use schema::{
     allows_free_text_setting, choice_label, default_table_col_width, help_text, is_skipped,
-    matches_search, nav_for_tab, pretty_key, setting_groups, string_choices, tab_color,
-    table_slot_options, top_tab_for, LAPLOG_COLUMNS, TABLE_DATA_COLUMNS, UNITS_CHOICES, TopTab,
+    matches_search, nav_for_tab, pretty_key, setting_groups, setting_visible, string_choices,
+    tab_color, table_slot_options, top_tab_for, LAPLOG_COLUMNS, TABLE_DATA_COLUMNS, UNITS_CHOICES,
+    TopTab,
 };
 
 use crate::config::{parse_color_str, ConfigContext};
@@ -305,7 +306,7 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
                 }
             }
         }
-        if button_kind(ui, "Delete", ButtonKind::Danger).clicked() {
+        if presets.len() > 1 && button_kind(ui, "Delete", ButtonKind::Danger).clicked() {
             if let Some(mut st) = state.try_write() {
                 match Arc::make_mut(&mut st.config).delete_preset(&active) {
                     Ok(()) => {
@@ -369,55 +370,52 @@ fn paint_preset_bar(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi,
             });
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                if preset_button(ui, "Export").clicked() {
+                if !ui_state.file_path_input.trim().is_empty()
+                    && preset_button(ui, "Export").clicked()
+                {
                     let path = ui_state.file_path_input.trim();
-                    if path.is_empty() {
-                        ui_state.flash("Type an export path above");
-                    } else {
-                        let payload = state.read().config.export_preset_value(&active);
-                        match payload.and_then(|v| {
-                            std::fs::write(path, serde_json::to_string_pretty(&v)?)
-                                .map_err(anyhow::Error::from)
-                        }) {
-                            Ok(()) => ui_state.flash("Preset exported"),
-                            Err(e) => ui_state.flash(e.to_string()),
-                        }
+                    let payload = state.read().config.export_preset_value(&active);
+                    match payload.and_then(|v| {
+                        std::fs::write(path, serde_json::to_string_pretty(&v)?)
+                            .map_err(anyhow::Error::from)
+                    }) {
+                        Ok(()) => ui_state.flash("Preset exported"),
+                        Err(e) => ui_state.flash(e.to_string()),
                     }
                 }
-                if preset_button(ui, "Import").clicked() {
+                if !ui_state.file_path_input.trim().is_empty()
+                    && !ui_state.new_preset_input.trim().is_empty()
+                    && preset_button(ui, "Import").clicked()
+                {
                     let path = ui_state.file_path_input.trim();
                     let name = ui_state.new_preset_input.trim();
-                    if path.is_empty() || name.is_empty() {
-                        ui_state.flash("Type import path + name above");
-                    } else {
-                        match std::fs::read_to_string(path)
-                            .map_err(anyhow::Error::from)
-                            .and_then(|text| {
-                                serde_json::from_str::<Value>(&text).map_err(anyhow::Error::from)
-                            }) {
-                            Ok(payload) => {
-                                if let Some(mut st) = state.try_write() {
-                                    match Arc::make_mut(&mut st.config)
-                                        .import_preset_value(name, &payload, false)
-                                    {
-                                        Ok(()) => {
-                                            st.apply_effective_context();
-                                            *dirty = false;
-                                            ui_state.flash("Preset imported");
-                                        }
-                                        Err(e) => ui_state.flash(e.to_string()),
+                    match std::fs::read_to_string(path)
+                        .map_err(anyhow::Error::from)
+                        .and_then(|text| {
+                            serde_json::from_str::<Value>(&text).map_err(anyhow::Error::from)
+                        }) {
+                        Ok(payload) => {
+                            if let Some(mut st) = state.try_write() {
+                                match Arc::make_mut(&mut st.config)
+                                    .import_preset_value(name, &payload, false)
+                                {
+                                    Ok(()) => {
+                                        st.apply_effective_context();
+                                        *dirty = false;
+                                        ui_state.flash("Preset imported");
                                     }
+                                    Err(e) => ui_state.flash(e.to_string()),
                                 }
                             }
-                            Err(e) => ui_state.flash(e.to_string()),
                         }
+                        Err(e) => ui_state.flash(e.to_string()),
                     }
                 }
-                if preset_button(ui, "Rename").clicked() {
+                if !ui_state.new_preset_input.trim().is_empty()
+                    && preset_button(ui, "Rename").clicked()
+                {
                     let to = ui_state.new_preset_input.trim().to_string();
-                    if to.is_empty() {
-                        ui_state.flash("Type a new name above");
-                    } else if let Some(mut st) = state.try_write() {
+                    if let Some(mut st) = state.try_write() {
                         match Arc::make_mut(&mut st.config).rename_preset(&active, &to) {
                             Ok(()) => {
                                 ui_state.new_preset_input.clear();
@@ -523,7 +521,8 @@ fn paint_nav(ui: &mut Ui, state: &StateHandle, ui_state: &SettingsUi, section: &
 fn widget_shown(state: &StateHandle, key: &str) -> bool {
     if matches!(
         key,
-        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__scan__" | "__widgets__"
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__"
+            | "__widgets__"
     ) {
         return true;
     }
@@ -544,6 +543,7 @@ fn paint_page(
         "__app__" => paint_app(ui, state, ui_state, dirty, accent),
         "__drivers__" => paint_drivers(ui, state, ui_state, dirty, accent),
         "__lan__" => paint_lan(ui, state, ui_state, dirty, accent),
+        "__laps__" => paint_laps(ui, state, ui_state, dirty, accent),
         "__scan__" => scan::paint_track_scan(ui, state, ui_state, accent),
         other => paint_widget_section(ui, state, ui_state, other, dirty, accent),
     }
@@ -844,90 +844,7 @@ fn paint_lan(
             .size(11.0)
             .color(MUTED),
         );
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new(format!(
-                "Token file: {}",
-                crate::paths::ipc_token_path().display()
-            ))
-            .size(10.0)
-            .color(MUTED),
-        );
         ui.add_space(6.0);
-        let mut port = state
-            .read()
-            .config
-            .cfg
-            .get("lan_telemetry_port")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
-            as f32;
-        let connect_endpoint = crate::telemetry_lan::lan_connect_endpoint(port.round() as u16);
-        let lan_ip = crate::telemetry_lan::preferred_lan_ipv4();
-        setting_row(
-            ui,
-            "Connect address",
-            Some(
-                "Host:port for other devices on the same Wi‑Fi. Use this IP — not 127.0.0.1 — from a phone or second PC.",
-            ),
-            |ui| {
-                ui.label(
-                    RichText::new(&connect_endpoint)
-                        .size(13.0)
-                        .monospace()
-                        .color(TITLE),
-                );
-                ui.add_space(6.0);
-                if button_kind(ui, "Copy address", ButtonKind::Primary).clicked() {
-                    if lan_ip.is_none() {
-                        ui_state.flash("Could not detect LAN IP — check Wi‑Fi or run ipconfig");
-                    } else {
-                        ui.ctx().copy_text(connect_endpoint.clone());
-                        ui_state.flash(format!("Copied {connect_endpoint}"));
-                    }
-                }
-            },
-        );
-        ui.add_space(4.0);
-        let lan_token = crate::ipc::ensure_ipc_token().unwrap_or_default();
-        setting_row(
-            ui,
-            "IPC token",
-            Some("Paste this token into the client on your phone or other PC. Same secret as localhost control IPC."),
-            |ui| {
-                let display = if ui_state.show_lan_token {
-                    lan_token.clone()
-                } else if lan_token.len() <= 8 {
-                    "••••••••".into()
-                } else {
-                    format!("{}…{}", &lan_token[..4], &lan_token[lan_token.len() - 4..])
-                };
-                ui.label(RichText::new(display).size(12.0).monospace().color(TITLE));
-                ui.add_space(6.0);
-                if button_kind(
-                    ui,
-                    if ui_state.show_lan_token {
-                        "Hide"
-                    } else {
-                        "Show"
-                    },
-                    ButtonKind::GhostAccent,
-                )
-                .clicked()
-                {
-                    ui_state.show_lan_token = !ui_state.show_lan_token;
-                }
-                if button_kind(ui, "Copy token", ButtonKind::Primary).clicked() {
-                    if lan_token.is_empty() {
-                        ui_state.flash("Could not read ipc_token");
-                    } else {
-                        ui.ctx().copy_text(lan_token.clone());
-                        ui_state.flash("Token copied — paste it into your other device’s app");
-                    }
-                }
-            },
-        );
-        ui.add_space(4.0);
         let mut lan_on = state
             .read()
             .config
@@ -951,48 +868,147 @@ fn paint_lan(
                 }
             },
         );
-        if number_row(
-            ui,
-            "Port",
-            &mut port,
-            1024.0..=65535.0,
-            1.0,
-            accent,
-            help_text("__lan__", "lan_telemetry_port"),
-        ) {
-            set_global(
-                state,
-                "lan_telemetry_port",
-                json!(port.round() as u64),
-                dirty,
-                ui_state,
+        if lan_on {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!(
+                    "Token file: {}",
+                    crate::paths::ipc_token_path().display()
+                ))
+                .size(10.0)
+                .color(MUTED),
             );
-        }
-        let mut hz = state
-            .read()
-            .config
-            .cfg
-            .get("lan_telemetry_hz")
-            .and_then(|v| v.as_f64())
-            .unwrap_or(15.0) as f32;
-        if number_row(
-            ui,
-            "Push rate (Hz)",
-            &mut hz,
-            5.0..=30.0,
-            1.0,
-            accent,
-            help_text("__lan__", "lan_telemetry_hz"),
-        ) {
-            set_global(
-                state,
-                "lan_telemetry_hz",
-                json!(hz.round() as u64),
-                dirty,
-                ui_state,
+            ui.add_space(6.0);
+            let mut port = state
+                .read()
+                .config
+                .cfg
+                .get("lan_telemetry_port")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
+                as f32;
+            let connect_endpoint = crate::telemetry_lan::lan_connect_endpoint(port.round() as u16);
+            let lan_ip = crate::telemetry_lan::preferred_lan_ipv4();
+            setting_row(
+                ui,
+                "Connect address",
+                Some(
+                    "Host:port for other devices on the same Wi‑Fi. Use this IP — not 127.0.0.1 — from a phone or second PC.",
+                ),
+                |ui| {
+                    ui.label(
+                        RichText::new(&connect_endpoint)
+                            .size(13.0)
+                            .monospace()
+                            .color(TITLE),
+                    );
+                    if lan_ip.is_some() {
+                        ui.add_space(6.0);
+                        if button_kind(ui, "Copy address", ButtonKind::Primary).clicked() {
+                            ui.ctx().copy_text(connect_endpoint.clone());
+                            ui_state.flash(format!("Copied {connect_endpoint}"));
+                        }
+                    }
+                },
             );
+            ui.add_space(4.0);
+            let lan_token = crate::ipc::ensure_ipc_token().unwrap_or_default();
+            setting_row(
+                ui,
+                "IPC token",
+                Some("Paste this token into the client on your phone or other PC. Same secret as localhost control IPC."),
+                |ui| {
+                    let display = if ui_state.show_lan_token {
+                        lan_token.clone()
+                    } else if lan_token.len() <= 8 {
+                        "••••••••".into()
+                    } else {
+                        format!("{}…{}", &lan_token[..4], &lan_token[lan_token.len() - 4..])
+                    };
+                    ui.label(RichText::new(display).size(12.0).monospace().color(TITLE));
+                    ui.add_space(6.0);
+                    if !lan_token.is_empty()
+                        && button_kind(
+                            ui,
+                            if ui_state.show_lan_token {
+                                "Hide"
+                            } else {
+                                "Show"
+                            },
+                            ButtonKind::GhostAccent,
+                        )
+                        .clicked()
+                    {
+                        ui_state.show_lan_token = !ui_state.show_lan_token;
+                    }
+                    if !lan_token.is_empty()
+                        && button_kind(ui, "Copy token", ButtonKind::Primary).clicked()
+                    {
+                        ui.ctx().copy_text(lan_token.clone());
+                        ui_state.flash("Token copied — paste it into your other device’s app");
+                    }
+                },
+            );
+            if number_row(
+                ui,
+                "Port",
+                &mut port,
+                1024.0..=65535.0,
+                1.0,
+                accent,
+                help_text("__lan__", "lan_telemetry_port"),
+            ) {
+                set_global(
+                    state,
+                    "lan_telemetry_port",
+                    json!(port.round() as u64),
+                    dirty,
+                    ui_state,
+                );
+            }
+            let mut hz = state
+                .read()
+                .config
+                .cfg
+                .get("lan_telemetry_hz")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(15.0) as f32;
+            if number_row(
+                ui,
+                "Push rate (Hz)",
+                &mut hz,
+                5.0..=30.0,
+                1.0,
+                accent,
+                help_text("__lan__", "lan_telemetry_hz"),
+            ) {
+                set_global(
+                    state,
+                    "lan_telemetry_hz",
+                    json!(hz.round() as u64),
+                    dirty,
+                    ui_state,
+                );
+            }
         }
-        ui.add_space(8.0);
+    });
+}
+
+fn paint_laps(
+    ui: &mut Ui,
+    state: &StateHandle,
+    ui_state: &mut SettingsUi,
+    dirty: &mut bool,
+    accent: Color32,
+) {
+    ui.label(RichText::new("Race laps").size(16.0).strong().color(TITLE));
+    ui.label(
+        RichText::new("Upload finished-race laps to the shared library.")
+            .size(11.0)
+            .color(MUTED),
+    );
+    ui.add_space(8.0);
+    enable_card(ui, "Cloud upload", accent, |ui| {
         let mut upload_laps = state
             .read()
             .config
@@ -1003,7 +1019,7 @@ fn paint_lan(
         setting_row(
             ui,
             "Upload race laps after finish",
-            help_text("__lan__", "upload_race_laps"),
+            help_text("__laps__", "upload_race_laps"),
             |ui| {
                 if toggle_switch(ui, &mut upload_laps, accent, ui.id().with("upload_race_laps"))
                     .changed()
@@ -1259,92 +1275,93 @@ fn paint_driver_groups(
             },
         );
         ui.horizontal(|ui| {
-            if button_kind(ui, "Add member", ButtonKind::GhostAccent).clicked() {
+            let member_typed = !ui_state.dg_member_edit.trim().is_empty();
+            if member_typed && button_kind(ui, "Add member", ButtonKind::GhostAccent).clicked() {
                 let name = ui_state.dg_member_edit.trim().to_string();
-                if !name.is_empty() {
-                    let mut next = member_names.clone();
-                    let exists = next
-                        .iter()
-                        .any(|n| n.eq_ignore_ascii_case(name.as_str()));
-                    if !exists {
-                        next.push(name.clone());
-                        ui_state.dg_members = next.join(", ");
-                        ui_state.dg_member_sel = Some(name);
-                        match persist_driver_group_members(
-                            state,
-                            ui_state,
-                            &mut groups,
-                            dirty,
-                        ) {
-                            Ok(()) => ui_state.flash("Member added"),
-                            Err(msg) => ui_state.flash(msg),
-                        }
-                    } else {
-                        ui_state.flash("Already in this group");
+                let mut next = member_names.clone();
+                let exists = next
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(name.as_str()));
+                if !exists {
+                    next.push(name.clone());
+                    ui_state.dg_members = next.join(", ");
+                    ui_state.dg_member_sel = Some(name);
+                    match persist_driver_group_members(
+                        state,
+                        ui_state,
+                        &mut groups,
+                        dirty,
+                    ) {
+                        Ok(()) => ui_state.flash("Member added"),
+                        Err(msg) => ui_state.flash(msg),
                     }
+                } else {
+                    ui_state.flash("Already in this group");
                 }
             }
-            if button_kind(ui, "Rename selected", ButtonKind::Default).clicked() {
+            let can_rename = ui_state.dg_member_sel.is_some()
+                && member_typed
+                && ui_state.dg_member_sel.as_deref() != Some(ui_state.dg_member_edit.trim());
+            if can_rename && button_kind(ui, "Rename selected", ButtonKind::Default).clicked() {
                 let new_name = ui_state.dg_member_edit.trim().to_string();
                 if let Some(old) = ui_state.dg_member_sel.clone() {
-                    if !new_name.is_empty() {
-                        let mut next = member_names.clone();
-                        if let Some(pos) = next.iter().position(|n| n == &old) {
-                            let clash = next.iter().enumerate().any(|(i, n)| {
-                                i != pos && n.eq_ignore_ascii_case(new_name.as_str())
-                            });
-                            if clash {
-                                ui_state.flash("Another member already has that name");
-                            } else {
-                                next[pos] = new_name.clone();
-                                ui_state.dg_members = next.join(", ");
-                                ui_state.dg_member_sel = Some(new_name.clone());
-                                ui_state.dg_member_edit = new_name;
-                                match persist_driver_group_members(
-                                    state,
-                                    ui_state,
-                                    &mut groups,
-                                    dirty,
-                                ) {
-                                    Ok(()) => ui_state.flash("Member renamed"),
-                                    Err(msg) => ui_state.flash(msg),
-                                }
+                    let mut next = member_names.clone();
+                    if let Some(pos) = next.iter().position(|n| n == &old) {
+                        let clash = next.iter().enumerate().any(|(i, n)| {
+                            i != pos && n.eq_ignore_ascii_case(new_name.as_str())
+                        });
+                        if clash {
+                            ui_state.flash("Another member already has that name");
+                        } else {
+                            next[pos] = new_name.clone();
+                            ui_state.dg_members = next.join(", ");
+                            ui_state.dg_member_sel = Some(new_name.clone());
+                            ui_state.dg_member_edit = new_name;
+                            match persist_driver_group_members(
+                                state,
+                                ui_state,
+                                &mut groups,
+                                dirty,
+                            ) {
+                                Ok(()) => ui_state.flash("Member renamed"),
+                                Err(msg) => ui_state.flash(msg),
                             }
                         }
                     }
-                } else {
-                    ui_state.flash("Select a member first");
                 }
             }
         });
 
         ui.horizontal(|ui| {
-            if button_kind(ui, "Add / Update", ButtonKind::GhostAccent).clicked() {
+            if !ui_state.dg_name.trim().is_empty()
+                && button_kind(ui, "Add / Update", ButtonKind::GhostAccent).clicked()
+            {
                 let name = ui_state.dg_name.trim().to_string();
-                if !name.is_empty() {
-                    let members = crate::driver_groups::members_from_csv(&ui_state.dg_members);
-                    ui_state.dg_members = crate::driver_groups::members_to_csv(&members);
-                    let entry = json!({
-                        "name": name,
-                        "icon": ui_state.dg_icon,
-                        "color": ui_state.dg_color,
-                        "members": members,
-                    });
-                    if let Some(pos) = groups
-                        .iter()
-                        .position(|g| g.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
-                    {
-                        groups[pos] = entry;
-                    } else {
-                        groups.push(entry);
-                    }
-                    ui_state.dg_sel = Some(name);
-                    ui_state.dg_new = false;
-                    set_driver_groups(state, json!(groups), dirty, ui_state);
-                    ui_state.flash("Driver group saved");
+                let members = crate::driver_groups::members_from_csv(&ui_state.dg_members);
+                ui_state.dg_members = crate::driver_groups::members_to_csv(&members);
+                let entry = json!({
+                    "name": name,
+                    "icon": ui_state.dg_icon,
+                    "color": ui_state.dg_color,
+                    "members": members,
+                });
+                if let Some(pos) = groups
+                    .iter()
+                    .position(|g| g.get("name").and_then(|n| n.as_str()) == Some(name.as_str()))
+                {
+                    groups[pos] = entry;
+                } else {
+                    groups.push(entry);
                 }
+                ui_state.dg_sel = Some(name);
+                ui_state.dg_new = false;
+                set_driver_groups(state, json!(groups), dirty, ui_state);
+                ui_state.flash("Driver group saved");
             }
-            if button_kind(ui, "Remove group", ButtonKind::Warn).clicked() {
+            if ui_state.dg_sel.is_some()
+                && !ui_state.dg_new
+                && button_kind(ui, "Remove group", ButtonKind::Warn).clicked()
+            {
                 if let Some(sel) = ui_state.dg_sel.clone() {
                     groups.retain(|g| g.get("name").and_then(|n| n.as_str()) != Some(sel.as_str()));
                     set_driver_groups(state, json!(groups), dirty, ui_state);
@@ -1622,16 +1639,22 @@ fn paint_widget_section(
                 .strong()
                 .color(TITLE),
         );
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if button_kind(ui, "Reset to defaults", ButtonKind::GhostAccent).clicked() {
-                if let Some(mut st) = state.try_write() {
-                    let context = st.effective_context();
-                    Arc::make_mut(&mut st.config).reset_section(context, section);
-                    *dirty = true;
-                    ui_state.invalidate_section_cache();
+        let shown = cached_section_values(state, section, ui_state)
+            .get("show")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if shown {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if button_kind(ui, "Reset to defaults", ButtonKind::GhostAccent).clicked() {
+                    if let Some(mut st) = state.try_write() {
+                        let context = st.effective_context();
+                        Arc::make_mut(&mut st.config).reset_section(context, section);
+                        *dirty = true;
+                        ui_state.invalidate_section_cache();
+                    }
                 }
-            }
-        });
+            });
+        }
     });
     ui.add_space(4.0);
 
@@ -1650,10 +1673,8 @@ fn paint_widget_section(
     ) {
         set_section_key(state, section, "show", json!(show), dirty, ui_state);
     }
-    ui.add_space(8.0);
-    paint_widget_position(ui, state, ui_state, section, accent);
-    ui.add_space(6.0);
     if !show {
+        ui.add_space(6.0);
         ui.label(
             RichText::new("Enable this widget to edit its settings.")
                 .size(11.0)
@@ -1661,6 +1682,9 @@ fn paint_widget_section(
         );
         return;
     }
+    ui.add_space(8.0);
+    paint_widget_position(ui, state, ui_state, section, accent);
+    ui.add_space(6.0);
 
     let groups = setting_groups(section);
     if !groups.is_empty() {
@@ -1681,6 +1705,7 @@ fn paint_widget_section(
                     *k != "show"
                         && !is_skipped(section, k)
                         && matches_search(section, k, &ui_state.search)
+                        && setting_visible(section, k, values.as_ref())
                 })
                 .collect();
             if visible_keys.is_empty() {
@@ -1716,6 +1741,7 @@ fn paint_widget_section(
                     && !is_skipped(section, key)
                     && !schema_keys.contains(key)
                     && matches_search(section, key, &ui_state.search)
+                    && setting_visible(section, key, values.as_ref())
             })
             .collect();
         leftovers.sort_by(|a, b| a.0.cmp(b.0));
@@ -1742,6 +1768,9 @@ fn paint_widget_section(
                 continue;
             }
             if !matches_search(section, key, &ui_state.search) {
+                continue;
+            }
+            if !setting_visible(section, key, values.as_ref()) {
                 continue;
             }
             if let Some(value) = values.get(key) {
@@ -2151,14 +2180,14 @@ fn paint_footer(ui: &mut Ui, state: &StateHandle, ui_state: &mut SettingsUi, dir
                             });
                     },
                 );
-                if button_kind(ui, "Apply", ButtonKind::Warn).clicked() {
+                if *dirty && !apply_live && button_kind(ui, "Apply", ButtonKind::Warn).clicked() {
                     if let Some(mut st) = state.try_write() {
                         let context = st.effective_context();
                         Arc::make_mut(&mut st.config).sync_active_preset_for_context(context);
                         ui_state.flash("Applied");
                     }
                 }
-                if button_kind(ui, "Save", ButtonKind::Primary).clicked() {
+                if *dirty && button_kind(ui, "Save", ButtonKind::Primary).clicked() {
                     if let Some(mut st) = state.try_write() {
                         let context = st.effective_context();
                         match Arc::make_mut(&mut st.config).save_for_context(context) {

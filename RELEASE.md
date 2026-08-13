@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.27 - 2026-08-13
+
+- **Track Scan import.** Saving a loop or pit after importing HTML no longer
+  reports “no track loop loaded.” The imported geometry stays loaded through
+  Save loop so you can Save pit next without re-importing.
+- **Settings eligibility.** Buttons and options only appear when they can run
+  (no Save track without a loop, no widget layout until the widget is on, no
+  Apply/Save with nothing to persist).
+- **Race laps.** “Upload race laps after finish” moved from LAN telemetry to
+  its own Settings page.
+
 ## 1.69.26 - 2026-08-13
 
 - **Widget snap position.** Each widget page has a 3×3 pad to pin the panel to

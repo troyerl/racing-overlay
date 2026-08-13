@@ -1116,7 +1116,16 @@ impl OverlayApp {
             // Track Scan / HTML import stamps `cached_track_id` for authoring.
             // Only push that onto the frame when the sim has no TrackID (demo /
             // disconnected). Overwriting a live session ID sticks the wrong map.
-            if self.demo_only || !frame.connected || frame.track_id.is_none() {
+            if st.map.import_hold && st.map.cached_path.len() >= 3 {
+                if let Some(id) = st.map.cached_track_id {
+                    if self.demo_only || !frame.connected || frame.track_id.is_none() {
+                        frame.track_id = Some(id);
+                        if !st.map.cached_track_name.is_empty() {
+                            frame.track_name = Some(st.map.cached_track_name.clone());
+                        }
+                    }
+                }
+            } else if self.demo_only || !frame.connected || frame.track_id.is_none() {
                 if let Some(id) = st.map.cached_track_id {
                     frame.track_id = Some(id);
                     if !st.map.cached_track_name.is_empty() {

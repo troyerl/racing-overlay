@@ -331,9 +331,6 @@ fn dispatch(state: &StateHandle, req: Request, expected_token: &str) -> Response
                     true,
                 )
             };
-            if msg.ok {
-                state.write().map.invalidate_track_cache();
-            }
             Response::ok(id, json!({"ok": msg.ok, "msg": msg.msg}))
         }
         methods::MAP_SAVE_LOOP => {
@@ -383,9 +380,6 @@ fn dispatch(state: &StateHandle, req: Request, expected_token: &str) -> Response
                     true,
                 )
             };
-            if msg.ok {
-                state.write().map.invalidate_track_cache();
-            }
             Response::ok(id, json!({"ok": msg.ok, "msg": msg.msg}))
         }
         methods::MAP_INVALIDATE_TRACK => {
@@ -455,6 +449,8 @@ fn dispatch(state: &StateHandle, req: Request, expected_token: &str) -> Response
             st.map.cached_pit2 = crate::track_path::PitLane::default();
             st.map.cached_pit_out_pct = None;
             st.map.clear_phase("all", None);
+            st.map.path_status = crate::state::TrackPathStatus::Ready;
+            st.map.import_hold = true;
             if let Some(n) = params.num_turns {
                 st.map.num_turns = n;
             }

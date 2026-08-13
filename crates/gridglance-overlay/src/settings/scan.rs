@@ -17,6 +17,33 @@ use super::widgets::{
 };
 use super::SettingsUi;
 
+struct ScanSnap {
+    track_id: Option<i32>,
+    track_name: String,
+    has_loop: bool,
+    has_tid: bool,
+    has_pit_draft: bool,
+    has_any_pit: bool,
+    has_cached_pit: bool,
+    has_local_file: bool,
+    phase: String,
+    lane: String,
+    pit_speed: f32,
+    lane_pct: f32,
+    aliases: Vec<i32>,
+    active_len: usize,
+}
+
+fn track_json_exists(tid: Option<i32>) -> bool {
+    let Some(id) = tid else {
+        return false;
+    };
+    let tid = json!(id);
+    let dir = paths::tracks_dir();
+    let canonical = cloud::resolve_track_id(&dir, &tid).unwrap_or(tid);
+    cloud::track_file_path(&dir, &canonical).is_file()
+}
+
 pub fn paint_track_scan(
     ui: &mut Ui,
     state: &StateHandle,
@@ -40,43 +67,91 @@ pub fn paint_track_scan(
         return;
     }
 
-    let (track_id, track_name, can_author, phase, lane, pit_speed, lane_pct, aliases) = {
+    let snap = {
         let st = state.read();
-        (
-            st.map.cached_track_id.or(st.frame.track_id),
-            st.map.cached_track_name.clone(),
-            !st.map.cached_path.is_empty() || st.frame.track_id.is_some(),
-            st.map.phase_key().to_string(),
-            if st.map.lane_is_2() {
-                "2".to_string()
-            } else {
-                "1".to_string()
-            },
-            st.map.pit_speed_ms as f32,
-            st.map.pit_lane_speed_pct as f32,
-            st.map.alias_ids.clone(),
-        )
+        let m = &st.map;
+        let track_id = m.cached_track_id.or(st.frame.track_id);
+        let has_loop = m.cached_path.len() >= 3;
+        let has_tid = track_id.is_some();
+        let has_pit_draft = m.road_pts.len() >= 2 && m.merge_pts.len() >= 2;
+        let has_any_pit = m.entry_pts.len()
+            + m.road_pts.len()
+            + m.merge_pts.len()
+            + m.entry_pts_2.len()
+            + m.road_pts_2.len()
+            + m.merge_pts_2.len()
+            > 0;
+        let has_cached_pit = m.cached_pit.path.len() >= 2
+            || m.cached_pit.entry.len() >= 2
+            || m.cached_pit.exit.len() >= 2
+            || m.cached_pit2.path.len() >= 2;
+        let lane2 = m.lane_is_2();
+        let active_len = match m.phase_key() {
+            "entry" => {
+                if lane2 {
+                    m.entry_pts_2.len()
+                } else {
+                    m.entry_pts.len()
+                }
+            }
+            "merge" => {
+                if lane2 {
+                    m.merge_pts_2.len()
+                } else {
+                    m.merge_pts.len()
+                }
+            }
+            _ => {
+                if lane2 {
+                    m.road_pts_2.len()
+                } else {
+                    m.road_pts.len()
+                }
+            }
+        };
+        ScanSnap {
+            track_id,
+            track_name: m.cached_track_name.clone(),
+            has_loop,
+            has_tid,
+            has_pit_draft,
+            has_any_pit,
+            has_cached_pit,
+            has_local_file: track_json_exists(track_id),
+            phase: m.phase_key().to_string(),
+            lane: if lane2 { "2".into() } else { "1".into() },
+            pit_speed: m.pit_speed_ms as f32,
+            lane_pct: m.pit_lane_speed_pct as f32,
+            aliases: m.alias_ids.clone(),
+            active_len,
+        }
     };
 
     enable_card(ui, "Session", accent, |ui| {
         ui.label(
             RichText::new(format!(
                 "TrackID: {}  ·  {}",
-                track_id
+                snap.track_id
                     .map(|t| t.to_string())
                     .unwrap_or_else(|| "—".into()),
-                if track_name.is_empty() {
+                if snap.track_name.is_empty() {
                     "no name"
                 } else {
-                    track_name.as_str()
+                    snap.track_name.as_str()
                 }
             ))
             .size(12.0)
             .color(TEXT),
         );
-        if !can_author {
+        if !snap.has_loop {
             ui.label(
-                RichText::new("Join a session or import HTML to author.")
+                RichText::new("Import a members HTML loop to author.")
+                    .size(11.0)
+                    .color(MUTED),
+            );
+        } else if !snap.has_tid {
+            ui.label(
+                RichText::new("No TrackID — join a session on this track to save.")
                     .size(11.0)
                     .color(MUTED),
             );
@@ -98,7 +173,9 @@ pub fn paint_track_scan(
                 ui.label(RichText::new(&ui_state.html_path).size(11.0).color(MUTED));
             }
         });
-        if button_kind(ui, "Import loop", ButtonKind::Primary).clicked() {
+        if !ui_state.html_path.is_empty()
+            && button_kind(ui, "Import loop", ButtonKind::Primary).clicked()
+        {
             match import_html(state, &ui_state.html_path) {
                 Ok(msg) => ui_state.flash(msg),
                 Err(e) => ui_state.flash(e.to_string()),
@@ -106,155 +183,184 @@ pub fn paint_track_scan(
         }
     });
 
-    ui.add_space(8.0);
-    enable_card(ui, "Edit pit on map", accent, |ui| {
-        let mut editing = {
-            let st = state.read();
-            st.map.interactive && !st.map.corner_edit && !st.map.sf_edit
-        };
-        setting_row(ui, "Enable pit edit", None, |ui| {
-            if toggle_switch(ui, &mut editing, accent, ui.id().with("pit_edit")).changed() {
-                if let Some(mut st) = state.try_write() {
-                    st.map.pit_edit = editing;
-                    st.map.interactive = editing;
-                    st.map.corner_edit = false;
-                    st.map.sf_edit = false;
-                    if editing {
-                        let _ = st.map.load_pit_from_cache(false);
-                    } else {
-                        st.map.pit_sel = None;
-                        st.map.pit_drag = None;
+    if snap.has_loop {
+        ui.add_space(8.0);
+        enable_card(ui, "Edit pit on map", accent, |ui| {
+            let mut editing = {
+                let st = state.read();
+                st.map.interactive && !st.map.corner_edit && !st.map.sf_edit
+            };
+            setting_row(ui, "Enable pit edit", None, |ui| {
+                if toggle_switch(ui, &mut editing, accent, ui.id().with("pit_edit")).changed() {
+                    if let Some(mut st) = state.try_write() {
+                        st.map.pit_edit = editing;
+                        st.map.interactive = editing;
+                        st.map.corner_edit = false;
+                        st.map.sf_edit = false;
+                        if editing {
+                            let _ = st.map.load_pit_from_cache(false);
+                        } else {
+                            st.map.pit_sel = None;
+                            st.map.pit_drag = None;
+                        }
                     }
                 }
-            }
-        });
+            });
 
-        let mut phase = phase;
-        setting_row(ui, "Phase", None, |ui| {
-            if let Some(next) = styled_choice_combo(ui, "pit_phase", &phase, PIT_PHASE_CHOICES, 120.0)
-            {
-                phase = next;
-                if let Some(mut st) = state.try_write() {
-                    st.map.phase = phase.clone();
-                    if phase == "road" {
-                        let lane2 = st.map.lane_is_2();
-                        st.map.seed_road_from_entry(lane2);
-                    }
-                }
-            }
-        });
-
-        let mut lane = lane;
-        setting_row(ui, "Lane", None, |ui| {
-            if let Some(next) = styled_choice_combo(ui, "pit_lane", &lane, PIT_LANE_CHOICES, 100.0) {
-                lane = next;
-                if let Some(mut st) = state.try_write() {
-                    st.map.lane = if lane == "2" { "2".into() } else { "1".into() };
-                }
-            }
-        });
-
-        let sel_info = {
-            let st = state.read();
-            st.map.pit_sel.and_then(|(lane_u, phase, idx)| {
-                let key = crate::state::MapAuthoring::pit_sel_phase_key(phase)?;
-                Some((lane_u, key.to_string(), idx))
-            })
-        };
-        if let Some((lane_u, cur_key, idx)) = sel_info {
-            setting_row(
-                ui,
-                "Selected point",
-                Some("Change type to move this handle between entry / road / exit."),
-                |ui| {
-                    ui.label(
-                        RichText::new(format!("L{lane_u} · {cur_key}[{idx}]"))
-                            .size(11.0)
-                            .color(MUTED),
-                    );
-                    let mut typ = cur_key.clone();
+            if editing {
+                let mut phase = snap.phase.clone();
+                setting_row(ui, "Phase", None, |ui| {
                     if let Some(next) =
-                        styled_choice_combo(ui, "pit_sel_type", &typ, PIT_PHASE_CHOICES, 120.0)
+                        styled_choice_combo(ui, "pit_phase", &phase, PIT_PHASE_CHOICES, 120.0)
                     {
-                        typ = next;
-                        if typ != cur_key {
-                            if let Some(mut st) = state.try_write() {
-                                match st.map.retype_selected_point(&typ) {
-                                    Ok(()) => ui_state.flash(format!("Point → {typ}")),
-                                    Err(e) => ui_state.flash(e.to_string()),
-                                }
+                        phase = next;
+                        if let Some(mut st) = state.try_write() {
+                            st.map.phase = phase.clone();
+                            if phase == "road" {
+                                let lane2 = st.map.lane_is_2();
+                                st.map.seed_road_from_entry(lane2);
                             }
                         }
                     }
-                },
-            );
-        } else {
-            ui.label(
-                RichText::new("Click a pit handle on the map to select it, then change its type here.")
-                    .size(11.0)
-                    .color(MUTED),
-            );
-        }
+                });
 
-        ui.horizontal(|ui| {
-            if button_kind(ui, "Load saved pit", ButtonKind::Default).clicked() {
-                if let Some(mut st) = state.try_write() {
-                    let ok = st.map.load_pit_from_cache(true);
-                    ui_state.flash(if ok {
-                        "Loaded pit from track file"
-                    } else {
-                        "No saved pit geometry"
+                let mut lane = snap.lane.clone();
+                setting_row(ui, "Lane", None, |ui| {
+                    if let Some(next) =
+                        styled_choice_combo(ui, "pit_lane", &lane, PIT_LANE_CHOICES, 100.0)
+                    {
+                        lane = next;
+                        if let Some(mut st) = state.try_write() {
+                            st.map.lane = if lane == "2" { "2".into() } else { "1".into() };
+                        }
+                    }
+                });
+
+                let sel_info = {
+                    let st = state.read();
+                    st.map.pit_sel.and_then(|(lane_u, phase, idx)| {
+                        let key = crate::state::MapAuthoring::pit_sel_phase_key(phase)?;
+                        Some((lane_u, key.to_string(), idx))
+                    })
+                };
+                if let Some((lane_u, cur_key, idx)) = sel_info {
+                    setting_row(
+                        ui,
+                        "Selected point",
+                        Some("Change type to move this handle between entry / road / exit."),
+                        |ui| {
+                            ui.label(
+                                RichText::new(format!("L{lane_u} · {cur_key}[{idx}]"))
+                                    .size(11.0)
+                                    .color(MUTED),
+                            );
+                            let mut typ = cur_key.clone();
+                            if let Some(next) = styled_choice_combo(
+                                ui,
+                                "pit_sel_type",
+                                &typ,
+                                PIT_PHASE_CHOICES,
+                                120.0,
+                            ) {
+                                typ = next;
+                                if typ != cur_key {
+                                    if let Some(mut st) = state.try_write() {
+                                        match st.map.retype_selected_point(&typ) {
+                                            Ok(()) => ui_state.flash(format!("Point → {typ}")),
+                                            Err(e) => ui_state.flash(e.to_string()),
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(
+                            "Click a pit handle on the map to select it, then change its type here.",
+                        )
+                        .size(11.0)
+                        .color(MUTED),
+                    );
+                }
+
+                ui.horizontal(|ui| {
+                    if snap.has_cached_pit
+                        && button_kind(ui, "Load saved pit", ButtonKind::Default).clicked()
+                    {
+                        if let Some(mut st) = state.try_write() {
+                            let ok = st.map.load_pit_from_cache(true);
+                            ui_state.flash(if ok {
+                                "Loaded pit from track file"
+                            } else {
+                                "No saved pit geometry"
+                            });
+                        }
+                    }
+                    if snap.active_len > 0
+                        && button_kind(ui, "Undo point", ButtonKind::Default).clicked()
+                    {
+                        if let Some(mut st) = state.try_write() {
+                            let pts = st.map.active_pts_mut();
+                            pts.pop();
+                            ui_state.flash("Undid last point");
+                        }
+                    }
+                    if button_kind(ui, "Reset view", ButtonKind::Default).clicked() {
+                        if let Some(mut st) = state.try_write() {
+                            st.map.reset_pit_edit_view();
+                        }
+                    }
+                });
+                ui.label(
+                    RichText::new("Ctrl+scroll to zoom · Middle-drag or Shift+drag to pan")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+                if snap.active_len > 0 || snap.has_any_pit {
+                    ui.horizontal(|ui| {
+                        if snap.active_len > 0
+                            && button_kind(ui, "Clear selected", ButtonKind::Default).clicked()
+                        {
+                            if let Some(mut st) = state.try_write() {
+                                let phase = st.map.phase_key().to_string();
+                                let lane2 = st.map.lane_is_2();
+                                st.map.clear_phase(&phase, Some(lane2));
+                            }
+                        }
+                        if snap.has_any_pit
+                            && button_kind(ui, "Clear all pit", ButtonKind::Warn).clicked()
+                        {
+                            if let Some(mut st) = state.try_write() {
+                                st.map.clear_phase("all", None);
+                            }
+                        }
                     });
                 }
             }
-            if button_kind(ui, "Undo point", ButtonKind::Default).clicked() {
-                if let Some(mut st) = state.try_write() {
-                    let pts = st.map.active_pts_mut();
-                    pts.pop();
-                    ui_state.flash("Undid last point");
-                }
-            }
-            if button_kind(ui, "Reset view", ButtonKind::Default).clicked() {
-                if let Some(mut st) = state.try_write() {
-                    st.map.reset_pit_edit_view();
-                }
-            }
-        });
-        ui.label(
-            RichText::new("Ctrl+scroll to zoom · Middle-drag or Shift+drag to pan")
-                .size(11.0)
-                .color(MUTED),
-        );
-        ui.horizontal(|ui| {
-            if button_kind(ui, "Clear selected", ButtonKind::Default).clicked() {
-                if let Some(mut st) = state.try_write() {
-                    let phase = st.map.phase_key().to_string();
-                    let lane2 = st.map.lane_is_2();
-                    st.map.clear_phase(&phase, Some(lane2));
-                }
-            }
-            if button_kind(ui, "Clear all pit", ButtonKind::Warn).clicked() {
-                if let Some(mut st) = state.try_write() {
-                    st.map.clear_phase("all", None);
-                }
-            }
-        });
-        ui.horizontal(|ui| {
-            if button_kind(ui, "Save loop", ButtonKind::GhostAccent).clicked() {
-                ui_state.flash(save_loop(state));
-            }
-            if button_kind(ui, "Save pit", ButtonKind::GhostAccent).clicked() {
-                ui_state.flash(save_pit(state));
-            }
-            if button_kind(ui, "Save track", ButtonKind::Primary).clicked() {
-                ui_state.flash(save_track(state));
-            }
-        });
-    });
 
-    ui.add_space(8.0);
-    enable_card(ui, "Track metadata", accent, |ui| {
-        let mut speed = pit_speed;
+            if snap.has_tid {
+                ui.horizontal(|ui| {
+                    if button_kind(ui, "Save loop", ButtonKind::GhostAccent).clicked() {
+                        ui_state.flash(save_loop(state));
+                    }
+                    if snap.has_pit_draft && snap.has_local_file
+                        && button_kind(ui, "Save pit", ButtonKind::GhostAccent).clicked()
+                    {
+                        ui_state.flash(save_pit(state));
+                    }
+                    if snap.has_pit_draft
+                        && button_kind(ui, "Save track", ButtonKind::Primary).clicked()
+                    {
+                        ui_state.flash(save_track(state));
+                    }
+                });
+            }
+        });
+
+        ui.add_space(8.0);
+        enable_card(ui, "Track metadata", accent, |ui| {
+        let mut speed = snap.pit_speed;
         // Seed from live SDK/YAML when the authoring field is still unset so a
         // stale default (22 m/s ≈ 49 mph) is not what gets saved/shown.
         if speed <= 0.5 {
@@ -285,7 +391,7 @@ pub fn paint_track_scan(
                 st.map.pit_speed_ms = speed as f64;
             }
         }
-        let mut pct = lane_pct * 100.0;
+        let mut pct = snap.lane_pct * 100.0;
         if super::widgets::number_row(
             ui,
             "Pit lane speed (%)",
@@ -316,7 +422,8 @@ pub fn paint_track_scan(
                 st.map.num_turns = turns as i32;
             }
         }
-        let mut alias_str = aliases
+        let mut alias_str = snap
+            .aliases
             .iter()
             .map(|a| a.to_string())
             .collect::<Vec<_>>()
@@ -387,7 +494,8 @@ pub fn paint_track_scan(
                 }
             },
         );
-    });
+        });
+    }
 
     ensure_admin_loaded(ui_state);
     paint_demo_track_admin(ui, ui_state, accent);
@@ -416,7 +524,9 @@ pub fn paint_demo_track_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Co
                     .color(MUTED),
             );
         }
-        if button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked() {
+        if ui_state.demo_track_id > 0
+            && button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked()
+        {
             let tid = ui_state.demo_track_id;
             ui_state.flash("Saving demo track…");
             std::thread::spawn(move || {
@@ -500,7 +610,9 @@ pub fn paint_pro_drivers_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: C
             let _ = text_field(ui, &mut ui_state.pro_aliases, "comma-separated", 220.0);
         });
         ui.horizontal(|ui| {
-            if button_kind(ui, "Add / Update", ButtonKind::GhostAccent).clicked() {
+            if !ui_state.pro_name.trim().is_empty()
+                && button_kind(ui, "Add / Update", ButtonKind::GhostAccent).clicked()
+            {
                 let name = ui_state.pro_name.trim().to_string();
                 if !name.is_empty() {
                     let aliases: Vec<Value> = ui_state
@@ -523,7 +635,9 @@ pub fn paint_pro_drivers_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: C
                     ui_state.pro_sel = Some(name);
                 }
             }
-            if button_kind(ui, "Remove", ButtonKind::Warn).clicked() {
+            if ui_state.pro_sel.is_some()
+                && button_kind(ui, "Remove", ButtonKind::Warn).clicked()
+            {
                 if let Some(sel) = ui_state.pro_sel.clone() {
                     ui_state
                         .pro_drivers
@@ -558,7 +672,9 @@ pub fn paint_pro_drivers_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: C
                     }
                 }
             }
-            if button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked() {
+            if !ui_state.pro_drivers.is_empty()
+                && button_kind(ui, "Save to cloud", ButtonKind::Primary).clicked()
+            {
                 let drivers = crate::driver_groups::dedupe_members(&ui_state.pro_drivers);
                 ui_state.pro_drivers = drivers.clone();
                 ui_state.flash("Saving pro drivers…");
@@ -611,7 +727,9 @@ pub fn paint_about(ui: &mut Ui, ui_state: &mut SettingsUi, accent: Color32) {
                     }
                 }
             }
-            if button_kind(ui, "Uninstall…", ButtonKind::Danger).clicked() {
+            if updater::uninstaller_available()
+                && button_kind(ui, "Uninstall…", ButtonKind::Danger).clicked()
+            {
                 match updater::launch_uninstaller() {
                     Ok(()) => ui_state.flash("Launching uninstaller"),
                     Err(e) => ui_state.flash(e.to_string()),
@@ -776,6 +894,7 @@ fn import_html(state: &StateHandle, path: &str) -> anyhow::Result<String> {
     // Must be Ready — otherwise ensure_path_cached reloads disk and wipes the import
     // (Iowa kept the old full-width yellow pit_in from 559.json).
     st.map.path_status = crate::state::TrackPathStatus::Ready;
+    st.map.import_hold = true;
 
     // Seed pit from HTML `#Pitroad` / `#Mergeline` when stitching succeeded.
     let pit_note = if let Some(pit) = doc.pit.clone() {
@@ -866,12 +985,6 @@ fn save_loop(state: &StateHandle) -> String {
         mirror,
         true,
     );
-    if r.ok {
-        drop(st);
-        if let Some(mut st) = state.try_write() {
-            st.map.invalidate_track_cache();
-        }
-    }
     r.msg
 }
 
@@ -897,12 +1010,6 @@ fn save_pit(state: &StateHandle) -> String {
         st.map.cached_pit2.lane_speed_pct,
         true,
     );
-    if r.ok {
-        drop(st);
-        if let Some(mut st) = state.try_write() {
-            st.map.invalidate_track_cache();
-        }
-    }
     r.msg
 }
 
@@ -940,12 +1047,6 @@ fn save_track(state: &StateHandle) -> String {
         mirror,
         true,
     );
-    if r.ok {
-        drop(st);
-        if let Some(mut st) = state.try_write() {
-            st.map.invalidate_track_cache();
-        }
-    }
     r.msg
 }
 

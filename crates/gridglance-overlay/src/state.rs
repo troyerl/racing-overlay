@@ -126,6 +126,8 @@ pub struct MapAuthoring {
     pub sprite_fit_key: u64,
     /// Cached plot fit: origin_x, origin_y, scale, min_x, min_y.
     pub sprite_fit: Option<(f32, f32, f32, f32, f32)>,
+    /// HTML/IPC import is on screen — don't reload from disk/cloud until save.
+    pub import_hold: bool,
 }
 
 /// Pit-edit zoom clamp (match Python `_PIT_EDIT_ZOOM_*`).
@@ -181,6 +183,7 @@ impl Default for MapAuthoring {
             pit_latch_seed_pending: false,
             sprite_fit_key: 0,
             sprite_fit: None,
+            import_hold: false,
         }
     }
 }
@@ -292,6 +295,7 @@ impl MapAuthoring {
 
     /// Drop cached track geometry so the next paint reloads from disk.
     pub fn invalidate_track_cache(&mut self) {
+        self.import_hold = false;
         self.cached_track_id = None;
         self.cached_path.clear();
         self.cached_self_crossing = false;

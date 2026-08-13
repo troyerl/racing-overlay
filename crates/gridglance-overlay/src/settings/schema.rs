@@ -1,6 +1,8 @@
 //! Settings schema: nav order, skip lists, labels, groups (Python `config_editor` parity).
 
 use crate::config::WIDGET_KEYS;
+use serde_json::Value;
+use std::collections::HashMap;
 
 /// Top-level Settings tabs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -599,6 +601,60 @@ pub fn group_default_open(group_title: &str) -> bool {
     !matches!(group_title, "Colors" | "Row layout")
 }
 
+fn flag(values: &HashMap<String, Value>, key: &str, default: bool) -> bool {
+    values.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
+}
+
+/// Hide a setting until its parent toggle (or mode) makes it applicable.
+pub fn setting_visible(section: &str, key: &str, values: &HashMap<String, Value>) -> bool {
+    if key == "title" && values.contains_key("show_title") {
+        return flag(values, "show_title", true);
+    }
+    match (section, key) {
+        ("relative" | "standings", "rows") => !flag(values, "center_on_player", true),
+        ("relative" | "standings", "rows_ahead" | "rows_behind") => {
+            flag(values, "center_on_player", true)
+        }
+        ("standings", "pin_podium") => flag(values, "center_on_player", true),
+        ("relative", "strategy_fuel_pct_thresh" | "undercut_gap_max_s" | "cover_gap_max_s") => {
+            flag(values, "show_strategy_hints", true)
+        }
+        ("relative" | "standings", "footer_font_scale" | "footer" | "footer_icons") => {
+            flag(values, "show_footer", true)
+        }
+        ("fuel_calc", "low_fuel_laps_threshold" | "low_fuel_time_threshold") => {
+            flag(values, "show_low_fuel_alert", true)
+        }
+        ("dash", "shift_blink") => flag(values, "show_shift_bar", true),
+        ("dash", "shift_blink_hz" | "shift_blink_pct" | "shift_blink_max_sec") => {
+            flag(values, "show_shift_bar", true) && flag(values, "shift_blink", false)
+        }
+        ("dash", "start_go_text" | "start_set_text" | "start_ready_text") => {
+            flag(values, "show_flags", true)
+        }
+        ("dash", "delta_bar_range") => flag(values, "show_delta_bar", false),
+        ("inputs", "brake_threshold") => flag(values, "show_brake_threshold", false),
+        ("inputs", "label_text") => flag(values, "show_label", true),
+        ("flags", "incident_warn_pct") => flag(values, "show_incident_warning", true),
+        ("pit_board", "pit_banner_text") => flag(values, "show_pit_banner", true),
+        ("tire_panel", "warn_wear_pct") => flag(values, "show_wear", true),
+        (
+            "system_panel",
+            "show_subtask_iracing" | "show_subtask_overlays" | "show_subtask_music",
+        ) => flag(values, "show_process_breakdown", true),
+        ("ers_hybrid", "label_battery") => flag(values, "show_battery", true),
+        ("ers_hybrid", "label_boost") => flag(values, "show_boost", true),
+        ("ers_hybrid", "label_p2p") => flag(values, "show_p2p", true),
+        ("map", "show_expanded_weather") => flag(values, "show_wind", true),
+        (
+            "map",
+            "show_pit_blends" | "show_pit_speed" | "pit_lane_opacity" | "pit_dot_opacity",
+        ) => flag(values, "show_pit", true),
+        ("map", "marker_hold_seconds") => flag(values, "show_traffic_markers", true),
+        _ => true,
+    }
+}
+
 /// Laptime log columns (toggle / order in Settings).
 pub const LAPLOG_COLUMNS: &[&str] = &[
     "lap", "time", "delta", "temp", "sectors", "fuel", "tires", "incidents", "tag",
@@ -651,7 +707,7 @@ pub fn default_table_col_width(col: &str) -> f32 {
 /// Per-widget accent (Python `TAB_COLORS`).
 pub fn tab_color(section: &str) -> &'static str {
     match section {
-        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__scan__" => "#9aa3b2",
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__" => "#9aa3b2",
         "__widgets__" => "#9aa3b2",
         "relative" => "#2fe0b0",
         "standings" => "#a98bff",
@@ -680,7 +736,7 @@ pub fn tab_color(section: &str) -> &'static str {
 
 pub fn top_tab_for(section: &str) -> TopTab {
     match section {
-        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__scan__" => TopTab::Settings,
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__" => TopTab::Settings,
         _ => TopTab::Widgets,
     }
 }
@@ -799,6 +855,7 @@ pub fn ordered_sections() -> Vec<(String, String, String)> {
         ("__app__".into(), "App".into(), String::new()),
         ("__drivers__".into(), "Drivers".into(), String::new()),
         ("__lan__".into(), "LAN telemetry".into(), String::new()),
+        ("__laps__".into(), "Race laps".into(), String::new()),
     ];
     if crate::cloud::can_write() {
         out.push(("__scan__".into(), "Track Scan".into(), String::new()));
@@ -1143,7 +1200,7 @@ pub fn help_text(section: &str, key: &str) -> Option<&'static str> {
         ("__lan__" | "__app__", "lan_telemetry_hz") => Some(
             "How often subscribed clients receive telemetry push frames (5–30 Hz).",
         ),
-        ("__lan__" | "__app__", "upload_race_laps") => Some(
+        ("__laps__" | "__lan__" | "__app__", "upload_race_laps") => Some(
             "Off by default. When enabled and a Mongo write URI is set, upload race best / your top-3 / track PB once after the race finishes (checkered / cooldown). Laps still save locally during the session.",
         ),
         ("lap_compare", "reference_mode") => Some(

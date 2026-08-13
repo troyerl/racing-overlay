@@ -168,6 +168,13 @@ fn live_status_for_miss(id: i32) -> TrackPathStatus {
 }
 
 pub fn ensure_path_cached(ctx: &mut WidgetCtx<'_>) {
+    // Track Scan import sits in memory until Save. A live/demo TrackID mismatch
+    // or a background cloud fetch must not wipe it (Save would then report
+    // "No track loop loaded").
+    if ctx.map.import_hold && ctx.map.cached_path.len() >= 3 {
+        ctx.map.path_status = TrackPathStatus::Ready;
+        return;
+    }
     let tid = ctx.frame.track_id;
     // Background cloud fetch or local calibration rewrote the file — reload.
     if let Some(id) = tid {
