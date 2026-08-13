@@ -133,7 +133,6 @@ pub fn sample_best_subpath(d: &str, n: usize) -> anyhow::Result<Vec<(f32, f32)>>
     if best.len() < 3 {
         anyhow::bail!("SVG path produced too few points");
     }
-    let best = super::geom::fillet_loop_kinks(&best);
     Ok(resample_open(&best, n.max(64)))
 }
 

@@ -1361,15 +1361,15 @@ pub fn finalize_frame(
         if dash_on {
             sync_dash_position_with_standings(frame, &rel_sticky.standings, table_focus);
         }
-        if needs.radio {
-            if let Some(radio) = frame.radio.as_mut() {
-                if let Some(c) = frame.cars.iter().find(|c| {
-                    (!radio.car_number.is_empty() && c.car_number == radio.car_number)
-                        || (!radio.name.is_empty() && c.name == radio.name)
-                }) {
-                    if c.position > 0 {
-                        radio.position = c.position;
-                    }
+        // Stamp even when radio_tower is hidden so other widgets (and tests)
+        // see the same live order as standings.
+        if let Some(radio) = frame.radio.as_mut() {
+            if let Some(c) = frame.cars.iter().find(|c| {
+                (!radio.car_number.is_empty() && c.car_number == radio.car_number)
+                    || (!radio.name.is_empty() && c.name == radio.name)
+            }) {
+                if c.position > 0 {
+                    radio.position = c.position;
                 }
             }
         }

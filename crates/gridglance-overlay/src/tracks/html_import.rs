@@ -172,10 +172,15 @@ pub fn import_loop_doc(
         None => (None, None),
     };
 
+    // Fillet after pit stitch so merge/exit attach to the uncut loop.
+    // Resample back so JSON point count stays at `num_samples`.
+    let n_pts = normalized.len().max(2);
+    let points = super::geom::resample_open(&super::geom::fillet_loop_kinks(&normalized), n_pts);
+
     Ok(ImportDoc {
         track_id: tid,
         name,
-        points: normalized,
+        points,
         corners,
         num_turns: n_turns,
         start_finish,
