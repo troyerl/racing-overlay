@@ -649,13 +649,13 @@ fn paint_row_cols(
                         );
                     }
                 }
-                // Python: left-aligned after class stripe inset.
+                // Centered in the POS column (stripe stays on the left).
                 // Lap traffic ink wins over pit dim so red/blue stay readable.
                 let pos_col = lap_ink.unwrap_or(if dim { dim_text } else { text });
                 label(
                     ui,
-                    Pos2::new(cx + rh * 0.2, cy),
-                    Align2::LEFT_CENTER,
+                    Pos2::new(cx + cw * 0.5, cy),
+                    Align2::CENTER_CENTER,
                     &format!("{}", row.position.max(0)),
                     fs,
                     pos_col,

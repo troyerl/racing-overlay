@@ -5,11 +5,20 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.24 - 2026-08-12
+
+- **Dash centering.** Gear in the ring and the P# badge sit on glyph ink, so
+  “1” and “P41” no longer sit high or left in their boxes.
+- **Map dot numbers.** Position labels follow live track order and are centered
+  in the dots.
+- **Relative / Standings POS.** Position column is centered in the cell.
+
 ## 1.69.23 - 2026-08-12
 
-- **Shared live positions.** Dash, Relative, Standings, leaderboard, radio, and
-  map position labels all use one standings order so P# never disagrees between
-  widgets. On-track passes update immediately (no wait for iRacing Position).
+- **Shared live positions.** Dash, Relative, Standings, leaderboard, and radio
+  use one standings order so P# never disagrees between those widgets. On-track
+  passes update immediately (no wait for iRacing Position). Map dot position
+  labels stay on live track order so they match the cars on the map.
 - **Relative row centering.** When the Relative panel is taller than the cars
   shown, the live rows sit vertically centered with even space above and below.
 - **Country flags.** Shared display footprint so wide flags (US) match other

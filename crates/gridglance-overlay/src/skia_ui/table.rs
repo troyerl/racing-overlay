@@ -455,17 +455,18 @@ fn paint_cols(
                         );
                     }
                 }
+                // Centered in the POS column (stripe stays on the left).
                 // Lap traffic ink wins over pit dim so red/blue stay readable.
                 let pos_col = lap_ink.unwrap_or(if dim { dim_text } else { text });
                 label(
                     c,
-                    cx + rh * 0.2,
+                    cx + cw * 0.5,
                     cy,
                     &format!("{}", row.position.max(0)),
                     fs,
                     pos_col,
                     true,
-                    TextAlign::Left,
+                    TextAlign::Center,
                 );
             }
             "name" => {

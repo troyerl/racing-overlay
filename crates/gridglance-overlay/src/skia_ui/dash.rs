@@ -376,9 +376,10 @@ fn label(
     );
 }
 
-/// Gear digit in the dash circle — centre on ink bounds so "1"/"N"/"R" sit true.
+/// Gear digit in the dash circle — centre on glyph-path ink so "1"/"N"/"R" sit true.
 fn gear_label(c: &mut Canvas, cx: f32, cy: f32, text: &str, size: f32, color: Rgba) {
-    c.text_ink_centered(text, cx, cy, FontSpec::bold(size), color);
+    // Path bounds + slight upward optical nudge for large bold digits.
+    c.text_path_centered(text, cx, cy - size * 0.05, FontSpec::bold(size), color);
 }
 
 fn text_w(c: &Canvas, size: f32, bold: bool, text: &str) -> f32 {
@@ -429,15 +430,13 @@ fn draw_position(
     if tw > max_w && tw > 0.0 {
         fs *= max_w / tw;
     }
-    label(
-        c,
-        box_r.center().0,
-        box_r.center().1,
+    // Path-ink centre — advance-width CENTER + baseline fudge sits "P41" high/left.
+    c.text_path_centered(
         &text,
-        fs,
+        box_r.center().0,
+        box_r.center().1 - fs * 0.04,
+        FontSpec::bold(fs),
         orange,
-        true,
-        TextAlign::Center,
     );
 }
 

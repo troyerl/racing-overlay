@@ -29,22 +29,46 @@ fn gear_label(ui: &mut Ui, cx: f32, cy: f32, text: &str, size: f32, color: Color
         egui::FontFamily::Name(crate::icons::BOLD_FAMILY.into()),
     );
     let galley = ui.fonts(|f| f.layout_no_wrap(text.to_owned(), font, color));
-    let mesh = galley.mesh_bounds;
-    if mesh.width() > 0.0 && mesh.height() > 0.0 {
-        // Optical centre: geometric ink mid sits slightly low for bold digits.
-        let cy = cy - size * 0.05;
-        let pos = Pos2::new(cx - mesh.center().x, cy - mesh.center().y);
+    // Prefer per-glyph mesh ink over galley.mesh_bounds — the latter can keep
+    // asymmetric side bearings that shove "1" left of the ring centre.
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for row in &galley.rows {
+        for g in &row.glyphs {
+            let uv = g.uv_rect;
+            if uv.is_nothing() {
+                continue;
+            }
+            let left_top = g.pos + uv.offset;
+            min_x = min_x.min(left_top.x);
+            min_y = min_y.min(left_top.y);
+            max_x = max_x.max(left_top.x + uv.size.x);
+            max_y = max_y.max(left_top.y + uv.size.y);
+        }
+    }
+    // Optical centre: geometric ink mid sits slightly low for bold digits.
+    let cy = cy - size * 0.05;
+    if min_x.is_finite() && max_x > min_x && max_y > min_y {
+        let pos = Pos2::new(cx - (min_x + max_x) * 0.5, cy - (min_y + max_y) * 0.5);
         ui.painter().galley(pos, galley, color);
     } else {
-        label(
-            ui,
-            Pos2::new(cx, cy - size * 0.05),
-            Align2::CENTER_CENTER,
-            text,
-            size,
-            color,
-            true,
-        );
+        let mesh = galley.mesh_bounds;
+        if mesh.width() > 0.0 && mesh.height() > 0.0 {
+            let pos = Pos2::new(cx - mesh.center().x, cy - mesh.center().y);
+            ui.painter().galley(pos, galley, color);
+        } else {
+            label(
+                ui,
+                Pos2::new(cx, cy),
+                Align2::CENTER_CENTER,
+                text,
+                size,
+                color,
+                true,
+            );
+        }
     }
 }
 
@@ -439,15 +463,49 @@ fn draw_position(
         "--".into()
     };
     let mut fs = box_r.height() * 0.48 * text_scale;
-    let font = FontId::proportional(fs);
-    let tw = text_w(ui, &font, &text);
+    let bold = |sz: f32| {
+        FontId::new(
+            sz.max(1.0),
+            egui::FontFamily::Name(crate::icons::BOLD_FAMILY.into()),
+        )
+    };
+    let tw = text_w(ui, &bold(fs), &text);
     let max_w = box_r.width() * 0.78;
     if tw > max_w && tw > 0.0 {
         fs *= max_w / tw;
     }
+    // Ink-box centre (same approach as gear) — galley CENTER leaves "P41" high.
+    let galley = ui.fonts(|f| f.layout_no_wrap(text.clone(), bold(fs), orange));
+    let mut min_x = f32::INFINITY;
+    let mut min_y = f32::INFINITY;
+    let mut max_x = f32::NEG_INFINITY;
+    let mut max_y = f32::NEG_INFINITY;
+    for row in &galley.rows {
+        for g in &row.glyphs {
+            let uv = g.uv_rect;
+            if uv.is_nothing() {
+                continue;
+            }
+            let left_top = g.pos + uv.offset;
+            min_x = min_x.min(left_top.x);
+            min_y = min_y.min(left_top.y);
+            max_x = max_x.max(left_top.x + uv.size.x);
+            max_y = max_y.max(left_top.y + uv.size.y);
+        }
+    }
+    let cy = box_r.center().y - fs * 0.04;
+    let cx = box_r.center().x;
+    if min_x.is_finite() && max_x > min_x && max_y > min_y {
+        ui.painter().galley(
+            Pos2::new(cx - (min_x + max_x) * 0.5, cy - (min_y + max_y) * 0.5),
+            galley,
+            orange,
+        );
+        return;
+    }
     label(
         ui,
-        box_r.center(),
+        Pos2::new(cx, cy),
         Align2::CENTER_CENTER,
         &text,
         fs,

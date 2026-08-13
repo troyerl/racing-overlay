@@ -476,10 +476,11 @@ impl Canvas {
         rect.width()
     }
 
-    /// Draw `text` so its tight ink box is centred on `(cx, cy)`.
+    /// Draw `text` so its tight measured ink box is centred on `(cx, cy)`.
     ///
-    /// Uses the same paint + TextBlob bounds that are drawn (not loose font
-    /// metrics). A small upward optical nudge keeps digits from looking low.
+    /// Good for small map-dot digits. For large dash gear, prefer
+    /// [`Self::text_path_centered`] (glyph-path union; blob/measure leave
+    /// "1" looking left-shifted).
     pub fn text_ink_centered(
         &mut self,
         text: &str,
@@ -505,19 +506,94 @@ impl Canvas {
         let Some(blob) = TextBlob::from_str(text, &font) else {
             return;
         };
-        // Prefer blob bounds (matches draw); fall back to measured string box.
-        let mut rect = *blob.bounds();
-        if rect.width() <= 0.0 || rect.height() <= 0.0 {
-            let (_, m) = font.measure_str(text, Some(&paint));
-            rect = m;
-        }
+        let (_, measured) = font.measure_str(text, Some(&paint));
+        let rect = if measured.width() > 0.0 && measured.height() > 0.0 {
+            measured
+        } else {
+            *blob.bounds()
+        };
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        // Optical centre: geometric ink mid sits slightly low for bold digits.
-        let cy = cy - spec.size * 0.05;
         let draw_x = cx - (rect.left + rect.right) * 0.5;
         let baseline = cy - (rect.top + rect.bottom) * 0.5;
+        self.surface
+            .canvas()
+            .draw_text_blob(&blob, (draw_x, baseline), &paint);
+    }
+
+    /// Draw `text` centred on the union of glyph path bounds (baseline origin).
+    ///
+    /// This is the most reliable centre for large bold digits like gear "1",
+    /// where TextBlob / measure boxes carry asymmetric side bearings.
+    pub fn text_path_centered(
+        &mut self,
+        text: &str,
+        cx: f32,
+        cy: f32,
+        spec: FontSpec,
+        color: Rgba,
+    ) {
+        if text.is_empty() {
+            return;
+        }
+        let font = self.font(spec);
+        let mut paint = Paint::new(
+            Color4f::new(
+                color.r as f32 / 255.0,
+                color.g as f32 / 255.0,
+                color.b as f32 / 255.0,
+                color.a as f32 / 255.0,
+            ),
+            None,
+        );
+        paint.set_anti_alias(true);
+        let Some(blob) = TextBlob::from_str(text, &font) else {
+            return;
+        };
+
+        let glyphs = font.str_to_glyphs_vec(text);
+        let mut widths = vec![0.0; glyphs.len()];
+        let mut glyph_bounds = vec![skia_safe::Rect::default(); glyphs.len()];
+        font.get_widths_bounds(&glyphs, Some(&mut widths), Some(&mut glyph_bounds), Some(&paint));
+
+        let mut pen_x = 0.0_f32;
+        let mut min_x = f32::INFINITY;
+        let mut min_y = f32::INFINITY;
+        let mut max_x = f32::NEG_INFINITY;
+        let mut max_y = f32::NEG_INFINITY;
+        for (i, gb) in glyph_bounds.iter().enumerate() {
+            if gb.width() > 0.0 && gb.height() > 0.0 {
+                min_x = min_x.min(pen_x + gb.left);
+                min_y = min_y.min(gb.top);
+                max_x = max_x.max(pen_x + gb.right);
+                max_y = max_y.max(gb.bottom);
+            } else if let Some(path) = font.get_path(glyphs[i]) {
+                let pb = path.bounds();
+                min_x = min_x.min(pen_x + pb.left);
+                min_y = min_y.min(pb.top);
+                max_x = max_x.max(pen_x + pb.right);
+                max_y = max_y.max(pb.bottom);
+            }
+            pen_x += widths[i];
+        }
+
+        let (draw_x, baseline) = if min_x.is_finite() && max_x > min_x && max_y > min_y {
+            (
+                cx - (min_x + max_x) * 0.5,
+                cy - (min_y + max_y) * 0.5,
+            )
+        } else {
+            // Fallback: measured string box.
+            let (_, measured) = font.measure_str(text, Some(&paint));
+            if measured.width() <= 0.0 || measured.height() <= 0.0 {
+                return;
+            }
+            (
+                cx - (measured.left + measured.right) * 0.5,
+                cy - (measured.top + measured.bottom) * 0.5,
+            )
+        };
         self.surface
             .canvas()
             .draw_text_blob(&blob, (draw_x, baseline), &paint);
