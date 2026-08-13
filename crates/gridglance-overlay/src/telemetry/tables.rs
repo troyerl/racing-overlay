@@ -1217,228 +1217,269 @@ pub fn finalize_frame(
     cfg: &OverlayConfig,
     rel_sticky: &mut RelativeOrderHysteresis,
 ) {
-    let app = crate::cloud::load_app_settings_cache().unwrap_or_else(|| serde_json::json!({}));
-    let groups = cfg.driver_groups_value();
+    let needs = cfg.telem_needs();
+    let need_tables = needs.relative || needs.standings || needs.pit_advisor;
+    let app = if need_tables || needs.radio {
+        crate::cloud::load_app_settings_cache().unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let groups = if need_tables || needs.radio {
+        cfg.driver_groups_value()
+    } else {
+        serde_json::json!([])
+    };
 
-    if let Some(radio) = frame.radio.as_mut() {
-        radio.is_pro = crate::cloud::is_pro_driver(&radio.name, &app);
-        if !radio.is_pro {
-            if let Some(g) = crate::driver_groups::driver_group_for_name(&radio.name, &groups) {
-                radio.group_icon = g.icon;
-                radio.group_color = g.color;
+    if needs.radio {
+        if let Some(radio) = frame.radio.as_mut() {
+            radio.is_pro = crate::cloud::is_pro_driver(&radio.name, &app);
+            if !radio.is_pro {
+                if let Some(g) = crate::driver_groups::driver_group_for_name(&radio.name, &groups) {
+                    radio.group_icon = g.icon;
+                    radio.group_color = g.color;
+                }
             }
         }
     }
     apply_irating_projection(frame, cfg, rel_sticky);
     apply_sr_projection(frame, cfg, rel_sticky);
-    resolve_delta_mode(frame, cfg);
-    apply_flag_config(frame, cfg);
+    if needs.delta {
+        resolve_delta_mode(frame, cfg);
+    }
+    if needs.flags {
+        apply_flag_config(frame, cfg);
+    }
 
-    // Map dots: tint relative to presentation focus (live you, else camera).
-    let map_focus = super::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
-    apply_lap_tints(
-        &mut frame.cars,
-        frame.lap_est_time,
-        frame.session_type.as_deref(),
-        map_focus,
-    );
+    if needs.map {
+        let map_focus = super::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
+        apply_lap_tints(
+            &mut frame.cars,
+            frame.lap_est_time,
+            frame.session_type.as_deref(),
+            map_focus,
+        );
+    }
 
-    // Rebuild fuel first so relative undercut/cover tags can use the pit window.
-    let (leader_lap, leader_pct, leader_lap_s) = leader_pace_bits(frame);
-    let inp = crate::telemetry::FuelInputs {
-        level: frame.fuel_l,
-        fuel_pct: frame.fuel_pct,
-        fuel_max: frame.fuel_max_l,
-        lap: frame.lap,
-        last_lap_s: frame.last_lap_s,
-        lap_est: frame.lap_est_time,
-        laps_remain: frame.session_laps_remain,
-        time_remain: frame.session_time_remain,
-        fuel_use_per_hour: frame.fuel_use_per_hour,
-        laps_total: frame.laps_total,
-        fc_use: frame.fuel_use_history.clone(),
-        ema_usage: frame.fuel_ema_l,
-        economy_usage: frame.fuel_economy_l,
-        leader_lap,
-        leader_lap_dist_pct: leader_pct,
-        leader_lap_s,
-        caution: matches!(
-            frame.flag.as_deref(),
-            Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
-        ),
-    };
-    frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
+    if needs.fuel {
+        let (leader_lap, leader_pct, leader_lap_s) = leader_pace_bits(frame);
+        let inp = crate::telemetry::FuelInputs {
+            level: frame.fuel_l,
+            fuel_pct: frame.fuel_pct,
+            fuel_max: frame.fuel_max_l,
+            lap: frame.lap,
+            last_lap_s: frame.last_lap_s,
+            lap_est: frame.lap_est_time,
+            laps_remain: frame.session_laps_remain,
+            time_remain: frame.session_time_remain,
+            fuel_use_per_hour: frame.fuel_use_per_hour,
+            laps_total: frame.laps_total,
+            fc_use: frame.fuel_use_history.clone(),
+            ema_usage: frame.fuel_ema_l,
+            economy_usage: frame.fuel_economy_l,
+            leader_lap,
+            leader_lap_dist_pct: leader_pct,
+            leader_lap_s,
+            caution: matches!(
+                frame.flag.as_deref(),
+                Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
+            ),
+        };
+        frame.fuel = crate::telemetry::build_fuel_snapshot(&inp, cfg);
 
-    // Refine service plan with accurate fuel-add from the snapshot.
-    {
-        let fuel_rate = cfg.f64_key("pit_advisor", "fuel_fill_rate_lps", 2.2) as f32;
-        let t2 = cfg.f64_key("pit_advisor", "tire_change_2t_s", 8.0) as f32;
-        let t4 = cfg.f64_key("pit_advisor", "tire_change_4t_s", 12.0) as f32;
-        let fallback_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0) as f32;
-        let transit = frame
-            .measured_pit_loss_s
-            .map(|m| (m - 10.0).clamp(8.0, 40.0))
-            .unwrap_or(18.0_f32.min(fallback_loss * 0.7));
-        let wear_low = frame
-            .tire_corners
-            .iter()
-            .filter_map(|c| c.wear)
-            .any(|w| w > 0.0 && w < 0.45);
-        let add = frame.fuel.add.unwrap_or(0.0);
-        frame.strategy.service = Some(crate::telemetry::best_service_plan(
-            add,
-            frame.strategy.tire.tire_urgent,
-            frame.strategy.pace.loss_per_lap,
-            frame.fuel.laps_remaining,
-            transit,
-            fuel_rate,
-            t2,
-            t4,
-            wear_low,
-        ));
-        // Prefer coast-model economy on the fuel snapshot when present.
-        if let Some(eco) = frame.strategy.coast.economy_usage {
-            frame.fuel.economy_usage = Some(eco);
-            if let (Some(race), Some(fuel)) = (frame.fuel.ema_usage.or(frame.fuel.avg.usage), frame.fuel.level)
-            {
-                if eco > 0.0 && race > 0.0 {
-                    frame.fuel.economy_extra_laps = Some((fuel / eco) - (fuel / race));
+        if needs.pit_advisor {
+            let fuel_rate = cfg.f64_key("pit_advisor", "fuel_fill_rate_lps", 2.2) as f32;
+            let t2 = cfg.f64_key("pit_advisor", "tire_change_2t_s", 8.0) as f32;
+            let t4 = cfg.f64_key("pit_advisor", "tire_change_4t_s", 12.0) as f32;
+            let fallback_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0) as f32;
+            let transit = frame
+                .measured_pit_loss_s
+                .map(|m| (m - 10.0).clamp(8.0, 40.0))
+                .unwrap_or(18.0_f32.min(fallback_loss * 0.7));
+            let wear_low = frame
+                .tire_corners
+                .iter()
+                .filter_map(|c| c.wear)
+                .any(|w| w > 0.0 && w < 0.45);
+            let add = frame.fuel.add.unwrap_or(0.0);
+            frame.strategy.service = Some(crate::telemetry::best_service_plan(
+                add,
+                frame.strategy.tire.tire_urgent,
+                frame.strategy.pace.loss_per_lap,
+                frame.fuel.laps_remaining,
+                transit,
+                fuel_rate,
+                t2,
+                t4,
+                wear_low,
+            ));
+            if let Some(eco) = frame.strategy.coast.economy_usage {
+                frame.fuel.economy_usage = Some(eco);
+                if let (Some(race), Some(fuel)) =
+                    (frame.fuel.ema_usage.or(frame.fuel.avg.usage), frame.fuel.level)
+                {
+                    if eco > 0.0 && race > 0.0 {
+                        frame.fuel.economy_extra_laps = Some((fuel / eco) - (fuel / race));
+                    }
                 }
             }
         }
     }
 
-    // Timing tables: live seated racer keeps focus; pure spectators center on
-    // camera -> seated -> leader. Keep `frame.cars.is_player` unchanged so
-    // map/fuel/radar/dashboard still use the user's actual car.
-    let seated_car_idx = frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
-    let mut focused_cars = frame.cars.clone();
-    apply_table_focus(&mut focused_cars, frame.camera_car_idx);
-    let table_focus = focused_cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
-    apply_lap_tints(
-        &mut focused_cars,
-        frame.lap_est_time,
-        frame.session_type.as_deref(),
-        table_focus,
-    );
+    let dash_on = needs.dash;
+    let need_order = needs.standings_order();
+    if need_order || needs.relative || needs.standings || needs.pit_advisor {
+        let seated_car_idx = frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
+        let mut focused_cars = frame.cars.clone();
+        apply_table_focus(&mut focused_cars, frame.camera_car_idx);
+        let table_focus = focused_cars.iter().find(|c| c.is_player).map(|c| c.car_idx);
+        if needs.relative || needs.standings {
+            apply_lap_tints(
+                &mut focused_cars,
+                frame.lap_est_time,
+                frame.session_type.as_deref(),
+                table_focus,
+            );
+        }
 
-    // One shared standings order for every widget (dash / relative / standings /
-    // leaderboard / map labels / radio). Tick sticky once, then write ranks.
-    {
-        let field = standings_field_cars(
-            &focused_cars,
-            frame.camera_car_idx,
-            seated_car_idx,
-        );
-        let order: Vec<i32> = compute_standings_order(
-            &field,
-            frame.session_type.as_deref(),
-            Some(&mut rel_sticky.standings),
-        )
-        .iter()
-        .map(|c| c.car_idx)
-        .collect();
-        apply_shared_standing_positions(&mut focused_cars, &order);
-        apply_shared_standing_positions(&mut frame.cars, &order);
+        if need_order {
+            let field = standings_field_cars(
+                &focused_cars,
+                frame.camera_car_idx,
+                seated_car_idx,
+            );
+            let order: Vec<i32> = compute_standings_order(
+                &field,
+                frame.session_type.as_deref(),
+                Some(&mut rel_sticky.standings),
+            )
+            .iter()
+            .map(|c| c.car_idx)
+            .collect();
+            apply_shared_standing_positions(&mut focused_cars, &order);
+            apply_shared_standing_positions(&mut frame.cars, &order);
+        }
+        if dash_on {
+            sync_dash_position_with_standings(frame, &rel_sticky.standings, table_focus);
+        }
+        if needs.radio {
+            if let Some(radio) = frame.radio.as_mut() {
+                if let Some(c) = frame.cars.iter().find(|c| {
+                    (!radio.car_number.is_empty() && c.car_number == radio.car_number)
+                        || (!radio.name.is_empty() && c.name == radio.name)
+                }) {
+                    if c.position > 0 {
+                        radio.position = c.position;
+                    }
+                }
+            }
+        }
+
+        let mut rel = if needs.relative || needs.pit_advisor {
+            let mut rel = build_relative(
+                &focused_cars,
+                cfg,
+                frame.lap_est_time,
+                Some(rel_sticky),
+                frame.session_state,
+                frame.session_type.as_deref(),
+                &app,
+                &groups,
+            );
+            if needs.relative
+                && needs.fuel
+                && cfg.widget_shown("fuel_calc")
+                && super::strategy_hints::strategy_window_active(&frame.fuel, frame.fuel_pct, cfg)
+            {
+                super::strategy_hints::apply_strategy_hints(&mut rel, cfg);
+            }
+            rel
+        } else {
+            Vec::new()
+        };
+        let mut std = if needs.standings {
+            build_standings(
+                &focused_cars,
+                cfg,
+                &app,
+                &groups,
+                frame.session_type.as_deref(),
+                frame.camera_car_idx,
+                seated_car_idx,
+                None,
+            )
+        } else {
+            Vec::new()
+        };
+        if needs.relative || needs.standings {
+            let fl_idx = session_best_car_idx(&focused_cars);
+            mark_session_best(&mut rel, fl_idx);
+            mark_session_best(&mut std, fl_idx);
+            stamp_player_sr_delta(&mut rel, seated_car_idx, frame.sr_delta);
+            stamp_player_sr_delta(&mut std, seated_car_idx, frame.sr_delta);
+        }
+        if needs.relative {
+            frame.relative_slots = build_table_slots(frame, cfg, "relative", &rel);
+            frame.relative_cars = rel;
+        } else if needs.pit_advisor {
+            frame.relative_cars = rel;
+        }
+        if needs.standings {
+            frame.standings_slots = build_table_slots(frame, cfg, "standings", &std);
+            frame.standings_cars = std;
+        }
     }
-    sync_dash_position_with_standings(frame, &rel_sticky.standings, table_focus);
-    if let Some(radio) = frame.radio.as_mut() {
-        if let Some(c) = frame.cars.iter().find(|c| {
-            (!radio.car_number.is_empty() && c.car_number == radio.car_number)
-                || (!radio.name.is_empty() && c.name == radio.name)
-        }) {
-            if c.position > 0 {
-                radio.position = c.position;
+
+    if needs.radar {
+        let enriched = build_radar(
+            &frame.cars,
+            cfg,
+            frame.radar.left,
+            frame.radar.right,
+            frame.radar.left2,
+            frame.radar.right2,
+            frame.player_lap_dist_pct,
+        );
+        if frame.radar.ahead.is_none() {
+            frame.radar.ahead = enriched.ahead;
+        }
+        if frame.radar.behind.is_none() {
+            frame.radar.behind = enriched.behind;
+        }
+        if frame.radar.left || frame.radar.right {
+            if frame.radar.left_pos == 0.0 && enriched.left_pos != 0.0 {
+                frame.radar.left_pos = enriched.left_pos;
+            }
+            if frame.radar.right_pos == 0.0 && enriched.right_pos != 0.0 {
+                frame.radar.right_pos = enriched.right_pos;
+            }
+            if frame.radar.left_label.is_empty() {
+                frame.radar.left_label = enriched.left_label;
+            }
+            if frame.radar.right_label.is_empty() {
+                frame.radar.right_label = enriched.right_label;
+            }
+        }
+        frame.radar_left = frame.radar.left;
+        frame.radar_right = frame.radar.right;
+    }
+
+    if needs.fuel {
+        if frame.pit_fuel_to_add.is_none() {
+            frame.pit_fuel_to_add = frame.fuel.add;
+        }
+        if frame.pit_fuel_add_l.is_none() {
+            frame.pit_fuel_add_l = frame.fuel.add;
+        }
+        if frame.pit_laps_to_go.is_none() {
+            if let Some((a, _)) = frame.fuel.window {
+                let remain = (a - frame.lap).max(0);
+                frame.pit_laps_to_go = Some(remain);
             }
         }
     }
-
-    let mut rel = build_relative(
-        &focused_cars,
-        cfg,
-        frame.lap_est_time,
-        Some(rel_sticky),
-        frame.session_state,
-        frame.session_type.as_deref(),
-        &app,
-        &groups,
-    );
-    if super::strategy_hints::strategy_window_active(&frame.fuel, frame.fuel_pct, cfg) {
-        super::strategy_hints::apply_strategy_hints(&mut rel, cfg);
+    if needs.pit_advisor {
+        frame.pit_advice = Some(super::pit_advice::compute_pit_advice(frame, cfg));
     }
-    // Sticky already ticked above — pass None so we don't double-advance it.
-    let mut std = build_standings(
-        &focused_cars,
-        cfg,
-        &app,
-        &groups,
-        frame.session_type.as_deref(),
-        frame.camera_car_idx,
-        seated_car_idx,
-        None,
-    );
-    let fl_idx = session_best_car_idx(&focused_cars);
-    mark_session_best(&mut rel, fl_idx);
-    mark_session_best(&mut std, fl_idx);
-    stamp_player_sr_delta(&mut rel, seated_car_idx, frame.sr_delta);
-    stamp_player_sr_delta(&mut std, seated_car_idx, frame.sr_delta);
-    // Slots after ranks so header POS matches dash / tables.
-    let relative_slots = build_table_slots(frame, cfg, "relative", &rel);
-    let standings_slots = build_table_slots(frame, cfg, "standings", &std);
-    frame.relative_cars = rel;
-    frame.standings_cars = std;
-    frame.relative_slots = relative_slots;
-    frame.standings_slots = standings_slots;
-
-    // Merge proximity / side-pos from lap % when IRSDK only set L/R bools (or demo).
-    let enriched = build_radar(
-        &frame.cars,
-        cfg,
-        frame.radar.left,
-        frame.radar.right,
-        frame.radar.left2,
-        frame.radar.right2,
-        frame.player_lap_dist_pct,
-    );
-    // Keep explicit clear_secs / labels from IRSDK when present.
-    if frame.radar.ahead.is_none() {
-        frame.radar.ahead = enriched.ahead;
-    }
-    if frame.radar.behind.is_none() {
-        frame.radar.behind = enriched.behind;
-    }
-    if frame.radar.left || frame.radar.right {
-        if frame.radar.left_pos == 0.0 && enriched.left_pos != 0.0 {
-            frame.radar.left_pos = enriched.left_pos;
-        }
-        if frame.radar.right_pos == 0.0 && enriched.right_pos != 0.0 {
-            frame.radar.right_pos = enriched.right_pos;
-        }
-        if frame.radar.left_label.is_empty() {
-            frame.radar.left_label = enriched.left_label;
-        }
-        if frame.radar.right_label.is_empty() {
-            frame.radar.right_label = enriched.right_label;
-        }
-    }
-    frame.radar_left = frame.radar.left;
-    frame.radar_right = frame.radar.right;
-
-    // Pit engineer advice + mirror fuel add / window into pit_* fields.
-    let advice = super::pit_advice::compute_pit_advice(frame, cfg);
-    if frame.pit_fuel_to_add.is_none() {
-        frame.pit_fuel_to_add = frame.fuel.add;
-    }
-    if frame.pit_fuel_add_l.is_none() {
-        frame.pit_fuel_add_l = frame.fuel.add;
-    }
-    if frame.pit_laps_to_go.is_none() {
-        if let Some((a, _)) = frame.fuel.window {
-            let remain = (a - frame.lap).max(0);
-            frame.pit_laps_to_go = Some(remain);
-        }
-    }
-    frame.pit_advice = Some(advice);
 }
 
 /// Pick `frame.delta` from raw SDK/demo values using `delta_bar.mode`.
@@ -1622,7 +1663,8 @@ fn needs_irating_projection(cfg: &OverlayConfig) -> bool {
         return true;
     }
     for section in ["relative", "standings"] {
-        if cfg.bool_key(section, "show_irating_projection", false)
+        if cfg.widget_shown(section)
+            && cfg.bool_key(section, "show_irating_projection", false)
             && cfg.has_column(section, "irating")
         {
             return true;
@@ -1636,7 +1678,9 @@ fn needs_sr_projection(cfg: &OverlayConfig) -> bool {
         return true;
     }
     for section in ["relative", "standings"] {
-        if cfg.bool_key(section, "show_sr_projection", false) && cfg.has_column(section, "license")
+        if cfg.widget_shown(section)
+            && cfg.bool_key(section, "show_sr_projection", false)
+            && cfg.has_column(section, "license")
         {
             return true;
         }
@@ -2136,7 +2180,9 @@ pub fn build_radar(
     let mut right_label = String::new();
 
     let me = player_pct;
-    // Collect alongside candidates sorted by |delta|.
+    // Side markers follow the spotter. Only match door-overlap for fore/aft
+    // slide — a car 1% ahead is in front, not "on the right".
+    let side_band = zone.max(span);
     let mut alongside: Vec<(f32, &CarRow)> = Vec::new();
     for c in cars {
         if c.is_player || c.is_pace_car || c.lap_dist_pct < 0.0 {
@@ -2151,7 +2197,7 @@ pub fn build_radar(
         } else if want_rear && -range <= d && d < -zone {
             nearest_behind = Some(nearest_behind.map_or(d, |b: f32| b.max(d)));
         }
-        if d.abs() <= zone * 3.0 {
+        if d.abs() <= side_band {
             alongside.push((d, c));
         }
     }
@@ -2170,13 +2216,7 @@ pub fn build_radar(
         }
     }
     if right {
-        let skip = if left { 1 } else { 0 };
-        if let Some((d, c)) = alongside.get(skip) {
-            right_delta = Some(*d);
-            if want_labels {
-                right_label = c.car_number.clone();
-            }
-        } else if let Some((d, c)) = alongside.first() {
+        if let Some((d, c)) = alongside.first() {
             right_delta = Some(*d);
             if want_labels {
                 right_label = c.car_number.clone();
@@ -2219,6 +2259,98 @@ pub fn build_radar(
 mod tests {
     use super::*;
     use crate::config::OverlayConfig;
+
+    #[test]
+    fn radar_front_glow_and_alongside_within_range() {
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["radar"]["show_front"] = serde_json::json!(true);
+        cfg.cfg["radar"]["show_rear"] = serde_json::json!(true);
+        cfg.cfg["radar"]["range_pct"] = serde_json::json!(0.03);
+        cfg.cfg["radar"]["alongside_zone_pct"] = serde_json::json!(0.004);
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                is_player: true,
+                on_track: true,
+                lap_dist_pct: 0.50,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                on_track: true,
+                lap_dist_pct: 0.518,
+                car_number: "19".into(),
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 2,
+                on_track: true,
+                lap_dist_pct: 0.485,
+                car_number: "5".into(),
+                ..Default::default()
+            },
+        ];
+        let r = build_radar(&cars, &cfg, true, false, false, false, 0.50);
+        assert!(r.ahead.is_some() && r.ahead.unwrap() > 0.0);
+        assert!(r.behind.is_some() && r.behind.unwrap() > 0.0);
+        assert!(r.left && !r.right, "spotter left must not invent a right car");
+        assert_eq!(
+            r.left_pos, 0.0,
+            "0.015 behind is in front/rear, not a door-overlap side match"
+        );
+    }
+
+    #[test]
+    fn radar_does_not_invent_sides_for_cars_ahead() {
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["radar"]["show_front"] = serde_json::json!(true);
+        cfg.cfg["radar"]["alongside_zone_pct"] = serde_json::json!(0.004);
+        cfg.cfg["radar"]["range_pct"] = serde_json::json!(0.03);
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                is_player: true,
+                on_track: true,
+                lap_dist_pct: 0.50,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                on_track: true,
+                lap_dist_pct: 0.518,
+                car_number: "19".into(),
+                ..Default::default()
+            },
+        ];
+        let r = build_radar(&cars, &cfg, false, false, false, false, 0.50);
+        assert!(!r.left && !r.right, "lap overlap must not guess a side");
+        assert!(r.ahead.is_some(), "car 1.8% ahead is front, not a side");
+    }
+
+    #[test]
+    fn radar_spotter_left_does_not_light_right() {
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["radar"]["alongside_zone_pct"] = serde_json::json!(0.004);
+        let cars = vec![
+            CarRow {
+                car_idx: 0,
+                is_player: true,
+                on_track: true,
+                lap_dist_pct: 0.50,
+                ..Default::default()
+            },
+            CarRow {
+                car_idx: 1,
+                on_track: true,
+                lap_dist_pct: 0.502,
+                car_number: "19".into(),
+                ..Default::default()
+            },
+        ];
+        let r = build_radar(&cars, &cfg, true, false, false, false, 0.50);
+        assert!(r.left && !r.right);
+        assert!(r.left_pos > 0.0);
+    }
 
     #[test]
     fn wrap_est_crosses_s_f() {
@@ -3839,5 +3971,103 @@ mod tests {
             );
         }
         assert_eq!(frame.radio.as_ref().unwrap().position, by_idx[&2]);
+    }
+
+    fn sample_cars() -> Vec<CarRow> {
+        (0..6)
+            .map(|i| CarRow {
+                car_idx: i,
+                position: i + 1,
+                name: format!("D{i}"),
+                car_number: format!("{i}"),
+                is_player: i == 2,
+                on_track: true,
+                lap: 5,
+                lap_dist_pct: 0.5 - i as f32 * 0.05,
+                last_lap_time_s: Some(90.0 + i as f32),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn enabled_widgets_keep_display_data_after_gating() {
+        let cfg = OverlayConfig::default();
+        let needs = cfg.telem_needs();
+        assert!(needs.relative && needs.standings && needs.dash && needs.fuel && needs.radar);
+        assert!(needs.air_temp && needs.track_temp);
+
+        let mut frame = TelemetryFrame {
+            session_type: Some("Race".into()),
+            air_temp: Some(24.0),
+            track_temp: Some(32.0),
+            wind_dir: Some(1.0),
+            wind_vel: Some(3.0),
+            fuel_l: 40.0,
+            fuel_pct: 0.5,
+            fuel_max_l: 80.0,
+            lap: 5,
+            last_lap_s: Some(90.0),
+            lap_est_time: 90.0,
+            cars: sample_cars(),
+            radar: RadarState {
+                left: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        if !needs.air_temp {
+            frame.air_temp = None;
+        }
+        if !needs.track_temp {
+            frame.track_temp = None;
+        }
+        let mut sticky = RelativeOrderHysteresis::default();
+        finalize_frame(&mut frame, &cfg, &mut sticky);
+
+        assert_eq!(frame.air_temp, Some(24.0), "dash/standings still show air temp");
+        assert_eq!(frame.track_temp, Some(32.0), "dash/standings still show track temp");
+        assert!(
+            frame.relative_cars.iter().any(|r| r.is_player && !r.empty),
+            "relative must still list the player"
+        );
+        assert!(
+            frame.standings_cars.iter().any(|r| r.is_player && !r.empty),
+            "standings must still list the player"
+        );
+        assert!(
+            frame.fuel.level.is_some(),
+            "fuel calc widget must still get a snapshot"
+        );
+        assert!(frame.position > 0, "dash POS must still resolve");
+        assert!(
+            frame.standings_slots.footer_right.key == "air_temp"
+                && !frame.standings_slots.footer_right.value.is_empty(),
+            "standings footer air temp must still format"
+        );
+    }
+
+    #[test]
+    fn hiding_fuel_calc_keeps_relative_rows() {
+        let mut cfg = OverlayConfig::default();
+        cfg.cfg["fuel_calc"]["show"] = serde_json::json!(false);
+        cfg.cfg["pit_advisor"]["show"] = serde_json::json!(false);
+        let needs = cfg.telem_needs();
+        assert!(!needs.fuel);
+        assert!(needs.relative);
+
+        let mut frame = TelemetryFrame {
+            session_type: Some("Race".into()),
+            cars: sample_cars(),
+            lap_est_time: 90.0,
+            ..Default::default()
+        };
+        let mut sticky = RelativeOrderHysteresis::default();
+        finalize_frame(&mut frame, &cfg, &mut sticky);
+        assert!(
+            frame.relative_cars.iter().any(|r| r.is_player && !r.empty),
+            "relative must still populate when fuel calc is off"
+        );
+        assert!(frame.fuel.level.is_none());
     }
 }

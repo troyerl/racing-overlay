@@ -5,6 +5,17 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.28 - 2026-08-13
+
+- **Radar car.** NASCAR Cup paths like `stockcars fordmustang2022` use the stock
+  car sprite instead of falling through to GT.
+- **Radar proximity.** Front/rear yellow-red glows follow cars ahead/behind.
+  Left/right bars follow iRacing’s spotter only — no guessed side for a car
+  that’s actually in front of you.
+- **Oval maps.** D-ovals (Richmond) keep the inner racing-line shape instead of
+  a stadium outer kerb. Polygonal kinks at T3 are filleted on load. Stale
+  infield pit chords are dropped so the dashed pit line stays on pit road.
+
 ## 1.69.27 - 2026-08-13
 
 - **Track Scan import.** Saving a loop or pit after importing HTML no longer

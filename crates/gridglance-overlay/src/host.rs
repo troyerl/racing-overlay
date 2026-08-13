@@ -1,7 +1,7 @@
 //! Multi-viewport egui host for overlay panels.
 
 use crate::chrome::color_with_alpha;
-use crate::config::{ConfigContext, WIDGET_KEYS};
+use crate::config::{ConfigContext, TelemNeeds, WIDGET_KEYS};
 use crate::layered;
 use crate::settings;
 use crate::state::{
@@ -12,7 +12,7 @@ use crate::telemetry::{
     best_service_plan, demo::DemoFeed, finalize_frame, project_lap_down, FcyModel, FuelBurnTracker,
     FuelLapContext, IrsdkReader, LapCompareState, LapExtras, LapLogAccum, LiftCoastTracker,
     PaceModel, PitLossTracker, PitStopTracker, RadioSpeaker, RelativeOrderHysteresis, SectorTimer,
-    SessionLineState, StrategySnapshot, TelemetryFrame, TireEnergyTracker,
+    SessionLineState, TelemetryFrame, TireEnergyTracker,
 };
 use crate::widgets::{self, MapPaintMode, WidgetCtx};
 use crate::win_click;
@@ -679,398 +679,423 @@ impl OverlayApp {
             }
         };
         let cfg = Arc::clone(&self.state.read().config);
+        let needs = cfg.telem_needs();
+        self.sysstats.set_enabled(needs.sys, needs.sys_gpu);
+        strip_unused_weather(&mut frame, &needs);
 
-        let hist_n = cfg
-            .f64_key("fuel_calc", "green_history_laps", 5.0)
-            .round()
-            .max(1.0) as usize;
-        let ema_alpha = cfg.f64_key("fuel_calc", "fuel_ema_alpha", 0.35) as f32;
-        let cap = if frame.fuel_max_l > 0.0 {
-            frame.fuel_max_l
-        } else if frame.fuel_pct > 0.01 {
-            frame.fuel_l / frame.fuel_pct
-        } else {
-            0.0
-        };
-        let player = frame.cars.iter().find(|c| c.is_player);
         let caution = matches!(
             frame.flag.as_deref(),
             Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
         );
-        let fuel_ctx = FuelLapContext {
-            caution,
-            on_pit: player.map(|c| c.on_pit).unwrap_or(false),
-            in_pit: player.map(|c| c.in_pit).unwrap_or(false),
-            approaching_pits: player.map(|c| c.approaching_pits).unwrap_or(false),
-            throttle: frame.throttle,
-        };
-        let eligible = !fuel_ctx.caution
-            && !fuel_ctx.on_pit
-            && !fuel_ctx.in_pit
-            && !fuel_ctx.approaching_pits;
-
-        // Finalize completed laps before folding this tick's contamination in.
-        self.fuel_burn
-            .observe(frame.lap, frame.fuel_l, cap, hist_n, ema_alpha);
-        self.fuel_burn.tick(&fuel_ctx);
-        frame.fuel_use_history = self.fuel_burn.uses.clone();
-        // Prefer completed-lap EMA; while the first green lap is underway,
-        // extrapolate so laps-until-empty starts updating before lap 1 finishes.
-        frame.fuel_ema_l = self.fuel_burn.ema.or_else(|| {
-            if eligible {
-                self.fuel_burn
-                    .provisional_usage(frame.fuel_l, frame.player_lap_dist_pct)
+        if needs.fuel {
+            let player = frame.cars.iter().find(|c| c.is_player);
+            let hist_n = cfg
+                .f64_key("fuel_calc", "green_history_laps", 5.0)
+                .round()
+                .max(1.0) as usize;
+            let ema_alpha = cfg.f64_key("fuel_calc", "fuel_ema_alpha", 0.35) as f32;
+            let cap = if frame.fuel_max_l > 0.0 {
+                frame.fuel_max_l
+            } else if frame.fuel_pct > 0.01 {
+                frame.fuel_l / frame.fuel_pct
             } else {
-                None
-            }
-        });
+                0.0
+            };
+            let fuel_ctx = FuelLapContext {
+                caution,
+                on_pit: player.map(|c| c.on_pit).unwrap_or(false),
+                in_pit: player.map(|c| c.in_pit).unwrap_or(false),
+                approaching_pits: player.map(|c| c.approaching_pits).unwrap_or(false),
+                throttle: frame.throttle,
+            };
+            let eligible = !fuel_ctx.caution
+                && !fuel_ctx.on_pit
+                && !fuel_ctx.in_pit
+                && !fuel_ctx.approaching_pits;
+            let on_pit_road = fuel_ctx.on_pit || fuel_ctx.in_pit;
 
-        let coast_snap = {
-            self.lift_coast.tick(
-                frame.throttle,
-                frame.brake,
-                eligible && frame.in_car,
-            );
-            self.lift_coast
-                .observe_lap(frame.lap, frame.fuel_l, eligible, hist_n)
-        };
-        frame.fuel_economy_l = coast_snap
-            .economy_usage
-            .or(self.fuel_burn.economy_ema);
-
-        let on_pit_road = fuel_ctx.on_pit || fuel_ctx.in_pit;
-        self.pit_loss
-            .observe(on_pit_road, frame.session_time, ema_alpha);
-        frame.measured_pit_loss_s = self.pit_loss.ema_loss_s;
-
-        let splash_max = cfg.f64_key("pit_advisor", "opponent_splash_pit_max_s", 12.0) as f32;
-        self.pit_stops
-            .observe(&frame.cars, frame.session_time, splash_max);
-
-        let mass_s = cfg.f64_key("pit_advisor", "fuel_mass_laptime_s_per_l", 0.02) as f32;
-        let pace_hist = cfg
-            .f64_key("pit_advisor", "pace_window_laps", 6.0)
-            .round()
-            .max(3.0) as usize;
-        let fallback_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0) as f32;
-        let pace_snap = self.pace_model.observe(
-            frame.lap,
-            frame.last_lap_s,
-            frame.fuel_l,
-            eligible,
-            mass_s,
-            pace_hist,
-            frame.measured_pit_loss_s.unwrap_or(fallback_loss),
-            frame.session_laps_remain,
-        );
-
-        let tire_bits = frame.pit_services.iter().any(|s| {
-            s.checked && matches!(s.key.as_str(), "lf_tire" | "rf_tire" | "lr_tire" | "rr_tire")
-        });
-        let wear_min = frame
-            .tire_corners
-            .iter()
-            .filter_map(|c| c.wear)
-            .fold(None, |acc: Option<f32>, w| {
-                Some(acc.map(|a| a.min(w)).unwrap_or(w))
+            // Finalize completed laps before folding this tick's contamination in.
+            self.fuel_burn
+                .observe(frame.lap, frame.fuel_l, cap, hist_n, ema_alpha);
+            self.fuel_burn.tick(&fuel_ctx);
+            frame.fuel_use_history = self.fuel_burn.uses.clone();
+            // Prefer completed-lap EMA; while the first green lap is underway,
+            // extrapolate so laps-until-empty starts updating before lap 1 finishes.
+            frame.fuel_ema_l = self.fuel_burn.ema.or_else(|| {
+                if eligible {
+                    self.fuel_burn
+                        .provisional_usage(frame.fuel_l, frame.player_lap_dist_pct)
+                } else {
+                    None
+                }
             });
-        let wet_suppress = cfg.f64_key("pit_advisor", "track_wetness_tire_suppress", 40.0) as f32;
-        let tire_temps = [
-            frame.tire_corners[0].temp.unwrap_or(0.0),
-            frame.tire_corners[1].temp.unwrap_or(0.0),
-            frame.tire_corners[2].temp.unwrap_or(0.0),
-            frame.tire_corners[3].temp.unwrap_or(0.0),
-        ];
-        let tire_snap = self.tire_energy.tick(
-            frame.session_time,
-            player.map(|c| c.on_track).unwrap_or(frame.in_car),
-            on_pit_road,
-            caution,
-            frame.speed_mps,
-            frame.lat_accel,
-            frame.steering,
-            frame.yaw_rate,
-            &tire_temps,
-            wear_min,
-            frame.track_temp,
-            frame.track_wetness,
-            wet_suppress,
-            tire_bits,
-        );
-        if eligible {
-            self.tire_energy.on_lap_complete(true);
+
+            let coast_snap = {
+                self.lift_coast.tick(
+                    frame.throttle,
+                    frame.brake,
+                    eligible && frame.in_car,
+                );
+                self.lift_coast
+                    .observe_lap(frame.lap, frame.fuel_l, eligible, hist_n)
+            };
+            frame.fuel_economy_l = coast_snap
+                .economy_usage
+                .or(self.fuel_burn.economy_ema);
+
+            if needs.pit_advisor {
+                frame.strategy.coast = coast_snap;
+            }
+
+            if needs.pit_loss {
+                self.pit_loss
+                    .observe(on_pit_road, frame.session_time, ema_alpha);
+                frame.measured_pit_loss_s = self.pit_loss.ema_loss_s;
+            }
+
+            if needs.pit_advisor {
+                let splash_max =
+                    cfg.f64_key("pit_advisor", "opponent_splash_pit_max_s", 12.0) as f32;
+                self.pit_stops
+                    .observe(&frame.cars, frame.session_time, splash_max);
+
+                let mass_s = cfg.f64_key("pit_advisor", "fuel_mass_laptime_s_per_l", 0.02) as f32;
+                let pace_hist = cfg
+                    .f64_key("pit_advisor", "pace_window_laps", 6.0)
+                    .round()
+                    .max(3.0) as usize;
+                let fallback_loss = cfg.f64_key("pit_advisor", "pit_loss_seconds", 25.0) as f32;
+                let pace_snap = self.pace_model.observe(
+                    frame.lap,
+                    frame.last_lap_s,
+                    frame.fuel_l,
+                    eligible,
+                    mass_s,
+                    pace_hist,
+                    frame.measured_pit_loss_s.unwrap_or(fallback_loss),
+                    frame.session_laps_remain,
+                );
+
+                let tire_bits = frame.pit_services.iter().any(|s| {
+                    s.checked
+                        && matches!(s.key.as_str(), "lf_tire" | "rf_tire" | "lr_tire" | "rr_tire")
+                });
+                let wear_min = frame
+                    .tire_corners
+                    .iter()
+                    .filter_map(|c| c.wear)
+                    .fold(None, |acc: Option<f32>, w| {
+                        Some(acc.map(|a| a.min(w)).unwrap_or(w))
+                    });
+                let wet_suppress =
+                    cfg.f64_key("pit_advisor", "track_wetness_tire_suppress", 40.0) as f32;
+                let tire_temps = [
+                    frame.tire_corners[0].temp.unwrap_or(0.0),
+                    frame.tire_corners[1].temp.unwrap_or(0.0),
+                    frame.tire_corners[2].temp.unwrap_or(0.0),
+                    frame.tire_corners[3].temp.unwrap_or(0.0),
+                ];
+                let tire_snap = self.tire_energy.tick(
+                    frame.session_time,
+                    player.map(|c| c.on_track).unwrap_or(frame.in_car),
+                    on_pit_road,
+                    caution,
+                    frame.speed_mps,
+                    frame.lat_accel,
+                    frame.steering,
+                    frame.yaw_rate,
+                    &tire_temps,
+                    wear_min,
+                    frame.track_temp,
+                    frame.track_wetness,
+                    wet_suppress,
+                    tire_bits,
+                );
+                if eligible {
+                    self.tire_energy.on_lap_complete(true);
+                }
+
+                let fcy_horizon = cfg.f64_key("pit_advisor", "fcy_horizon_laps", 5.0) as f32;
+                let fcy_snap = self
+                    .fcy_model
+                    .observe(frame.lap, caution, frame.incidents, fcy_horizon);
+
+                let player_idx = player.map(|c| c.car_idx).unwrap_or(-1);
+                let field = self.pit_stops.field_note(
+                    &frame.cars,
+                    player_idx,
+                    cfg.f64_key("pit_advisor", "opponent_stint_due_laps", 18.0)
+                        .round() as i32,
+                    cfg.bool_key("pit_advisor", "show_field_context", true),
+                );
+
+                let leader = frame
+                    .cars
+                    .iter()
+                    .filter(|c| c.is_live_competitor())
+                    .max_by(|a, b| {
+                        a.lap.cmp(&b.lap).then_with(|| {
+                            a.lap_dist_pct
+                                .partial_cmp(&b.lap_dist_pct)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                    });
+                let player_pace = frame
+                    .last_lap_s
+                    .map(|s| s as f32)
+                    .filter(|s| *s > 10.0)
+                    .unwrap_or(frame.lap_est_time)
+                    .max(10.0);
+                let leader_pace = leader
+                    .and_then(|l| l.last_lap_time_s)
+                    .filter(|s| *s > 10.0)
+                    .unwrap_or(player_pace);
+                let lap_down = if let Some(l) = leader {
+                    project_lap_down(
+                        frame.lap,
+                        frame.player_lap_dist_pct,
+                        player_pace,
+                        l.lap,
+                        l.lap_dist_pct,
+                        leader_pace,
+                        frame.measured_pit_loss_s.unwrap_or(fallback_loss),
+                        frame.session_laps_remain,
+                    )
+                } else {
+                    Default::default()
+                };
+
+                let fuel_rate = cfg.f64_key("pit_advisor", "fuel_fill_rate_lps", 2.2) as f32;
+                let t2 = cfg.f64_key("pit_advisor", "tire_change_2t_s", 8.0) as f32;
+                let t4 = cfg.f64_key("pit_advisor", "tire_change_4t_s", 12.0) as f32;
+                let transit = frame
+                    .measured_pit_loss_s
+                    .map(|m| (m - 10.0).clamp(8.0, 40.0))
+                    .unwrap_or(18.0);
+                let fuel_add_est = if frame.fuel_ema_l.unwrap_or(0.0) > 0.0 {
+                    frame
+                        .session_laps_remain
+                        .map(|r| (r * frame.fuel_ema_l.unwrap() - frame.fuel_l).max(0.0))
+                        .unwrap_or(0.0)
+                } else {
+                    0.0
+                };
+                let wear_low = wear_min.map(|w| w > 0.0 && w < 0.45).unwrap_or(false);
+                let service = best_service_plan(
+                    fuel_add_est,
+                    tire_snap.tire_urgent,
+                    pace_snap.loss_per_lap,
+                    frame.session_laps_remain,
+                    transit,
+                    fuel_rate,
+                    t2,
+                    t4,
+                    wear_low,
+                );
+
+                frame.strategy.lap_down = lap_down;
+                frame.strategy.pace = pace_snap;
+                frame.strategy.tire = tire_snap;
+                frame.strategy.fcy = fcy_snap;
+                frame.strategy.service = Some(service);
+                frame.strategy.field_note = field.note;
+                frame.strategy.ahead_due = field.ahead_due;
+                frame.strategy.ahead_splash = field.ahead_splash;
+            }
         }
 
-        let fcy_horizon = cfg.f64_key("pit_advisor", "fcy_horizon_laps", 5.0) as f32;
-        let fcy_snap = self
-            .fcy_model
-            .observe(frame.lap, caution, frame.incidents, fcy_horizon);
-
-        let player_idx = player.map(|c| c.car_idx).unwrap_or(-1);
-        let field = self.pit_stops.field_note(
-            &frame.cars,
-            player_idx,
-            cfg.f64_key("pit_advisor", "opponent_stint_due_laps", 18.0)
-                .round() as i32,
-            cfg.bool_key("pit_advisor", "show_field_context", true),
-        );
-
-        // Leader for lap-down (filled after cars present; fuel remain refined in finalize).
-        let leader = frame
-            .cars
-            .iter()
-            .filter(|c| c.is_live_competitor())
-            .max_by(|a, b| {
-                a.lap.cmp(&b.lap).then_with(|| {
-                    a.lap_dist_pct
-                        .partial_cmp(&b.lap_dist_pct)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-            });
-        let player_pace = frame
-            .last_lap_s
-            .map(|s| s as f32)
-            .filter(|s| *s > 10.0)
-            .unwrap_or(frame.lap_est_time)
-            .max(10.0);
-        let leader_pace = leader
-            .and_then(|l| l.last_lap_time_s)
-            .filter(|s| *s > 10.0)
-            .unwrap_or(player_pace);
-        let lap_down = if let Some(l) = leader {
-            project_lap_down(
-                frame.lap,
-                frame.player_lap_dist_pct,
-                player_pace,
-                l.lap,
-                l.lap_dist_pct,
-                leader_pace,
-                frame.measured_pit_loss_s.unwrap_or(fallback_loss),
-                frame.session_laps_remain,
-            )
-        } else {
-            Default::default()
-        };
-
-        let fuel_rate = cfg.f64_key("pit_advisor", "fuel_fill_rate_lps", 2.2) as f32;
-        let t2 = cfg.f64_key("pit_advisor", "tire_change_2t_s", 8.0) as f32;
-        let t4 = cfg.f64_key("pit_advisor", "tire_change_4t_s", 12.0) as f32;
-        let transit = frame
-            .measured_pit_loss_s
-            .map(|m| (m - 10.0).clamp(8.0, 40.0))
-            .unwrap_or(18.0);
-        // Fuel add estimate before finalize; refine after snapshot in finalize via service recompute.
-        let fuel_add_est = if frame.fuel_ema_l.unwrap_or(0.0) > 0.0 {
-            frame
-                .session_laps_remain
-                .map(|r| (r * frame.fuel_ema_l.unwrap() - frame.fuel_l).max(0.0))
-                .unwrap_or(0.0)
-        } else {
-            0.0
-        };
-        let wear_low = wear_min.map(|w| w > 0.0 && w < 0.45).unwrap_or(false);
-        let service = best_service_plan(
-            fuel_add_est,
-            tire_snap.tire_urgent,
-            pace_snap.loss_per_lap,
-            frame.session_laps_remain,
-            transit,
-            fuel_rate,
-            t2,
-            t4,
-            wear_low,
-        );
-
-        frame.strategy = StrategySnapshot {
-            lap_down,
-            pace: pace_snap,
-            tire: tire_snap,
-            coast: coast_snap,
-            fcy: fcy_snap,
-            service: Some(service),
-            field_note: field.note,
-            ahead_due: field.ahead_due,
-            ahead_splash: field.ahead_splash,
-        };
+        if needs.pit_stops && !needs.pit_advisor {
+            let splash_max = cfg.f64_key("pit_advisor", "opponent_splash_pit_max_s", 12.0) as f32;
+            self.pit_stops
+                .observe(&frame.cars, frame.session_time, splash_max);
+        }
 
         // Table focus change: drop sticky Relative + Standings order so rows
         // don't inherit the previous car's ranking.
-        let table_focus =
-            crate::telemetry::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
-        if table_focus != self.last_table_focus {
-            self.rel_order = RelativeOrderHysteresis::default();
-            self.last_table_focus = table_focus;
+        if needs.standings_order() {
+            let table_focus =
+                crate::telemetry::presentation_focus_car_idx(&frame.cars, frame.camera_car_idx);
+            if table_focus != self.last_table_focus {
+                self.rel_order = RelativeOrderHysteresis::default();
+                self.last_table_focus = table_focus;
+            }
         }
 
-        // Header/footer slots (cpu/mem/gpu) read these fields — sample before finalize.
-        self.sysstats.sample_into(&mut frame);
+        if needs.sys {
+            self.sysstats.sample_into(&mut frame);
+        }
 
         finalize_frame(&mut frame, cfg.as_ref(), &mut self.rel_order);
-        self.pit_stops.apply_frame(&mut frame, cfg.as_ref());
+        if needs.pit_stops {
+            self.pit_stops.apply_frame(&mut frame, cfg.as_ref());
+        }
         self.path_probe.observe(&frame);
         self.lan_server.publish(&frame);
 
-        {
+        if needs.sector {
             let n = cfg
                 .f64_key("sector_timing", "sectors", 3.0)
                 .round()
                 .max(1.0) as usize;
             let starts = SectorTimer::equal_starts(n);
             self.sector_timer.set_boundaries(&starts);
+            self.sector_timer
+                .update(frame.player_lap_dist_pct, frame.cur_lap_s, frame.last_lap_s);
+            let show_delta = cfg.bool_key("sector_timing", "show_sector_delta", false);
+            frame.sectors_ui = self.sector_timer.snapshot(
+                frame.cur_lap_s,
+                frame.last_lap_s,
+                frame.best_lap_s,
+                show_delta,
+            );
         }
-        self.sector_timer
-            .update(frame.player_lap_dist_pct, frame.cur_lap_s, frame.last_lap_s);
-        let show_delta = cfg.bool_key("sector_timing", "show_sector_delta", false);
-        frame.sectors_ui = self.sector_timer.snapshot(
-            frame.cur_lap_s,
-            frame.last_lap_s,
-            frame.best_lap_s,
-            show_delta,
-        );
 
-        let ref_mode = cfg.str_key("lap_compare", "reference_mode", "race_best");
         let upload_laps = cfg
             .cfg
             .get("upload_race_laps")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        let review_top3 = cfg.str_key("lap_compare", "review_top3", "-1");
-        let selected_top3 = match review_top3.as_str() {
-            "0" => Some(0),
-            "1" => Some(1),
-            "2" => Some(2),
-            _ => None,
-        };
-        self.session_line.set_selected_top3(selected_top3);
+        if needs.session_laps {
+            let review_top3 = cfg.str_key("lap_compare", "review_top3", "-1");
+            let selected_top3 = match review_top3.as_str() {
+                "0" => Some(0),
+                "1" => Some(1),
+                "2" => Some(2),
+                _ => None,
+            };
+            self.session_line.set_selected_top3(selected_top3);
 
-        // Load track PB when track/car changes.
-        let tid = frame.track_id.unwrap_or(0);
-        let car = frame.car_path.clone().unwrap_or_default();
-        if tid > 0 && !car.is_empty() {
-            let key = (tid, car.clone());
-            if self.session_line_pb_key.as_ref() != Some(&key) {
-                self.session_line_pb_key = Some(key);
-                if let Some(pb) = crate::race_store::load_track_pb(tid, &car) {
-                    self.session_line.set_track_pb(Some(pb));
+            let tid = frame.track_id.unwrap_or(0);
+            let car = frame.car_path.clone().unwrap_or_default();
+            if tid > 0 && !car.is_empty() {
+                let key = (tid, car.clone());
+                if self.session_line_pb_key.as_ref() != Some(&key) {
+                    self.session_line_pb_key = Some(key);
+                    if let Some(pb) = crate::race_store::load_track_pb(tid, &car) {
+                        self.session_line.set_track_pb(Some(pb));
+                    }
                 }
             }
-        }
 
-        self.session_line.update(&frame);
+            self.session_line.update(&frame);
 
-        // Always save locally during the session. Mongo upload is opt-in via
-        // Settings → Upload race laps after finish (and only after checkered/cooldown).
-        if self.session_line.dirty_race {
-            if let Some(doc) = self.session_line.to_race_doc() {
-                if let Err(e) = crate::race_store::save_race_doc(&doc, false) {
-                    eprintln!("[gridglance] race save: {e}");
-                } else if upload_laps {
-                    self.session_line_cloud_pending = true;
-                }
-            }
-            self.session_line.dirty_race = false;
-        }
-        if self.session_line.dirty_pb {
-            if let Some(doc) = self.session_line.to_track_pb_doc() {
-                if let Err(e) = crate::race_store::save_track_pb_doc(&doc, false) {
-                    eprintln!("[gridglance] track PB save: {e}");
-                } else if upload_laps {
-                    self.session_line_cloud_pending = true;
-                }
-            }
-            self.session_line.dirty_pb = false;
-        }
-
-        let sid = frame.subsession_id.unwrap_or(0);
-        if sid > 0
-            && self
-                .session_line_cloud_uploaded_sid
-                .is_some_and(|prev| prev != sid)
-        {
-            // New subsession — clear the prior upload latch.
-            self.session_line_cloud_uploaded_sid = None;
-        }
-        let session_finished = frame.session_state >= 5
-            || matches!(frame.flag.as_deref(), Some("checkered"));
-        let already_uploaded = sid > 0 && self.session_line_cloud_uploaded_sid == Some(sid);
-        if session_finished && self.session_line_cloud_pending && !already_uploaded {
-            if upload_laps {
+            if self.session_line.dirty_race {
                 if let Some(doc) = self.session_line.to_race_doc() {
-                    if let Err(e) = crate::race_store::save_race_doc(&doc, true) {
-                        eprintln!("[gridglance] race cloud upload: {e}");
+                    if let Err(e) = crate::race_store::save_race_doc(&doc, false) {
+                        eprintln!("[gridglance] race save: {e}");
+                    } else if upload_laps {
+                        self.session_line_cloud_pending = true;
                     }
                 }
+                self.session_line.dirty_race = false;
+            }
+            if self.session_line.dirty_pb {
                 if let Some(doc) = self.session_line.to_track_pb_doc() {
-                    if let Err(e) = crate::race_store::save_track_pb_doc(&doc, true) {
-                        eprintln!("[gridglance] track PB cloud upload: {e}");
+                    if let Err(e) = crate::race_store::save_track_pb_doc(&doc, false) {
+                        eprintln!("[gridglance] track PB save: {e}");
+                    } else if upload_laps {
+                        self.session_line_cloud_pending = true;
                     }
                 }
-                if sid > 0 {
-                    self.session_line_cloud_uploaded_sid = Some(sid);
-                }
+                self.session_line.dirty_pb = false;
             }
-            // Clear pending whether uploaded or skipped so a later toggle-on
-            // doesn't push an old session unexpectedly.
-            self.session_line_cloud_pending = false;
+
+            let sid = frame.subsession_id.unwrap_or(0);
+            if sid > 0
+                && self
+                    .session_line_cloud_uploaded_sid
+                    .is_some_and(|prev| prev != sid)
+            {
+                self.session_line_cloud_uploaded_sid = None;
+            }
+            let session_finished = frame.session_state >= 5
+                || matches!(frame.flag.as_deref(), Some("checkered"));
+            let already_uploaded = sid > 0 && self.session_line_cloud_uploaded_sid == Some(sid);
+            if session_finished && self.session_line_cloud_pending && !already_uploaded {
+                if upload_laps {
+                    if let Some(doc) = self.session_line.to_race_doc() {
+                        if let Err(e) = crate::race_store::save_race_doc(&doc, true) {
+                            eprintln!("[gridglance] race cloud upload: {e}");
+                        }
+                    }
+                    if let Some(doc) = self.session_line.to_track_pb_doc() {
+                        if let Err(e) = crate::race_store::save_track_pb_doc(&doc, true) {
+                            eprintln!("[gridglance] track PB cloud upload: {e}");
+                        }
+                    }
+                    if sid > 0 {
+                        self.session_line_cloud_uploaded_sid = Some(sid);
+                    }
+                }
+                self.session_line_cloud_pending = false;
+            }
         }
 
-        let allow_demo_compare = self.demo_only || edit_mode;
-        let corners = corner_pcts_for_track(frame.track_id);
-        if let Some(view) =
-            self.session_line
-                .view(&frame, &ref_mode, &corners, allow_demo_compare)
-        {
-            frame.lap_compare = view;
-        } else {
-            self.lap_compare.update(
-                frame.player_lap_dist_pct,
-                frame.cur_lap_s,
+        if needs.lap_compare {
+            let ref_mode = cfg.str_key("lap_compare", "reference_mode", "race_best");
+            let allow_demo_compare = self.demo_only || edit_mode;
+            let corners = corner_pcts_for_track(frame.track_id);
+            if let Some(view) =
+                self.session_line
+                    .view(&frame, &ref_mode, &corners, allow_demo_compare)
+            {
+                frame.lap_compare = view;
+            } else {
+                self.lap_compare.update(
+                    frame.player_lap_dist_pct,
+                    frame.cur_lap_s,
+                    frame.last_lap_s,
+                    frame.brake,
+                    frame.throttle,
+                    &ref_mode,
+                );
+                frame.lap_compare =
+                    self.lap_compare
+                        .view(frame.session_time, &ref_mode, allow_demo_compare);
+            }
+        }
+
+        if needs.lap_log {
+            let temp = if needs.lap_log_temp {
+                frame.track_temp
+            } else {
+                None
+            };
+            self.lap_log.observe(
+                frame.lap,
                 frame.last_lap_s,
-                frame.brake,
-                frame.throttle,
-                &ref_mode,
+                temp,
+                LapExtras::from_frame(&frame),
             );
-            frame.lap_compare =
-                self.lap_compare
-                    .view(frame.session_time, &ref_mode, allow_demo_compare);
-        }
-
-        self.lap_log.observe(
-            frame.lap,
-            frame.last_lap_s,
-            frame.track_temp,
-            LapExtras::from_frame(&frame),
-        );
-
-        // Latch radio on telem ticks (not paint). Short in-car TX was missed when
-        // the radio panel was starved by map-hot / heavy-frame throttling.
-        let caution = matches!(
-            frame.flag.as_deref(),
-            Some("yellow") | Some("caution") | Some("yellow_waving") | Some("caution_waving")
-        );
-        let hold_secs = if caution {
-            RADIO_HOLD_CAUTION_SECS
-        } else {
-            RADIO_HOLD_SECS
-        };
-        if let Some(r) = frame.radio.clone() {
-            self.radio_hold = Some((r, mono + hold_secs));
-        } else if self
-            .radio_hold
-            .as_ref()
-            .is_some_and(|(_, until)| mono > *until)
-        {
-            self.radio_hold = None;
-        }
-        if frame.radio.is_none() {
-            if let Some((r, until)) = &self.radio_hold {
-                if mono <= *until {
-                    frame.radio = Some(r.clone());
-                }
+            if !self.lap_log.laps.is_empty() {
+                frame.lap_log = self.lap_log.build_rows(cfg.as_ref());
             }
         }
-        if !self.lap_log.laps.is_empty() {
-            frame.lap_log = self.lap_log.build_rows(cfg.as_ref());
+
+        if needs.radio {
+            let hold_secs = if caution {
+                RADIO_HOLD_CAUTION_SECS
+            } else {
+                RADIO_HOLD_SECS
+            };
+            if let Some(r) = frame.radio.clone() {
+                self.radio_hold = Some((r, mono + hold_secs));
+            } else if self
+                .radio_hold
+                .as_ref()
+                .is_some_and(|(_, until)| mono > *until)
+            {
+                self.radio_hold = None;
+            }
+            if frame.radio.is_none() {
+                if let Some((r, until)) = &self.radio_hold {
+                    if mono <= *until {
+                        frame.radio = Some(r.clone());
+                    }
+                }
+            }
+        } else {
+            self.radio_hold = None;
         }
 
         // Auto-switch presets when league/car bindings match.
@@ -2412,6 +2437,30 @@ impl eframe::App for OverlayApp {
             self.perf_acc.frame_ms_sum += ms;
             self.perf_acc.panel_slots += panel_count;
             self.perf_maybe_emit();
+        }
+    }
+}
+
+fn strip_unused_weather(frame: &mut TelemetryFrame, needs: &TelemNeeds) {
+    if !needs.air_temp {
+        frame.air_temp = None;
+    }
+    if !needs.track_temp {
+        frame.track_temp = None;
+    }
+    if !needs.wind {
+        frame.wind_dir = None;
+        frame.wind_vel = None;
+    }
+    if !needs.skies {
+        frame.skies = None;
+        frame.humidity = None;
+        frame.fog = None;
+    }
+    if !needs.rain {
+        frame.rain_intensity = None;
+        if !needs.weather_model {
+            frame.track_wetness = None;
         }
     }
 }

@@ -881,7 +881,7 @@ pub mod demo {
                 "porsche 963 gtp",
                 "ferrari 296 gt3",
                 "mx5 cup",
-                "nascar cup series next gen chevrolet camaro z l 1",
+                "stockcars fordmustang2022",
                 "nascar truck",
                 "dirt sprint car",
             ];

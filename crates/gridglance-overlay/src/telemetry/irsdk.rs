@@ -11,7 +11,7 @@ mod win {
     use crate::telemetry::{
         decode_pit_flags, CarRow, RadarState, RadioSpeaker, TelemetryFrame, TireCorner,
     };
-    use iracing_telem::{flags, Client, DataUpdateResult, Session, Value};
+    use iracing_telem::{Client, DataUpdateResult, Session, Value};
     use std::collections::HashMap;
     use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -1045,22 +1045,15 @@ mod win {
     }
 
     unsafe fn car_left_right(session: &Session) -> (bool, bool, bool, bool) {
-        let Some(var) = session.find_var("CarLeftRight") else {
-            return (false, false, false, false);
-        };
-        match session.value::<flags::CarLeftRight>(&var) {
-            Ok(v) => {
-                use flags::CarLeftRight::*;
-                match v {
-                    CarLeft => (true, false, false, false),
-                    CarRight => (false, true, false, false),
-                    CarLeftRight => (true, true, false, false),
-                    TwoCarsLeft => (true, false, true, false),
-                    TwoCarsRight => (false, true, false, true),
-                    _ => (false, false, false, false),
-                }
-            }
-            Err(_) => (false, false, false, false),
+        // iRacing: Off=0 Clear=1 Left=2 Right=3 Both=4 TwoLeft=5 TwoRight=6.
+        // Read as i32 so Bitfield/Float layouts still map; enum TryFrom is stricter.
+        match read_i32_opt(session, "CarLeftRight").unwrap_or(0) {
+            2 => (true, false, false, false),
+            3 => (false, true, false, false),
+            4 => (true, true, false, false),
+            5 => (true, false, true, false),
+            6 => (false, true, false, true),
+            _ => (false, false, false, false),
         }
     }
 
@@ -2301,6 +2294,7 @@ mod win {
         let var = session.find_var(name)?;
         match session.var_value(&var) {
             Value::Int(v) | Value::Bitfield(v) => Some(v),
+            Value::Ints(a) | Value::Bitfields(a) => a.first().copied(),
             Value::Float(v) => Some(v as i32),
             _ => session.value::<i32>(&var).ok(),
         }

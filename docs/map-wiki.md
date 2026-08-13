@@ -95,11 +95,13 @@ Covered by `charlotte_roval_aligns_and_labels`.
 ### Tracks that cross over themselves (Oran Park GP, 202)
 
 The config layer is a *stroke outline*, not a centreline. For a normal circuit
-that outline is an annulus and `pick_best_subpath` takes the outer boundary,
-which laps once. Where a track passes under itself the exporter **breaks the
-stroke** so the overpass reads visually — Oran Park leaves an 80.7-unit gap at
-Yokohama Bridge, marked by the only two radius-10 round caps in the path, at
-`(1642, 545)` and `(1563, 529)`.
+that outline is an annulus (outer kerb + inner hole). `annulus_centerline`
+averages those two rings so the map follows the racing line. Using the outer
+ring alone (`pick_best_subpath`) rounds a D-oval — Richmond’s outer apron looks
+like a stadium; the D lives on the inner kerb. Where a track passes under itself
+the exporter **breaks the stroke** so the overpass reads visually — Oran Park
+leaves an 80.7-unit gap at Yokohama Bridge, marked by the only two radius-10
+round caps in the path, at `(1642, 545)` and `(1563, 529)`.
 
 That break makes the circuit topologically an open arc, so its outline is one
 closed ribbon with **no enclosed area** instead of an annulus. Used verbatim the
@@ -135,6 +137,11 @@ The recovered lap genuinely self-intersects, and that must survive — do not
 
 Covered by `oran_park_bridge_is_folded_to_one_lap`, which asserts the fold is
 gone, the crossing is present, and no sample-to-sample jump exceeds 0.1.
+Annulus centreline: `annulus_averages_concentric_circles`,
+`annulus_keeps_inner_d_aspect`, `annulus_keeps_stadium_corners_round`,
+`iowa_oval_uses_annulus_centerline`. Pair along the **inward normal**, not
+global closest-point — closest-point snaps an outer T3 onto the inner
+backstretch and chamfers the D.
 
 **Re-importing does not fix an already-saved track** — the bad geometry is in
 the JSON, locally and in Mongo. Import the HTML again and press *Save track*.
@@ -542,3 +549,7 @@ Append a short bullet each time you change map behavior:
 - **2026-08-05 (map calibration):** "The dot moves faster than the car on the straights" was neither the motion model nor the overall map scale. A critically damped tracker has zero steady-state error and only `a/ω²` (~5e-6 lap) under acceleration, and the Charlotte drawing measures 0.472 m per SVG unit — a believable 9.4 m track width. What is wrong is that `point_at` reads lap % as a **drawn arc fraction**, and imported SVGs do not distribute length like the real track. Dead reckoning three driven laps from `VelocityX`/`VelocityY`/`Yaw` (iRacing exposes no `Lat`/`Lon`) put the dot 19 m ahead at worst and 45 m behind at worst, running 0.82–1.41× the correct rate. `--log-track-path` now solves a 256-knot `pct_map` (Procrustes shape fit + monotone projection, `tracks::calibrate`) and writes it to the track document; `loop_frac_for_pct` applies it to every lap-%-to-position conversion. Fit on one lap and scored on the next: rms 14.1 m → 1.4 m, worst 43.9 m → 5.0 m.
 - **2026-08-05 (calibration rejected every lap):** A clean three-lap recording at Charlotte produced no `pct_map` — "laps did not match the drawn loop well enough". The shape fit was fine (14 m rms on a 3.6 km lap); the projection was not. `project_monotone` searched `m/6` of the loop ahead of the current vertex — 600 m against a 14 m knot spacing — and at the infield hairpin, whose legs run a few metres apart but ~100 m apart along the lap, the return leg won. The walk jumped the gap and doubled back on the way out, and the strict "no backward step" gate threw both laps away. The window is now sized in knot steps (1.5 back, 3 ahead), and backward steps are clamped out of the table instead of voiding the lap, with cumulative backtracking over 2 % of a lap still rejecting it. Also added `--calibrate-track-path <csv>` so an existing recording can be re-solved without driving again. Scored on the *other* recording: rms 14.3 m → 2 m, worst 44.8 m → 12 m, the remainder a single blip at the hairpin apex.
 - **2026-08-04 (self-crossing import):** Oran Park GP (202) laps twice per lap of `LapDistPct`. The exporter breaks the stroke at Yokohama Bridge to draw the overpass, which makes the circuit an open arc, so its outline is a single zero-area ribbon rather than an annulus and `pick_best_subpath` had no outer boundary to pick. New `tracks::ribbon::collapse_to_centerline` folds the ribbon onto its centreline (area-derived width cross-checked against nearest-far-index pairing, opposite-*polyline* projection to absorb corner drift) and closes the ring across the gap. The recovered lap self-intersects on purpose: `track_path::loop_self_crossing` flags it so the infield uses a winding fill instead of ear clipping. Also filtered the turns layer with `is_turn_label` — Oran Park puts corner names in it, which imported as 28 turns.
+- **2026-08-13 (annulus centreline):** Richmond (561) imported as a stadium oval. Members config layers are a filled annulus; `pick_best_subpath` took the outer kerb, which rounds a D-oval. New `tracks::ribbon::annulus_centerline` averages outer+inner when they nest at track width (inner/outer length ≥ 0.55, median gap 0.4–12 % of span). Decorative holes and Oran-Park ribbons are left to the existing fold path. **Re-import HTML and Save track** — the bad loop is already in `561.json`.
+- **2026-08-13 (T3 chamfer):** After the D-loop fix, Richmond T3 was still a straight cut. Averaging used global closest-point, which snaps the outer apex onto the inner backstretch. Pair along the inward normal (`annulus_keeps_stadium_corners_round`). Re-import HTML and Save track.
+- **2026-08-13 (T3 still a kink):** Re-import kept a 31° vertex at Richmond T3 — the members inner kerb really does meet at an angle. `fillet_loop_kinks` cuts 8–55° polygonal corners (hairpins stay) on import **and** on JSON load, so a restart rounds the saved `561.json` without another import. Cubics tessellate at 24 steps.
+- **2026-08-13 (infield pit chord):** Richmond still showed a straight `PIT 40 mph` dashed line through the grass after the D-loop fix. Save-loop keeps the old `pit_path`; HTML stitch never replaced it. `pit_path_cuts_infield` drops a lane whose samples sit inside the loop and closer to the infield centre than to the racing line. Applied on load, HTML stitch, and Save loop so a stale chord cannot come back. Iowa frontstretch pit is kept (`iowa_oval_pit_stays_on_frontstretch`).

@@ -16,6 +16,7 @@ use std::path::Path;
 use crate::cloud;
 
 pub use html_import::import_track_source;
+pub use geom::fillet_loop_kinks;
 
 pub fn cloud_blocks_track_save(canonical: &Value) -> Option<String> {
     if !cloud::can_write() {
@@ -107,6 +108,9 @@ pub fn build_manual_pit_lane_fields(
     }
     let (entry, road, merge) =
         geom::orient_pit_lane_polylines(loop_pts, entry, road, merge);
+    if crate::track_path::pit_path_cuts_infield(loop_pts, &road) {
+        return None;
+    }
     let pit_path = geom::resample_open(&road, 140);
     let pit_out_raw = geom::resample_open(&merge, 41);
     let pit_out =
@@ -484,6 +488,7 @@ pub fn save_loop_only(
         if let Some(n) = name {
             obj.insert("name".into(), json!(n));
         }
+        strip_infield_pit_fields(obj, loop_pts);
     }
     match write_track_json(tracks_dir, &canonical, &doc) {
         Ok(path) => {
@@ -506,6 +511,47 @@ pub fn save_loop_only(
 fn fs_read_json(path: &Path) -> anyhow::Result<Value> {
     let text = std::fs::read_to_string(path)?;
     Ok(serde_json::from_str(&text)?)
+}
+
+fn json_polyline(v: Option<&Value>) -> Vec<(f32, f32)> {
+    let Some(arr) = v.and_then(|x| x.as_array()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for p in arr {
+        let Some(pair) = p.as_array() else {
+            continue;
+        };
+        if pair.len() < 2 {
+            continue;
+        }
+        let x = pair[0].as_f64().unwrap_or(f64::NAN) as f32;
+        let y = pair[1].as_f64().unwrap_or(f64::NAN) as f32;
+        if x.is_finite() && y.is_finite() {
+            out.push((x, y));
+        }
+    }
+    out
+}
+
+fn strip_infield_pit_fields(obj: &mut serde_json::Map<String, Value>, loop_pts: &[(f32, f32)]) {
+    let path = json_polyline(obj.get("pit_path"));
+    if path.len() < 2 || !crate::track_path::pit_path_cuts_infield(loop_pts, &path) {
+        return;
+    }
+    for k in [
+        "pit_path",
+        "pit_out",
+        "pit_in",
+        "pit_span",
+        "pit_in_pct",
+        "pit_out_pct",
+        "pit_source",
+        "pit_speed",
+        "pit_lane_speed_pct",
+    ] {
+        obj.remove(k);
+    }
 }
 
 /// Keep an existing lap-% → arc calibration only when the racing loop is unchanged.

@@ -33,6 +33,176 @@ pub enum PanelStyle {
     Elegant,
 }
 
+const DASH_SLOTS: &[&str] = &[
+    "top_left",
+    "top_right",
+    "primary_left",
+    "primary_right",
+    "stat_left",
+    "stat_right",
+    "strip_left",
+    "strip_center",
+    "strip_right",
+];
+const TABLE_SLOT_SIDES: &[&str] = &["left", "center", "right"];
+
+fn dash_slot_default(slot: &str) -> &'static str {
+    match slot {
+        "top_right" => "incidents",
+        "primary_left" => "lap_count",
+        "primary_right" => "speed",
+        "stat_left" => "tires",
+        "stat_right" => "fuel_stack",
+        "strip_left" => "air_temp",
+        "strip_center" => "track_temp",
+        "strip_right" => "last_lap",
+        _ => "",
+    }
+}
+
+fn table_slot_default(section: &str, group: &str, side: &str) -> &'static str {
+    match (section, group, side) {
+        ("standings", "header", "left") => "order_pill",
+        ("standings", "header", "center") => "title",
+        ("standings", "header", "right") => "count",
+        ("standings", "footer", "left") => "track_temp",
+        ("standings", "footer", "center") => "session_time",
+        ("standings", "footer", "right") => "air_temp",
+        ("relative", "header", "left") => "sof",
+        ("relative", "header", "center") => "none",
+        ("relative", "header", "right") => "position",
+        ("relative", "footer", "left") => "race_time",
+        ("relative", "footer", "center") => "lap",
+        ("relative", "footer", "right") => "incidents",
+        _ => "",
+    }
+}
+
+fn default_column_order(section: &str) -> &'static [&'static str] {
+    match section {
+        "laptime_log" => &["lap", "time", "delta", "temp"],
+        "relative" | "standings" => &["badge", "position", "name", "license", "irating", "gap"],
+        _ => &[],
+    }
+}
+
+/// Pipelines to run for the live preset (skip work no enabled widget uses).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TelemNeeds {
+    pub weather: bool,
+    pub air_temp: bool,
+    pub track_temp: bool,
+    pub wind: bool,
+    pub skies: bool,
+    pub rain: bool,
+    pub weather_model: bool,
+    pub fuel: bool,
+    pub pit_loss: bool,
+    pub pit_advisor: bool,
+    pub pit_stops: bool,
+    pub sector: bool,
+    pub lap_compare: bool,
+    pub lap_log: bool,
+    pub lap_log_temp: bool,
+    pub session_laps: bool,
+    pub sys: bool,
+    pub sys_gpu: bool,
+    pub relative: bool,
+    pub standings: bool,
+    pub leaderboard: bool,
+    pub radar: bool,
+    pub radio: bool,
+    pub delta: bool,
+    pub dash: bool,
+    pub map: bool,
+    pub flags: bool,
+}
+
+impl TelemNeeds {
+    pub fn from_cfg(cfg: &OverlayConfig) -> Self {
+        let wx_panel = cfg.widget_shown("weather_panel");
+        let show_temps = wx_panel && cfg.bool_key("weather_panel", "show_temps", true);
+        let show_wind = wx_panel && cfg.bool_key("weather_panel", "show_wind", true);
+        let show_skies = wx_panel && cfg.bool_key("weather_panel", "show_skies", true);
+        let show_rain = wx_panel && cfg.bool_key("weather_panel", "show_rain", true);
+        let map = cfg.widget_shown("map");
+        let map_wind = map && cfg.bool_key("map", "show_wind", true);
+        let map_exp = map_wind && cfg.bool_key("map", "show_expanded_weather", false);
+        let lap_log = cfg.widget_shown("laptime_log");
+        let lap_log_temp = lap_log && cfg.has_column("laptime_log", "temp");
+        let air_temp = show_temps || cfg.uses_metric("air_temp");
+        let track_temp_ui = show_temps || cfg.uses_metric("track_temp") || lap_log_temp;
+        let wind = show_wind || map_wind;
+        let skies = show_skies || cfg.uses_metric("weather");
+        let rain = show_rain || map_exp || cfg.uses_metric("track_wetness");
+        let pit_advisor = cfg.widget_shown("pit_advisor");
+        let fuel_calc = cfg.widget_shown("fuel_calc");
+        let relative = cfg.widget_shown("relative");
+        let standings = cfg.widget_shown("standings");
+        let leaderboard = cfg.widget_shown("leaderboard_strip");
+        let sys_panel = cfg.widget_shown("system_panel");
+        let sys_cpu = sys_panel && cfg.bool_key("system_panel", "show_cpu", true);
+        let sys_mem = sys_panel && cfg.bool_key("system_panel", "show_mem", true);
+        let sys_gpu_panel = sys_panel && cfg.bool_key("system_panel", "show_gpu", true);
+        let sys_net = sys_panel && cfg.bool_key("system_panel", "show_network", true);
+        let sys_procs = sys_panel && cfg.bool_key("system_panel", "show_process_breakdown", true);
+        let sys_slots = cfg.uses_metric("cpu")
+            || cfg.uses_metric("mem")
+            || cfg.uses_metric("gpu")
+            || cfg.uses_metric("wifi");
+        let sys_gpu = sys_gpu_panel || sys_procs || cfg.uses_metric("gpu");
+        let lap_compare = cfg.widget_shown("lap_compare");
+        let upload = cfg
+            .cfg
+            .get("upload_race_laps")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let dash = cfg.widget_shown("dash");
+        let map_sector_hl = map
+            && cfg.bool_key("sector_timing", "highlight_active_sector_on_map", false);
+        let pit_col = (relative && cfg.has_column("relative", "pit"))
+            || (standings && cfg.has_column("standings", "pit"));
+        Self {
+            weather: air_temp || track_temp_ui || wind || skies || rain,
+            air_temp,
+            track_temp: track_temp_ui || pit_advisor,
+            wind,
+            skies,
+            rain,
+            weather_model: pit_advisor,
+            // Fuel EMA + snapshot only for widgets that display them.
+            fuel: fuel_calc || pit_advisor,
+            pit_loss: pit_advisor
+                || (fuel_calc && cfg.bool_key("fuel_calc", "show_pit_compare", true)),
+            pit_advisor,
+            pit_stops: pit_advisor || pit_col,
+            sector: cfg.widget_shown("sector_timing") || map_sector_hl,
+            lap_compare,
+            lap_log,
+            lap_log_temp,
+            session_laps: lap_compare || upload,
+            sys: sys_cpu || sys_mem || sys_gpu_panel || sys_net || sys_procs || sys_slots,
+            sys_gpu,
+            relative,
+            standings,
+            leaderboard,
+            radar: cfg.widget_shown("radar"),
+            radio: cfg.widget_shown("radio_tower"),
+            delta: cfg.widget_shown("delta_bar")
+                || (dash && cfg.bool_key("dash", "show_delta_bar", false))
+                || cfg.uses_metric("delta"),
+            dash,
+            map,
+            flags: cfg.widget_shown("flags"),
+        }
+    }
+
+    /// Shared field order for dash POS, map labels, radio, leaderboard, tables.
+    pub fn standings_order(&self) -> bool {
+        self.relative || self.standings || self.leaderboard || self.dash || self.map || self.radio
+    }
+}
+
 /// Widget section keys owned by the Rust overlay.
 pub const WIDGET_KEYS: &[&str] = &[
     "standings",
@@ -360,6 +530,11 @@ impl OverlayConfig {
             .get("show")
             .and_then(|v| v.as_bool())
             .unwrap_or(false)
+    }
+
+    /// Which derived telemetry pipelines the current preset actually displays.
+    pub fn telem_needs(&self) -> TelemNeeds {
+        TelemNeeds::from_cfg(self)
     }
 
     pub fn apply_cfg_patch(&mut self, patch: &Value) {
@@ -1094,49 +1269,63 @@ impl OverlayConfig {
             .unwrap_or(default)
     }
 
-    /// Whether `column_order` includes `col`.
+    /// Whether `column_order` includes `col` (same fallback as paint).
     pub fn has_column(&self, section: &str, col: &str) -> bool {
-        self.section(section)
+        let cols = self
+            .section(section)
             .get("column_order")
             .and_then(|v| v.as_array())
-            .map(|arr| arr.iter().any(|x| x.as_str() == Some(col)))
-            .unwrap_or(false)
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+            })
+            .filter(|v| !v.is_empty());
+        match cols {
+            Some(list) => list.iter().any(|c| *c == col),
+            None => default_column_order(section).iter().any(|c| *c == col),
+        }
     }
 
     /// Dash slot keys that may hold `"irating"`.
     pub fn dash_uses_irating(&self) -> bool {
-        const SLOTS: &[&str] = &[
-            "top_left",
-            "top_right",
-            "primary_left",
-            "primary_right",
-            "stat_left",
-            "stat_right",
-            "strip_left",
-            "strip_center",
-            "strip_right",
-        ];
-        SLOTS
-            .iter()
-            .any(|k| self.str_key("dash", k, "") == "irating")
+        self.dash_uses_any(&["irating"])
     }
 
     /// Dash slot keys that may hold `"license"` (SR projection).
     pub fn dash_uses_license(&self) -> bool {
-        const SLOTS: &[&str] = &[
-            "top_left",
-            "top_right",
-            "primary_left",
-            "primary_right",
-            "stat_left",
-            "stat_right",
-            "strip_left",
-            "strip_center",
-            "strip_right",
-        ];
-        SLOTS
-            .iter()
-            .any(|k| self.str_key("dash", k, "") == "license")
+        self.dash_uses_any(&["license"])
+    }
+
+    pub fn dash_uses_any(&self, metrics: &[&str]) -> bool {
+        if !self.widget_shown("dash") {
+            return false;
+        }
+        DASH_SLOTS.iter().any(|slot| {
+            let v = self.str_key("dash", slot, dash_slot_default(slot));
+            metrics.iter().any(|m| v == *m)
+        })
+    }
+
+    /// True if an enabled dash, relative, or standings slot shows `metric`.
+    pub fn uses_metric(&self, metric: &str) -> bool {
+        if self.dash_uses_any(&[metric]) {
+            return true;
+        }
+        for section in ["relative", "standings"] {
+            if !self.widget_shown(section) {
+                continue;
+            }
+            for group in ["header", "footer"] {
+                for side in TABLE_SLOT_SIDES {
+                    let default = table_slot_default(section, group, side);
+                    if self.nested_str(section, group, side, default) == metric {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
     }
 
     pub fn conv_temp(&self, celsius: f32) -> f32 {
@@ -1940,6 +2129,7 @@ fn default_cfg() -> Value {
             section.insert("show_panel".into(), Value::Bool(false));
             section.insert("show_front".into(), Value::Bool(true));
             section.insert("show_rear".into(), Value::Bool(true));
+            section.insert("side_proximity_color".into(), Value::Bool(true));
             section.insert("show_axis".into(), Value::Bool(true));
             section.insert("show_nose".into(), Value::Bool(true));
             section.insert("text_scale".into(), json!(1.0));
@@ -2566,5 +2756,96 @@ mod tests {
         assert!(oc.doc["presets"]["Default"]["layout_garage"]
             .get("pace_caution")
             .is_none());
+    }
+
+    fn hide(cfg: &mut OverlayConfig, key: &str) {
+        cfg.cfg[key]["show"] = json!(false);
+    }
+
+    #[test]
+    fn telem_needs_skips_air_temp_when_not_displayed() {
+        let mut cfg = OverlayConfig::default();
+        hide(&mut cfg, "dash");
+        hide(&mut cfg, "standings");
+        hide(&mut cfg, "weather_panel");
+        cfg.cfg["map"]["show_wind"] = json!(false);
+        cfg.cfg["laptime_log"]["column_order"] = json!(["lap", "time", "delta"]);
+        let n = cfg.telem_needs();
+        assert!(!n.air_temp);
+        assert!(!n.track_temp);
+        assert!(!n.weather);
+    }
+
+    #[test]
+    fn telem_needs_default_shows_air_temp() {
+        let n = OverlayConfig::default().telem_needs();
+        assert!(n.air_temp);
+        assert!(n.track_temp);
+        assert!(!n.pit_advisor);
+        assert!(!n.sys);
+        assert!(!n.radio);
+        assert!(n.fuel);
+        assert!(n.lap_log);
+        assert!(n.lap_log_temp);
+        assert!(n.lap_compare);
+        assert!(n.session_laps);
+        assert!(!n.pit_stops);
+        assert!(!n.leaderboard);
+    }
+
+    #[test]
+    fn telem_needs_skips_fuel_when_widget_off() {
+        let mut cfg = OverlayConfig::default();
+        hide(&mut cfg, "fuel_calc");
+        hide(&mut cfg, "pit_advisor");
+        let n = cfg.telem_needs();
+        assert!(
+            !n.fuel,
+            "relative strategy hints must not keep fuel calc running"
+        );
+        assert!(!n.pit_advisor);
+        assert!(!n.pit_loss);
+    }
+
+    #[test]
+    fn telem_needs_skips_lap_save_without_compare_or_upload() {
+        let mut cfg = OverlayConfig::default();
+        hide(&mut cfg, "lap_compare");
+        cfg.cfg["upload_race_laps"] = json!(false);
+        let n = cfg.telem_needs();
+        assert!(!n.lap_compare);
+        assert!(!n.session_laps);
+    }
+
+    #[test]
+    fn telem_needs_skips_other_widgets_when_off() {
+        let mut cfg = OverlayConfig::default();
+        hide(&mut cfg, "relative");
+        hide(&mut cfg, "standings");
+        hide(&mut cfg, "radar");
+        hide(&mut cfg, "sector_timing");
+        hide(&mut cfg, "lap_compare");
+        hide(&mut cfg, "laptime_log");
+        hide(&mut cfg, "system_panel");
+        hide(&mut cfg, "delta_bar");
+        hide(&mut cfg, "flags");
+        hide(&mut cfg, "leaderboard_strip");
+        cfg.cfg["dash"]["show_delta_bar"] = json!(false);
+        cfg.cfg["upload_race_laps"] = json!(false);
+        let n = cfg.telem_needs();
+        assert!(!n.relative);
+        assert!(!n.standings);
+        assert!(!n.leaderboard);
+        assert!(!n.radar);
+        assert!(!n.pit_stops);
+        assert!(!n.sector);
+        assert!(!n.lap_compare);
+        assert!(!n.lap_log);
+        assert!(!n.session_laps);
+        assert!(!n.sys);
+        assert!(!n.delta);
+        assert!(!n.flags);
+        assert!(n.dash);
+        assert!(n.map);
     }
 }

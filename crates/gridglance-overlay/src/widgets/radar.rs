@@ -35,7 +35,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let kind = radar_car_kind(ctx.frame.car_path.as_deref());
     let (sprite_w, _) = car_sprite_fit(kind, car_w, car_h);
     let bar_h = car_h * size_frac(ctx, "bar_h", 0.78);
-    let inner = sprite_w * 0.5 + (w * 0.032).max(7.0);
+    let pad = (w * 0.032).max(7.0);
+    let inner = (sprite_w * 0.5 + pad).min(w * 0.38);
     let nose_len = h * size_frac(ctx, "nose_len", 0.16);
     let glow_w = w * size_frac(ctx, "glow_w", 0.17);
 
@@ -44,7 +45,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     let show_rear = ctx.cfg.bool_key(SECTION, "show_rear", true);
     let side_tau = ctx.cfg.f64_key(SECTION, "ease_side_tau", 0.10) as f32;
     let glow_tau = ctx.cfg.f64_key(SECTION, "ease_glow_tau", 0.13) as f32;
-    let prox = ctx.cfg.bool_key(SECTION, "side_proximity_color", false);
+    let prox = ctx.cfg.bool_key(SECTION, "side_proximity_color", true);
 
     let id = egui::Id::new("radar_anim");
     let mut a = ui
@@ -281,6 +282,7 @@ pub(crate) fn radar_car_kind(car_path: Option<&str>) -> RadarCarKind {
     } else if has("nascar")
         || has("nextgen")
         || has("next gen")
+        || has("stockcar")
         || has("latemodel")
         || has("late model")
         || has("streetstock")
@@ -667,6 +669,14 @@ mod tests {
         assert_eq!(radar_car_kind(Some("mx5 cup")), RadarCarKind::Touring);
         assert_eq!(
             radar_car_kind(Some("nASCAR cup series next gen chevrolet camaro z l 1")),
+            RadarCarKind::Stock
+        );
+        assert_eq!(
+            radar_car_kind(Some("stockcars fordmustang2022")),
+            RadarCarKind::Stock
+        );
+        assert_eq!(
+            radar_car_kind(Some("stockcars2 chevroletcamaro2018")),
             RadarCarKind::Stock
         );
         assert_eq!(radar_car_kind(Some("porsche 963 gtp")), RadarCarKind::Prototype);

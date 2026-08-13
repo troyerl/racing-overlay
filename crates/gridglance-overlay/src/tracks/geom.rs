@@ -325,6 +325,80 @@ fn dist(a: (f32, f32), b: (f32, f32)) -> f32 {
     ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt()
 }
 
+/// Cut polygonal kinks (8–55°) into short fillets. Hairpins (~90°) stay.
+pub fn fillet_loop_kinks(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    if pts.len() < 8 {
+        return pts.to_vec();
+    }
+    let mut ring = strip_near_dups(pts);
+    if ring.len() < 8 {
+        return pts.to_vec();
+    }
+    const MIN_DEG: f32 = 8.0;
+    const MAX_DEG: f32 = 55.0;
+    for _ in 0..4 {
+        let n = ring.len();
+        let mut out = Vec::with_capacity(n + 8);
+        let mut cut = false;
+        for i in 0..n {
+            let t = vertex_turn_deg(&ring, i);
+            if (MIN_DEG..=MAX_DEG).contains(&t) {
+                let prev = ring[(i + n - 1) % n];
+                let cur = ring[i];
+                let next = ring[(i + 1) % n];
+                out.push(lerp(cur, prev, 0.32));
+                out.push(lerp(cur, next, 0.32));
+                cut = true;
+            } else {
+                out.push(ring[i]);
+            }
+        }
+        ring = out;
+        if !cut {
+            break;
+        }
+    }
+    ring
+}
+
+fn strip_near_dups(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut out: Vec<(f32, f32)> = Vec::with_capacity(pts.len());
+    for &p in pts {
+        if out
+            .last()
+            .map(|q| dist(*q, p) < 1e-6)
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        out.push(p);
+    }
+    if out.len() >= 2 && dist(out[0], *out.last().unwrap()) < 1e-6 {
+        out.pop();
+    }
+    out
+}
+
+fn vertex_turn_deg(ring: &[(f32, f32)], i: usize) -> f32 {
+    let n = ring.len();
+    let a = ring[(i + n - 1) % n];
+    let b = ring[i];
+    let c = ring[(i + 1) % n];
+    let v1 = (a.0 - b.0, a.1 - b.1);
+    let v2 = (c.0 - b.0, c.1 - b.1);
+    let n1 = v1.0.hypot(v1.1);
+    let n2 = v2.0.hypot(v2.1);
+    if n1 < 1e-9 || n2 < 1e-9 {
+        return 0.0;
+    }
+    let d = ((v1.0 * v2.0 + v1.1 * v2.1) / (n1 * n2)).clamp(-1.0, 1.0);
+    180.0 - d.acos().to_degrees()
+}
+
+fn lerp(a: (f32, f32), b: (f32, f32), t: f32) -> (f32, f32) {
+    (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,5 +439,44 @@ mod tests {
         // First merge segment must not jump across most of the pit width.
         let seg = dist(merge[0], merge[1]);
         assert!(seg < 0.35, "merge bridge too long: {seg}");
+    }
+
+    fn ngon_edges(sides: usize, per_edge: usize, r: f32) -> Vec<(f32, f32)> {
+        let mut pts = Vec::new();
+        for s in 0..sides {
+            let a0 = s as f32 / sides as f32 * std::f32::consts::TAU;
+            let a1 = (s + 1) as f32 / sides as f32 * std::f32::consts::TAU;
+            let p0 = (r * a0.cos(), r * a0.sin());
+            let p1 = (r * a1.cos(), r * a1.sin());
+            for i in 0..per_edge {
+                let t = i as f32 / per_edge as f32;
+                pts.push((p0.0 + (p1.0 - p0.0) * t, p0.1 + (p1.1 - p0.1) * t));
+            }
+        }
+        pts
+    }
+
+    fn max_turn(pts: &[(f32, f32)]) -> f32 {
+        (0..pts.len())
+            .map(|i| vertex_turn_deg(pts, i))
+            .fold(0.0f32, f32::max)
+    }
+
+    #[test]
+    fn fillets_octagon_kinks_but_keeps_square_hairpins() {
+        let oct = ngon_edges(8, 12, 100.0);
+        let rounded = fillet_loop_kinks(&oct);
+        assert!(
+            max_turn(&rounded) < 18.0,
+            "octagon kinks should fillet, got {}",
+            max_turn(&rounded)
+        );
+        let sq = ngon_edges(4, 16, 100.0);
+        let kept = fillet_loop_kinks(&sq);
+        assert!(
+            max_turn(&kept) > 70.0,
+            "square corners are hairpins and must stay, got {}",
+            max_turn(&kept)
+        );
     }
 }

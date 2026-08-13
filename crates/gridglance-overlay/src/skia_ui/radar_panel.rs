@@ -177,7 +177,8 @@ pub fn paint_radar(
     let kind = crate::widgets::radar::radar_car_kind(frame.car_path.as_deref());
     let (sprite_w, _) = crate::widgets::radar::car_sprite_fit(kind, car_w, car_h);
     let bar_h = car_h * size_frac(cfg, "bar_h", 0.78);
-    let inner = sprite_w * 0.5 + (w * 0.032).max(7.0);
+    let pad = (w * 0.032).max(7.0);
+    let inner = (sprite_w * 0.5 + pad).min(w * 0.38);
     let nose_len = h * size_frac(cfg, "nose_len", 0.16);
     let glow_w = w * size_frac(cfg, "glow_w", 0.17);
 
@@ -186,7 +187,7 @@ pub fn paint_radar(
     let show_rear = cfg.bool_key(SECTION, "show_rear", true);
     let side_tau = cfg.f64_key(SECTION, "ease_side_tau", 0.10) as f32;
     let glow_tau = cfg.f64_key(SECTION, "ease_glow_tau", 0.13) as f32;
-    let prox = cfg.bool_key(SECTION, "side_proximity_color", false);
+    let prox = cfg.bool_key(SECTION, "side_proximity_color", true);
 
     let dt = anim_dt(mono_secs, &mut anim.last_secs);
 

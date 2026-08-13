@@ -260,6 +260,83 @@ fn parse_pit_lane(v: &Value, suffix: &str) -> PitLane {
     }
 }
 
+/// True when `pit_path` shortcuts across the infield instead of hugging the loop.
+///
+/// Richmond's saved lane was a frontstretch-width chord through the grass
+/// (`PIT 40 mph` drawn as a straight red dashed line). A kerb-following oval
+/// pit stays close to the racing line, so its points never sit that far inside.
+pub fn pit_path_cuts_infield(loop_pts: &[(f32, f32)], pit_path: &[(f32, f32)]) -> bool {
+    if loop_pts.len() < 8 || pit_path.len() < 2 {
+        return false;
+    }
+    let min_x = loop_pts.iter().map(|p| p.0).fold(f32::MAX, f32::min);
+    let max_x = loop_pts.iter().map(|p| p.0).fold(f32::MIN, f32::max);
+    let min_y = loop_pts.iter().map(|p| p.1).fold(f32::MAX, f32::min);
+    let max_y = loop_pts.iter().map(|p| p.1).fold(f32::MIN, f32::max);
+    let span = (max_x - min_x).max(max_y - min_y).max(1e-6);
+    let cx = (min_x + max_x) * 0.5;
+    let cy = (min_y + max_y) * 0.5;
+    let step = (pit_path.len() / 48).max(1);
+    let mut n = 0usize;
+    let mut deep = 0usize;
+    let mut i = 0usize;
+    while i < pit_path.len() {
+        n += 1;
+        let p = pit_path[i];
+        let d_loop = dist_to_closed(loop_pts, p);
+        let d_cent = (p.0 - cx).hypot(p.1 - cy);
+        // A kerb pit is nearer the racing line than the infield centre. A
+        // diameter through the grass is the other way around.
+        if point_in_closed(loop_pts, p) && d_loop > d_cent && d_loop > span * 0.06 {
+            deep += 1;
+        }
+        i += step;
+    }
+    n >= 4 && (deep as f32) > (n as f32) * 0.20
+}
+
+fn dist_to_closed(loop_pts: &[(f32, f32)], p: (f32, f32)) -> f32 {
+    let n = loop_pts.len();
+    let mut best = f32::MAX;
+    for i in 0..n {
+        let a = loop_pts[i];
+        let b = loop_pts[(i + 1) % n];
+        let dx = b.0 - a.0;
+        let dy = b.1 - a.1;
+        let len2 = dx * dx + dy * dy;
+        let t = if len2 < 1e-12 {
+            0.0
+        } else {
+            (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len2).clamp(0.0, 1.0)
+        };
+        let qx = a.0 + dx * t;
+        let qy = a.1 + dy * t;
+        best = best.min((p.0 - qx).hypot(p.1 - qy));
+    }
+    best
+}
+
+fn point_in_closed(ring: &[(f32, f32)], p: (f32, f32)) -> bool {
+    let n = ring.len();
+    if n < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = n - 1;
+    for i in 0..n {
+        let (xi, yi) = ring[i];
+        let (xj, yj) = ring[j];
+        if (yi > p.1) != (yj > p.1) {
+            let at_x = (xj - xi) * (p.1 - yi) / (yj - yi) + xi;
+            if p.0 < at_x {
+                inside = !inside;
+            }
+        }
+        j = i;
+    }
+    inside
+}
+
 /// Load `points` from a track JSON.
 ///
 /// Members imports already arc-resample the outline. Keep those samples (do not
@@ -283,6 +360,7 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
     if pts.len() < 2 {
         return None;
     }
+    let pts = crate::tracks::fillet_loop_kinks(&pts);
     let name = v
         .get("name")
         .and_then(|n| n.as_str())
@@ -295,12 +373,19 @@ pub fn load_points(path: &Path, n: usize) -> Option<TrackPath> {
     let drs_zones = parse_zone_ranges(v.get("drs_zones"));
     let p2p_zones = parse_zone_ranges(v.get("p2p_zones"));
     let mut pit = parse_pit_lane(&v, "");
-    let pit2 = parse_pit_lane(&v, "_2");
-    let mut pit_out_pct = parse_pit_out_pct(&v, &pts);
-    if pit_out_pct.is_none() {
-        pit_out_pct = pit.out_pct;
+    let mut pit2 = parse_pit_lane(&v, "_2");
+    if pit_path_cuts_infield(&pts, &pit.path) {
+        pit = PitLane::default();
     }
-    if pit.out_pct.is_none() {
+    if pit_path_cuts_infield(&pts, &pit2.path) {
+        pit2 = PitLane::default();
+    }
+    let pit_out_pct = if pit.has_drawable() {
+        parse_pit_out_pct(&v, &pts).or(pit.out_pct)
+    } else {
+        None
+    };
+    if pit.has_drawable() && pit.out_pct.is_none() {
         pit.out_pct = pit_out_pct;
     }
     let target = n.clamp(64, 720);
@@ -846,5 +931,22 @@ mod tests {
             Some(17.9)
         );
         assert_eq!(resolve_pit_speed_mps(None, &PitLane::default(), 0.0), None);
+    }
+
+    #[test]
+    fn infield_chord_is_rejected_kerb_pit_is_not() {
+        let oval = oval_path(80);
+        let chord: Vec<(f32, f32)> = (0..40)
+            .map(|i| (0.15 + i as f32 * 0.018, 0.50))
+            .collect();
+        assert!(
+            pit_path_cuts_infield(&oval, &chord),
+            "a diameter through the grass must be rejected"
+        );
+        let pit = synthesize_demo_pit(&oval).expect("synth");
+        assert!(
+            !pit_path_cuts_infield(&oval, &pit.path),
+            "inward frontstretch pit must be kept"
+        );
     }
 }

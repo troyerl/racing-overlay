@@ -3,6 +3,7 @@
 use crate::telemetry::TelemetryFrame;
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use sysinfo::{
@@ -53,6 +54,8 @@ struct Snapshot {
 pub struct SysStats {
     /// Latest values from the background sampler; reads never block the UI.
     shared: Arc<Mutex<Snapshot>>,
+    enabled: Arc<AtomicBool>,
+    gpu_enabled: Arc<AtomicBool>,
     cpu: String,
     mem: String,
     gpu: String,
@@ -85,9 +88,13 @@ impl SysStats {
             wifi: None,
             ..Default::default()
         }));
-        spawn_sampler(Arc::clone(&shared));
+        let enabled = Arc::new(AtomicBool::new(false));
+        let gpu_enabled = Arc::new(AtomicBool::new(false));
+        spawn_sampler(Arc::clone(&shared), Arc::clone(&enabled), Arc::clone(&gpu_enabled));
         Self {
             shared,
+            enabled,
+            gpu_enabled,
             cpu: "--".into(),
             mem: "--".into(),
             gpu: "--".into(),
@@ -100,6 +107,12 @@ impl SysStats {
             apple_music: ProcSnap::default(),
             youtube_music: ProcSnap::default(),
         }
+    }
+
+    /// Pause the sampler when no widget shows CPU/mem/GPU.
+    pub fn set_enabled(&self, on: bool, gpu: bool) {
+        self.enabled.store(on, Ordering::Relaxed);
+        self.gpu_enabled.store(on && gpu, Ordering::Relaxed);
     }
 
     /// Write the latest sampled display strings onto the frame (never blocks).
@@ -426,7 +439,11 @@ fn gpu_for_pids(by_pid: &HashMap<u32, f32>, pids: &[u32]) -> String {
 
 /// Sample CPU/memory every `SAMPLE_INTERVAL` and GPU every `GPU_INTERVAL`,
 /// publishing formatted strings for the host to pick up for free.
-fn spawn_sampler(shared: Arc<Mutex<Snapshot>>) {
+fn spawn_sampler(
+    shared: Arc<Mutex<Snapshot>>,
+    enabled: Arc<AtomicBool>,
+    gpu_enabled: Arc<AtomicBool>,
+) {
     std::thread::Builder::new()
         .name("sysstats".into())
         .spawn(move || {
@@ -451,6 +468,9 @@ fn spawn_sampler(shared: Arc<Mutex<Snapshot>>) {
 
             loop {
                 std::thread::sleep(SAMPLE_INTERVAL);
+                if !enabled.load(Ordering::Relaxed) {
+                    continue;
+                }
                 sys.refresh_cpu_usage();
                 sys.refresh_memory_specifics(MemoryRefreshKind::everything());
                 sys.refresh_processes_specifics(ProcessesToUpdate::All, true, proc_kind);
@@ -482,7 +502,7 @@ fn spawn_sampler(shared: Arc<Mutex<Snapshot>>) {
                 }
 
                 let gpu_due = gpu_at.map(|t| t.elapsed() >= GPU_INTERVAL).unwrap_or(true);
-                if gpu_due && gpu_misses < GPU_MAX_MISSES {
+                if gpu_enabled.load(Ordering::Relaxed) && gpu_due && gpu_misses < GPU_MAX_MISSES {
                     let gpu = match probe_gpu() {
                         Some(v) => {
                             gpu_misses = 0;
@@ -532,6 +552,7 @@ mod tests {
     #[test]
     fn sample_into_sets_pct_strings() {
         let mut s = SysStats::new();
+        s.set_enabled(true, false);
         let mut frame = TelemetryFrame::default();
         // Poll until the background sampler publishes (timing is not exact).
         let deadline = Instant::now() + Duration::from_secs(5);

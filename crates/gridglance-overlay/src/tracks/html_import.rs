@@ -521,6 +521,54 @@ mod tests {
             .fold(0.0f32, f32::max);
         assert!(max_seg < 0.35, "infield chord segment={max_seg}");
         assert_eq!(doc.to_json()["pit_source"], "html");
+        assert!(
+            !crate::track_path::pit_path_cuts_infield(&doc.points, &pit.path),
+            "iowa pit must hug the frontstretch"
+        );
+    }
+
+    #[test]
+    fn iowa_oval_uses_annulus_centerline() {
+        let html = fixture("iowa_oval.html");
+        let scraped = Html::parse_document(&html);
+        let d = resolve_active_path_d(&scraped).expect("active path");
+        let subs = super::super::path_sample::split_subpaths(&d).expect("subs");
+        assert!(
+            super::super::ribbon::annulus_centerline(&subs).is_some(),
+            "Iowa active config is an outer+inner annulus"
+        );
+        let outer = super::super::path_sample::pick_best_subpath(&subs).expect("outer");
+        let mid = super::super::path_sample::sample_best_subpath(&d, 120).expect("mid");
+        let inside = mid
+            .iter()
+            .filter(|&&p| iowa_point_in_ring(p, outer))
+            .count();
+        assert!(
+            (inside as f32) > mid.len() as f32 * 0.85,
+            "centreline must sit inside the outer kerb ({inside}/{})",
+            mid.len()
+        );
+    }
+
+    fn iowa_point_in_ring(p: (f32, f32), ring: &[(f32, f32)]) -> bool {
+        let n = ring.len();
+        if n < 3 {
+            return false;
+        }
+        let mut inside = false;
+        let mut j = n - 1;
+        for i in 0..n {
+            let (xi, yi) = ring[i];
+            let (xj, yj) = ring[j];
+            if (yi > p.1) != (yj > p.1) {
+                let at_x = (xj - xi) * (p.1 - yi) / (yj - yi) + xi;
+                if p.0 < at_x {
+                    inside = !inside;
+                }
+            }
+            j = i;
+        }
+        inside
     }
 
     #[test]

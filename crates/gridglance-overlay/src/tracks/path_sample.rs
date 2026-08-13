@@ -115,20 +115,25 @@ pub fn pick_best_subpath(subs: &[Vec<(f32, f32)>]) -> Option<&[(f32, f32)]> {
         .map(|v| v.as_slice())
 }
 
-/// Sample the best subpath of `d` to approximately `n` points.
+/// Sample the racing-line polyline of `d` to approximately `n` points.
 pub fn sample_best_subpath(d: &str, n: usize) -> anyhow::Result<Vec<(f32, f32)>> {
     let subs = split_subpaths(d)?;
-    let best = if let Some(b) = pick_best_subpath(&subs) {
-        b.to_vec()
+    // Closed annulus (outer kerb + inner hole) → asphalt centreline. A D-oval's
+    // outer ring is rounder than the racing line; averaging keeps the D.
+    let best = if let Some(mid) = super::ribbon::annulus_centerline(&subs) {
+        mid
+    } else if let Some(b) = pick_best_subpath(&subs) {
+        // Tracks that pass under themselves are exported with the stroke broken
+        // at the crossing, which leaves one out-and-back ribbon instead of an
+        // annulus.
+        super::ribbon::collapse_to_centerline(b).unwrap_or_else(|| b.to_vec())
     } else {
         flatten_path_d(d)?
     };
     if best.len() < 3 {
         anyhow::bail!("SVG path produced too few points");
     }
-    // Tracks that pass under themselves are exported with the stroke broken at
-    // the crossing, which leaves one out-and-back ribbon instead of an annulus.
-    let best = super::ribbon::collapse_to_centerline(&best).unwrap_or(best);
+    let best = super::geom::fillet_loop_kinks(&best);
     Ok(resample_open(&best, n.max(64)))
 }
 
@@ -194,7 +199,7 @@ fn walk_path(d: &str, mut on_pt: impl FnMut(f64, f64, bool)) -> anyhow::Result<(
                 } else {
                     (cx + x1, cy + y1, cx + x2, cy + y2, cx + x, cy + y)
                 };
-                sample_cubic(cx, cy, x1, y1, x2, y2, x, y, 12, &mut on_pt);
+                sample_cubic(cx, cy, x1, y1, x2, y2, x, y, 24, &mut on_pt);
                 last_cx = x2;
                 last_cy = y2;
                 cx = x;
@@ -208,7 +213,7 @@ fn walk_path(d: &str, mut on_pt: impl FnMut(f64, f64, bool)) -> anyhow::Result<(
                 } else {
                     (cx + x2, cy + y2, cx + x, cy + y)
                 };
-                sample_cubic(cx, cy, x1, y1, x2, y2, x, y, 12, &mut on_pt);
+                sample_cubic(cx, cy, x1, y1, x2, y2, x, y, 24, &mut on_pt);
                 last_cx = x2;
                 last_cy = y2;
                 cx = x;
@@ -220,7 +225,7 @@ fn walk_path(d: &str, mut on_pt: impl FnMut(f64, f64, bool)) -> anyhow::Result<(
                 } else {
                     (cx + x1, cy + y1, cx + x, cy + y)
                 };
-                sample_quad(cx, cy, x1, y1, x, y, 10, &mut on_pt);
+                sample_quad(cx, cy, x1, y1, x, y, 20, &mut on_pt);
                 last_cx = x1;
                 last_cy = y1;
                 cx = x;
@@ -230,7 +235,7 @@ fn walk_path(d: &str, mut on_pt: impl FnMut(f64, f64, bool)) -> anyhow::Result<(
                 let x1 = 2.0 * cx - last_cx;
                 let y1 = 2.0 * cy - last_cy;
                 let (x, y) = if abs { (x, y) } else { (cx + x, cy + y) };
-                sample_quad(cx, cy, x1, y1, x, y, 10, &mut on_pt);
+                sample_quad(cx, cy, x1, y1, x, y, 20, &mut on_pt);
                 last_cx = x1;
                 last_cy = y1;
                 cx = x;
