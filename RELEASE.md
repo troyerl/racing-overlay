@@ -5,6 +5,15 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 2.0.0 - 2026-08-27
+
+- **Stable Rust app.** GridGlance on `main` is now `gridglance-overlay` only.
+  Python / hybrid 1.67.x builds are retired. This is a breaking update from
+  those installers.
+- **Lap count when lapped.** Dash and table totals drop by one each time the
+  leader actually laps you (a start/finish split does not count until they
+  catch you).
+
 ## 1.69.30 - 2026-08-27
 
 - **Lap count when lapped.** Dash and table totals drop by one each time the
