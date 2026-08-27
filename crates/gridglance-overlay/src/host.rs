@@ -28,6 +28,17 @@ use std::time::{Duration, Instant};
 const MIN_PANEL_W: i32 = 90;
 const MIN_PANEL_H: i32 = 44;
 const RESIZE_GRIP: f32 = 28.0;
+
+fn json_u64(v: &serde_json::Value) -> u64 {
+    v.as_u64()
+        .or_else(|| v.as_i64().and_then(|i| u64::try_from(i).ok()))
+        .or_else(|| {
+            v.as_f64()
+                .filter(|f| f.is_finite() && *f >= 0.0)
+                .map(|f| f.round() as u64)
+        })
+        .unwrap_or(0)
+}
 /// Frames to keep applying Visible(false) so macOS/eframe actually drops the window.
 const HIDE_RETRY_FRAMES: u8 = 8;
 /// Cold panels while map composite is hot (~8 Hz). Faster floods UpdateLayeredWindow
@@ -1197,26 +1208,51 @@ impl OverlayApp {
     }
 
     fn sync_lan_telemetry(&mut self) {
-        let (enabled, port, hz) = {
+        let (enabled, port, hz, fix_port) = {
             let st = self.state.read();
             let cfg = &st.config.cfg;
             let enabled = cfg
                 .get("lan_telemetry_enabled")
-                .and_then(|v| v.as_bool())
+                .and_then(|v| {
+                    v.as_bool()
+                        .or_else(|| v.as_u64().map(|n| n != 0))
+                        .or_else(|| v.as_i64().map(|n| n != 0))
+                })
                 .unwrap_or(false);
-            let port = cfg
-                .get("lan_telemetry_port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(u64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
-                .clamp(1, 65535) as u16;
             let hz = cfg
                 .get("lan_telemetry_hz")
-                .and_then(|v| v.as_u64())
+                .map(json_u64)
                 .unwrap_or(15)
                 .clamp(5, 30) as u32;
-            (enabled, port, hz)
+            let raw_port = cfg
+                .get("lan_telemetry_port")
+                .map(json_u64)
+                .unwrap_or(u64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
+                .clamp(1, 65535) as u16;
+            let port = crate::telemetry_lan::sanitize_lan_port(raw_port);
+            (enabled, port, hz, raw_port != port)
         };
+        if fix_port {
+            if let Some(mut st) = self.state.try_write() {
+                Arc::make_mut(&mut st.config).apply_cfg_patch(&serde_json::json!({
+                    "lan_telemetry_port": port,
+                }));
+            }
+        }
         self.lan_server.sync(enabled, port, hz);
+        let err = if enabled && !self.lan_server.is_listening() {
+            self.lan_server
+                .bind_error()
+                .or_else(|| Some("not listening".into()))
+        } else {
+            None
+        };
+        {
+            let mut st = self.state.write();
+            if st.lan_listen_error != err {
+                st.lan_listen_error = err;
+            }
+        }
     }
 
     /// Drop present/geom caches so garage↔track (telemetry or Settings preview)

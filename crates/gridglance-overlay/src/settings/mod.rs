@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use theme::{paint_background, MUTED, NAV_SECTION, NAV_WIDTH, TITLE};
+use theme::{paint_background, MUTED, NAV_SECTION, NAV_WIDTH, ORANGE, TITLE};
 use widgets::{
     accordion, button_kind, color_button, enable_card, enable_card_row, icon_button, nav_item,
     number_row, preset_button, search_field, setting_row, snap_preview_button, status_line,
@@ -874,6 +874,21 @@ fn paint_lan(
             },
         );
         if lan_on {
+            let listen_err = state.read().lan_listen_error.clone();
+            ui.add_space(4.0);
+            if let Some(err) = listen_err {
+                ui.label(
+                    RichText::new(format!("Not listening — {err}"))
+                        .size(11.0)
+                        .color(ORANGE),
+                );
+            } else {
+                ui.label(
+                    RichText::new("Listening for clients on your LAN.")
+                        .size(11.0)
+                        .color(MUTED),
+                );
+            }
             ui.add_space(4.0);
             ui.label(
                 RichText::new(format!(
@@ -966,7 +981,9 @@ fn paint_lan(
                 set_global(
                     state,
                     "lan_telemetry_port",
-                    json!(port.round() as u64),
+                    json!(u64::from(crate::telemetry_lan::sanitize_lan_port(
+                        port.round() as u16
+                    ))),
                     dirty,
                     ui_state,
                 );

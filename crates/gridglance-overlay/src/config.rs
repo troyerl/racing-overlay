@@ -495,6 +495,7 @@ impl OverlayConfig {
             Self::cfg_from_doc(&doc, "Default", ConfigContext::Race)
         };
         inject_doc_driver_groups(&mut cfg, &doc);
+        inject_doc_lan_keys(&mut cfg, &doc);
         Ok(Self {
             cfg,
             doc,
@@ -542,6 +543,7 @@ impl OverlayConfig {
 
     pub fn apply_cfg_patch(&mut self, patch: &Value) {
         deep_merge(&mut self.cfg, patch);
+        persist_lan_keys_to_doc(patch, &mut self.doc);
         self.generation = self.generation.saturating_add(1);
     }
 
@@ -611,6 +613,7 @@ impl OverlayConfig {
     pub fn context_cfg(&self, context: ConfigContext) -> Value {
         let mut cfg = Self::cfg_from_doc(&self.doc, &self.active_preset, context);
         inject_doc_driver_groups(&mut cfg, &self.doc);
+        inject_doc_lan_keys(&mut cfg, &self.doc);
         cfg
     }
 
@@ -931,6 +934,8 @@ impl OverlayConfig {
         }
         // App-wide keys live on the document root, never in preset sparse.
         strip_driver_groups_from_value(&mut sparse);
+        strip_lan_keys_from_value(&mut sparse);
+        persist_lan_keys_to_doc(&self.cfg, &mut self.doc);
         // Preserve garage overrides already on the preset if present.
         if let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) {
             if let Some(preset) = presets.get(&self.active_preset) {
@@ -938,6 +943,7 @@ impl OverlayConfig {
                     preset.get("config").and_then(|c| c.get("garage")).cloned()
                 {
                     strip_driver_groups_from_value(&mut garage);
+                    strip_lan_keys_from_value(&mut garage);
                     if let Some(obj) = sparse.as_object_mut() {
                         if garage.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
                             obj.insert("garage".into(), garage);
@@ -975,6 +981,8 @@ impl OverlayConfig {
                 let race = self.context_cfg(ConfigContext::Race);
                 let mut garage = sparse_diff(&race, &self.cfg);
                 strip_driver_groups_from_value(&mut garage);
+                strip_lan_keys_from_value(&mut garage);
+                persist_lan_keys_to_doc(&self.cfg, &mut self.doc);
                 if let Some(presets) = self.doc.get_mut("presets").and_then(|p| p.as_object_mut()) {
                     let entry = presets
                         .entry(self.active_preset.clone())
@@ -1485,6 +1493,122 @@ fn sanitize_loaded_config(doc: &mut Value) {
         }
     }
     hoist_driver_groups_to_doc(doc);
+    hoist_lan_keys_to_doc(doc);
+}
+
+const LAN_APP_KEYS: &[&str] = &[
+    "lan_telemetry_enabled",
+    "lan_telemetry_port",
+    "lan_telemetry_hz",
+];
+
+fn persist_lan_keys_to_doc(src: &Value, doc: &mut Value) {
+    let Some(doc_obj) = doc.as_object_mut() else {
+        return;
+    };
+    for key in LAN_APP_KEYS {
+        if let Some(mut v) = src.get(*key).cloned() {
+            if *key == "lan_telemetry_port" {
+                if let Some(p) = v.as_u64().or_else(|| v.as_f64().map(|f| f.round() as u64)) {
+                    v = json!(u64::from(crate::telemetry_lan::sanitize_lan_port(
+                        p.clamp(1, 65535) as u16
+                    )));
+                }
+            }
+            doc_obj.insert((*key).to_string(), v);
+        }
+    }
+}
+
+fn inject_doc_lan_keys(cfg: &mut Value, doc: &Value) {
+    let Some(cfg_obj) = cfg.as_object_mut() else {
+        return;
+    };
+    for key in LAN_APP_KEYS {
+        if let Some(v) = doc.get(*key) {
+            cfg_obj.insert((*key).to_string(), v.clone());
+        }
+    }
+}
+
+fn strip_lan_keys_from_value(v: &mut Value) {
+    let Some(obj) = v.as_object_mut() else {
+        return;
+    };
+    for key in LAN_APP_KEYS {
+        obj.remove(*key);
+    }
+    if let Some(garage) = obj.get_mut(GARAGE_KEY).and_then(|g| g.as_object_mut()) {
+        for key in LAN_APP_KEYS {
+            garage.remove(*key);
+        }
+        if garage.is_empty() {
+            obj.remove(GARAGE_KEY);
+        }
+    }
+}
+
+fn strip_lan_keys_from_all_presets(doc: &mut Value) {
+    let Some(presets) = doc.get_mut("presets").and_then(|p| p.as_object_mut()) else {
+        return;
+    };
+    for preset in presets.values_mut() {
+        if let Some(config) = preset.get_mut("config") {
+            strip_lan_keys_from_value(config);
+        }
+    }
+}
+
+fn merge_hoisted_lan_value(slot: &mut Option<Value>, v: &Value, key: &str) {
+    if key == "lan_telemetry_enabled" {
+        if v.as_bool() == Some(true) {
+            *slot = Some(Value::Bool(true));
+        } else if slot.is_none() {
+            *slot = Some(v.clone());
+        }
+    } else if slot.is_none() {
+        *slot = Some(v.clone());
+    }
+}
+
+/// Move LAN telemetry settings to the document root (shared across presets).
+fn hoist_lan_keys_to_doc(doc: &mut Value) {
+    let mut found: Vec<Option<Value>> = LAN_APP_KEYS.iter().map(|_| None).collect();
+    for (i, key) in LAN_APP_KEYS.iter().enumerate() {
+        if let Some(v) = doc.get(*key) {
+            found[i] = Some(v.clone());
+        }
+    }
+    if let Some(presets) = doc.get("presets").and_then(|p| p.as_object()) {
+        for preset in presets.values() {
+            let Some(config) = preset.get("config") else {
+                continue;
+            };
+            for (i, key) in LAN_APP_KEYS.iter().enumerate() {
+                if let Some(v) = config.get(*key) {
+                    merge_hoisted_lan_value(&mut found[i], v, key);
+                }
+                if let Some(v) = config.get(GARAGE_KEY).and_then(|g| g.get(*key)) {
+                    merge_hoisted_lan_value(&mut found[i], v, key);
+                }
+            }
+        }
+    }
+    if let Some(obj) = doc.as_object_mut() {
+        for (i, key) in LAN_APP_KEYS.iter().enumerate() {
+            if let Some(mut v) = found[i].take() {
+                if *key == "lan_telemetry_port" {
+                    if let Some(p) = v.as_u64().or_else(|| v.as_f64().map(|f| f.round() as u64)) {
+                        v = json!(u64::from(crate::telemetry_lan::sanitize_lan_port(
+                            p.clamp(1, 65535) as u16
+                        )));
+                    }
+                }
+                obj.insert((*key).to_string(), v);
+            }
+        }
+    }
+    strip_lan_keys_from_all_presets(doc);
 }
 
 /// Inject document-root driver groups into a live/context CFG snapshot.
@@ -2630,6 +2754,53 @@ mod tests {
         assert_eq!(oc.doc["driver_groups"][0]["name"], "802");
         assert!(oc.doc["presets"]["Default"]["config"]
             .get("driver_groups")
+            .is_none());
+    }
+
+    #[test]
+    fn lan_keys_survive_garage_and_race_reload() {
+        let mut oc = OverlayConfig::default();
+        oc.apply_cfg_patch(&json!({
+            "lan_telemetry_enabled": true,
+            "lan_telemetry_port": 19848,
+            "lan_telemetry_hz": 20
+        }));
+        oc.apply_context(ConfigContext::Garage);
+        assert_eq!(oc.cfg["lan_telemetry_enabled"], true);
+        oc.apply_context(ConfigContext::Race);
+        assert_eq!(oc.cfg["lan_telemetry_enabled"], true);
+        assert_eq!(oc.cfg["lan_telemetry_hz"], 20);
+        assert_eq!(oc.doc["lan_telemetry_enabled"], true);
+        oc.sync_active_preset_config();
+        assert!(oc.doc["presets"]["Default"]["config"]
+            .get("lan_telemetry_enabled")
+            .is_none());
+        assert_eq!(oc.doc["lan_telemetry_enabled"], true);
+    }
+
+    #[test]
+    fn hoist_lan_keys_from_garage_overlay() {
+        let mut doc = json!({
+            "schema": 2,
+            "active_preset": "Default",
+            "presets": {
+                "Default": {
+                    "config": {
+                        "garage": {
+                            "lan_telemetry_enabled": true,
+                            "lan_telemetry_hz": 12
+                        }
+                    },
+                    "default": true
+                }
+            }
+        });
+        sanitize_loaded_config(&mut doc);
+        assert_eq!(doc["lan_telemetry_enabled"], true);
+        assert_eq!(doc["lan_telemetry_hz"], 12);
+        assert!(doc["presets"]["Default"]["config"]
+            .get("garage")
+            .and_then(|g| g.get("lan_telemetry_enabled"))
             .is_none());
     }
 

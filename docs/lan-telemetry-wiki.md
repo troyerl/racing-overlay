@@ -32,7 +32,7 @@ design — use only on trusted local networks.
 
    `%LOCALAPPDATA%\GridGlance\ipc_token`
 
-Toggling enable or changing port restarts the listener without quitting GridGlance.
+Toggling enable or changing port restarts the listener without quitting GridGlance. Changing push rate does not.
 
 ---
 
@@ -255,8 +255,8 @@ Keep the connection open after `telemetry.subscribe` to receive push lines.
 | `unauthorized: token required` | Missing/wrong `token`, or trailing whitespace in the file/string |
 | `method '…' not allowed on LAN telemetry` | Only `ping` / `telemetry.*` are allowed; use localhost `19847` for control |
 | `no telemetry frame yet` | Wait for a telemetry tick (overlay running / iRacing or demo producing frames) |
-| Connect then immediate close | Client cap (4) reached |
-| Subscribe ack then drop / reconnect loop | Older builds closed the socket if the first telemetry push blocked on slow Wi‑Fi. Update GridGlance. |
+| Connect hangs / “connecting…” forever | Older builds bound single-instance on **19848**, so LAN telemetry could not listen. Update GridGlance. Also allow GridGlance in Windows Firewall. |
+| Subscribe ack then drop / reconnect loop | Older builds closed the socket if the first telemetry push blocked on slow Wi‑Fi, or restarted the listener when garage/race/preset config reloaded (LAN enable lived on the preset). Update GridGlance; LAN settings are app-wide. |
 
 ---
 

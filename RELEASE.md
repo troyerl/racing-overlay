@@ -5,6 +5,15 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 2.0.1 - 2026-08-27
+
+- **LAN telemetry listen.** Second-launch activate no longer occupies port 19848,
+  so the LAN socket can bind. Settings shows Listening or the bind error.
+- **LAN enable survives garage/race.** The toggle is app-wide, so switching
+  in-car, garage, or preset no longer stops the listener and drops the phone.
+- **LAN port.** Changing push rate no longer restarts the socket. Ports 19846
+  and 19847 (instance / IPC) fall back to 19848.
+
 ## 2.0.0 - 2026-08-27
 
 - **Stable Rust app.** GridGlance on `main` is now `gridglance-overlay` only.

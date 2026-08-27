@@ -7,8 +7,9 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-/// Control port for activate-existing (IPC is 19847).
-pub const CONTROL_PORT: u16 = 19848;
+/// Localhost port for second-launch activate. Must not collide with
+/// IPC (`19847`) or LAN telemetry (`19848`).
+pub const CONTROL_PORT: u16 = 19846;
 const ACTIVATE: &[u8] = b"activate\n";
 
 /// Holds the listen socket thread; drop does not stop the process.
@@ -71,4 +72,16 @@ fn try_activate_existing() -> bool {
     let _ = stream.write_all(ACTIVATE);
     let _ = stream.flush();
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CONTROL_PORT;
+    use gridglance_ipc::{DEFAULT_IPC_PORT, DEFAULT_LAN_TELEMETRY_PORT};
+
+    #[test]
+    fn instance_port_does_not_collide_with_ipc_or_lan() {
+        assert_ne!(CONTROL_PORT, DEFAULT_IPC_PORT);
+        assert_ne!(CONTROL_PORT, DEFAULT_LAN_TELEMETRY_PORT);
+    }
 }

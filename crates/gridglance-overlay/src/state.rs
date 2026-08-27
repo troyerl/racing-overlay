@@ -866,6 +866,8 @@ pub struct SharedState {
     pub settings_section: String,
     /// Launch-time update notice: (version, download_url). Consumed by Settings UI.
     pub pending_update: Option<(String, Option<String>)>,
+    /// LAN telemetry bind failure, if the Settings toggle is on but listen failed.
+    pub lan_listen_error: Option<String>,
 }
 
 impl SharedState {
@@ -897,6 +899,7 @@ impl SharedState {
             settings_open: false,
             settings_section: "__general__".into(),
             pending_update: None,
+            lan_listen_error: None,
         }
     }
 

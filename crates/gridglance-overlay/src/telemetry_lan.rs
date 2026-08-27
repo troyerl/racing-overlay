@@ -71,8 +71,10 @@ pub struct LanTelemetryServer {
     stop: Arc<AtomicBool>,
     clients: Arc<AtomicUsize>,
     join: Option<JoinHandle<()>>,
-    /// Last applied (enabled, port, hz) so sync can no-op.
-    applied: Option<(bool, u16, u32)>,
+    /// Last bind failure (cleared on a successful listen).
+    bind_error: Arc<Mutex<Option<String>>>,
+    /// Last applied (enabled, port). Hz updates in place without restarting.
+    applied: Option<(bool, u16)>,
 }
 
 impl Default for LanTelemetryServer {
@@ -85,6 +87,7 @@ impl Default for LanTelemetryServer {
             stop: Arc::new(AtomicBool::new(true)),
             clients: Arc::new(AtomicUsize::new(0)),
             join: None,
+            bind_error: Arc::new(Mutex::new(None)),
             applied: None,
         }
     }
@@ -97,40 +100,49 @@ impl LanTelemetryServer {
         }
     }
 
-    /// Apply settings; restart listener when enable/port/hz change.
+    /// Apply settings; restart listener when enable or port change. Hz is live.
     pub fn sync(&mut self, enabled: bool, port: u16, hz: u32) {
-        let port = if port == 0 {
-            DEFAULT_LAN_TELEMETRY_PORT
-        } else {
-            port
-        };
+        let port = sanitize_lan_port(port);
         let hz = clamp_hz(hz);
-        let next = (enabled, port, hz);
+        self.hz.store(hz, Ordering::SeqCst);
+        let next = (enabled, port);
         if self.applied == Some(next) {
             return;
         }
         self.stop_listener();
         self.enabled.store(enabled, Ordering::SeqCst);
         self.port.store(port, Ordering::SeqCst);
-        self.hz.store(hz, Ordering::SeqCst);
         self.applied = Some(next);
         if enabled {
             if let Err(e) = self.start_listener() {
                 eprintln!("[gridglance] LAN telemetry failed to start: {e}");
+                if let Ok(mut g) = self.bind_error.lock() {
+                    *g = Some(e.to_string());
+                }
                 self.enabled.store(false, Ordering::SeqCst);
-                self.applied = Some((false, port, hz));
+                self.applied = Some((false, port));
             }
+        } else if let Ok(mut g) = self.bind_error.lock() {
+            *g = None;
         }
+    }
+
+    /// `None` while listening (or disabled). `Some` after a failed bind.
+    pub fn bind_error(&self) -> Option<String> {
+        self.bind_error.lock().ok().and_then(|g| g.clone())
+    }
+
+    /// True when the LAN socket is actually accepting connections.
+    pub fn is_listening(&self) -> bool {
+        self.enabled.load(Ordering::SeqCst)
+            && self.join.is_some()
+            && !self.stop.load(Ordering::SeqCst)
     }
 
     pub fn shutdown(&mut self) {
         self.stop_listener();
         self.enabled.store(false, Ordering::SeqCst);
-        self.applied = Some((
-            false,
-            self.port.load(Ordering::Relaxed),
-            self.hz.load(Ordering::Relaxed),
-        ));
+        self.applied = Some((false, self.port.load(Ordering::Relaxed)));
     }
 
     fn stop_listener(&mut self) {
@@ -153,6 +165,9 @@ impl LanTelemetryServer {
         listener.set_nonblocking(false)?;
         // Short accept timeout so stop flag is noticed without a dummy connect on some OS.
         let _ = listener.set_nonblocking(true);
+        if let Ok(mut g) = self.bind_error.lock() {
+            *g = None;
+        }
 
         self.stop.store(false, Ordering::SeqCst);
         let stop = Arc::clone(&self.stop);
@@ -187,8 +202,16 @@ impl LanTelemetryServer {
                         let stop_c = Arc::clone(&stop);
                         thread::spawn(move || {
                             let _slot = ClientSlot(clients_c);
-                            if let Err(e) = handle_client(stream, addr, &tok, hub_c, hz_c, stop_c) {
-                                eprintln!("[gridglance] LAN telemetry {addr}: {e}");
+                            eprintln!("[gridglance] LAN telemetry client {addr} connected");
+                            match handle_client(stream, addr, &tok, hub_c, hz_c, stop_c) {
+                                Ok(()) => {
+                                    eprintln!(
+                                        "[gridglance] LAN telemetry client {addr} disconnected"
+                                    );
+                                }
+                                Err(e) => {
+                                    eprintln!("[gridglance] LAN telemetry client {addr}: {e}")
+                                }
                             }
                         });
                     }
@@ -211,6 +234,15 @@ impl LanTelemetryServer {
 
 pub fn clamp_hz(hz: u32) -> u32 {
     hz.clamp(MIN_HZ, MAX_HZ)
+}
+
+/// LAN must not share the single-instance (19846) or IPC (19847) ports.
+pub fn sanitize_lan_port(port: u16) -> u16 {
+    if port < 1024 || port == 19846 || port == gridglance_ipc::DEFAULT_IPC_PORT {
+        DEFAULT_LAN_TELEMETRY_PORT
+    } else {
+        port
+    }
 }
 
 /// Best-effort LAN IPv4 for display (interface used for outbound traffic).
@@ -568,6 +600,14 @@ mod tests {
     }
 
     #[test]
+    fn lan_port_skips_ipc_and_instance() {
+        assert_eq!(sanitize_lan_port(0), DEFAULT_LAN_TELEMETRY_PORT);
+        assert_eq!(sanitize_lan_port(19846), DEFAULT_LAN_TELEMETRY_PORT);
+        assert_eq!(sanitize_lan_port(19847), DEFAULT_LAN_TELEMETRY_PORT);
+        assert_eq!(sanitize_lan_port(19848), 19848);
+    }
+
+    #[test]
     fn smoke_disabled_does_not_bind() {
         let mut srv = LanTelemetryServer::default();
         let probe = TcpListener::bind("127.0.0.1:0").expect("probe bind");
@@ -698,6 +738,66 @@ mod tests {
             }
         }
         assert!(got_ping, "socket closed or no ping reply after subscribe");
+
+        srv.shutdown();
+    }
+
+    #[test]
+    fn smoke_subscribe_survives_hz_change() {
+        let mut srv = LanTelemetryServer::default();
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe bind");
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        srv.sync(true, port, 10);
+        srv.publish(&TelemetryFrame {
+            connected: true,
+            speed_mps: 12.0,
+            ..Default::default()
+        });
+
+        let token = ensure_ipc_token().expect("token");
+        let mut stream = connect_retry(port);
+        stream.set_nodelay(true).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+
+        let sub = Request {
+            id: 1,
+            method: methods::TELEMETRY_SUBSCRIBE.into(),
+            params: json!({}),
+            token: Some(token.clone()),
+        };
+        writeln!(stream, "{}", serde_json::to_string(&sub).unwrap()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("subscribe ack");
+
+        srv.sync(true, port, 30);
+
+        let ping = Request {
+            id: 2,
+            method: methods::PING.into(),
+            params: json!({}),
+            token: Some(token),
+        };
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            serde_json::to_string(&ping).unwrap()
+        )
+        .unwrap();
+        let mut got_ping = false;
+        for _ in 0..30 {
+            line.clear();
+            reader.read_line(&mut line).expect("line after hz change");
+            if let Ok(resp) = serde_json::from_str::<Response>(line.trim()) {
+                if resp.id == 2 {
+                    assert!(resp.ok, "{resp:?}");
+                    got_ping = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_ping, "hz change must not restart the listen socket");
 
         srv.shutdown();
     }
