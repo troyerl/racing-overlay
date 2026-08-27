@@ -86,21 +86,21 @@ const CODEPOINTS: &[(&str, u32)] = &[
     ("crown", 0xF521),      // crown
     ("bolt", 0xF0E7),       // bolt
     ("voltage", 0xF0E7),
-    ("skull", 0xF54C),           // skull — bad / dangerous
-    ("bad", 0xF54C),             // alias
-    ("bad_driver", 0xF54C),      // alias
-    ("thumbs_down", 0xF165),     // thumbs-down
-    ("ban", 0xF05E),             // ban
-    ("user_slash", 0xF506),       // user-slash — blocked
-    ("biohazard", 0xF780),       // biohazard — dirty / toxic
-    ("dirty", 0xF780),           // alias
-    ("dirty_driver", 0xF780),    // alias
-    ("smog", 0xF75F),            // smog
-    ("bomb", 0xF1E2),            // bomb
-    ("angry", 0xF556),           // face-angry
-    ("ghost", 0xF6E2),           // ghost
-    ("fire", 0xF06D),            // fire
-    ("poop", 0xF2FE),            // poo — tongue-in-cheek dirty
+    ("skull", 0xF54C),        // skull — bad / dangerous
+    ("bad", 0xF54C),          // alias
+    ("bad_driver", 0xF54C),   // alias
+    ("thumbs_down", 0xF165),  // thumbs-down
+    ("ban", 0xF05E),          // ban
+    ("user_slash", 0xF506),   // user-slash — blocked
+    ("biohazard", 0xF780),    // biohazard — dirty / toxic
+    ("dirty", 0xF780),        // alias
+    ("dirty_driver", 0xF780), // alias
+    ("smog", 0xF75F),         // smog
+    ("bomb", 0xF1E2),         // bomb
+    ("angry", 0xF556),        // face-angry
+    ("ghost", 0xF6E2),        // ghost
+    ("fire", 0xF06D),         // fire
+    ("poop", 0xF2FE),         // poo — tongue-in-cheek dirty
     // table header / footer
     ("sof", 0xF0C0),          // users
     ("class_sof", 0xF0C0),    // users

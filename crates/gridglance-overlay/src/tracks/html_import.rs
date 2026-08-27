@@ -6,13 +6,13 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::OnceLock;
 
+use super::build_manual_pit_lane_fields;
 use super::layers::{
     align_loop_from_sf, apply_iracing_oval_labels, extract_layers_from_html, labels_run_backwards,
     normalize_loop, oval_corners, parse_turn_numbers,
 };
 use super::path_sample::sample_best_subpath;
 use super::pit_import::{extract_pit_polylines_svg, normalize_pit_polylines};
-use super::build_manual_pit_lane_fields;
 use crate::track_path::PitLane;
 
 static TRACK_MAP_RE: OnceLock<Regex> = OnceLock::new();
@@ -206,10 +206,7 @@ fn pit_lane_from_fields(fields: &serde_json::Map<String, Value>) -> PitLane {
     };
     let span = fields.get("pit_span").and_then(|v| {
         let a = v.as_array()?;
-        Some((
-            a.first()?.as_f64()? as f32,
-            a.get(1)?.as_f64()? as f32,
-        ))
+        Some((a.first()?.as_f64()? as f32, a.get(1)?.as_f64()? as f32))
     });
     PitLane {
         path: poly("pit_path"),
@@ -487,7 +484,10 @@ mod tests {
     fn rudskogen_imports_pit_road() {
         let html = fixture("rudskogen_pit.html");
         let doc = import_loop_doc(&html, 80, 4, 0.0).expect("import");
-        let pit = doc.pit.as_ref().expect("rudskogen should stitch a pit road");
+        let pit = doc
+            .pit
+            .as_ref()
+            .expect("rudskogen should stitch a pit road");
         assert!(pit.path.len() >= 8, "pit_path len={}", pit.path.len());
         assert!(pit.exit.len() >= 4, "pit_out len={}", pit.exit.len());
         assert_eq!(doc.to_json()["pit_source"], "html");
@@ -598,8 +598,7 @@ mod tests {
         );
         assert!(
             (p1.0 - tip.0).abs() + 1e-3 < (p0.0 - tip.0).abs()
-                || (p1.0 - tip.0).hypot(p1.1 - tip.1) + 0.02
-                    < (p0.0 - tip.0).hypot(p0.1 - tip.1),
+                || (p1.0 - tip.0).hypot(p1.1 - tip.1) + 0.02 < (p0.0 - tip.0).hypot(p0.1 - tip.1),
             "exit should attach near path end, tip={tip:?} p0={p0:?} p1={p1:?}"
         );
 
@@ -618,7 +617,10 @@ mod tests {
         let html = fixture("charlotte_roval.html");
         let doc = import_loop_doc(&html, 80, 4, 0.0).expect("import");
         assert!(doc.points.len() >= 40);
-        let pit = doc.pit.as_ref().expect("charlotte should stitch pit from ticks");
+        let pit = doc
+            .pit
+            .as_ref()
+            .expect("charlotte should stitch pit from ticks");
         assert!(pit.path.len() >= 8, "pit_path len={}", pit.path.len());
         assert!(pit.exit.len() >= 4, "pit_out len={}", pit.exit.len());
         assert_eq!(doc.to_json()["pit_source"], "html");

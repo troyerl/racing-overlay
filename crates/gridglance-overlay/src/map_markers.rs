@@ -360,9 +360,7 @@ fn dedupe_marker_slots(markers: &mut HashMap<&'static str, Option<TrafficMarker>
     let leader = markers
         .get("leader")
         .and_then(|m| m.as_ref().map(|t| t.idx));
-    let ahead = markers
-        .get("ahead")
-        .and_then(|m| m.as_ref().map(|t| t.idx));
+    let ahead = markers.get("ahead").and_then(|m| m.as_ref().map(|t| t.idx));
     if let Some(li) = leader {
         if ahead == Some(li) {
             markers.insert("ahead", None);
@@ -375,9 +373,7 @@ fn dedupe_marker_slots(markers: &mut HashMap<&'static str, Option<TrafficMarker>
             markers.insert("behind", None);
         }
     }
-    let ahead = markers
-        .get("ahead")
-        .and_then(|m| m.as_ref().map(|t| t.idx));
+    let ahead = markers.get("ahead").and_then(|m| m.as_ref().map(|t| t.idx));
     if let Some(ai) = ahead {
         if markers
             .get("behind")
@@ -551,14 +547,7 @@ mod tests {
         let mut hold = fresh_hold_states();
         let mut prev = None;
         let m = resolve_traffic_markers(
-            &mut hold,
-            &cars,
-            10.0,
-            0.75,
-            None,
-            "number",
-            true,
-            &mut prev,
+            &mut hold, &cars, 10.0, 0.75, None, "number", true, &mut prev,
         );
         assert!(m["ahead"].is_some());
         assert!(m["behind"].is_some());
@@ -611,18 +600,16 @@ mod tests {
         ];
         let mut hold = fresh_hold_states();
         let mut prev = None;
-        let m = resolve_traffic_markers(
-            &mut hold, &cars, 1.0, 3.0, None, "number", true, &mut prev,
-        );
+        let m =
+            resolve_traffic_markers(&mut hold, &cars, 1.0, 3.0, None, "number", true, &mut prev);
         assert_eq!(m["ahead"].as_ref().map(|t| t.idx), Some(1));
 
         // Pass car1: progress flips, official positions unchanged.
         cars[1].lap_dist_pct = 0.40;
         cars[2].lap_dist_pct = 0.55;
         cars[3].lap_dist_pct = 0.30;
-        let m2 = resolve_traffic_markers(
-            &mut hold, &cars, 1.1, 3.0, None, "number", true, &mut prev,
-        );
+        let m2 =
+            resolve_traffic_markers(&mut hold, &cars, 1.1, 3.0, None, "number", true, &mut prev);
         // Hold would keep old ahead for 3s — pass flush must reacquire immediately.
         assert_eq!(m2["behind"].as_ref().map(|t| t.idx), Some(1));
         assert_eq!(m2["ahead"].as_ref().map(|t| t.idx), None);
@@ -640,9 +627,8 @@ mod tests {
         ];
         let mut hold = fresh_hold_states();
         let mut prev = None;
-        let _ = resolve_traffic_markers(
-            &mut hold, &cars, 1.0, 3.0, None, "number", true, &mut prev,
-        );
+        let _ =
+            resolve_traffic_markers(&mut hold, &cars, 1.0, 3.0, None, "number", true, &mut prev);
         assert_eq!(hold["behind"].locked, Some(3));
 
         // Flicker: candidate briefly becomes car4 while car3 is still behind
@@ -672,9 +658,8 @@ mod tests {
         ];
         let mut hold = fresh_hold_states();
         let mut prev = None;
-        let _ = resolve_traffic_markers(
-            &mut hold, &cars, 1.0, 3.0, None, "number", true, &mut prev,
-        );
+        let _ =
+            resolve_traffic_markers(&mut hold, &cars, 1.0, 3.0, None, "number", true, &mut prev);
         assert_eq!(hold["ahead"].locked, Some(1));
         assert!(prev.is_some());
 
@@ -715,5 +700,4 @@ mod tests {
         assert_eq!(c["ahead"], Some(1));
         assert_eq!(c["behind"], Some(3));
     }
-
 }

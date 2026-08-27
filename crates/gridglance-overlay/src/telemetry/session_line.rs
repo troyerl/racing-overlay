@@ -216,11 +216,7 @@ impl SessionLineState {
                 continue;
             }
             let is_player = car.is_player;
-            let motion = if is_player {
-                frame.player_motion
-            } else {
-                None
-            };
+            let motion = if is_player { frame.player_motion } else { None };
             let throttle = if is_player {
                 Some(frame.throttle.clamp(0.0, 1.0))
             } else {
@@ -240,21 +236,10 @@ impl SessionLineState {
             } else {
                 car.steer_rad
             };
-            let gear = if is_player {
-                frame.gear
-            } else {
-                car.gear
-            };
+            let gear = if is_player { frame.gear } else { car.gear };
 
             self.sample_car(
-                car,
-                session_t,
-                steer,
-                gear,
-                throttle,
-                brake,
-                motion,
-                is_player,
+                car, session_t, steer, gear, throttle, brake, motion, is_player,
             );
         }
     }
@@ -412,10 +397,7 @@ impl SessionLineState {
                 return Some(b);
             }
             // Fall back to track PB, then own best in top3.
-            return self
-                .track_pb
-                .as_ref()
-                .or_else(|| self.player_top3.first());
+            return self.track_pb.as_ref().or_else(|| self.player_top3.first());
         }
         None
     }
@@ -487,7 +469,10 @@ impl SessionLineState {
                 cur_t - r.lap_time_s
             })
         } else {
-            live_delta(cur_for_delta, reference.map(|r| r.samples.as_slice()).unwrap_or(&[]))
+            live_delta(
+                cur_for_delta,
+                reference.map(|r| r.samples.as_slice()).unwrap_or(&[]),
+            )
         };
 
         let spark = build_time_spark(
@@ -613,7 +598,9 @@ fn insert_top3(list: &mut Vec<StoredLap>, lap: StoredLap) {
             .partial_cmp(&b.lap_time_s)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    list.dedup_by(|a, b| (a.lap_time_s - b.lap_time_s).abs() < 1e-4 && a.lap_number == b.lap_number);
+    list.dedup_by(|a, b| {
+        (a.lap_time_s - b.lap_time_s).abs() < 1e-4 && a.lap_number == b.lap_number
+    });
     if list.len() > TOP_N {
         list.truncate(TOP_N);
     }
@@ -824,10 +811,11 @@ fn turns_from_spark(spark: &[f32], allow_demo: bool) -> Vec<(String, f32)> {
             let i = ((*frac) * (n - 1) as f32).round() as usize;
             let lo = i.saturating_sub(2);
             let hi = (i + 2).min(n - 1);
-            let loss = spark[lo..=hi]
-                .iter()
-                .copied()
-                .fold(0.0_f32, |a, b| if b.abs() > a.abs() { b } else { a });
+            let loss =
+                spark[lo..=hi]
+                    .iter()
+                    .copied()
+                    .fold(0.0_f32, |a, b| if b.abs() > a.abs() { b } else { a });
             ((*label).into(), loss)
         })
         .collect()
@@ -892,7 +880,9 @@ mod tests {
             is_player: false,
             lap_time_s: 90.0,
             lap_number: 2,
-            samples: (0..40).map(|i| sample(i as f32 / 40.0, i as f64 * 2.0)).collect(),
+            samples: (0..40)
+                .map(|i| sample(i as f32 / 40.0, i as f64 * 2.0))
+                .collect(),
             markers: vec![],
         };
         st.promote_finished(lap.clone());
@@ -958,7 +948,9 @@ mod tests {
 
     #[test]
     fn delta_sign_behind_reference_positive() {
-        let cur: Vec<_> = (0..20).map(|i| sample(i as f32 / 20.0, i as f64 * 1.1)).collect();
+        let cur: Vec<_> = (0..20)
+            .map(|i| sample(i as f32 / 20.0, i as f64 * 1.1))
+            .collect();
         let reference: Vec<_> = (0..20).map(|i| sample(i as f32 / 20.0, i as f64)).collect();
         let d = live_delta(&cur, &reference).unwrap();
         assert!(d > 0.0, "slower current lap should be +delta, got {d}");

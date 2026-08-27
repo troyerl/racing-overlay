@@ -137,8 +137,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         y += 14.0;
     }
 
-    let ctx_line = if ctx.edit_mode && advice.fcy_note.is_none() && advice.lap_down_note.is_none()
-    {
+    let ctx_line = if ctx.edit_mode && advice.fcy_note.is_none() && advice.lap_down_note.is_none() {
         Some("Pit risks lap down · Pace drop 0.08s/L · FCY ~12%".into())
     } else {
         strategy_context_line(&advice)

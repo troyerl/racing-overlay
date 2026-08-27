@@ -385,10 +385,7 @@ mod tests {
         let (s, show) = update_white_flag_hud(s, true, 13);
         assert_eq!(s, WhiteFlagHud::Exhausted);
         assert!(!show);
-        assert_eq!(
-            apply_white_flag_timing(Some("white".into()), false),
-            None
-        );
+        assert_eq!(apply_white_flag_timing(Some("white".into()), false), None);
         assert_eq!(
             apply_white_flag_timing(Some("yellow".into()), true).as_deref(),
             Some("yellow")

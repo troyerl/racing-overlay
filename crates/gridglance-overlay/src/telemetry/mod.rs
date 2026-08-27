@@ -7,12 +7,12 @@ mod fuel;
 mod irsdk;
 mod lap_compare;
 mod lap_log;
-pub mod session_line;
 mod pit_advice;
 mod pit_loss;
 mod pit_service;
 mod pit_track;
 mod sector_timer;
+pub mod session_line;
 mod strategy;
 mod strategy_hints;
 mod tables;
@@ -23,13 +23,13 @@ pub use fuel::{
 };
 pub use irsdk::IrsdkReader;
 pub use lap_compare::{CompareMarker, LapCompareState, LapCompareView, MarkerKind};
-pub use session_line::{RaceDoc, SessionLineState, StoredLap, TrackPbDoc};
 pub use lap_log::{signed_delta_1, LapExtras, LapLogAccum};
 pub use pit_advice::{strategy_context_line, strategy_loss_line, strategy_meta_line, PitAdvice};
 pub use pit_loss::{effective_loss_s, PitLossTracker};
 pub use pit_service::{decode_flags as decode_pit_flags, PitService};
 pub use pit_track::PitStopTracker;
 pub use sector_timer::{SectorCell, SectorSnapshot, SectorTimer};
+pub use session_line::{RaceDoc, SessionLineState, StoredLap, TrackPbDoc};
 pub use strategy::{
     best_service_plan, project_lap_down, FcyModel, LiftCoastTracker, PaceModel, StrategySnapshot,
     TireEnergyTracker,
@@ -104,10 +104,7 @@ pub struct CarRow {
 impl CarRow {
     /// Still an active race/qual entry (not pace car, retired, or spectator ghost).
     pub fn is_live_competitor(&self) -> bool {
-        !self.is_pace_car
-            && !self.inactive
-            && self.position > 0
-            && self.lap_dist_pct >= 0.0
+        !self.is_pace_car && !self.inactive && self.position > 0 && self.lap_dist_pct >= 0.0
     }
 
     /// Seated-account ghost with no race presence (true spectator / not in field).
@@ -751,15 +748,15 @@ pub mod demo {
                     // Spread laps so demo shows blue (lapped) and red (lapper)
                     // traffic once finalize_frame applies proximity tints.
                     lap: match i {
-                        0 | 1 => 13, // lappers (ahead of player lap 12)
-                        2 | 3 => 12, // same lap as player (i=3)
-                        4 | 5 | 6 | 7 => 11,
+                        0..=1 => 13, // lappers (ahead of player lap 12)
+                        2..=3 => 12, // same lap as player (i=3)
+                        4..=7 => 11,
                         _ => 10,
                     },
                     laps_completed: match i {
-                        0 | 1 => 12,
-                        2 | 3 => 11,
-                        4 | 5 | 6 | 7 => 10,
+                        0..=1 => 12,
+                        2..=3 => 11,
+                        4..=7 => 10,
                         _ => 9,
                     },
                     speed_mps: 55.0 + (i as f32) * 1.5 + 3.0 * (t as f32 * 0.4).sin(),

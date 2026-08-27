@@ -481,14 +481,7 @@ impl Canvas {
     /// Good for small map-dot digits. For large dash gear, prefer
     /// [`Self::text_path_centered`] (glyph-path union; blob/measure leave
     /// "1" looking left-shifted).
-    pub fn text_ink_centered(
-        &mut self,
-        text: &str,
-        cx: f32,
-        cy: f32,
-        spec: FontSpec,
-        color: Rgba,
-    ) {
+    pub fn text_ink_centered(&mut self, text: &str, cx: f32, cy: f32, spec: FontSpec, color: Rgba) {
         if text.is_empty() {
             return;
         }
@@ -555,7 +548,12 @@ impl Canvas {
         let glyphs = font.str_to_glyphs_vec(text);
         let mut widths = vec![0.0; glyphs.len()];
         let mut glyph_bounds = vec![skia_safe::Rect::default(); glyphs.len()];
-        font.get_widths_bounds(&glyphs, Some(&mut widths), Some(&mut glyph_bounds), Some(&paint));
+        font.get_widths_bounds(
+            &glyphs,
+            Some(&mut widths),
+            Some(&mut glyph_bounds),
+            Some(&paint),
+        );
 
         let mut pen_x = 0.0_f32;
         let mut min_x = f32::INFINITY;
@@ -579,10 +577,7 @@ impl Canvas {
         }
 
         let (draw_x, baseline) = if min_x.is_finite() && max_x > min_x && max_y > min_y {
-            (
-                cx - (min_x + max_x) * 0.5,
-                cy - (min_y + max_y) * 0.5,
-            )
+            (cx - (min_x + max_x) * 0.5, cy - (min_y + max_y) * 0.5)
         } else {
             // Fallback: measured string box.
             let (_, measured) = font.measure_str(text, Some(&paint));
@@ -761,7 +756,12 @@ impl Canvas {
         let canvas = self.surface.canvas();
         canvas.save();
         canvas.clip_rrect(RRect::new_rect_xy(dst, radius, radius), None, true);
-        canvas.draw_image_rect(&img, Some((&src, skia_safe::canvas::SrcRectConstraint::Strict)), dst, &paint);
+        canvas.draw_image_rect(
+            &img,
+            Some((&src, skia_safe::canvas::SrcRectConstraint::Strict)),
+            dst,
+            &paint,
+        );
         canvas.restore();
     }
 
@@ -834,6 +834,7 @@ impl Canvas {
     }
 
     /// Snapshot as top-down premul BGRA (matches `layered::present_bgra`).
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_bgra(&mut self) -> Vec<u8> {
         let mut buf = Vec::new();
         self.read_bgra_into(&mut buf);

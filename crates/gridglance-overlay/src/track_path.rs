@@ -936,9 +936,7 @@ mod tests {
     #[test]
     fn infield_chord_is_rejected_kerb_pit_is_not() {
         let oval = oval_path(80);
-        let chord: Vec<(f32, f32)> = (0..40)
-            .map(|i| (0.15 + i as f32 * 0.018, 0.50))
-            .collect();
+        let chord: Vec<(f32, f32)> = (0..40).map(|i| (0.15 + i as f32 * 0.018, 0.50)).collect();
         assert!(
             pit_path_cuts_infield(&oval, &chord),
             "a diameter through the grass must be rejected"

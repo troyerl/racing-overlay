@@ -784,10 +784,7 @@ mod win {
         let country_code = if is_pace {
             None
         } else {
-            cache
-                .drivers
-                .get(&radio_idx)
-                .and_then(driver_country_code)
+            cache.drivers.get(&radio_idx).and_then(driver_country_code)
         };
         Some(RadioSpeaker {
             position,
@@ -883,14 +880,11 @@ mod win {
         laps_total: i32,
         position: i32,
     ) -> Option<String> {
-        if flag.is_none() {
-            return None;
-        }
-        match flag {
-            Some("start_go") => Some("Green light — go".into()),
-            Some("start_set") => Some("Start lights set".into()),
-            Some("start_ready") => Some("Get ready — start imminent".into()),
-            Some("yellow") | Some("caution") => {
+        match flag? {
+            "start_go" => Some("Green light — go".into()),
+            "start_set" => Some("Start lights set".into()),
+            "start_ready" => Some("Get ready — start imminent".into()),
+            "yellow" | "caution" => {
                 let base = if sf & FLAG_ONE_LAP_GREEN != 0 {
                     "1 lap to green".to_string()
                 } else if sf & FLAG_TEN_TO_GO != 0 {
@@ -913,34 +907,34 @@ mod win {
                 };
                 Some(base)
             }
-            Some("green") => {
+            "green" => {
                 if sf & FLAG_GREEN_HELD != 0 {
                     Some("Green held — stay in formation".into())
                 } else {
                     Some("Track clear — racing resumes".into())
                 }
             }
-            Some("red") => {
+            "red" => {
                 if let Some(remain) = session_time_remain.filter(|t| *t > 0.0) {
                     Some(format!("Session stopped — {} left", fmt_clock(remain)))
                 } else {
                     Some("Session stopped — stand by".into())
                 }
             }
-            Some("white") => {
+            "white" => {
                 if laps_total > 0 && lap > 0 {
                     Some(format!("Lap {lap} of {laps_total} — last lap next"))
                 } else {
                     Some("White flag — last lap next".into())
                 }
             }
-            Some("blue") => Some("Faster car approaching — let them pass".into()),
-            Some("black") => Some("Report to the pits — penalty".into()),
-            Some("meatball") => Some("Mandatory pit — repairs required".into()),
-            Some("furled") => Some("Warning — next infraction is a penalty".into()),
-            Some("dq") => Some("Disqualified — exit the track".into()),
-            Some("debris") => Some("Debris on track — reduce speed".into()),
-            Some("crossed") => {
+            "blue" => Some("Faster car approaching — let them pass".into()),
+            "black" => Some("Report to the pits — penalty".into()),
+            "meatball" => Some("Mandatory pit — repairs required".into()),
+            "furled" => Some("Warning — next infraction is a penalty".into()),
+            "dq" => Some("Disqualified — exit the track".into()),
+            "debris" => Some("Debris on track — reduce speed".into()),
+            "crossed" => {
                 if laps_total > 0 && lap > 0 {
                     let rem = (laps_total - lap).max(0);
                     Some(format!("Halfway — {rem} laps to go"))
@@ -948,7 +942,7 @@ mod win {
                     Some("Halfway point".into())
                 }
             }
-            Some("checkered") => {
+            "checkered" => {
                 if position > 0 {
                     Some(format!("Session complete — P{position}"))
                 } else {
@@ -1248,10 +1242,7 @@ mod win {
                 .and_then(|a| a.get(i).copied())
                 .filter(|v| v.is_finite())
                 .unwrap_or(0.0);
-            let gear = gears
-                .as_ref()
-                .and_then(|a| a.get(i).copied())
-                .unwrap_or(0);
+            let gear = gears.as_ref().and_then(|a| a.get(i).copied()).unwrap_or(0);
 
             // Keep DriverInfo entries with a grid/qual position even when they
             // haven't joined (NOT_IN_WORLD / invalid LapDistPct).
@@ -2281,7 +2272,15 @@ mod win {
             return;
         }
         let mut parts = Vec::new();
-        for name in ["Lat", "Lon", "Alt", "VelocityX", "VelocityY", "Yaw", "YawNorth"] {
+        for name in [
+            "Lat",
+            "Lon",
+            "Alt",
+            "VelocityX",
+            "VelocityY",
+            "Yaw",
+            "YawNorth",
+        ] {
             match session.find_var(name) {
                 Some(var) => parts.push(format!("{name}={:?}", session.var_value(&var))),
                 None => parts.push(format!("{name}=absent")),
@@ -2577,8 +2576,14 @@ DriverInfo:
 "#;
             let drivers = parse_drivers(yaml);
             assert_eq!(drivers.get(&0).map(|d| d.flair_id), Some(223));
-            assert_eq!(drivers.get(&0).and_then(driver_country_code).as_deref(), Some("us"));
-            assert_eq!(drivers.get(&1).and_then(driver_country_code).as_deref(), Some("br"));
+            assert_eq!(
+                drivers.get(&0).and_then(driver_country_code).as_deref(),
+                Some("us")
+            );
+            assert_eq!(
+                drivers.get(&1).and_then(driver_country_code).as_deref(),
+                Some("br")
+            );
             // Unaffiliated flair, International club → no country.
             assert_eq!(drivers.get(&2).and_then(driver_country_code), None);
         }

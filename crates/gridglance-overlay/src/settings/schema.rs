@@ -646,10 +646,9 @@ pub fn setting_visible(section: &str, key: &str, values: &HashMap<String, Value>
         ("ers_hybrid", "label_boost") => flag(values, "show_boost", true),
         ("ers_hybrid", "label_p2p") => flag(values, "show_p2p", true),
         ("map", "show_expanded_weather") => flag(values, "show_wind", true),
-        (
-            "map",
-            "show_pit_blends" | "show_pit_speed" | "pit_lane_opacity" | "pit_dot_opacity",
-        ) => flag(values, "show_pit", true),
+        ("map", "show_pit_blends" | "show_pit_speed" | "pit_lane_opacity" | "pit_dot_opacity") => {
+            flag(values, "show_pit", true)
+        }
         ("map", "marker_hold_seconds") => flag(values, "show_traffic_markers", true),
         _ => true,
     }
@@ -657,7 +656,15 @@ pub fn setting_visible(section: &str, key: &str, values: &HashMap<String, Value>
 
 /// Laptime log columns (toggle / order in Settings).
 pub const LAPLOG_COLUMNS: &[&str] = &[
-    "lap", "time", "delta", "temp", "sectors", "fuel", "tires", "incidents", "tag",
+    "lap",
+    "time",
+    "delta",
+    "temp",
+    "sectors",
+    "fuel",
+    "tires",
+    "incidents",
+    "tag",
 ];
 
 /// Data columns Relative / Standings can show (order = default insertion order).
@@ -707,7 +714,9 @@ pub fn default_table_col_width(col: &str) -> f32 {
 /// Per-widget accent (Python `TAB_COLORS`).
 pub fn tab_color(section: &str) -> &'static str {
     match section {
-        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__" => "#9aa3b2",
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__" => {
+            "#9aa3b2"
+        }
         "__widgets__" => "#9aa3b2",
         "relative" => "#2fe0b0",
         "standings" => "#a98bff",
@@ -736,7 +745,9 @@ pub fn tab_color(section: &str) -> &'static str {
 
 pub fn top_tab_for(section: &str) -> TopTab {
     match section {
-        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__" => TopTab::Settings,
+        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__" => {
+            TopTab::Settings
+        }
         _ => TopTab::Widgets,
     }
 }
@@ -1103,15 +1114,8 @@ pub fn string_choices(section: &str, key: &str) -> Option<&'static [(&'static st
         ]),
         (
             "dash",
-            "top_left"
-                | "top_right"
-                | "primary_left"
-                | "primary_right"
-                | "stat_left"
-                | "stat_right"
-                | "strip_left"
-                | "strip_center"
-                | "strip_right",
+            "top_left" | "top_right" | "primary_left" | "primary_right" | "stat_left"
+            | "stat_right" | "strip_left" | "strip_center" | "strip_right",
         ) => Some(DASH_SLOT_CHOICES),
         _ => None,
     }

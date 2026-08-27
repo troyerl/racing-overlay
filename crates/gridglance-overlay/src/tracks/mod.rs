@@ -15,8 +15,8 @@ use std::path::Path;
 
 use crate::cloud;
 
-pub use html_import::import_track_source;
 pub use geom::fillet_loop_kinks;
+pub use html_import::import_track_source;
 
 pub fn cloud_blocks_track_save(canonical: &Value) -> Option<String> {
     if !cloud::can_write() {
@@ -106,8 +106,7 @@ pub fn build_manual_pit_lane_fields(
     if road.len() < 2 || merge.len() < 2 {
         return None;
     }
-    let (entry, road, merge) =
-        geom::orient_pit_lane_polylines(loop_pts, entry, road, merge);
+    let (entry, road, merge) = geom::orient_pit_lane_polylines(loop_pts, entry, road, merge);
     if crate::track_path::pit_path_cuts_infield(loop_pts, &road) {
         return None;
     }

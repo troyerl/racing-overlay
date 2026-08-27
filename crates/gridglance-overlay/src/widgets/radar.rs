@@ -2,9 +2,7 @@
 
 use super::WidgetCtx;
 use crate::chrome::{anim_dt, color_with_alpha, ease, full_rect, label, panel_card, still_easing};
-use egui::{
-    epaint::Vertex, Align2, Color32, Mesh, Pos2, Rect, Shape, Stroke, Ui, Vec2,
-};
+use egui::{epaint::Vertex, Align2, Color32, Mesh, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 
 const SECTION: &str = "radar";
 
@@ -193,10 +191,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
         let nose = ctx.cfg.color(SECTION, "nose", "#f4f6f8");
         let tip_y = cy - car_h * 0.50;
         ui.painter().line_segment(
-            [
-                Pos2::new(cx, tip_y),
-                Pos2::new(cx, tip_y - nose_len),
-            ],
+            [Pos2::new(cx, tip_y), Pos2::new(cx, tip_y - nose_len)],
             Stroke::new((w * 0.012).max(1.5), nose),
         );
     }
@@ -256,7 +251,8 @@ fn decode_car_png(bytes: &[u8]) -> Option<(u32, u32, Vec<u8>)> {
 /// Cached RGBA8 (unpremultiplied), downscaled for the HUD. Art is nose-up.
 pub(crate) fn car_sprite_rgba(kind: RadarCarKind) -> Option<&'static (u32, u32, Vec<u8>)> {
     use std::sync::OnceLock;
-    static CACHE: OnceLock<[OnceLock<Option<(u32, u32, Vec<u8>)>>; 7]> = OnceLock::new();
+    type SpriteRgba = (u32, u32, Vec<u8>);
+    static CACHE: OnceLock<[OnceLock<Option<SpriteRgba>>; 7]> = OnceLock::new();
     let slots = CACHE.get_or_init(|| std::array::from_fn(|_| OnceLock::new()));
     slots[kind as usize]
         .get_or_init(|| decode_car_png(kind.png_bytes()))
@@ -415,7 +411,8 @@ fn paint_car_sprite(ui: &mut Ui, c: Pos2, box_w: f32, box_h: f32, kind: RadarCar
 }
 
 fn size_frac(ctx: &WidgetCtx<'_>, key: &str, default: f32) -> f32 {
-    let v = ctx.cfg
+    let v = ctx
+        .cfg
         .section(SECTION)
         .get("sizes")
         .and_then(|s| s.get(key))
@@ -574,10 +571,7 @@ fn v_glow(
     );
     paint_feather_mesh(
         ui,
-        Rect::from_min_max(
-            Pos2::new(cx - half_w, top),
-            Pos2::new(cx + half_w, bottom),
-        ),
+        Rect::from_min_max(Pos2::new(cx - half_w, top), Pos2::new(cx + half_w, bottom)),
         base,
         peak,
         kind,
@@ -679,8 +673,14 @@ mod tests {
             radar_car_kind(Some("stockcars2 chevroletcamaro2018")),
             RadarCarKind::Stock
         );
-        assert_eq!(radar_car_kind(Some("porsche 963 gtp")), RadarCarKind::Prototype);
-        assert_eq!(radar_car_kind(Some("dirt sprint car")), RadarCarKind::Sprint);
+        assert_eq!(
+            radar_car_kind(Some("porsche 963 gtp")),
+            RadarCarKind::Prototype
+        );
+        assert_eq!(
+            radar_car_kind(Some("dirt sprint car")),
+            RadarCarKind::Sprint
+        );
         assert_eq!(radar_car_kind(Some("nascar truck")), RadarCarKind::Truck);
         assert_eq!(radar_car_kind(None), RadarCarKind::Gt);
     }

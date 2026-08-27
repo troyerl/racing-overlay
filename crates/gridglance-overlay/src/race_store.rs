@@ -40,7 +40,10 @@ pub fn race_path(subsession_id: i32, track_id: i32) -> PathBuf {
     let key = if subsession_id > 0 {
         subsession_id.to_string()
     } else {
-        format!("local_{track_id}_{}", chrono::Utc::now().format("%Y%m%d%H%M%S"))
+        format!(
+            "local_{track_id}_{}",
+            chrono::Utc::now().format("%Y%m%d%H%M%S")
+        )
     };
     races_dir().join(format!("{key}.json"))
 }
@@ -100,4 +103,3 @@ pub fn save_race_doc(doc: &RaceDoc, upload: bool) -> anyhow::Result<()> {
     }
     Ok(())
 }
-

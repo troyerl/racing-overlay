@@ -9,10 +9,10 @@ mod tire_energy;
 
 pub use fcy_model::{FcyModel, FcySnapshot};
 pub use lap_down::{project_lap_down, LapDownSnapshot};
-pub use lift_coast::{LiftCoastTracker, LiftCoastSnapshot};
+pub use lift_coast::{LiftCoastSnapshot, LiftCoastTracker};
 pub use pace_model::{PaceModel, PaceSnapshot};
 pub use service_time::{best_service_plan, ServicePlan};
-pub use tire_energy::{TireEnergyTracker, TireEnergySnapshot};
+pub use tire_energy::{TireEnergySnapshot, TireEnergyTracker};
 
 use serde::{Deserialize, Serialize};
 

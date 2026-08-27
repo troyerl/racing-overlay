@@ -246,7 +246,7 @@ fn ray_hit_ring(
         let Some((q, t)) = ray_seg(origin, dir, a, b) else {
             continue;
         };
-        if t > 1e-4 && best.map_or(true, |(_, bt)| t < bt) {
+        if t > 1e-4 && best.is_none_or(|(_, bt)| t < bt) {
             best = Some((q, t));
         }
     }
@@ -710,7 +710,10 @@ mod tests {
             .map(|p| (p.0 - left_cx).hypot(p.1 - cy))
             .collect();
         let mean = radii.iter().sum::<f32>() / radii.len() as f32;
-        let max_dev = radii.iter().map(|r| (r - mean).abs()).fold(0.0f32, f32::max);
+        let max_dev = radii
+            .iter()
+            .map(|r| (r - mean).abs())
+            .fold(0.0f32, f32::max);
         assert!(
             max_dev < mean * 0.14,
             "left cap is chamfered: radius spread {max_dev:.1} around {mean:.1}"

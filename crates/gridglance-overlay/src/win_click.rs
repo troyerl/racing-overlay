@@ -59,7 +59,7 @@ pub fn set_click_through(_hwnd: isize, _enabled: bool) {}
 pub fn monitor_work_area(x: i32, y: i32, w: i32, h: i32) -> Option<(i32, i32, i32, i32)> {
     use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromRect, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+        GetMonitorInfoW, MonitorFromRect, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     unsafe {
         let rc = RECT {

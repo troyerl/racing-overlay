@@ -624,7 +624,10 @@ pub fn upsert_track_pb(doc: &Value) -> anyhow::Result<()> {
     })
 }
 
-pub fn fetch_track_pb(track_id: i32, car_path: &str) -> anyhow::Result<Option<crate::telemetry::TrackPbDoc>> {
+pub fn fetch_track_pb(
+    track_id: i32,
+    car_path: &str,
+) -> anyhow::Result<Option<crate::telemetry::TrackPbDoc>> {
     if !read_available() || track_id <= 0 || car_path.is_empty() {
         return Ok(None);
     }

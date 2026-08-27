@@ -710,10 +710,7 @@ pub fn build_standings(
         .max(0.0) as usize;
     let grow = cfg.bool_key("standings", "grow", true);
 
-    let leader_f2 = ordered
-        .first()
-        .map(|c| c.f2_time)
-        .unwrap_or(0.0);
+    let leader_f2 = ordered.first().map(|c| c.f2_time).unwrap_or(0.0);
 
     let build_at = |c: &CarRow, ord: usize| -> TableRow {
         // When ordering from sticky/best-lap, list index is the display P#
@@ -820,11 +817,11 @@ pub fn build_standings(
 }
 
 /// Field used for shared standings ranks (same filter as [`build_standings`]).
-fn standings_field_cars<'a>(
-    cars: &'a [CarRow],
+fn standings_field_cars(
+    cars: &[CarRow],
     camera_car_idx: Option<i32>,
     seated_car_idx: Option<i32>,
-) -> Vec<&'a CarRow> {
+) -> Vec<&CarRow> {
     let spectating = matches!(
         (camera_car_idx, seated_car_idx),
         (Some(cam), Some(seat)) if cam != seat
@@ -1055,8 +1052,8 @@ fn sync_dash_position_with_standings(
     sticky: &StandingsOrderHysteresis,
     table_focus_car_idx: Option<i32>,
 ) {
-    let target = table_focus_car_idx
-        .or_else(|| frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx));
+    let target =
+        table_focus_car_idx.or_else(|| frame.cars.iter().find(|c| c.is_player).map(|c| c.car_idx));
     let Some(car_idx) = target else {
         return;
     };
@@ -1104,11 +1101,10 @@ fn pick_context_indices(
         // after the podium (P4+). Searching ±offset from the focus only hits
         // other podium rows first and used to abort with an empty context.
         let mut chosen = Vec::new();
-        for slot in 0..total {
+        for &idx in ranked {
             if chosen.len() >= limit {
                 break;
             }
-            let idx = ranked[slot];
             if podium_idxs.contains(&idx) {
                 continue;
             }
@@ -1169,13 +1165,11 @@ fn leader_pace_bits(frame: &TelemetryFrame) -> (i32, f32, Option<f32>) {
         .iter()
         .filter(|c| c.is_live_competitor())
         .max_by(|a, b| {
-            a.lap
-                .cmp(&b.lap)
-                .then_with(|| {
-                    a.lap_dist_pct
-                        .partial_cmp(&b.lap_dist_pct)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
+            a.lap.cmp(&b.lap).then_with(|| {
+                a.lap_dist_pct
+                    .partial_cmp(&b.lap_dist_pct)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
         })
         .or_else(|| {
             frame
@@ -1195,20 +1189,14 @@ fn leader_pace_bits(frame: &TelemetryFrame) -> (i32, f32, Option<f32>) {
             .last_lap_s
             .map(|s| s as f32)
             .filter(|s| *s > 10.0)
-            .or_else(|| {
-                (frame.lap_est_time > 10.0).then_some(frame.lap_est_time)
-            })
+            .or_else(|| (frame.lap_est_time > 10.0).then_some(frame.lap_est_time))
     } else if l.est_time > 10.0 {
         // EstTime is not lap duration; prefer session lap estimate.
         (frame.lap_est_time > 10.0).then_some(frame.lap_est_time)
     } else {
         (frame.lap_est_time > 10.0).then_some(frame.lap_est_time)
     };
-    (
-        l.lap.max(0),
-        l.lap_dist_pct.clamp(0.0, 0.999),
-        pace,
-    )
+    (l.lap.max(0), l.lap_dist_pct.clamp(0.0, 0.999), pace)
 }
 
 /// Fill relative_cars / standings_cars and enrich radar from cars + cfg.
@@ -1314,9 +1302,10 @@ pub fn finalize_frame(
             ));
             if let Some(eco) = frame.strategy.coast.economy_usage {
                 frame.fuel.economy_usage = Some(eco);
-                if let (Some(race), Some(fuel)) =
-                    (frame.fuel.ema_usage.or(frame.fuel.avg.usage), frame.fuel.level)
-                {
+                if let (Some(race), Some(fuel)) = (
+                    frame.fuel.ema_usage.or(frame.fuel.avg.usage),
+                    frame.fuel.level,
+                ) {
                     if eco > 0.0 && race > 0.0 {
                         frame.fuel.economy_extra_laps = Some((fuel / eco) - (fuel / race));
                     }
@@ -1342,11 +1331,7 @@ pub fn finalize_frame(
         }
 
         if need_order {
-            let field = standings_field_cars(
-                &focused_cars,
-                frame.camera_car_idx,
-                seated_car_idx,
-            );
+            let field = standings_field_cars(&focused_cars, frame.camera_car_idx, seated_car_idx);
             let order: Vec<i32> = compute_standings_order(
                 &field,
                 frame.session_type.as_deref(),
@@ -1809,9 +1794,7 @@ fn apply_irating_projection(
         }
     }
     if let Some(p) = frame.cars.iter().find(|c| c.is_player) {
-        frame.irating_delta = p
-            .irating_delta
-            .or(sticky.irating_player_delta);
+        frame.irating_delta = p.irating_delta.or(sticky.irating_player_delta);
         if frame.irating <= 0 {
             frame.irating = p.irating;
         }
@@ -2293,7 +2276,10 @@ mod tests {
         let r = build_radar(&cars, &cfg, true, false, false, false, 0.50);
         assert!(r.ahead.is_some() && r.ahead.unwrap() > 0.0);
         assert!(r.behind.is_some() && r.behind.unwrap() > 0.0);
-        assert!(r.left && !r.right, "spotter left must not invent a right car");
+        assert!(
+            r.left && !r.right,
+            "spotter left must not invent a right car"
+        );
         assert_eq!(
             r.left_pos, 0.0,
             "0.015 behind is in front/rear, not a door-overlap side match"
@@ -2516,7 +2502,10 @@ mod tests {
             Some(&mut sticky),
         );
         let player = rows.iter().find(|r| r.is_player).expect("player");
-        assert_eq!(player.position, 1, "on-track pass must update P# immediately");
+        assert_eq!(
+            player.position, 1,
+            "on-track pass must update P# immediately"
+        );
         let old_leader = rows.iter().find(|r| r.car_number == "0").expect("old P1");
         assert_eq!(old_leader.position, 2);
     }
@@ -2557,7 +2546,10 @@ mod tests {
         let live: Vec<_> = rows.iter().filter(|r| !r.empty).collect();
         assert_eq!(live[0].name, "D1", "qual must stay best-lap order");
         assert_eq!(live[0].position, 1);
-        assert!(sticky.committed.is_empty(), "qual must not seed race sticky");
+        assert!(
+            sticky.committed.is_empty(),
+            "qual must not seed race sticky"
+        );
     }
 
     #[test]
@@ -3614,7 +3606,10 @@ mod tests {
         ];
         apply_lap_tints(&mut cars, 90.0, Some("Race"), None);
         assert!(!cars[1].lapping, "inactive cars stay untinted");
-        assert!(cars[2].lapping && !cars[2].lap_ahead, "off-track still tints");
+        assert!(
+            cars[2].lapping && !cars[2].lap_ahead,
+            "off-track still tints"
+        );
     }
 
     #[test]
@@ -3658,12 +3653,10 @@ mod tests {
                 .any(|r| r.key == "1" && r.session_best),
             "garage driver must keep the purple session-best mark"
         );
-        assert!(
-            !frame
-                .standings_cars
-                .iter()
-                .any(|r| r.key == "0" && r.session_best)
-        );
+        assert!(!frame
+            .standings_cars
+            .iter()
+            .any(|r| r.key == "0" && r.session_best));
     }
 
     #[test]
@@ -3893,10 +3886,7 @@ mod tests {
             frame.position
         );
         assert!(
-            !frame
-                .standings_cars
-                .iter()
-                .any(|r| r.is_player && !r.empty),
+            !frame.standings_cars.iter().any(|r| r.is_player && !r.empty),
             "test setup: player must be outside the visible standings window"
         );
         let player_car = frame.cars.iter().find(|c| c.is_player).unwrap();
@@ -3947,11 +3937,8 @@ mod tests {
         let mut sticky = RelativeOrderHysteresis::default();
         finalize_frame(&mut frame, &cfg, &mut sticky);
 
-        let by_idx: std::collections::HashMap<i32, i32> = frame
-            .cars
-            .iter()
-            .map(|c| (c.car_idx, c.position))
-            .collect();
+        let by_idx: std::collections::HashMap<i32, i32> =
+            frame.cars.iter().map(|c| (c.car_idx, c.position)).collect();
         assert_eq!(by_idx.get(&1), Some(&1));
         assert_eq!(by_idx.get(&0), Some(&2));
         assert_eq!(by_idx.get(&2), Some(&3));
@@ -3965,8 +3952,7 @@ mod tests {
         {
             let idx: i32 = row.key.parse().unwrap();
             assert_eq!(
-                row.position,
-                by_idx[&idx],
+                row.position, by_idx[&idx],
                 "table row for car {idx} out of sync"
             );
         }
@@ -4025,8 +4011,16 @@ mod tests {
         let mut sticky = RelativeOrderHysteresis::default();
         finalize_frame(&mut frame, &cfg, &mut sticky);
 
-        assert_eq!(frame.air_temp, Some(24.0), "dash/standings still show air temp");
-        assert_eq!(frame.track_temp, Some(32.0), "dash/standings still show track temp");
+        assert_eq!(
+            frame.air_temp,
+            Some(24.0),
+            "dash/standings still show air temp"
+        );
+        assert_eq!(
+            frame.track_temp,
+            Some(32.0),
+            "dash/standings still show track temp"
+        );
         assert!(
             frame.relative_cars.iter().any(|r| r.is_player && !r.empty),
             "relative must still list the player"

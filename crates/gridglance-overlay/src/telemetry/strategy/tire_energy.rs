@@ -143,8 +143,38 @@ mod tests {
         }
         assert!(t.energy > 0.0);
         // Enter pit with tires selected, then exit → reset.
-        t.tick(1.0, false, true, false, 10.0, 0.0, 0.0, 0.0, &temps, Some(0.8), Some(30.0), Some(0.0), 40.0, true);
-        t.tick(1.1, true, false, false, 40.0, 5.0, 0.0, 0.0, &temps, Some(0.95), Some(30.0), Some(0.0), 40.0, false);
+        t.tick(
+            1.0,
+            false,
+            true,
+            false,
+            10.0,
+            0.0,
+            0.0,
+            0.0,
+            &temps,
+            Some(0.8),
+            Some(30.0),
+            Some(0.0),
+            40.0,
+            true,
+        );
+        t.tick(
+            1.1,
+            true,
+            false,
+            false,
+            40.0,
+            5.0,
+            0.0,
+            0.0,
+            &temps,
+            Some(0.95),
+            Some(30.0),
+            Some(0.0),
+            40.0,
+            false,
+        );
         assert!(t.energy < 500.0);
     }
 }

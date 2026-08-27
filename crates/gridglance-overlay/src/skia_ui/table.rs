@@ -557,8 +557,12 @@ fn paint_cols(
                 let pill_w = (tw + 2.0 * pad_x).min((cw - gap - d_w).max(4.0));
                 let total = pill_w + gap + d_w;
                 let left = cx + (cw - total).max(0.0) * 0.5;
-                let pill =
-                    Rect::from_xywh(left, rect.center().1 - pill_h * 0.5, pill_w.max(4.0), pill_h);
+                let pill = Rect::from_xywh(
+                    left,
+                    rect.center().1 - pill_h * 0.5,
+                    pill_w.max(4.0),
+                    pill_h,
+                );
                 let edge_a = ((bg.a as f32 * 0.55) as u16 + 60).min(255) as u8;
                 c.fill_rect(pill, bg, 4.0);
                 c.stroke_rect(pill, bg.with_alpha(edge_a), 4.0, 1.0);

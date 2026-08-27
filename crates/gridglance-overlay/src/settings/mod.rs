@@ -8,8 +8,8 @@ mod widgets;
 pub use schema::{
     allows_free_text_setting, choice_label, default_table_col_width, help_text, is_skipped,
     matches_search, nav_for_tab, pretty_key, setting_groups, setting_visible, string_choices,
-    tab_color, table_slot_options, top_tab_for, LAPLOG_COLUMNS, TABLE_DATA_COLUMNS, UNITS_CHOICES,
-    TopTab,
+    tab_color, table_slot_options, top_tab_for, TopTab, LAPLOG_COLUMNS, TABLE_DATA_COLUMNS,
+    UNITS_CHOICES,
 };
 
 use crate::config::{parse_color_str, ConfigContext};
@@ -23,9 +23,9 @@ use std::time::{Duration, Instant};
 use theme::{paint_background, MUTED, NAV_SECTION, NAV_WIDTH, TITLE};
 use widgets::{
     accordion, button_kind, color_button, enable_card, enable_card_row, icon_button, nav_item,
-    snap_preview_button,
-    number_row, preset_button, search_field, setting_row, status_line, styled_choice_combo,
-    styled_combo, text_field, toggle_switch, top_tab_button, top_tabs_frame, ButtonKind,
+    number_row, preset_button, search_field, setting_row, snap_preview_button, status_line,
+    styled_choice_combo, styled_combo, text_field, toggle_switch, top_tab_button, top_tabs_frame,
+    ButtonKind,
 };
 
 const WINDOW_TITLE: &str = "GridGlance Settings";
@@ -521,7 +521,12 @@ fn paint_nav(ui: &mut Ui, state: &StateHandle, ui_state: &SettingsUi, section: &
 fn widget_shown(state: &StateHandle, key: &str) -> bool {
     if matches!(
         key,
-        "__general__" | "__app__" | "__drivers__" | "__lan__" | "__laps__" | "__scan__"
+        "__general__"
+            | "__app__"
+            | "__drivers__"
+            | "__lan__"
+            | "__laps__"
+            | "__scan__"
             | "__widgets__"
     ) {
         return true;
@@ -1021,8 +1026,13 @@ fn paint_laps(
             "Upload race laps after finish",
             help_text("__laps__", "upload_race_laps"),
             |ui| {
-                if toggle_switch(ui, &mut upload_laps, accent, ui.id().with("upload_race_laps"))
-                    .changed()
+                if toggle_switch(
+                    ui,
+                    &mut upload_laps,
+                    accent,
+                    ui.id().with("upload_race_laps"),
+                )
+                .changed()
                 {
                     set_global(
                         state,
@@ -1199,10 +1209,15 @@ fn paint_driver_groups(
             }
         });
 
-        let member_names: Vec<String> = crate::driver_groups::members_from_csv(&ui_state.dg_members)
-            .iter()
-            .filter_map(|e| e.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()))
-            .collect();
+        let member_names: Vec<String> =
+            crate::driver_groups::members_from_csv(&ui_state.dg_members)
+                .iter()
+                .filter_map(|e| {
+                    e.get("name")
+                        .and_then(|n| n.as_str())
+                        .map(|s| s.to_string())
+                })
+                .collect();
         if ui_state
             .dg_member_sel
             .as_ref()
@@ -1279,19 +1294,12 @@ fn paint_driver_groups(
             if member_typed && button_kind(ui, "Add member", ButtonKind::GhostAccent).clicked() {
                 let name = ui_state.dg_member_edit.trim().to_string();
                 let mut next = member_names.clone();
-                let exists = next
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(name.as_str()));
+                let exists = next.iter().any(|n| n.eq_ignore_ascii_case(name.as_str()));
                 if !exists {
                     next.push(name.clone());
                     ui_state.dg_members = next.join(", ");
                     ui_state.dg_member_sel = Some(name);
-                    match persist_driver_group_members(
-                        state,
-                        ui_state,
-                        &mut groups,
-                        dirty,
-                    ) {
+                    match persist_driver_group_members(state, ui_state, &mut groups, dirty) {
                         Ok(()) => ui_state.flash("Member added"),
                         Err(msg) => ui_state.flash(msg),
                     }
@@ -1307,9 +1315,10 @@ fn paint_driver_groups(
                 if let Some(old) = ui_state.dg_member_sel.clone() {
                     let mut next = member_names.clone();
                     if let Some(pos) = next.iter().position(|n| n == &old) {
-                        let clash = next.iter().enumerate().any(|(i, n)| {
-                            i != pos && n.eq_ignore_ascii_case(new_name.as_str())
-                        });
+                        let clash = next
+                            .iter()
+                            .enumerate()
+                            .any(|(i, n)| i != pos && n.eq_ignore_ascii_case(new_name.as_str()));
                         if clash {
                             ui_state.flash("Another member already has that name");
                         } else {
@@ -1317,12 +1326,8 @@ fn paint_driver_groups(
                             ui_state.dg_members = next.join(", ");
                             ui_state.dg_member_sel = Some(new_name.clone());
                             ui_state.dg_member_edit = new_name;
-                            match persist_driver_group_members(
-                                state,
-                                ui_state,
-                                &mut groups,
-                                dirty,
-                            ) {
+                            match persist_driver_group_members(state, ui_state, &mut groups, dirty)
+                            {
                                 Ok(()) => ui_state.flash("Member renamed"),
                                 Err(msg) => ui_state.flash(msg),
                             }
@@ -1396,15 +1401,14 @@ fn paint_driver_groups(
                         Ok(names) => {
                             // Prefer saved group members so a stale/empty UI field
                             // cannot re-import drivers that are already in the group.
-                            let mut existing = crate::driver_groups::members_from_csv(
-                                &ui_state.dg_members,
-                            );
+                            let mut existing =
+                                crate::driver_groups::members_from_csv(&ui_state.dg_members);
                             if let Some(sel) = ui_state.dg_sel.as_deref() {
-                                if let Some(g) = groups.iter().find(|g| {
-                                    g.get("name").and_then(|n| n.as_str()) == Some(sel)
-                                }) {
-                                    if let Some(mem) = g.get("members").and_then(|m| m.as_array())
-                                    {
+                                if let Some(g) = groups
+                                    .iter()
+                                    .find(|g| g.get("name").and_then(|n| n.as_str()) == Some(sel))
+                                {
+                                    if let Some(mem) = g.get("members").and_then(|m| m.as_array()) {
                                         let (merged_existing, _, _) =
                                             crate::driver_groups::merge_names_into_members(
                                                 &existing,
@@ -1422,8 +1426,7 @@ fn paint_driver_groups(
                             }
                             let (merged, added, skipped) =
                                 crate::driver_groups::merge_names_into_members(&existing, &names);
-                            ui_state.dg_members =
-                                crate::driver_groups::members_to_csv(&merged);
+                            ui_state.dg_members = crate::driver_groups::members_to_csv(&merged);
                             // Persist immediately when editing a named group.
                             let gname = ui_state.dg_name.trim().to_string();
                             if !gname.is_empty() {
@@ -1548,7 +1551,8 @@ fn paint_widget_position(
         ui.add_space(8.0);
         let gap = 4.0;
         let cell = egui::vec2(36.0, 36.0);
-        let grid: [[(&str, Option<usize>, Option<usize>, AlignH, AlignV); 3]; 3] = [
+        type AlignPad = (&'static str, Option<usize>, Option<usize>, AlignH, AlignV);
+        let grid: [[AlignPad; 3]; 3] = [
             [
                 ("Top left", Some(0), Some(0), AlignH::Left, AlignV::Top),
                 ("Top", Some(1), Some(0), AlignH::Center, AlignV::Top),
@@ -1560,9 +1564,21 @@ fn paint_widget_position(
                 ("Right", Some(2), Some(1), AlignH::Right, AlignV::Center),
             ],
             [
-                ("Bottom left", Some(0), Some(2), AlignH::Left, AlignV::Bottom),
+                (
+                    "Bottom left",
+                    Some(0),
+                    Some(2),
+                    AlignH::Left,
+                    AlignV::Bottom,
+                ),
                 ("Bottom", Some(1), Some(2), AlignH::Center, AlignV::Bottom),
-                ("Bottom right", Some(2), Some(2), AlignH::Right, AlignV::Bottom),
+                (
+                    "Bottom right",
+                    Some(2),
+                    Some(2),
+                    AlignH::Right,
+                    AlignV::Bottom,
+                ),
             ],
         ];
         for (ri, row) in grid.iter().enumerate() {
@@ -1583,27 +1599,15 @@ fn paint_widget_position(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            if snap_preview_button(
-                ui,
-                None,
-                Some(1),
-                cell,
-                ui.id().with((section, "pos_h")),
-            )
-            .on_hover_text("Center horizontally (keep vertical)")
-            .clicked()
+            if snap_preview_button(ui, None, Some(1), cell, ui.id().with((section, "pos_h")))
+                .on_hover_text("Center horizontally (keep vertical)")
+                .clicked()
             {
                 snap_widget(state, ui_state, section, AlignH::Center, AlignV::Keep);
             }
-            if snap_preview_button(
-                ui,
-                Some(1),
-                None,
-                cell,
-                ui.id().with((section, "pos_v")),
-            )
-            .on_hover_text("Center vertically (keep horizontal)")
-            .clicked()
+            if snap_preview_button(ui, Some(1), None, cell, ui.id().with((section, "pos_v")))
+                .on_hover_text("Center vertically (keep horizontal)")
+                .clicked()
             {
                 snap_widget(state, ui_state, section, AlignH::Keep, AlignV::Center);
             }
@@ -2369,12 +2373,7 @@ fn set_global(
     }
 }
 
-fn set_driver_groups(
-    state: &StateHandle,
-    val: Value,
-    dirty: &mut bool,
-    ui_state: &mut SettingsUi,
-) {
+fn set_driver_groups(state: &StateHandle, val: Value, dirty: &mut bool, ui_state: &mut SettingsUi) {
     if let Some(mut st) = state.try_write() {
         let cfg = Arc::make_mut(&mut st.config);
         cfg.set_driver_groups(val);
@@ -2673,13 +2672,8 @@ fn paint_ordered_columns(
         for col in hidden {
             let mut on = false;
             setting_row(ui, &choice_label(col), None, |ui| {
-                if toggle_switch(
-                    ui,
-                    &mut on,
-                    accent,
-                    ui.id().with((section, "col_add", col)),
-                )
-                .changed()
+                if toggle_switch(ui, &mut on, accent, ui.id().with((section, "col_add", col)))
+                    .changed()
                     && on
                     && next_order.is_none()
                 {
@@ -2701,7 +2695,14 @@ fn paint_ordered_columns(
                         pruned.insert(k.clone(), v.clone());
                     }
                 }
-                set_section_key(state, section, "widths", Value::Object(pruned), dirty, ui_state);
+                set_section_key(
+                    state,
+                    section,
+                    "widths",
+                    Value::Object(pruned),
+                    dirty,
+                    ui_state,
+                );
             }
         }
         set_section_key(state, section, key, json!(o), dirty, ui_state);
@@ -2842,23 +2843,15 @@ fn paint_structured_object(
                 let (range, step) = number_setting_bounds(ck);
                 v = v.clamp(*range.start(), *range.end());
                 if number_row(ui, &pretty_key(ck), &mut v, range, step, accent, None) {
-                    set_nested(
-                        state,
-                        section,
-                        key,
-                        ck,
-                        json!(v as f64),
-                        dirty,
-                        ui_state,
-                    );
+                    set_nested(state, section, key, ck, json!(v as f64), dirty, ui_state);
                 }
             }
             Value::String(s) if looks_like_color(s) => {
                 paint_nested_color(ui, state, section, key, ck, s, dirty, ui_state);
             }
             Value::String(s) => {
-                if let Some(choices) = string_choices(section, ck)
-                    .or_else(|| string_choices(key, ck))
+                if let Some(choices) =
+                    string_choices(section, ck).or_else(|| string_choices(key, ck))
                 {
                     let selected = if choices.iter().any(|(v, _)| *v == s) {
                         s.as_str()
@@ -2908,9 +2901,7 @@ fn paint_structured_array(
 ) {
     if arr.iter().all(|v| v.as_str().is_some()) {
         // Generic string-list editor: reorder/remove only (no free-text add).
-        ui.label(
-            RichText::new(pretty_key(key)).size(12.0).color(TITLE),
-        );
+        ui.label(RichText::new(pretty_key(key)).size(12.0).color(TITLE));
         let mut items: Vec<String> = arr
             .iter()
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
@@ -3006,8 +2997,7 @@ fn paint_table_widths(
 
     ui.label(
         RichText::new(
-            help_text(section, "widths")
-                .unwrap_or("Column width as a multiple of row height."),
+            help_text(section, "widths").unwrap_or("Column width as a multiple of row height."),
         )
         .size(11.0)
         .color(MUTED),

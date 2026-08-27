@@ -90,7 +90,11 @@ impl SysStats {
         }));
         let enabled = Arc::new(AtomicBool::new(false));
         let gpu_enabled = Arc::new(AtomicBool::new(false));
-        spawn_sampler(Arc::clone(&shared), Arc::clone(&enabled), Arc::clone(&gpu_enabled));
+        spawn_sampler(
+            Arc::clone(&shared),
+            Arc::clone(&enabled),
+            Arc::clone(&gpu_enabled),
+        );
         Self {
             shared,
             enabled,

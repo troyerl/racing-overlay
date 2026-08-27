@@ -122,7 +122,12 @@ pub fn merge_window_note(frame: &TelemetryFrame, pit_loss_s: f32, lap_est: f32) 
     }
 }
 
-fn enrich(mut advice: PitAdvice, frame: &TelemetryFrame, pit_loss: f32, stopping: bool) -> PitAdvice {
+fn enrich(
+    mut advice: PitAdvice,
+    frame: &TelemetryFrame,
+    pit_loss: f32,
+    stopping: bool,
+) -> PitAdvice {
     let strat = &frame.strategy;
     advice.stop_window = frame.fuel.window;
     advice.fuel_add_l = frame.fuel.add;
@@ -133,12 +138,18 @@ fn enrich(mut advice: PitAdvice, frame: &TelemetryFrame, pit_loss: f32, stopping
             .map(|s| s.total_loss_s)
             .unwrap_or(pit_loss),
     );
-    advice.merge_note = merge_window_note(frame, advice.pit_loss_s.unwrap_or(pit_loss), frame.lap_est_time);
-    advice.economy_note = strat
-        .coast
-        .note
-        .clone()
-        .or_else(|| frame.fuel.economy_extra_laps.filter(|e| *e >= 0.3).map(|e| format!("Economy +{e:.1} laps")));
+    advice.merge_note = merge_window_note(
+        frame,
+        advice.pit_loss_s.unwrap_or(pit_loss),
+        frame.lap_est_time,
+    );
+    advice.economy_note = strat.coast.note.clone().or_else(|| {
+        frame
+            .fuel
+            .economy_extra_laps
+            .filter(|e| *e >= 0.3)
+            .map(|e| format!("Economy +{e:.1} laps"))
+    });
     advice.optimal_stop_lap = frame.fuel.window.map(|(a, b)| (a + b) / 2);
     advice.lap_down_note = strat.lap_down.note.clone();
     advice.pace_note = strat.pace.note.clone();
@@ -178,7 +189,11 @@ pub fn strategy_meta_line(advice: &PitAdvice) -> Option<String> {
     if let Some(add) = advice.fuel_add_l.filter(|v| *v > 0.05) {
         parts.push(format!("Add {add:.1}L"));
     }
-    if let Some(plan) = advice.service_plan.as_deref().or(advice.tire_plan.as_deref()) {
+    if let Some(plan) = advice
+        .service_plan
+        .as_deref()
+        .or(advice.tire_plan.as_deref())
+    {
         if plan != "hold" {
             parts.push(plan.to_string());
         }
@@ -319,7 +334,11 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
             .fuel
             .add
             .zip(frame.fuel.level)
-            .map(|(add, level)| add > 0.0 && level < legal_buf && frame.fuel.laps_margin.map(|m| m < 1.0).unwrap_or(true))
+            .map(|(add, level)| {
+                add > 0.0
+                    && level < legal_buf
+                    && frame.fuel.laps_margin.map(|m| m < 1.0).unwrap_or(true)
+            })
             .unwrap_or(false);
 
     let fuel_window = frame.fuel.window_open;
@@ -482,7 +501,8 @@ pub fn compute_pit_advice(frame: &TelemetryFrame, cfg: &OverlayConfig) -> PitAdv
         );
 
         // Soften green pit-now when FCY likely and fuel comfortable.
-        let soft_fcy = green && p_fcy >= 0.28 && frame.fuel.laps_margin.map(|m| m > 4.0).unwrap_or(false);
+        let soft_fcy =
+            green && p_fcy >= 0.28 && frame.fuel.laps_margin.map(|m| m > 4.0).unwrap_or(false);
 
         if cover_risk > 0.0 && pit_score <= stay_score + 2.0 && !lap_down_if_pit && !soft_fcy {
             let num = cover_car
@@ -642,20 +662,21 @@ mod tests {
     use crate::telemetry::strategy::{FcySnapshot, LapDownSnapshot, StrategySnapshot};
 
     fn base_frame() -> TelemetryFrame {
-        let mut f = TelemetryFrame::default();
-        f.flag = Some("green".into());
-        f.lap_est_time = 90.0;
-        f.fuel = FuelCalcState {
-            window_open: true,
-            window: Some((24, 26)),
-            add: Some(18.4),
-            laps_empty: Some(8.0),
-            laps_margin: Some(6.0),
-            ema_usage: Some(2.2),
+        TelemetryFrame {
+            flag: Some("green".into()),
+            lap_est_time: 90.0,
+            fuel: FuelCalcState {
+                window_open: true,
+                window: Some((24, 26)),
+                add: Some(18.4),
+                laps_empty: Some(8.0),
+                laps_margin: Some(6.0),
+                ema_usage: Some(2.2),
+                ..Default::default()
+            },
+            fuel_pct: 0.25,
             ..Default::default()
-        };
-        f.fuel_pct = 0.25;
-        f
+        }
     }
 
     #[test]
@@ -692,7 +713,10 @@ mod tests {
             ..Default::default()
         };
         let advice = compute_pit_advice(&f, &cfg);
-        assert!(matches!(advice.rec.as_str(), "stay_out" | "marginal" | "pit_now" | "pit_next_lap"));
+        assert!(matches!(
+            advice.rec.as_str(),
+            "stay_out" | "marginal" | "pit_now" | "pit_next_lap"
+        ));
         // With comfortable fuel + high FCY and no cover/undercut, expect stay/hold-for-yellow.
         assert!(
             advice.rationale.contains("yellow")

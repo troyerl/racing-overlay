@@ -528,12 +528,8 @@ pub fn snap_preview_button(
         StrokeKind::Inside,
     );
     let screen = rect.shrink(7.0);
-    ui.painter().rect_stroke(
-        screen,
-        2.0,
-        Stroke::new(1.0_f32, ink),
-        StrokeKind::Inside,
-    );
+    ui.painter()
+        .rect_stroke(screen, 2.0, Stroke::new(1.0_f32, ink), StrokeKind::Inside);
     let gw = screen.width() / 3.0;
     let gh = screen.height() / 3.0;
     let (hx, hw) = match col {

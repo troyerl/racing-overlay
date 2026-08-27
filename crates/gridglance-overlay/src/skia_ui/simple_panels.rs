@@ -1074,7 +1074,10 @@ fn push_child(
     name: &'static str,
     val: Option<&String>,
 ) {
-    let Some(v) = val.map(String::as_str).filter(|v| !v.is_empty() && *v != "--") else {
+    let Some(v) = val
+        .map(String::as_str)
+        .filter(|v| !v.is_empty() && *v != "--")
+    else {
         return;
     };
     rows.push((name, "", v.to_string(), false, 1));
@@ -1262,10 +1265,14 @@ fn paint_system_data(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFrame
     } else {
         0.0
     };
-    let content_h =
-        SYSTEM_DATA_PAD * 2.0 + title_h + rows.len().max(1) as f32 * rh;
+    let content_h = SYSTEM_DATA_PAD * 2.0 + title_h + rows.len().max(1) as f32 * rh;
     // Hug content — ignore oversize HWND so the card never shows an empty band.
-    let card = Rect::from_xywh(rect.left(), rect.top(), rect.width(), content_h.min(rect.height()));
+    let card = Rect::from_xywh(
+        rect.left(),
+        rect.top(),
+        rect.width(),
+        content_h.min(rect.height()),
+    );
     let radius = panel_card(c, cfg, section, card);
     let pad = SYSTEM_DATA_PAD;
     let mut y = card.top() + pad;
@@ -1380,7 +1387,12 @@ fn paint_system_elegant(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFr
         0.0
     };
     let content_h = SYSTEM_ELEGANT_PAD_Y * 2.0 + title_h + rows.len() as f32 * SYSTEM_ELEGANT_ROW_H;
-    let card = Rect::from_xywh(rect.left(), rect.top(), rect.width(), content_h.min(rect.height()));
+    let card = Rect::from_xywh(
+        rect.left(),
+        rect.top(),
+        rect.width(),
+        content_h.min(rect.height()),
+    );
     panel_card(c, cfg, section, card);
     let pad_x = SYSTEM_ELEGANT_PAD_X;
     let pad_y = SYSTEM_ELEGANT_PAD_Y;
@@ -1456,16 +1468,7 @@ fn paint_system_elegant(c: &mut Canvas, cfg: &OverlayConfig, frame: &TelemetryFr
                 TextAlign::Left,
             );
         } else {
-            text_at(
-                c,
-                left,
-                cy,
-                text_label,
-                11.0,
-                accent,
-                true,
-                TextAlign::Left,
-            );
+            text_at(c, left, cy, text_label, 11.0, accent, true, TextAlign::Left);
         }
         text_at(
             c,

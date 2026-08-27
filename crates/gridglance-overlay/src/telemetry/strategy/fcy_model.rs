@@ -38,9 +38,9 @@ impl FcyModel {
                     self.green_laps = self.green_laps.saturating_add(1);
                 }
                 if incidents > self.prev_incidents {
-                    self.incident_deltas = self.incident_deltas.saturating_add(
-                        (incidents - self.prev_incidents).max(0) as u32,
-                    );
+                    self.incident_deltas = self
+                        .incident_deltas
+                        .saturating_add((incidents - self.prev_incidents).max(0) as u32);
                 }
                 self.prev_incidents = incidents;
                 self.prev_lap = Some(lap);
@@ -59,7 +59,8 @@ impl FcyModel {
         }
 
         let base = if self.green_laps + self.yellow_events > 0 {
-            self.yellow_events as f32 / (self.green_laps as f32 + self.yellow_events as f32).max(1.0)
+            self.yellow_events as f32
+                / (self.green_laps as f32 + self.yellow_events as f32).max(1.0)
         } else {
             0.08
         };

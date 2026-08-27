@@ -39,13 +39,7 @@ pub fn best_service_plan(
     let tire_benefit = pace * rem * (rem + 1.0) * 0.5;
 
     let opts = [
-        (
-            ServiceOption::FuelOnly,
-            fuel_s,
-            "fuel",
-            "fuel",
-            0.0f32,
-        ),
+        (ServiceOption::FuelOnly, fuel_s, "fuel", "fuel", 0.0f32),
         (
             ServiceOption::TwoTiresFuel,
             fuel_s.max(tire_2t_s),
@@ -112,7 +106,17 @@ mod tests {
 
     #[test]
     fn urgent_tires_pick_four() {
-        let plan = best_service_plan(8.0, true, Some(0.12), Some(20.0), 18.0, 2.0, 8.0, 12.0, true);
+        let plan = best_service_plan(
+            8.0,
+            true,
+            Some(0.12),
+            Some(20.0),
+            18.0,
+            2.0,
+            8.0,
+            12.0,
+            true,
+        );
         assert!(plan.label.contains("4T") || plan.tire_plan.contains("tire"));
     }
 }

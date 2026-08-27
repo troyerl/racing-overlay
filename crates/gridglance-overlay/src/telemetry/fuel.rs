@@ -135,7 +135,7 @@ impl FuelBurnTracker {
             return None;
         }
         let proj = used / pct;
-        if !proj.is_finite() || proj < 0.25 || proj > 12.0 {
+        if !proj.is_finite() || !(0.25..=12.0).contains(&proj) {
             return None;
         }
         if is_burn_outlier(proj, self.ema) {
@@ -161,14 +161,7 @@ impl FuelBurnTracker {
     }
 
     /// Call every tick, then `observe` for lap transitions.
-    pub fn observe(
-        &mut self,
-        lap: i32,
-        fuel: f32,
-        cap: f32,
-        history_n: usize,
-        ema_alpha: f32,
-    ) {
+    pub fn observe(&mut self, lap: i32, fuel: f32, cap: f32, history_n: usize, ema_alpha: f32) {
         if lap <= 0 || !fuel.is_finite() {
             return;
         }
@@ -274,7 +267,8 @@ fn seed_usage_l_per_lap(cap: Option<f32>, lap_avg: Option<f32>, fuph: f32) -> Op
             }
         }
     }
-    cap.filter(|c| *c > 5.0).map(|c| (c / SEED_STINT_LAPS).clamp(0.5, 10.0))
+    cap.filter(|c| *c > 5.0)
+        .map(|c| (c / SEED_STINT_LAPS).clamp(0.5, 10.0))
 }
 
 fn fuph_usage_plausible(u: f32, fuph: f32, cap: Option<f32>) -> bool {
@@ -282,7 +276,7 @@ fn fuph_usage_plausible(u: f32, fuph: f32, cap: Option<f32>) -> bool {
         return false;
     }
     // Idle / grid FuelUsePerHour is a few L/h and yields absurd lap counts.
-    if fuph < 12.0 || u < 0.35 || u > 12.0 {
+    if fuph < 12.0 || !(0.35..=12.0).contains(&u) {
         return false;
     }
     if let Some(c) = cap.filter(|c| *c > 5.0) {
@@ -450,8 +444,8 @@ pub fn build_fuel_snapshot(inp: &FuelInputs, cfg: &OverlayConfig) -> FuelCalcSta
     } else {
         // No completed green burns yet: prefer a race-plausible FuelUsePerHour
         // estimate, else a typical full-tank stint seed (avoids 800+ lap garage idle).
-        let est = seed_usage_l_per_lap(cap, lap_avg, inp.fuel_use_per_hour)
-            .map(|u| u * caution_mul);
+        let est =
+            seed_usage_l_per_lap(cap, lap_avg, inp.fuel_use_per_hour).map(|u| u * caution_mul);
         (est, est.map(|u| u * 1.08), est.map(|u| u * 0.92))
     };
 
@@ -695,14 +689,7 @@ mod tests {
     fn timed_race_projector_uses_leader_fraction() {
         // Leader on lap 20 at 50% with 90s pace, 180s remain → 2.5 laps to zero
         // ceil → 3, finish lap = 23, player lap 20 → 3 remain.
-        let rem = project_timed_race_laps_remain(
-            Some(180.0),
-            20,
-            0.5,
-            Some(90.0),
-            20,
-            Some(90.0),
-        );
+        let rem = project_timed_race_laps_remain(Some(180.0), 20, 0.5, Some(90.0), 20, Some(90.0));
         assert!(rem.is_some());
         let rem = rem.unwrap();
         assert!((rem - 3.0).abs() < 0.01, "got {rem}");

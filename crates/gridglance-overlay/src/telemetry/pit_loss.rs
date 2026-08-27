@@ -12,12 +12,7 @@ pub struct PitLossTracker {
 impl PitLossTracker {
     /// Observe player pit-road state. Rising edge starts a timer; falling edge
     /// records duration into the EMA when the stop looks like a real service.
-    pub fn observe(
-        &mut self,
-        on_pit: bool,
-        session_time: f64,
-        alpha: f32,
-    ) {
+    pub fn observe(&mut self, on_pit: bool, session_time: f64, alpha: f32) {
         let alpha = alpha.clamp(0.05, 0.95);
         if on_pit && !self.on_pit {
             if session_time.is_finite() && session_time >= 0.0 {
@@ -39,7 +34,6 @@ impl PitLossTracker {
         }
         self.on_pit = on_pit;
     }
-
 }
 
 /// Effective pit loss for strategy: measured EMA or config fallback, scaled

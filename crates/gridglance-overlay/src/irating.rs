@@ -128,7 +128,11 @@ fn field_rating(ir: i32, fallback: i32) -> i32 {
 }
 
 fn class_ir_fallback(cars: &[&CarRow]) -> i32 {
-    let known: Vec<i32> = cars.iter().map(|c| c.irating).filter(|&ir| ir > 0).collect();
+    let known: Vec<i32> = cars
+        .iter()
+        .map(|c| c.irating)
+        .filter(|&ir| ir > 0)
+        .collect();
     if known.is_empty() {
         // iRacing's default starting iRating when nothing else is known.
         return 1350;
@@ -309,10 +313,10 @@ mod tests {
             (3, 4, 1098),
             (4, 5, 1097), // player
             (5, 6, 1107),
-            (6, 7, 0),    // Marc Cooper2 — results oldi_rating -1
+            (6, 7, 0), // Marc Cooper2 — results oldi_rating -1
             (7, 8, 1095),
-            (8, 9, 0),    // Darcy Roulston4
-            (9, 10, 0),   // Victor Zamorano
+            (8, 9, 0),  // Darcy Roulston4
+            (9, 10, 0), // Victor Zamorano
             (10, 11, 1131),
             (11, 12, 1114),
         ];

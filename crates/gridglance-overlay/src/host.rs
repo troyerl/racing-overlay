@@ -370,11 +370,7 @@ impl OverlayApp {
                 st.map.cached_start_finish,
                 st.config.bool_key("map", "reverse_path", false),
                 st.frame.session_state,
-                st.map
-                    .cached_pct_map
-                    .as_ref()
-                    .map(|t| t.len())
-                    .unwrap_or(0),
+                st.map.cached_pct_map.as_ref().map(|t| t.len()).unwrap_or(0),
             )
         };
         let telem_ms = acc.telem_ms / fps;
@@ -731,17 +727,12 @@ impl OverlayApp {
             });
 
             let coast_snap = {
-                self.lift_coast.tick(
-                    frame.throttle,
-                    frame.brake,
-                    eligible && frame.in_car,
-                );
+                self.lift_coast
+                    .tick(frame.throttle, frame.brake, eligible && frame.in_car);
                 self.lift_coast
                     .observe_lap(frame.lap, frame.fuel_l, eligible, hist_n)
             };
-            frame.fuel_economy_l = coast_snap
-                .economy_usage
-                .or(self.fuel_burn.economy_ema);
+            frame.fuel_economy_l = coast_snap.economy_usage.or(self.fuel_burn.economy_ema);
 
             if needs.pit_advisor {
                 frame.strategy.coast = coast_snap;
@@ -778,7 +769,10 @@ impl OverlayApp {
 
                 let tire_bits = frame.pit_services.iter().any(|s| {
                     s.checked
-                        && matches!(s.key.as_str(), "lf_tire" | "rf_tire" | "lr_tire" | "rr_tire")
+                        && matches!(
+                            s.key.as_str(),
+                            "lf_tire" | "rf_tire" | "lr_tire" | "rr_tire"
+                        )
                 });
                 let wear_min = frame
                     .tire_corners
@@ -816,9 +810,9 @@ impl OverlayApp {
                 }
 
                 let fcy_horizon = cfg.f64_key("pit_advisor", "fcy_horizon_laps", 5.0) as f32;
-                let fcy_snap = self
-                    .fcy_model
-                    .observe(frame.lap, caution, frame.incidents, fcy_horizon);
+                let fcy_snap =
+                    self.fcy_model
+                        .observe(frame.lap, caution, frame.incidents, fcy_horizon);
 
                 let player_idx = player.map(|c| c.car_idx).unwrap_or(-1);
                 let field = self.pit_stops.field_note(
@@ -1008,8 +1002,8 @@ impl OverlayApp {
             {
                 self.session_line_cloud_uploaded_sid = None;
             }
-            let session_finished = frame.session_state >= 5
-                || matches!(frame.flag.as_deref(), Some("checkered"));
+            let session_finished =
+                frame.session_state >= 5 || matches!(frame.flag.as_deref(), Some("checkered"));
             let already_uploaded = sid > 0 && self.session_line_cloud_uploaded_sid == Some(sid);
             if session_finished && self.session_line_cloud_pending && !already_uploaded {
                 if upload_laps {
@@ -1183,13 +1177,9 @@ impl OverlayApp {
             if st.config.bool_key("standings", "grow", true)
                 && !self.skia_host.is_interacting("standings")
             {
-                let max_rows = st
-                    .config
-                    .f64_key("standings", "rows", 9.0)
-                    .max(1.0) as usize;
+                let max_rows = st.config.f64_key("standings", "rows", 9.0).max(1.0) as usize;
                 let n = st.frame.standings_cars.len().clamp(1, max_rows);
-                let (_, need_h) =
-                    crate::skia_ui::standings_content_size(st.config.as_ref(), n);
+                let (_, need_h) = crate::skia_ui::standings_content_size(st.config.as_ref(), n);
                 if st
                     .layout
                     .get("standings")
@@ -1340,8 +1330,8 @@ impl eframe::App for OverlayApp {
                 // Repair oversized caution layouts from older auto-fit bugs.
                 if let Some(lay) = st.layout.get_mut("pace_caution") {
                     if lay.w > widgets::PACE_CAUTION_MAX_W || lay.h > widgets::PACE_CAUTION_MAX_H {
-                        lay.w = lay.w.min(widgets::PACE_CAUTION_MAX_W).max(180);
-                        lay.h = lay.h.min(widgets::PACE_CAUTION_MAX_H).max(52);
+                        lay.w = lay.w.clamp(180, widgets::PACE_CAUTION_MAX_W);
+                        lay.h = lay.h.clamp(52, widgets::PACE_CAUTION_MAX_H);
                         changed = true;
                     }
                 }
@@ -1356,8 +1346,8 @@ impl eframe::App for OverlayApp {
             let mut st = self.state.write();
             if let Some(lay) = st.layout.get_mut("pace_caution") {
                 if lay.w > widgets::PACE_CAUTION_MAX_W || lay.h > widgets::PACE_CAUTION_MAX_H {
-                    lay.w = lay.w.min(widgets::PACE_CAUTION_MAX_W).max(180);
-                    lay.h = lay.h.min(widgets::PACE_CAUTION_MAX_H).max(52);
+                    lay.w = lay.w.clamp(180, widgets::PACE_CAUTION_MAX_W);
+                    lay.h = lay.h.clamp(52, widgets::PACE_CAUTION_MAX_H);
                     st.save_layout_to_preset();
                 }
             }
@@ -1389,8 +1379,8 @@ impl eframe::App for OverlayApp {
                         && (lay.w > widgets::PACE_CAUTION_MAX_W
                             || lay.h > widgets::PACE_CAUTION_MAX_H)
                     {
-                        lay.w = lay.w.min(widgets::PACE_CAUTION_MAX_W).max(180);
-                        lay.h = lay.h.min(widgets::PACE_CAUTION_MAX_H).max(52);
+                        lay.w = lay.w.clamp(180, widgets::PACE_CAUTION_MAX_W);
+                        lay.h = lay.h.clamp(52, widgets::PACE_CAUTION_MAX_H);
                     }
                     items.push(((*key).to_string(), lay));
                 }

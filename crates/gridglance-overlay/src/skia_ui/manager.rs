@@ -543,13 +543,9 @@ impl SkiaPanelHost {
             return;
         }
 
-        let plot = egui::Rect::from_min_size(
-            egui::pos2(0.0, 0.0),
-            egui::vec2(w as f32, h as f32),
-        );
-        let local_pos = cursor.map(|(cx, cy)| {
-            egui::pos2((cx - geom.0) as f32, (cy - geom.1) as f32)
-        });
+        let plot = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(w as f32, h as f32));
+        let local_pos =
+            cursor.map(|(cx, cy)| egui::pos2((cx - geom.0) as f32, (cy - geom.1) as f32));
 
         if primary_pressed {
             self.pit_press_on_handle = false;
@@ -573,7 +569,11 @@ impl SkiaPanelHost {
                 if let Some(pos) = local_pos.filter(|p| plot.contains(*p)) {
                     let scroll_y = wheel as f32 * (40.0 / 120.0);
                     widgets::map::apply_pit_edit_wheel_zoom(
-                        &mut st.map, &base, &view, pos, scroll_y,
+                        &mut st.map,
+                        &base,
+                        &view,
+                        pos,
+                        scroll_y,
                     );
                 }
             }

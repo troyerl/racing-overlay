@@ -12,8 +12,8 @@ use std::sync::Arc;
 use super::schema::{PIT_LANE_CHOICES, PIT_PHASE_CHOICES};
 use super::theme::{MUTED, TEXT, TITLE};
 use super::widgets::{
-    button_kind, enable_card, info_card, setting_row, styled_choice_combo, styled_combo, text_field,
-    toggle_switch, ButtonKind,
+    button_kind, enable_card, info_card, setting_row, styled_choice_combo, styled_combo,
+    text_field, toggle_switch, ButtonKind,
 };
 use super::SettingsUi;
 
@@ -344,7 +344,8 @@ pub fn paint_track_scan(
                     if button_kind(ui, "Save loop", ButtonKind::GhostAccent).clicked() {
                         ui_state.flash(save_loop(state));
                     }
-                    if snap.has_pit_draft && snap.has_local_file
+                    if snap.has_pit_draft
+                        && snap.has_local_file
                         && button_kind(ui, "Save pit", ButtonKind::GhostAccent).clicked()
                     {
                         ui_state.flash(save_pit(state));
@@ -360,140 +361,142 @@ pub fn paint_track_scan(
 
         ui.add_space(8.0);
         enable_card(ui, "Track metadata", accent, |ui| {
-        let mut speed = snap.pit_speed;
-        // Seed from live SDK/YAML when the authoring field is still unset so a
-        // stale default (22 m/s ≈ 49 mph) is not what gets saved/shown.
-        if speed <= 0.5 {
-            if let Some(live) = state.read().frame.pit_speed_limit_mps {
-                if live.is_finite() && live > 0.5 {
-                    speed = live;
+            let mut speed = snap.pit_speed;
+            // Seed from live SDK/YAML when the authoring field is still unset so a
+            // stale default (22 m/s ≈ 49 mph) is not what gets saved/shown.
+            if speed <= 0.5 {
+                if let Some(live) = state.read().frame.pit_speed_limit_mps {
+                    if live.is_finite() && live > 0.5 {
+                        speed = live;
+                    }
                 }
             }
-        }
-        let speed_hint = if speed > 0.5 {
-            let st = state.read();
-            let shown = st.config.conv_speed(speed);
-            let unit = st.config.speed_unit();
-            Some(format!("≈ {shown:.0} {unit}"))
-        } else {
-            None
-        };
-        if super::widgets::number_row(
-            ui,
-            "Pit speed limit (m/s)",
-            &mut speed,
-            0.0..=40.0,
-            0.5,
-            accent,
-            speed_hint.as_deref(),
-        ) {
-            if let Some(mut st) = state.try_write() {
-                st.map.pit_speed_ms = speed as f64;
-            }
-        }
-        let mut pct = snap.lane_pct * 100.0;
-        if super::widgets::number_row(
-            ui,
-            "Pit lane speed (%)",
-            &mut pct,
-            50.0..=150.0,
-            1.0,
-            accent,
-            None,
-        ) {
-            if let Some(mut st) = state.try_write() {
-                st.map.pit_lane_speed_pct = (pct / 100.0) as f64;
-            }
-        }
-        // Read live, not from the frame-start snapshot: the import card runs
-        // earlier in this same frame and would otherwise be overwritten with
-        // the previous track's corner count.
-        let mut turns = state.read().map.num_turns as f32;
-        if super::widgets::number_row(
-            ui,
-            "Number of corners",
-            &mut turns,
-            0.0..=40.0,
-            1.0,
-            accent,
-            None,
-        ) {
-            if let Some(mut st) = state.try_write() {
-                st.map.num_turns = turns as i32;
-            }
-        }
-        let mut alias_str = snap
-            .aliases
-            .iter()
-            .map(|a| a.to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        setting_row(ui, "Track ID aliases", None, |ui| {
-            if text_field(ui, &mut alias_str, "e.g. 123, 456", 220.0).changed() {
-                let ids: Vec<i32> = alias_str
-                    .split(|c: char| !c.is_ascii_digit() && c != '-')
-                    .filter_map(|s| s.parse().ok())
-                    .collect();
-                if let Some(mut st) = state.try_write() {
-                    st.map.alias_ids = ids;
-                }
-            }
-        });
-
-        let mut corner_edit = state.read().map.corner_edit;
-        setting_row(ui, "Edit corner labels on map", None, |ui| {
-            if toggle_switch(ui, &mut corner_edit, accent, ui.id().with("corner_edit")).changed() {
-                if let Some(mut st) = state.try_write() {
-                    st.map.corner_edit = corner_edit;
-                    st.map.sf_edit = false;
-                    st.map.pit_edit = false;
-                    st.map.interactive = corner_edit;
-                    st.map.pit_sel = None;
-                }
-            }
-        });
-        // Fine offset for the residual lead/lag left after SVG alignment: the
-        // outline's arc length is not distributed quite like iRacing's
-        // LapDistPct. Signed percent reads better than the raw 0..1 wrap.
-        let mut nudge = {
-            let sf = state.read().map.cached_start_finish * 100.0;
-            if sf > 50.0 {
-                sf - 100.0
+            let speed_hint = if speed > 0.5 {
+                let st = state.read();
+                let shown = st.config.conv_speed(speed);
+                let unit = st.config.speed_unit();
+                Some(format!("≈ {shown:.0} {unit}"))
             } else {
-                sf
+                None
+            };
+            if super::widgets::number_row(
+                ui,
+                "Pit speed limit (m/s)",
+                &mut speed,
+                0.0..=40.0,
+                0.5,
+                accent,
+                speed_hint.as_deref(),
+            ) {
+                if let Some(mut st) = state.try_write() {
+                    st.map.pit_speed_ms = speed as f64;
+                }
             }
-        };
-        if super::widgets::number_row(
-            ui,
-            "Map position offset (%)",
-            &mut nudge,
-            -50.0..=50.0,
-            0.1,
-            accent,
-            Some("Positive pulls the dots back along the track. Save track after."),
-        ) {
-            if let Some(mut st) = state.try_write() {
-                st.map.cached_start_finish = (nudge / 100.0).rem_euclid(1.0);
+            let mut pct = snap.lane_pct * 100.0;
+            if super::widgets::number_row(
+                ui,
+                "Pit lane speed (%)",
+                &mut pct,
+                50.0..=150.0,
+                1.0,
+                accent,
+                None,
+            ) {
+                if let Some(mut st) = state.try_write() {
+                    st.map.pit_lane_speed_pct = (pct / 100.0) as f64;
+                }
             }
-        }
-
-        let mut sf_edit = state.read().map.sf_edit;
-        setting_row(
-            ui,
-            "Calibrate map position",
-            Some("While on track: click where you are on the map. Save track after."),
-            |ui| {
-                if toggle_switch(ui, &mut sf_edit, accent, ui.id().with("sf_edit")).changed() {
+            // Read live, not from the frame-start snapshot: the import card runs
+            // earlier in this same frame and would otherwise be overwritten with
+            // the previous track's corner count.
+            let mut turns = state.read().map.num_turns as f32;
+            if super::widgets::number_row(
+                ui,
+                "Number of corners",
+                &mut turns,
+                0.0..=40.0,
+                1.0,
+                accent,
+                None,
+            ) {
+                if let Some(mut st) = state.try_write() {
+                    st.map.num_turns = turns as i32;
+                }
+            }
+            let mut alias_str = snap
+                .aliases
+                .iter()
+                .map(|a| a.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            setting_row(ui, "Track ID aliases", None, |ui| {
+                if text_field(ui, &mut alias_str, "e.g. 123, 456", 220.0).changed() {
+                    let ids: Vec<i32> = alias_str
+                        .split(|c: char| !c.is_ascii_digit() && c != '-')
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
                     if let Some(mut st) = state.try_write() {
-                        st.map.sf_edit = sf_edit;
-                        st.map.corner_edit = false;
+                        st.map.alias_ids = ids;
+                    }
+                }
+            });
+
+            let mut corner_edit = state.read().map.corner_edit;
+            setting_row(ui, "Edit corner labels on map", None, |ui| {
+                if toggle_switch(ui, &mut corner_edit, accent, ui.id().with("corner_edit"))
+                    .changed()
+                {
+                    if let Some(mut st) = state.try_write() {
+                        st.map.corner_edit = corner_edit;
+                        st.map.sf_edit = false;
                         st.map.pit_edit = false;
-                        st.map.interactive = sf_edit;
+                        st.map.interactive = corner_edit;
                         st.map.pit_sel = None;
                     }
                 }
-            },
-        );
+            });
+            // Fine offset for the residual lead/lag left after SVG alignment: the
+            // outline's arc length is not distributed quite like iRacing's
+            // LapDistPct. Signed percent reads better than the raw 0..1 wrap.
+            let mut nudge = {
+                let sf = state.read().map.cached_start_finish * 100.0;
+                if sf > 50.0 {
+                    sf - 100.0
+                } else {
+                    sf
+                }
+            };
+            if super::widgets::number_row(
+                ui,
+                "Map position offset (%)",
+                &mut nudge,
+                -50.0..=50.0,
+                0.1,
+                accent,
+                Some("Positive pulls the dots back along the track. Save track after."),
+            ) {
+                if let Some(mut st) = state.try_write() {
+                    st.map.cached_start_finish = (nudge / 100.0).rem_euclid(1.0);
+                }
+            }
+
+            let mut sf_edit = state.read().map.sf_edit;
+            setting_row(
+                ui,
+                "Calibrate map position",
+                Some("While on track: click where you are on the map. Save track after."),
+                |ui| {
+                    if toggle_switch(ui, &mut sf_edit, accent, ui.id().with("sf_edit")).changed() {
+                        if let Some(mut st) = state.try_write() {
+                            st.map.sf_edit = sf_edit;
+                            st.map.corner_edit = false;
+                            st.map.pit_edit = false;
+                            st.map.interactive = sf_edit;
+                            st.map.pit_sel = None;
+                        }
+                    }
+                },
+            );
         });
     }
 
@@ -635,9 +638,7 @@ pub fn paint_pro_drivers_admin(ui: &mut Ui, ui_state: &mut SettingsUi, accent: C
                     ui_state.pro_sel = Some(name);
                 }
             }
-            if ui_state.pro_sel.is_some()
-                && button_kind(ui, "Remove", ButtonKind::Warn).clicked()
-            {
+            if ui_state.pro_sel.is_some() && button_kind(ui, "Remove", ButtonKind::Warn).clicked() {
                 if let Some(sel) = ui_state.pro_sel.clone() {
                     ui_state
                         .pro_drivers
@@ -851,8 +852,7 @@ fn import_html(state: &StateHandle, path: &str) -> anyhow::Result<String> {
     }
     st.map.invalidate_track_cache();
     st.map.cached_path = doc.points.clone();
-    st.map.cached_self_crossing =
-        crate::track_path::loop_self_crossing(&st.map.cached_path);
+    st.map.cached_self_crossing = crate::track_path::loop_self_crossing(&st.map.cached_path);
     st.map.cached_track_name = doc.name.clone();
     st.map.cached_start_finish = doc.start_finish;
     st.map.cached_corners = doc

@@ -7,9 +7,7 @@ use crate::ipc::ensure_ipc_token;
 use crate::paths;
 use crate::telemetry::TelemetryFrame;
 use anyhow::Result;
-use gridglance_ipc::{
-    methods, Request, Response, DEFAULT_LAN_TELEMETRY_PORT, PROTOCOL_VERSION,
-};
+use gridglance_ipc::{methods, Request, Response, DEFAULT_LAN_TELEMETRY_PORT, PROTOCOL_VERSION};
 use serde::Serialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
@@ -128,7 +126,11 @@ impl LanTelemetryServer {
     pub fn shutdown(&mut self) {
         self.stop_listener();
         self.enabled.store(false, Ordering::SeqCst);
-        self.applied = Some((false, self.port.load(Ordering::Relaxed), self.hz.load(Ordering::Relaxed)));
+        self.applied = Some((
+            false,
+            self.port.load(Ordering::Relaxed),
+            self.hz.load(Ordering::Relaxed),
+        ));
     }
 
     fn stop_listener(&mut self) {
@@ -448,7 +450,10 @@ fn dispatch(req: &Request, token: &str, hub: &FrameHub) -> (Response, SubCmd) {
         methods::TELEMETRY_GET => match hub.snapshot() {
             Some(frame) => match serde_json::to_value(&frame) {
                 Ok(v) => (Response::ok(req.id, v), SubCmd::None),
-                Err(e) => (Response::err(req.id, format!("serialize: {e}")), SubCmd::None),
+                Err(e) => (
+                    Response::err(req.id, format!("serialize: {e}")),
+                    SubCmd::None,
+                ),
             },
             None => (
                 Response::err(req.id, "no telemetry frame yet"),
@@ -456,10 +461,7 @@ fn dispatch(req: &Request, token: &str, hub: &FrameHub) -> (Response, SubCmd) {
             ),
         },
         methods::TELEMETRY_SUBSCRIBE => (
-            Response::ok(
-                req.id,
-                json!({ "subscribed": true, "type": "telemetry" }),
-            ),
+            Response::ok(req.id, json!({ "subscribed": true, "type": "telemetry" })),
             SubCmd::Subscribe,
         ),
         methods::TELEMETRY_UNSUBSCRIBE => (
@@ -677,7 +679,12 @@ mod tests {
             params: json!({}),
             token: Some(token),
         };
-        writeln!(reader.get_mut(), "{}", serde_json::to_string(&ping).unwrap()).unwrap();
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            serde_json::to_string(&ping).unwrap()
+        )
+        .unwrap();
         let mut got_ping = false;
         for _ in 0..30 {
             line.clear();
@@ -731,7 +738,12 @@ mod tests {
             params: json!({}),
             token: Some(token),
         };
-        writeln!(reader.get_mut(), "{}", serde_json::to_string(&ping).unwrap()).unwrap();
+        writeln!(
+            reader.get_mut(),
+            "{}",
+            serde_json::to_string(&ping).unwrap()
+        )
+        .unwrap();
         let mut got_ping = false;
         for _ in 0..30 {
             line.clear();

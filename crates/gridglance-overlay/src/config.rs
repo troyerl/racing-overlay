@@ -158,8 +158,8 @@ impl TelemNeeds {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let dash = cfg.widget_shown("dash");
-        let map_sector_hl = map
-            && cfg.bool_key("sector_timing", "highlight_active_sector_on_map", false);
+        let map_sector_hl =
+            map && cfg.bool_key("sector_timing", "highlight_active_sector_on_map", false);
         let pit_col = (relative && cfg.has_column("relative", "pit"))
             || (standings && cfg.has_column("standings", "pit"));
         Self {
@@ -341,7 +341,7 @@ pub fn elegant_content_size(cfg: &OverlayConfig, key: &str) -> (i32, i32) {
                 0
             };
             // Hard cap — never auto-expand into a huge caution banner.
-            ((n * 52).min(300), h.min(72).max(52))
+            ((n * 52).min(300), h.clamp(52, 72))
         }
         "pit_board" => {
             // Typical 3 services + title; grows with live list via host fit slack.
@@ -462,7 +462,10 @@ impl OverlayConfig {
             let mut cfg = default_cfg();
             deep_merge(&mut cfg, &doc);
             sanitize_config_sections(&mut cfg);
-            let legacy_groups = cfg.get("driver_groups").cloned().unwrap_or_else(|| json!([]));
+            let legacy_groups = cfg
+                .get("driver_groups")
+                .cloned()
+                .unwrap_or_else(|| json!([]));
             if let Some(obj) = cfg.as_object_mut() {
                 obj.remove("driver_groups");
             }
@@ -931,7 +934,8 @@ impl OverlayConfig {
         // Preserve garage overrides already on the preset if present.
         if let Some(presets) = self.doc.get("presets").and_then(|p| p.as_object()) {
             if let Some(preset) = presets.get(&self.active_preset) {
-                if let Some(mut garage) = preset.get("config").and_then(|c| c.get("garage")).cloned()
+                if let Some(mut garage) =
+                    preset.get("config").and_then(|c| c.get("garage")).cloned()
                 {
                     strip_driver_groups_from_value(&mut garage);
                     if let Some(obj) = sparse.as_object_mut() {
@@ -1275,15 +1279,11 @@ impl OverlayConfig {
             .section(section)
             .get("column_order")
             .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str())
-                    .collect::<Vec<_>>()
-            })
+            .map(|arr| arr.iter().filter_map(|x| x.as_str()).collect::<Vec<_>>())
             .filter(|v| !v.is_empty());
         match cols {
-            Some(list) => list.iter().any(|c| *c == col),
-            None => default_column_order(section).iter().any(|c| *c == col),
+            Some(list) => list.contains(&col),
+            None => default_column_order(section).contains(&col),
         }
     }
 
@@ -1593,12 +1593,11 @@ fn promote_shared_garage_prefs(config: &mut Value) {
         let Some(val) = garage.get(section).and_then(|s| s.get(key)).cloned() else {
             continue;
         };
-        let race_has = cfg_obj
-            .get(section)
-            .and_then(|s| s.get(key))
-            .is_some();
+        let race_has = cfg_obj.get(section).and_then(|s| s.get(key)).is_some();
         if !race_has {
-            let race_sec = cfg_obj.entry(section.to_string()).or_insert_with(|| json!({}));
+            let race_sec = cfg_obj
+                .entry(section.to_string())
+                .or_insert_with(|| json!({}));
             if let Some(obj) = race_sec.as_object_mut() {
                 obj.insert(key.into(), val);
                 changed = true;
@@ -1665,7 +1664,11 @@ fn optional_section_keys(section: &str) -> &'static [&'static str] {
     match section {
         "relative" | "standings" => &["widths", "license_colors"],
         "laptime_log" => &["widths"],
-        "radar" => &["show_side_labels", "show_clear_timer", "side_proximity_color"],
+        "radar" => &[
+            "show_side_labels",
+            "show_clear_timer",
+            "side_proximity_color",
+        ],
         _ => &[],
     }
 }
@@ -1709,11 +1712,7 @@ fn normalize_table_row_counts(cfg: &mut Value, section: &str) {
         let a = ahead.max(0).min(budget);
         (a, budget - a, total)
     } else {
-        (
-            ahead.max(0),
-            behind.max(0),
-            neighbors.max(0),
-        )
+        (ahead.max(0), behind.max(0), neighbors.max(0))
     };
     obj.insert("rows_ahead".into(), json!(ahead));
     obj.insert("rows_behind".into(), json!(behind));
@@ -2653,13 +2652,11 @@ mod tests {
             doc["presets"]["Default"]["config"]["map"]["car_label"],
             "position"
         );
-        assert!(
-            doc["presets"]["Default"]["config"]
-                .get("garage")
-                .and_then(|g| g.get("map"))
-                .and_then(|m| m.get("car_label"))
-                .is_none()
-        );
+        assert!(doc["presets"]["Default"]["config"]
+            .get("garage")
+            .and_then(|g| g.get("map"))
+            .and_then(|m| m.get("car_label"))
+            .is_none());
         let race = OverlayConfig::cfg_from_doc(&doc, "Default", ConfigContext::Race);
         assert_eq!(race["map"]["car_label"], "position");
     }

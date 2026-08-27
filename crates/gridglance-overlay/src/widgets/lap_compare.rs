@@ -162,7 +162,8 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 
     // Steering delta vs reference
-    if ctx.cfg.bool_key(SECTION, "show_steer_delta", true) && !view.session_extra.steer_spark.is_empty()
+    if ctx.cfg.bool_key(SECTION, "show_steer_delta", true)
+        && !view.session_extra.steer_spark.is_empty()
     {
         let gh = h * 0.08;
         let graph = Rect::from_min_size(Pos2::new(card.left() + pad, y), egui::vec2(iw, gh));

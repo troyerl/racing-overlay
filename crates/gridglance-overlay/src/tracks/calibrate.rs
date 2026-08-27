@@ -651,7 +651,7 @@ mod tests {
         assert!((arc_for_pct(&table, 0.25) - 0.25).abs() < 1e-4);
         // Halfway between the last knot and the wrap back to zero.
         let mid = arc_for_pct(&table, 1.0 - 0.5 / KNOTS as f32);
-        assert!(mid > 0.997 || mid < 0.003, "got {mid}");
+        assert!(!(0.003..=0.997).contains(&mid), "got {mid}");
         assert!((arc_for_pct(&table, 1.25) - arc_for_pct(&table, 0.25)).abs() < 1e-4);
     }
 

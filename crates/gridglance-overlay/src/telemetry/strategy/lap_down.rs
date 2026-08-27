@@ -67,8 +67,7 @@ pub fn project_lap_down(
         }
     }
 
-    let mut lap_down_if_pit = gap_after >= 0.95
-        || after.map(|a| a < 1.5).unwrap_or(false);
+    let mut lap_down_if_pit = gap_after >= 0.95 || after.map(|a| a < 1.5).unwrap_or(false);
     if let Some(rem) = race_laps_remain {
         if after.map(|a| a > rem).unwrap_or(true) && gap_after < 0.95 {
             lap_down_if_pit = false;
@@ -77,10 +76,10 @@ pub fn project_lap_down(
 
     let note = if lap_down_if_pit {
         Some("Pit risks lap down".into())
-    } else if let Some(u) = laps_until.filter(|u| *u < 5.0) {
-        Some(format!("Leader laps in ~{u:.1}L"))
     } else {
-        None
+        laps_until
+            .filter(|u| *u < 5.0)
+            .map(|u| format!("Leader laps in ~{u:.1}L"))
     };
 
     LapDownSnapshot {

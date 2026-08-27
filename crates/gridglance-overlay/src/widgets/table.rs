@@ -141,10 +141,8 @@ pub fn paint_table(
         Pos2::new(card.left(), card.top()),
         Vec2::new(card.width(), header_h),
     );
-    let hdr_content = Rect::from_min_size(
-        Pos2::new(left, card.top()),
-        Vec2::new(inner_w, header_h),
-    );
+    let hdr_content =
+        Rect::from_min_size(Pos2::new(left, card.top()), Vec2::new(inner_w, header_h));
     draw_edge_band(
         ui,
         cfg,
@@ -755,9 +753,7 @@ fn paint_row_cols(
                 let d_sz = font_sz * 0.90;
                 let icon_slot = if show_sr { fs * 0.38 } else { 0.0 };
                 let d_w = if show_sr {
-                    icon_slot
-                        + fs * 0.08
-                        + text_advance(ui, &dtxt, d_sz)
+                    icon_slot + fs * 0.08 + text_advance(ui, &dtxt, d_sz)
                 } else {
                     0.0
                 };
@@ -1350,7 +1346,8 @@ fn paint_badge(
             cfg.color(section, "lapped", "#2563eb")
         };
         let bg = color_with_alpha(raw, 255);
-        ui.painter().circle_filled(Pos2::new(cx, cy), size * 0.42, bg);
+        ui.painter()
+            .circle_filled(Pos2::new(cx, cy), size * 0.42, bg);
         ui.painter().circle_stroke(
             Pos2::new(cx, cy),
             size * 0.42,

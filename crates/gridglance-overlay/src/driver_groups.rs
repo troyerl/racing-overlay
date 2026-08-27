@@ -10,17 +10,17 @@ pub const DRIVER_GROUP_ICONS: &[&str] = &[
     "crown",
     "bolt",
     // Negative / caution tags
-    "skull",        // bad / dangerous driver
-    "thumbs_down",  // clearly negative
-    "ban",          // banned / avoid
-    "user_slash",   // blocked
-    "biohazard",    // dirty / toxic racing
-    "smog",         // dirty air metaphor
-    "bomb",         // liability
-    "angry",        // hot-headed
-    "ghost",        // invisible / offline vibe
-    "fire",         // dumpster-fire energy
-    "poop",         // tongue-in-cheek dirty
+    "skull",       // bad / dangerous driver
+    "thumbs_down", // clearly negative
+    "ban",         // banned / avoid
+    "user_slash",  // blocked
+    "biohazard",   // dirty / toxic racing
+    "smog",        // dirty air metaphor
+    "bomb",        // liability
+    "angry",       // hot-headed
+    "ghost",       // invisible / offline vibe
+    "fire",        // dumpster-fire energy
+    "poop",        // tongue-in-cheek dirty
 ];
 const DEFAULT_COLOR: &str = "#5bb8ff";
 const DEFAULT_ICON: &str = "league";
@@ -369,11 +369,7 @@ mod tests {
     #[test]
     fn merge_skips_existing_names_case_insensitively() {
         let existing = vec![json!({ "name": "Ada Lovelace", "aliases": ["Ada"] })];
-        let names = vec![
-            "ada lovelace".into(),
-            "ADA".into(),
-            "Grace Hopper".into(),
-        ];
+        let names = vec!["ada lovelace".into(), "ADA".into(), "Grace Hopper".into()];
         let (merged, added, skipped) = merge_names_into_members(&existing, &names);
         assert_eq!(added, 1);
         assert_eq!(skipped, 2);

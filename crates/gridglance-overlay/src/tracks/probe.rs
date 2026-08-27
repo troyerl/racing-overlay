@@ -233,8 +233,7 @@ pub fn calibrate_track(track_id: i32, samples: &[Sample]) -> anyhow::Result<Stri
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let fix = resolve_loop_fix(samples, &mut loop_pts, was_mirrored);
-    let table =
-        calibrate::solve_pct_map(samples, &loop_pts).map_err(|e| anyhow::anyhow!(e))?;
+    let table = calibrate::solve_pct_map(samples, &loop_pts).map_err(|e| anyhow::anyhow!(e))?;
 
     let obj = doc
         .as_object_mut()
@@ -305,7 +304,7 @@ pub fn calibrate_track(track_id: i32, samples: &[Sample]) -> anyhow::Result<Stri
 /// and put dots on the wrong side of the D).
 fn resolve_loop_fix(
     samples: &[Sample],
-    loop_pts: &mut Vec<(f32, f32)>,
+    loop_pts: &mut [(f32, f32)],
     was_mirrored: bool,
 ) -> calibrate::LoopFix {
     // Never bake Reverse/Mirror from dead-reckoned yaw. On Iowa (559) that

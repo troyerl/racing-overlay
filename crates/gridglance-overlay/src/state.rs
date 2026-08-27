@@ -370,10 +370,7 @@ impl MapAuthoring {
                 if !road.is_empty() && !entry.is_empty() {
                     // Keep road[0] as the joint end.
                     let joint = road[0];
-                    if entry
-                        .last()
-                        .is_some_and(|&e| Self::pts_coincide(e, joint))
-                    {
+                    if entry.last().is_some_and(|&e| Self::pts_coincide(e, joint)) {
                         let at = entry.len() - 1;
                         entry.insert(at, xy);
                         new_idx = at;
@@ -651,7 +648,7 @@ mod pit_edit_tests {
 
         m.pit_sel = Some((1, 1, 1)); // road end (2,0)
         m.retype_selected_point("merge").unwrap();
-        assert!(m.merge_pts.iter().any(|p| *p == (2.0, 0.0)));
+        assert!(m.merge_pts.contains(&(2.0, 0.0)));
         assert_eq!(m.phase, "merge");
     }
 }
@@ -780,15 +777,13 @@ fn merge_overlay_layout_json(layout: &mut HashMap<String, PanelLayout>) {
             } else {
                 None
             }
-        } else if let Some(obj) = v.as_object() {
-            Some(PanelLayout {
+        } else {
+            v.as_object().map(|obj| PanelLayout {
                 x: obj.get("x").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
                 y: obj.get("y").and_then(|x| x.as_i64()).unwrap_or(0) as i32,
                 w: obj.get("w").and_then(|x| x.as_i64()).unwrap_or(280) as i32,
                 h: obj.get("h").and_then(|x| x.as_i64()).unwrap_or(160) as i32,
             })
-        } else {
-            None
         };
         if let Some(geom) = parsed {
             layout.entry(k).or_insert(geom);
@@ -829,11 +824,7 @@ pub fn fit_panel_size(layout: &mut HashMap<String, PanelLayout>, key: &str, w: i
 }
 
 /// Set panel height while keeping the bottom edge fixed (grows/shrinks upward).
-pub fn fit_panel_height_from_bottom(
-    layout: &mut HashMap<String, PanelLayout>,
-    key: &str,
-    h: i32,
-) {
+pub fn fit_panel_height_from_bottom(layout: &mut HashMap<String, PanelLayout>, key: &str, h: i32) {
     let lay = layout.entry(key.to_string()).or_insert_with(|| {
         let (x, y, w, h0) = default_geom(key);
         PanelLayout { x, y, w, h: h0 }
@@ -949,7 +940,16 @@ impl SharedState {
         });
         let screen = crate::win_click::monitor_work_area(lay.x, lay.y, lay.w, lay.h)
             .unwrap_or((0, 0, 1920, 1080));
-        let (nx, ny) = aligned_xy(lay.x, lay.y, lay.w, lay.h, screen, horiz, vert, ALIGN_MARGIN);
+        let (nx, ny) = aligned_xy(
+            lay.x,
+            lay.y,
+            lay.w,
+            lay.h,
+            screen,
+            horiz,
+            vert,
+            ALIGN_MARGIN,
+        );
         lay.x = nx;
         lay.y = ny;
         self.save_layout_to_preset();

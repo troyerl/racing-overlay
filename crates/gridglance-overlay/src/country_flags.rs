@@ -25,7 +25,7 @@ pub fn resolve_country_code(
 pub fn flair_id_to_country_code(flair_id: i32) -> Option<&'static str> {
     match flair_id {
         // Unaffiliated / unknown / iRacing logo flairs — no country flag.
-        0 | 1 | 2 => None,
+        0..=2 => None,
         13 => Some("ar"),
         16 => Some("au"),
         17 => Some("at"),
@@ -478,14 +478,8 @@ mod tests {
         assert_eq!(flair_id_to_country_code(222), Some("gb"));
         assert_eq!(flair_id_to_country_code(31), Some("br"));
         assert_eq!(flair_id_to_country_code(1), None);
-        assert_eq!(
-            resolve_country_code(223, "", "Florida"),
-            Some("us")
-        );
-        assert_eq!(
-            resolve_country_code(0, "", "Brazil"),
-            Some("br")
-        );
+        assert_eq!(resolve_country_code(223, "", "Florida"), Some("us"));
+        assert_eq!(resolve_country_code(0, "", "Brazil"), Some("br"));
     }
 
     #[test]

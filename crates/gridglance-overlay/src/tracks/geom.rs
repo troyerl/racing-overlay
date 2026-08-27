@@ -1,5 +1,7 @@
 //! Pit / loop geometry helpers (Python `schematic_to_track` subset).
 
+type Poly = Vec<(f32, f32)>;
+
 pub fn resample_open(pts: &[(f32, f32)], n: usize) -> Vec<(f32, f32)> {
     if pts.len() < 2 || n < 2 {
         return pts.to_vec();
@@ -146,7 +148,7 @@ pub fn orient_pit_lane_polylines(
     entry: &[(f32, f32)],
     road: &[(f32, f32)],
     merge: &[(f32, f32)],
-) -> (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>) {
+) -> (Poly, Poly, Poly) {
     let mut entry = entry.to_vec();
     let mut road = road.to_vec();
     let mut merge = merge.to_vec();
@@ -169,8 +171,7 @@ pub fn orient_pit_lane_polylines(
         let d0_loop = min_dist_to_poly(merge[0], loop_pts);
         let d1_loop = min_dist_to_poly(*merge.last().unwrap(), loop_pts);
         if d0_loop + 1e-3 < d1_loop
-            && dist(merge[0], exit) + max_joint_gap * 0.25
-                >= dist(*merge.last().unwrap(), exit)
+            && dist(merge[0], exit) + max_joint_gap * 0.25 >= dist(*merge.last().unwrap(), exit)
         {
             merge.reverse();
         }
@@ -235,9 +236,7 @@ fn poly_bbox_diag(pts: &[(f32, f32)]) -> f32 {
 }
 
 fn min_dist_to_poly(pt: (f32, f32), poly: &[(f32, f32)]) -> f32 {
-    poly.iter()
-        .map(|p| dist(pt, *p))
-        .fold(f32::MAX, f32::min)
+    poly.iter().map(|p| dist(pt, *p)).fold(f32::MAX, f32::min)
 }
 
 pub fn connect_blend_to_loop(
@@ -364,11 +363,7 @@ pub fn fillet_loop_kinks(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
 fn strip_near_dups(pts: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let mut out: Vec<(f32, f32)> = Vec::with_capacity(pts.len());
     for &p in pts {
-        if out
-            .last()
-            .map(|q| dist(*q, p) < 1e-6)
-            .unwrap_or(false)
-        {
+        if out.last().map(|q| dist(*q, p) < 1e-6).unwrap_or(false) {
             continue;
         }
         out.push(p);
@@ -416,7 +411,10 @@ mod tests {
         assert!(road.last().unwrap().0 > road[0].0);
         assert!((merge[0].0 - road.last().unwrap().0).abs() < 1e-5);
         // Merge tip nearer loop than joint.
-        assert!(min_dist_to_poly(*merge.last().unwrap(), &loop_pts) <= min_dist_to_poly(merge[0], &loop_pts) + 1e-5);
+        assert!(
+            min_dist_to_poly(*merge.last().unwrap(), &loop_pts)
+                <= min_dist_to_poly(merge[0], &loop_pts) + 1e-5
+        );
         let (lo, hi) = pit_span_on_loop(&loop_pts, &road);
         let p0 = pct_on_loop(&loop_pts, road[0]);
         let p1 = pct_on_loop(&loop_pts, *road.last().unwrap());

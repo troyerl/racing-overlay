@@ -328,14 +328,7 @@ pub fn paint_radar(
     if cfg.bool_key(SECTION, "show_nose", true) {
         let nose = section_color(cfg, SECTION, "nose", "#f4f6f8");
         let tip_y = cy - car_h * 0.50;
-        c.line(
-            cx,
-            tip_y,
-            cx,
-            tip_y - nose_len,
-            nose,
-            (w * 0.012).max(1.5),
-        );
+        c.line(cx, tip_y, cx, tip_y - nose_len, nose, (w * 0.012).max(1.5));
     }
 
     c.draw_radar_car(cx, cy, car_w, car_h, kind);

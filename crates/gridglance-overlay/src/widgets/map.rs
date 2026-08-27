@@ -881,9 +881,7 @@ fn pit_path_pos_for_route_pct(
     if racing.len() >= 2 {
         let track = track_path::point_at(racing, loop_frac);
         return Some(track_path::nearest_point_on_open(
-            &lane.path,
-            track.0,
-            track.1,
+            &lane.path, track.0, track.1,
         ));
     }
     let span = (hi - lo).rem_euclid(1.0);
@@ -1014,10 +1012,7 @@ pub(crate) fn seed_pit_latches(ctx: &mut WidgetCtx<'_>) {
 
 /// When HTML left `pit_in` empty, open a short approach window before `lane_lo`.
 fn pit_approach_in_pct(lane: &track_path::PitLane, lane_lo: f32) -> f32 {
-    let authored = lane
-        .in_pct
-        .or(lane.span.map(|(a, _)| a))
-        .unwrap_or(lane_lo);
+    let authored = lane.in_pct.or(lane.span.map(|(a, _)| a)).unwrap_or(lane_lo);
     if lane.entry.len() >= 2 {
         return authored;
     }
@@ -1047,10 +1042,7 @@ fn synthetic_entry_seg(
     };
     let sf = ctx.map.cached_start_finish;
     let cal = ctx.map.cached_pct_map.as_deref();
-    let track = track_path::point_at(
-        racing,
-        loop_frac_for_pct(in_pct, sf, map_reverse(ctx), cal),
-    );
+    let track = track_path::point_at(racing, loop_frac_for_pct(in_pct, sf, map_reverse(ctx), cal));
     Some(vec![track, handoff])
 }
 
@@ -1319,7 +1311,8 @@ pub(crate) fn draw_car_number_label(
     };
     // Place by mesh ink bounds (same approach as dash gear) so digits sit in
     // the geometric centre of the dot — galley size includes ascent padding.
-    let galley = ui.fonts(|fonts| fonts.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE));
+    let galley =
+        ui.fonts(|fonts| fonts.layout_no_wrap(text.to_owned(), font.clone(), Color32::WHITE));
     let mesh = galley.mesh_bounds;
     let origin = if mesh.width() > 0.0 && mesh.height() > 0.0 {
         Pos2::new(c.x - mesh.center().x, c.y - mesh.center().y)
@@ -1440,8 +1433,7 @@ fn advance_car_pcts(ctx: &mut WidgetCtx<'_>, dt: f32, wall_secs: f64) -> HashMap
                     && sess_dt < VEL_DT_MAX
                 {
                     sess_dt
-                } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX
-                {
+                } else if st.last_telem_secs > 0.0 && wall_dt > VEL_DT_MIN && wall_dt < VEL_DT_MAX {
                     wall_dt
                 } else {
                     0.0
@@ -1552,6 +1544,7 @@ fn smooth_marker_point(cur: Pos2, tgt: Pos2, dt: f32, tau: f32) -> (Pos2, bool) 
 /// - **pct** mode: use target from eased lap-% (no second screen ease)
 /// - **route** mode: screen-space ease toward route targets
 /// - **pit**: snap to target
+///
 /// Returns `(points, still_animating)`.
 pub(crate) fn smooth_car_screen_pts(
     ctx: &mut WidgetCtx<'_>,
@@ -1931,9 +1924,7 @@ fn draw_wind(
         let bearing = wind_dir_radians(wind_dir) + PI;
         let angle = bearing - std::f32::consts::FRAC_PI_4;
         let sz = (r * 1.15).max(9.0);
-        let galley = ui.fonts(|f| {
-            f.layout_no_wrap(g, icons::font_id(sz), Color32::PLACEHOLDER)
-        });
+        let galley = ui.fonts(|f| f.layout_no_wrap(g, icons::font_id(sz), Color32::PLACEHOLDER));
         let half = galley.size() * 0.5;
         let (cos, sin) = (angle.cos(), angle.sin());
         // Clockwise rotation around galley top-left; place so center stays put.
@@ -2833,7 +2824,7 @@ pub fn build_car_sprites(
         }
         let fill = car_fill(ctx.cfg, car, pit_opacity, on_route, is_focus);
         let label = car_label_text(car, &car_label_mode, &live_ranks);
-        let place = live_ranks.get(&car.car_idx).copied().unwrap_or_else(|| {
+        let place = live_ranks.get(&car.car_idx).copied().unwrap_or({
             if car.position > 0 {
                 car.position
             } else if car.class_position > 0 {
@@ -2966,7 +2957,12 @@ fn draw_corners(
     for (idx, c) in corners.iter().enumerate() {
         let (nx, ny) = track_path::point_at(
             path,
-            loop_frac_for_pct(c.pct, sf, map_reverse(ctx), ctx.map.cached_pct_map.as_deref()),
+            loop_frac_for_pct(
+                c.pct,
+                sf,
+                map_reverse(ctx),
+                ctx.map.cached_pct_map.as_deref(),
+            ),
         );
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
@@ -3037,8 +3033,8 @@ pub(crate) fn collect_pit_edit_hits(
         }
         let has_joint = map.has_joint(lane2);
         let has_entry_joint = map.has_entry_joint(lane2);
-        let phases: [(&str, u8, &[(f32, f32)]); 3] =
-            [("entry", 0, entry), ("road", 1, road), ("merge", 2, merge)];
+        type PitPhase<'a> = (&'a str, u8, &'a [(f32, f32)]);
+        let phases: [PitPhase; 3] = [("entry", 0, entry), ("road", 1, road), ("merge", 2, merge)];
         for (_name, phase_code, pts) in phases {
             for (idx, &(nx, ny)) in pts.iter().enumerate() {
                 if has_entry_joint
@@ -3138,13 +3134,15 @@ pub(crate) fn tick_pit_edit_pointer(
         map.pit_edit_pan.1 += cursor_delta.1;
     }
 
-    if allow_click_append && buttons.primary_released && !buttons.shift {
-        if pit_handle_at(&hits, pos, handle_r).is_none() {
-            map.pit_sel = None;
-            let (mx, my) = xform.unmap(pos);
-            let (rx, ry) = inverse_model(mx, my, mirror, rot);
-            map.append_pit_edit_at(rx, ry);
-        }
+    if allow_click_append
+        && buttons.primary_released
+        && !buttons.shift
+        && pit_handle_at(&hits, pos, handle_r).is_none()
+    {
+        map.pit_sel = None;
+        let (mx, my) = xform.unmap(pos);
+        let (rx, ry) = inverse_model(mx, my, mirror, rot);
+        map.append_pit_edit_at(rx, ry);
     }
 
     if buttons.secondary_pressed {
@@ -3519,7 +3517,12 @@ fn handle_corner_edit(
     for (idx, c) in corners.iter().enumerate() {
         let (nx, ny) = track_path::point_at(
             path,
-            loop_frac_for_pct(c.pct, sf, map_reverse(ctx), ctx.map.cached_pct_map.as_deref()),
+            loop_frac_for_pct(
+                c.pct,
+                sf,
+                map_reverse(ctx),
+                ctx.map.cached_pct_map.as_deref(),
+            ),
         );
         let (mx, my) = model_point(nx, ny, mirror, rot);
         let s = xform.map(mx, my);
@@ -3729,12 +3732,7 @@ mod tests {
     fn pit_path_pos_aligns_beside_racing_line() {
         // Unit square loop. At loop_frac=0.125 the racing line is mid bottom
         // edge (0.5, 0); the parallel pit path should place beside it.
-        let racing = vec![
-            (0.0, 0.0),
-            (1.0, 0.0),
-            (1.0, 1.0),
-            (0.0, 1.0),
-        ];
+        let racing = vec![(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)];
         let lane = crate::track_path::PitLane {
             path: vec![(0.1, -0.1), (1.1, -0.1)],
             span: Some((0.0, 0.25)),
@@ -3746,9 +3744,8 @@ mod tests {
         assert!((mid.0 - 0.5).abs() < 1e-3, "got {mid:?}");
         assert!((mid.1 - (-0.1)).abs() < 1e-3, "got {mid:?}");
         // Empty racing → span-linear fallback (mid-span → mid path).
-        let fallback =
-            super::pit_path_pos_for_route_pct(&lane, 0.125, 0.0, 0.25, 1.0, &[], 0.125)
-                .expect("fallback");
+        let fallback = super::pit_path_pos_for_route_pct(&lane, 0.125, 0.0, 0.25, 1.0, &[], 0.125)
+            .expect("fallback");
         assert!((fallback.0 - 0.6).abs() < 1e-3, "got {fallback:?}");
     }
 
@@ -3797,7 +3794,10 @@ mod tests {
             .expect("latched mid-lane should stay on pit_path without exit");
         // Must sample the pit path (y=0), not fall back to None/racing line.
         // loop_frac 0.10 on the unit square ≈ (0.4, 0) → beside on pit at (0.4, 0).
-        assert!((pos.0 - 0.4).abs() < 0.05, "expected beside racing line, got {pos:?}");
+        assert!(
+            (pos.0 - 0.4).abs() < 0.05,
+            "expected beside racing line, got {pos:?}"
+        );
         assert!(pos.1.abs() < 1e-4, "expected y on pit path, got {pos:?}");
     }
 

@@ -12,6 +12,8 @@ const MIN_MERGE_DASHES: usize = 3;
 /// Reject a chain whose total length is tiny vs the SVG bbox diagonal.
 const MIN_CHAIN_FRAC: f32 = 0.04;
 
+type Poly = Vec<(f32, f32)>;
+
 #[derive(Debug, Clone)]
 pub struct PitPolylinesSvg {
     pub road: Vec<(f32, f32)>,
@@ -80,10 +82,7 @@ pub fn extract_pit_polylines_svg(pit_svg: &str) -> Option<PitPolylinesSvg> {
 }
 
 /// Normalize SVG pit polylines with the racing-loop `NormParams`.
-pub fn normalize_pit_polylines(
-    pit: &PitPolylinesSvg,
-    norm: NormParams,
-) -> (Vec<(f32, f32)>, Vec<(f32, f32)>, Vec<(f32, f32)>) {
+pub fn normalize_pit_polylines(pit: &PitPolylinesSvg, norm: NormParams) -> (Poly, Poly, Poly) {
     (
         apply_norm(&pit.road, norm),
         apply_norm(&pit.merge, norm),
@@ -187,9 +186,7 @@ fn bbox_diag(subs: &[Vec<(f32, f32)>]) -> f32 {
     (max_x - min_x).hypot(max_y - min_y).max(1.0)
 }
 
-fn split_dashes_and_long(
-    subs: &[Vec<(f32, f32)>],
-) -> (Vec<Vec<(f32, f32)>>, Vec<Vec<(f32, f32)>>) {
+fn split_dashes_and_long(subs: &[Poly]) -> (Vec<Poly>, Vec<Poly>) {
     if subs.is_empty() {
         return (vec![], vec![]);
     }
@@ -303,9 +300,7 @@ fn stitch_dash_midpoints(subs: &[Vec<(f32, f32)>], min_dashes: usize) -> Option<
 
 /// Split a stitched pit centerline into road + exit climb when merge ticks were
 /// drawn inside `#Pitroad` (no `#Mergeline` group).
-fn split_exit_climb(
-    chain: &[(f32, f32)],
-) -> Option<(Vec<(f32, f32)>, Vec<(f32, f32)>)> {
+fn split_exit_climb(chain: &[(f32, f32)]) -> Option<(Poly, Poly)> {
     if chain.len() < 8 {
         return None;
     }
@@ -399,7 +394,10 @@ fn adaptive_max_jump(dashes: &[Dash], diag: f32) -> f32 {
 
 /// Sort dash midpoints along the cluster's long axis (fallback when NN stitch
 /// fails on a short, evenly spaced Mergeline).
-fn sort_midpoints_along_axis(subs: &[Vec<(f32, f32)>], min_dashes: usize) -> Option<Vec<(f32, f32)>> {
+fn sort_midpoints_along_axis(
+    subs: &[Vec<(f32, f32)>],
+    min_dashes: usize,
+) -> Option<Vec<(f32, f32)>> {
     let mut mids: Vec<(f32, f32)> = subs.iter().filter_map(|s| dash_mid(s)).collect();
     if mids.len() < min_dashes {
         return None;
@@ -432,10 +430,7 @@ fn grow_chain(dashes: &[Dash], start_i: usize, max_jump: f32) -> Vec<(f32, f32)>
 
     let mut forward = Vec::new();
     let mut cur = dashes[start_i].mid;
-    loop {
-        let Some(i) = nearest_unused(dashes, &used, cur, max_jump) else {
-            break;
-        };
+    while let Some(i) = nearest_unused(dashes, &used, cur, max_jump) {
         used[i] = true;
         cur = dashes[i].mid;
         forward.push(cur);
@@ -443,10 +438,7 @@ fn grow_chain(dashes: &[Dash], start_i: usize, max_jump: f32) -> Vec<(f32, f32)>
 
     let mut backward = Vec::new();
     cur = dashes[start_i].mid;
-    loop {
-        let Some(i) = nearest_unused(dashes, &used, cur, max_jump) else {
-            break;
-        };
+    while let Some(i) = nearest_unused(dashes, &used, cur, max_jump) {
         used[i] = true;
         cur = dashes[i].mid;
         backward.push(cur);
@@ -459,12 +451,7 @@ fn grow_chain(dashes: &[Dash], start_i: usize, max_jump: f32) -> Vec<(f32, f32)>
     chain
 }
 
-fn nearest_unused(
-    dashes: &[Dash],
-    used: &[bool],
-    cur: (f32, f32),
-    max_jump: f32,
-) -> Option<usize> {
+fn nearest_unused(dashes: &[Dash], used: &[bool], cur: (f32, f32), max_jump: f32) -> Option<usize> {
     let mut best: Option<(usize, f32)> = None;
     for (i, d) in dashes.iter().enumerate() {
         if used[i] {
@@ -482,10 +469,7 @@ fn nearest_unused(
     best.map(|(i, _)| i)
 }
 
-fn pick_entry_blend(
-    longs: &[Vec<(f32, f32)>],
-    road: &[(f32, f32)],
-) -> Option<Vec<(f32, f32)>> {
+fn pick_entry_blend(longs: &[Vec<(f32, f32)>], road: &[(f32, f32)]) -> Option<Vec<(f32, f32)>> {
     let road0 = *road.first()?;
     let road_len = polyline_length(road).max(1.0);
     let mut best: Option<(f32, Vec<(f32, f32)>)> = None;

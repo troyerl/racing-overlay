@@ -336,8 +336,8 @@ mod tests {
         let class_idx = ((old_lic - 1) / 4) as usize;
         let old_sr = old_sub as f64 / 100.0;
         let corners = laps * corners_per_lap;
-        let p = project_delta_with_cpi(class_idx, old_sr, old_cpi, corners, incidents, "Race")
-            .unwrap();
+        let p =
+            project_delta_with_cpi(class_idx, old_sr, old_cpi, corners, incidents, "Race").unwrap();
         (p.delta_hundredths, new_sub - old_sub)
     }
 
@@ -391,7 +391,8 @@ mod tests {
         assert!(
             (proj_est - actual).abs() <= 1,
             "est-CPI path within 0.01: projected {:+} vs official {:+}",
-            proj_est, actual
+            proj_est,
+            actual
         );
     }
 }

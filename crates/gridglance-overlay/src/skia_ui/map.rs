@@ -723,8 +723,7 @@ fn draw_pit_lane(
         c.dashed_polyline(&s, pit_col, 2.2, 4.0, 3.0);
 
         if show_speed {
-            if let Some(ms) =
-                track_path::resolve_pit_speed_mps(live_pit_mps, lane, authored_pit_ms)
+            if let Some(ms) = track_path::resolve_pit_speed_mps(live_pit_mps, lane, authored_pit_ms)
             {
                 let (val, unit) = (cfg.conv_speed(ms), cfg.speed_unit());
                 let anchor = s[s.len() / 2];
@@ -771,7 +770,8 @@ fn draw_zones(
     cal: Option<&[f32]>,
 ) {
     for &(lo, hi) in zones {
-        let pts = emap::zone_screen_pts(path, xform, mirror, rot, lo, hi, start_finish, reverse, cal);
+        let pts =
+            emap::zone_screen_pts(path, xform, mirror, rot, lo, hi, start_finish, reverse, cal);
         if pts.len() >= 2 {
             c.polyline(&pts, color, width, false);
         }
@@ -1054,8 +1054,10 @@ fn draw_traffic_markers(
             continue;
         };
         let car_pt = car_pts.get(&m.idx).copied().unwrap_or_else(|| {
-            let (nx, ny) =
-                track_path::point_at(path, emap::loop_frac_for_pct(m.pct, start_finish, reverse, cal));
+            let (nx, ny) = track_path::point_at(
+                path,
+                emap::loop_frac_for_pct(m.pct, start_finish, reverse, cal),
+            );
             let (mx, my) = emap::model_point(nx, ny, mirror, rot);
             xform.map(mx, my)
         });
@@ -1268,7 +1270,8 @@ fn draw_pit_edit_drafts(
 
         let has_joint = map.has_joint(lane2);
         let has_entry_joint = map.has_entry_joint(lane2);
-        let phases: [(&str, u8, &[(f32, f32)], Rgba); 3] = [
+        type PhaseDraw<'a> = (&'a str, u8, &'a [(f32, f32)], Rgba);
+        let phases: [PhaseDraw; 3] = [
             ("entry", 0, entry, entry_col),
             ("road", 1, road, road_col),
             ("merge", 2, merge, merge_col),
