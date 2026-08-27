@@ -204,6 +204,8 @@ pub struct TelemetryFrame {
     pub position: i32,
     pub car_number: String,
     pub lap: i32,
+    /// Official session lap total from iRacing (`SessionLapsTotal`).
+    /// Dash / table lap count uses [`TelemetryFrame::display_laps_total`].
     pub laps_total: i32,
     /// Highest competitor lap in the field (lead lap).
     #[serde(default)]
@@ -408,6 +410,39 @@ pub struct TelemetryFrame {
     /// Player tire-set inventory from iRacing (`255` = unlimited).
     #[serde(default)]
     pub tire_sets: TireSets,
+}
+
+impl TelemetryFrame {
+    /// Live competitor furthest around the circuit (lap, then track %).
+    fn leader_progress(&self) -> (i32, f32) {
+        let leader = self
+            .cars
+            .iter()
+            .filter(|c| !c.is_pace_car && c.lap > 0 && c.lap_dist_pct >= 0.0)
+            .max_by(|a, b| {
+                a.lap.cmp(&b.lap).then_with(|| {
+                    a.lap_dist_pct
+                        .partial_cmp(&b.lap_dist_pct)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+            });
+        match leader {
+            Some(c) => (c.lap.max(0), c.lap_dist_pct),
+            // No field snapshot — do not treat the player as lapped.
+            None => (self.lap.max(0), self.player_lap_dist_pct),
+        }
+    }
+
+    /// Session lap total minus whole laps the leader has put on this car.
+    pub fn display_laps_total(&self) -> Option<i32> {
+        self.display_laps_total_for(self.lap, self.player_lap_dist_pct)
+    }
+
+    /// Like [`Self::display_laps_total`] for a specific car (table focus).
+    pub fn display_laps_total_for(&self, lap: i32, pct: f32) -> Option<i32> {
+        let (lead_lap, leader_pct) = self.leader_progress();
+        format::display_laps_total(self.laps_total, lap, pct, lead_lap, leader_pct)
+    }
 }
 
 /// Player remaining / used tire sets. `255` means unlimited; `None` if the

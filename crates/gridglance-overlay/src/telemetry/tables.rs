@@ -1998,11 +1998,11 @@ fn format_slot_value(
             }
         }
         "lap" => {
-            let lap = player
-                .map(|p| p.lap)
-                .filter(|l| *l > 0)
-                .unwrap_or(frame.lap);
-            if let Some(total) = crate::telemetry::finite_laps_total(frame.laps_total) {
+            let (lap, pct) = player
+                .map(|p| (p.lap, p.lap_dist_pct))
+                .filter(|(l, _)| *l > 0)
+                .unwrap_or((frame.lap, frame.player_lap_dist_pct));
+            if let Some(total) = frame.display_laps_total_for(lap, pct) {
                 format!("{}/{}", lap, total)
             } else if lap > 0 {
                 format!("{lap}")

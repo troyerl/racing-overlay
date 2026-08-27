@@ -75,6 +75,49 @@ pub fn finite_laps_total(n: i32) -> Option<i32> {
     }
 }
 
+/// Whole laps the leader has put on the player.
+///
+/// Uses lap + track % so a start/finish split (leader 21.02, you 20.98) is
+/// not a lap down until they actually catch you.
+pub fn laps_down_to_leader(
+    player_lap: i32,
+    player_pct: f32,
+    leader_lap: i32,
+    leader_pct: f32,
+) -> i32 {
+    if player_lap <= 0 || leader_lap <= 0 {
+        return 0;
+    }
+    let p = if player_pct.is_finite() && player_pct >= 0.0 {
+        player_pct.clamp(0.0, 0.999)
+    } else {
+        0.0
+    };
+    let l = if leader_pct.is_finite() && leader_pct >= 0.0 {
+        leader_pct.clamp(0.0, 0.999)
+    } else {
+        0.0
+    };
+    let delta = (leader_lap as f32 + l) - (player_lap as f32 + p);
+    delta.floor().max(0.0) as i32
+}
+
+/// Official session total minus laps the leader has put on this car.
+pub fn display_laps_total(
+    official_total: i32,
+    player_lap: i32,
+    player_pct: f32,
+    leader_lap: i32,
+    leader_pct: f32,
+) -> Option<i32> {
+    let total = finite_laps_total(official_total)?;
+    if player_lap <= 0 {
+        return Some(total);
+    }
+    let down = laps_down_to_leader(player_lap, player_pct, leader_lap, leader_pct);
+    Some((total - down).max(player_lap).max(1))
+}
+
 pub fn fmt_car_gap(position: i32, f2: f32) -> String {
     if position == 1 {
         return "LEADER".into();
@@ -289,6 +332,37 @@ mod tests {
         assert_eq!(finite_laps_total(0), None);
         assert_eq!(finite_laps_total(32_767), None);
         assert_eq!(finite_laps_total(100_000), None);
+    }
+
+    #[test]
+    fn sf_split_is_not_a_lap_down() {
+        // Leader just took S/F; player is still on the previous lap, right behind.
+        assert_eq!(laps_down_to_leader(20, 0.98, 21, 0.02), 0);
+        assert_eq!(display_laps_total(50, 20, 0.98, 21, 0.02), Some(50));
+    }
+
+    #[test]
+    fn leader_pass_drops_total_one_lap() {
+        assert_eq!(laps_down_to_leader(20, 0.50, 21, 0.51), 1);
+        assert_eq!(display_laps_total(50, 20, 0.50, 21, 0.51), Some(49));
+    }
+
+    #[test]
+    fn two_laps_down_drops_total_twice() {
+        assert_eq!(laps_down_to_leader(20, 0.40, 22, 0.45), 2);
+        assert_eq!(display_laps_total(50, 20, 0.40, 22, 0.45), Some(48));
+    }
+
+    #[test]
+    fn catching_from_behind_is_not_yet_lapped() {
+        assert_eq!(laps_down_to_leader(20, 0.50, 21, 0.40), 0);
+        assert_eq!(display_laps_total(50, 20, 0.50, 21, 0.40), Some(50));
+    }
+
+    #[test]
+    fn player_leading_keeps_official_total() {
+        assert_eq!(laps_down_to_leader(21, 0.30, 21, 0.30), 0);
+        assert_eq!(display_laps_total(50, 21, 0.30, 21, 0.30), Some(50));
     }
 
     #[test]

@@ -118,7 +118,7 @@ fn metric_str(cfg: &OverlayConfig, f: &TelemetryFrame, key: &str) -> String {
             }
         }
         "lap_count" => {
-            if let Some(total) = crate::telemetry::finite_laps_total(f.laps_total) {
+            if let Some(total) = f.display_laps_total() {
                 format!("{}/{}", f.lap, total)
             } else if f.lap > 0 {
                 format!("{}", f.lap)
