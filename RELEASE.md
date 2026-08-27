@@ -5,6 +5,15 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 1.69.29 - 2026-08-27
+
+- **LAN telemetry subscribe.** Connecting from another device no longer drops
+  right after the subscribe ack. The first live frame waits a tick so the
+  client can start reading, a blocked send skips that frame instead of closing
+  the socket, and a non-JSON float in a frame no longer kills the session.
+- **LAN tire sets.** Telemetry frames include remaining/used tire sets (overall,
+  left/right, front/rear) plus the dry-set limit (`255` = unlimited).
+
 ## 1.69.28 - 2026-08-13
 
 - **Radar car.** NASCAR Cup paths like `stockcars fordmustang2022` use the stock

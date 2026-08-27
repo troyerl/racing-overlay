@@ -10,9 +10,10 @@ use anyhow::Result;
 use gridglance_ipc::{
     methods, Request, Response, DEFAULT_LAN_TELEMETRY_PORT, PROTOCOL_VERSION,
 };
+use serde::Serialize;
 use serde_json::json;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream, UdpSocket};
+use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -22,6 +23,24 @@ const MAX_CLIENTS: usize = 4;
 const MIN_HZ: u32 = 5;
 const MAX_HZ: u32 = 30;
 const DEFAULT_HZ: u32 = 15;
+const WRITE_DEADLINE: Duration = Duration::from_secs(20);
+const IDLE_SLEEP: Duration = Duration::from_millis(5);
+
+/// Decrements the live-client counter even if the handler panics.
+struct ClientSlot(Arc<AtomicUsize>);
+
+impl Drop for ClientSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+#[derive(Serialize)]
+struct TelemetryPush<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    frame: &'a TelemetryFrame,
+}
 
 /// Shared latest frame for LAN clients.
 #[derive(Clone, Default)]
@@ -165,10 +184,10 @@ impl LanTelemetryServer {
                         let clients_c = Arc::clone(&clients);
                         let stop_c = Arc::clone(&stop);
                         thread::spawn(move || {
-                            if let Err(e) = handle_client(stream, &tok, hub_c, hz_c, stop_c) {
-                                eprintln!("[gridglance] LAN telemetry client error: {e}");
+                            let _slot = ClientSlot(clients_c);
+                            if let Err(e) = handle_client(stream, addr, &tok, hub_c, hz_c, stop_c) {
+                                eprintln!("[gridglance] LAN telemetry {addr}: {e}");
                             }
-                            clients_c.fetch_sub(1, Ordering::SeqCst);
                         });
                     }
                     Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -212,22 +231,105 @@ pub fn lan_connect_endpoint(port: u16) -> String {
     }
 }
 
+fn io_would_block(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+    )
+}
+
+fn io_gone(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        ErrorKind::BrokenPipe
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::NotConnected
+            | ErrorKind::UnexpectedEof
+    )
+}
+
+fn flush_deadline(stream: &mut TcpStream, deadline: Instant) -> Result<()> {
+    loop {
+        match stream.flush() {
+            Ok(()) => return Ok(()),
+            Err(e) if io_would_block(&e) => {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("write timeout");
+                }
+                thread::sleep(IDLE_SLEEP);
+            }
+            Err(e) if io_gone(&e) => return Err(e.into()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
+fn write_all_deadline(stream: &mut TcpStream, mut buf: &[u8], deadline: Instant) -> Result<()> {
+    while !buf.is_empty() {
+        match stream.write(buf) {
+            Ok(0) => anyhow::bail!("write zero"),
+            Ok(n) => buf = &buf[n..],
+            Err(e) if io_would_block(&e) => {
+                if Instant::now() >= deadline {
+                    anyhow::bail!("write timeout");
+                }
+                thread::sleep(IDLE_SLEEP);
+            }
+            Err(e) if io_gone(&e) => return Err(e.into()),
+            Err(e) => return Err(e.into()),
+        }
+    }
+    flush_deadline(stream, deadline)
+}
+
+fn write_line(stream: &mut TcpStream, json: &str) -> Result<()> {
+    let mut line = String::with_capacity(json.len() + 1);
+    line.push_str(json);
+    line.push('\n');
+    write_all_deadline(stream, line.as_bytes(), Instant::now() + WRITE_DEADLINE)
+}
+
+/// Write a telemetry line. `Ok(false)` means the socket wasn't writable — skip
+/// this frame and keep the connection (don't start a partial NDJSON line).
+fn try_push_line(stream: &mut TcpStream, json: &str) -> Result<bool> {
+    let mut line = String::with_capacity(json.len() + 1);
+    line.push_str(json);
+    line.push('\n');
+    let bytes = line.as_bytes();
+    let n = match stream.write(bytes) {
+        Ok(n) => n,
+        Err(e) if io_would_block(&e) => return Ok(false),
+        Err(e) if io_gone(&e) => return Err(e.into()),
+        Err(e) => return Err(e.into()),
+    };
+    if n == 0 {
+        return Ok(false);
+    }
+    write_all_deadline(stream, &bytes[n..], Instant::now() + WRITE_DEADLINE)?;
+    Ok(true)
+}
+
 fn handle_client(
     stream: TcpStream,
+    addr: SocketAddr,
     token: &str,
     hub: FrameHub,
     hz: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
 ) -> Result<()> {
     stream.set_nodelay(true)?;
-    stream.set_read_timeout(Some(Duration::from_millis(50)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_nonblocking(true)?;
 
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = stream;
     let mut line = String::new();
     let mut subscribed = false;
-    let mut last_push = Instant::now() - Duration::from_secs(1);
+    // Don't dump a (often huge) frame in the same tick as the subscribe ack —
+    // the client is still reading that RPC line. Immediate blocking writes on
+    // a slow Wi‑Fi path were closing the socket right after the ack.
+    let mut last_push = Instant::now();
+    let mut logged_ser = false;
 
     while !stop.load(Ordering::SeqCst) {
         line.clear();
@@ -242,20 +344,23 @@ fn handle_client(
                     Ok(r) => r,
                     Err(e) => {
                         let resp = Response::err(0, format!("bad request: {e}"));
-                        writeln!(writer, "{}", serde_json::to_string(&resp)?)?;
+                        write_line(&mut writer, &serde_json::to_string(&resp)?)?;
                         continue;
                     }
                 };
                 let (resp, sub_cmd) = dispatch(&req, token, &hub);
                 match sub_cmd {
-                    SubCmd::Subscribe => subscribed = true,
+                    SubCmd::Subscribe => {
+                        subscribed = true;
+                        last_push = Instant::now();
+                    }
                     SubCmd::Unsubscribe => subscribed = false,
                     SubCmd::None => {}
                 }
-                writeln!(writer, "{}", serde_json::to_string(&resp)?)?;
-                writer.flush()?;
+                write_line(&mut writer, &serde_json::to_string(&resp)?)?;
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut => {}
+            Err(e) if io_would_block(&e) => thread::sleep(IDLE_SLEEP),
+            Err(e) if io_gone(&e) => break,
             Err(e) => return Err(e.into()),
         }
 
@@ -264,13 +369,28 @@ fn handle_client(
             let interval = Duration::from_secs_f32(1.0 / rate as f32);
             if last_push.elapsed() >= interval {
                 if let Some(frame) = hub.snapshot() {
-                    let push = json!({
-                        "type": "telemetry",
-                        "frame": frame,
-                    });
-                    writeln!(writer, "{}", serde_json::to_string(&push)?)?;
-                    writer.flush()?;
-                    last_push = Instant::now();
+                    let push = TelemetryPush {
+                        kind: "telemetry",
+                        frame: &frame,
+                    };
+                    match serde_json::to_string(&push) {
+                        Ok(s) => match try_push_line(&mut writer, &s) {
+                            Ok(true) => last_push = Instant::now(),
+                            Ok(false) => {
+                                // Client hasn't drained yet; skip this tick.
+                            }
+                            Err(e) => return Err(e),
+                        },
+                        Err(e) => {
+                            if !logged_ser {
+                                eprintln!(
+                                    "[gridglance] LAN telemetry {addr}: skip frame serialize ({e})"
+                                );
+                                logged_ser = true;
+                            }
+                            last_push = Instant::now();
+                        }
+                    }
                 }
             }
         }
@@ -408,6 +528,37 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_get_includes_tire_sets() {
+        let hub = FrameHub::new();
+        hub.publish(&TelemetryFrame {
+            connected: true,
+            tire_sets: crate::telemetry::TireSets {
+                available: Some(2),
+                used: Some(1),
+                dry_limit: Some(3),
+                left_available: Some(2),
+                right_available: Some(1),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let req = Request {
+            id: 4,
+            method: methods::TELEMETRY_GET.into(),
+            params: json!({}),
+            token: Some("secret".into()),
+        };
+        let resp = dispatch_for_test(&req, "secret", &hub);
+        assert!(resp.ok);
+        let v = resp.result.unwrap();
+        assert_eq!(v["tire_sets"]["available"], 2);
+        assert_eq!(v["tire_sets"]["used"], 1);
+        assert_eq!(v["tire_sets"]["dry_limit"], 3);
+        assert_eq!(v["tire_sets"]["left_available"], 2);
+        assert_eq!(v["tire_sets"]["right_available"], 1);
+    }
+
+    #[test]
     fn hz_clamped() {
         assert_eq!(clamp_hz(1), 5);
         assert_eq!(clamp_hz(15), 15);
@@ -466,5 +617,135 @@ mod tests {
         srv.shutdown();
         srv.sync(false, port, 10);
         assert!(!srv.enabled.load(Ordering::SeqCst));
+    }
+
+    fn connect_retry(port: u16) -> TcpStream {
+        let mut stream = None;
+        for _ in 0..50 {
+            if let Ok(s) = TcpStream::connect(("127.0.0.1", port)) {
+                stream = Some(s);
+                break;
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        stream.expect("connect")
+    }
+
+    #[test]
+    fn smoke_subscribe_stays_open() {
+        let mut srv = LanTelemetryServer::default();
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe bind");
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        srv.sync(true, port, 10);
+        srv.publish(&TelemetryFrame {
+            connected: true,
+            speed_mps: 21.0,
+            ..Default::default()
+        });
+
+        let token = ensure_ipc_token().expect("token");
+        let mut stream = connect_retry(port);
+        stream.set_nodelay(true).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+
+        let sub = Request {
+            id: 1,
+            method: methods::TELEMETRY_SUBSCRIBE.into(),
+            params: json!({}),
+            token: Some(token.clone()),
+        };
+        writeln!(stream, "{}", serde_json::to_string(&sub).unwrap()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("subscribe ack");
+        let ack: Response = serde_json::from_str(line.trim()).expect("ack json");
+        assert!(ack.ok, "{ack:?}");
+        assert_eq!(ack.result.as_ref().unwrap()["subscribed"], true);
+
+        line.clear();
+        reader.read_line(&mut line).expect("telemetry push");
+        let push: serde_json::Value = serde_json::from_str(line.trim()).expect("push json");
+        assert_eq!(push["type"], "telemetry");
+        assert_eq!(push["frame"]["speed_mps"], 21.0);
+
+        // Connection must still accept RPC after the first push (the old bug
+        // closed the socket immediately after the subscribe ack).
+        let ping = Request {
+            id: 2,
+            method: methods::PING.into(),
+            params: json!({}),
+            token: Some(token),
+        };
+        writeln!(reader.get_mut(), "{}", serde_json::to_string(&ping).unwrap()).unwrap();
+        let mut got_ping = false;
+        for _ in 0..30 {
+            line.clear();
+            reader.read_line(&mut line).expect("line after subscribe");
+            if let Ok(resp) = serde_json::from_str::<Response>(line.trim()) {
+                if resp.id == 2 {
+                    assert!(resp.ok, "{resp:?}");
+                    got_ping = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_ping, "socket closed or no ping reply after subscribe");
+
+        srv.shutdown();
+    }
+
+    #[test]
+    fn smoke_subscribe_nan_frame_keeps_socket() {
+        let mut srv = LanTelemetryServer::default();
+        let probe = TcpListener::bind("127.0.0.1:0").expect("probe bind");
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+        srv.sync(true, port, 10);
+        srv.publish(&TelemetryFrame {
+            speed_mps: f32::NAN,
+            ..Default::default()
+        });
+
+        let token = ensure_ipc_token().expect("token");
+        let mut stream = connect_retry(port);
+        stream.set_nodelay(true).ok();
+        stream.set_read_timeout(Some(Duration::from_secs(2))).ok();
+
+        let sub = Request {
+            id: 1,
+            method: methods::TELEMETRY_SUBSCRIBE.into(),
+            params: json!({}),
+            token: Some(token.clone()),
+        };
+        writeln!(stream, "{}", serde_json::to_string(&sub).unwrap()).unwrap();
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).expect("subscribe ack");
+        let ack: Response = serde_json::from_str(line.trim()).expect("ack json");
+        assert!(ack.ok, "{ack:?}");
+
+        let ping = Request {
+            id: 2,
+            method: methods::PING.into(),
+            params: json!({}),
+            token: Some(token),
+        };
+        writeln!(reader.get_mut(), "{}", serde_json::to_string(&ping).unwrap()).unwrap();
+        let mut got_ping = false;
+        for _ in 0..30 {
+            line.clear();
+            reader.read_line(&mut line).expect("line after subscribe");
+            if let Ok(resp) = serde_json::from_str::<Response>(line.trim()) {
+                if resp.id == 2 {
+                    assert!(resp.ok, "{resp:?}");
+                    got_ping = true;
+                    break;
+                }
+            }
+        }
+        assert!(got_ping, "socket closed or no ping reply after NaN frame");
+
+        srv.shutdown();
     }
 }

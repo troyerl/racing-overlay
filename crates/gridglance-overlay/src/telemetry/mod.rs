@@ -405,6 +405,37 @@ pub struct TelemetryFrame {
     /// Fast repairs already used this session.
     #[serde(default)]
     pub pit_repairs_used: Option<i32>,
+    /// Player tire-set inventory from iRacing (`255` = unlimited).
+    #[serde(default)]
+    pub tire_sets: TireSets,
+}
+
+/// Player remaining / used tire sets. `255` means unlimited; `None` if the
+/// session does not publish that var.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct TireSets {
+    #[serde(default)]
+    pub available: Option<i32>,
+    #[serde(default)]
+    pub used: Option<i32>,
+    #[serde(default)]
+    pub dry_limit: Option<i32>,
+    #[serde(default)]
+    pub left_available: Option<i32>,
+    #[serde(default)]
+    pub left_used: Option<i32>,
+    #[serde(default)]
+    pub right_available: Option<i32>,
+    #[serde(default)]
+    pub right_used: Option<i32>,
+    #[serde(default)]
+    pub front_available: Option<i32>,
+    #[serde(default)]
+    pub front_used: Option<i32>,
+    #[serde(default)]
+    pub rear_available: Option<i32>,
+    #[serde(default)]
+    pub rear_used: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -969,6 +1000,16 @@ pub mod demo {
                 race_split: Some(2),
                 race_split_total: Some(5),
                 pit_repairs_used: Some(0),
+                tire_sets: super::TireSets {
+                    available: Some(2),
+                    used: Some(1),
+                    dry_limit: Some(3),
+                    left_available: Some(2),
+                    left_used: Some(1),
+                    right_available: Some(2),
+                    right_used: Some(1),
+                    ..Default::default()
+                },
                 radar: radar.clone(),
                 radar_left: radar.left,
                 radar_right: radar.right,

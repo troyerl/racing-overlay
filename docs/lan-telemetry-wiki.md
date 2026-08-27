@@ -256,6 +256,7 @@ Keep the connection open after `telemetry.subscribe` to receive push lines.
 | `method '…' not allowed on LAN telemetry` | Only `ping` / `telemetry.*` are allowed; use localhost `19847` for control |
 | `no telemetry frame yet` | Wait for a telemetry tick (overlay running / iRacing or demo producing frames) |
 | Connect then immediate close | Client cap (4) reached |
+| Subscribe ack then drop / reconnect loop | Older builds closed the socket if the first telemetry push blocked on slow Wi‑Fi. Update GridGlance. |
 
 ---
 

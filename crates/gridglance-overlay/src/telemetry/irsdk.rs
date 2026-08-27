@@ -343,6 +343,19 @@ mod win {
         let pit_compound = read_i32_opt(session, "PitSvTireCompound");
         let pit_repairs = read_i32_opt(session, "FastRepairAvailable");
         let pit_repairs_used = read_i32_opt(session, "FastRepairUsed");
+        let tire_sets = crate::telemetry::TireSets {
+            available: read_i32_opt(session, "TireSetsAvailable"),
+            used: read_i32_opt(session, "TireSetsUsed"),
+            dry_limit: read_i32_opt(session, "PlayerCarDryTireSetLimit"),
+            left_available: read_i32_opt(session, "LeftTireSetsAvailable"),
+            left_used: read_i32_opt(session, "LeftTireSetsUsed"),
+            right_available: read_i32_opt(session, "RightTireSetsAvailable"),
+            right_used: read_i32_opt(session, "RightTireSetsUsed"),
+            front_available: read_i32_opt(session, "FrontTireSetsAvailable"),
+            front_used: read_i32_opt(session, "FrontTireSetsUsed"),
+            rear_available: read_i32_opt(session, "RearTireSetsAvailable"),
+            rear_used: read_i32_opt(session, "RearTireSetsUsed"),
+        };
 
         let fps = read_f32_opt(session, "FrameRate").map(|v| v.round() as i32);
         let chan_quality = read_f32_opt(session, "ChanQuality")
@@ -606,6 +619,7 @@ mod win {
             pit_compound,
             pit_repairs,
             pit_repairs_used,
+            tire_sets,
             have_hybrid,
             ers_battery_pct,
             ers_pct: ers_battery_pct,
