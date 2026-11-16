@@ -1559,10 +1559,7 @@ mod win {
         // back to the qualify grid just because the local player car has no
         // position (normal while spectating / in garage during a race).
         let grid_count = grid.values().filter(|e| e.position > 0).count();
-        if grid_count >= 2 && valid_live < (2).max(grid_count / 2) {
-            return true;
-        }
-        false
+        grid_count >= 2 && valid_live < (2).max(grid_count / 2)
     }
 
     /// Numeric car-number key for qualifying no-time tiebreaks (`"16"` → 16).

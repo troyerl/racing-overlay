@@ -13,7 +13,7 @@ use serde_json::json;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::net::{Ipv4Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -263,6 +263,63 @@ pub fn lan_connect_endpoint(port: u16) -> String {
         Some(ip) => format!("{ip}:{port}"),
         None => format!("<lan-ip>:{port}"),
     }
+}
+
+/// Single hostname label for `{name}.local`.
+///
+/// Empty names and labels that contain spaces or slashes are rejected. A
+/// trailing `.local` is stripped so the suffix is not applied twice.
+fn sanitize_lan_host_label(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let name = trimmed
+        .strip_suffix(".local")
+        .unwrap_or(trimmed)
+        .trim_end_matches('.')
+        .trim();
+    if name.is_empty() || name.len() > 63 {
+        return None;
+    }
+    if name
+        .chars()
+        .any(|c| c.is_whitespace() || c == '/' || c == '\\' || c == ':' || c.is_control())
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+fn read_lan_host_name() -> Option<String> {
+    let from_env = {
+        #[cfg(windows)]
+        {
+            std::env::var("COMPUTERNAME").ok()
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    };
+    let raw = from_env
+        .filter(|s| !s.trim().is_empty())
+        .or_else(sysinfo::System::host_name);
+    raw.as_deref().and_then(sanitize_lan_host_label)
+}
+
+/// This PC's hostname label, read once per process.
+///
+/// `None` when the name is missing or not safe to put in a connect address.
+pub fn lan_host_label() -> Option<String> {
+    static CACHED: OnceLock<Option<String>> = OnceLock::new();
+    CACHED.get_or_init(read_lan_host_name).clone()
+}
+
+/// Stable `name.local:port` for LAN clients. `None` when there is no usable hostname.
+pub fn lan_stable_endpoint(port: u16) -> Option<String> {
+    lan_host_label().map(|name| format!("{name}.local:{port}"))
+}
+
+fn lan_stable_endpoint_for(name: &str, port: u16) -> Option<String> {
+    sanitize_lan_host_label(name).map(|label| format!("{label}.local:{port}"))
 }
 
 fn io_would_block(e: &std::io::Error) -> bool {
@@ -605,6 +662,33 @@ mod tests {
         assert_eq!(sanitize_lan_port(19846), DEFAULT_LAN_TELEMETRY_PORT);
         assert_eq!(sanitize_lan_port(19847), DEFAULT_LAN_TELEMETRY_PORT);
         assert_eq!(sanitize_lan_port(19848), 19848);
+    }
+
+    #[test]
+    fn lan_host_label_rejects_blank_space_and_slash() {
+        assert_eq!(sanitize_lan_host_label(""), None);
+        assert_eq!(sanitize_lan_host_label("   "), None);
+        assert_eq!(sanitize_lan_host_label("My PC"), None);
+        assert_eq!(sanitize_lan_host_label("foo/bar"), None);
+        assert_eq!(sanitize_lan_host_label("foo\\bar"), None);
+        assert_eq!(sanitize_lan_host_label("host:port"), None);
+    }
+
+    #[test]
+    fn lan_stable_endpoint_uses_local_suffix() {
+        assert_eq!(
+            sanitize_lan_host_label("  DESKTOP-ABC.local  ").as_deref(),
+            Some("DESKTOP-ABC")
+        );
+        assert_eq!(
+            lan_stable_endpoint_for("DESKTOP-ABC", 19848).as_deref(),
+            Some("DESKTOP-ABC.local:19848")
+        );
+        assert_eq!(
+            lan_stable_endpoint_for("DESKTOP-ABC.local", 19848).as_deref(),
+            Some("DESKTOP-ABC.local:19848")
+        );
+        assert_eq!(lan_stable_endpoint_for("bad name", 19848), None);
     }
 
     #[test]

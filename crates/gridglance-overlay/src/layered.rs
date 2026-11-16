@@ -529,7 +529,7 @@ pub fn hash_bgra(data: &[u8]) -> u64 {
 #[cfg(windows)]
 /// Punch near-black clears and swap R↔B in place on a packed row (RGBA → BGRA).
 fn punch_and_swap_rgba_row(row: &mut [u8]) {
-    for px in row.chunks_exact_mut(4) {
+    for px in row.as_chunks_mut::<4>().0 {
         let r = px[0];
         let g = px[1];
         let b = px[2];
@@ -550,7 +550,7 @@ fn punch_and_swap_rgba_row(row: &mut [u8]) {
 #[cfg(windows)]
 /// Punch near-black clears on an already-BGRA row (no channel swap).
 fn punch_bgra_row(row: &mut [u8]) {
-    for px in row.chunks_exact_mut(4) {
+    for px in row.as_chunks_mut::<4>().0 {
         let b = px[0];
         let g = px[1];
         let r = px[2];

@@ -39,11 +39,17 @@ Toggling enable or changing port restarts the listener without quitting GridGlan
 ## Find the host from another device
 
 1. Race PC and client must be on the **same Wi‑Fi / LAN**.
-2. Use the race PC’s **LAN IPv4** (e.g. `192.168.1.50`), not `127.0.0.1`
-   (`127.0.0.1` only works when the client runs on the race PC itself).
-3. Connect TCP to `HOST:PORT` (default port `19848`).
+2. Prefer the stable name in **Settings → LAN telemetry**: `{COMPUTERNAME}.local`
+   (example `DESKTOP-ABC.local`). That name stays the same when the race PC’s
+   IPv4 changes. Windows answers it on a private network.
+3. Connect TCP to `HOST:PORT` (default port `19848`), for example
+   `DESKTOP-ABC.local:19848`.
+4. Use the **Current IP** on that same settings page (e.g. `192.168.1.50`) when
+   the client cannot resolve names, or when `.local` does not resolve. Do not
+   use `127.0.0.1` from another device (`127.0.0.1` only works when the client
+   runs on the race PC itself).
 
-On Windows you can find the IP with:
+On Windows you can still find the IP with:
 
 ```powershell
 ipconfig

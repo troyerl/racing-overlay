@@ -148,7 +148,12 @@ fn polys_in_svg(svg_text: &str) -> Vec<Vec<(f32, f32)>> {
                 .filter(|s| !s.is_empty())
                 .filter_map(|s| s.parse().ok())
                 .collect();
-            let pts: Vec<(f32, f32)> = nums.chunks_exact(2).map(|p| (p[0], p[1])).collect();
+            let pts: Vec<(f32, f32)> = nums
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|p| (p[0], p[1]))
+                .collect();
             (pts.len() >= 2).then_some(pts)
         })
         .collect()

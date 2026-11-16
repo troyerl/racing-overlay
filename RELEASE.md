@@ -5,6 +5,12 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 2.0.3 - 2026-11-16
+
+- **LAN connect name.** Settings → LAN telemetry shows this PC’s stable
+  `COMPUTERNAME.local` address so other devices can keep the same host when
+  the IPv4 changes. The current IP stays on the page as a fallback.
+
 ## 2.0.2 - 2026-11-16
 
 - **Dash flag corners.** The flag bar uses the dash panel corner radius instead of a full pill.

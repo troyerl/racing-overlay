@@ -907,30 +907,78 @@ fn paint_lan(
                 .and_then(|v| v.as_f64())
                 .unwrap_or(f64::from(gridglance_ipc::DEFAULT_LAN_TELEMETRY_PORT))
                 as f32;
-            let connect_endpoint = crate::telemetry_lan::lan_connect_endpoint(port.round() as u16);
+            let port_u16 = port.round() as u16;
+            let stable_endpoint = crate::telemetry_lan::lan_stable_endpoint(port_u16);
+            let connect_endpoint = crate::telemetry_lan::lan_connect_endpoint(port_u16);
             let lan_ip = crate::telemetry_lan::preferred_lan_ipv4();
-            setting_row(
-                ui,
-                "Connect address",
-                Some(
-                    "Host:port for other devices on the same Wi‑Fi. Use this IP — not 127.0.0.1 — from a phone or second PC.",
-                ),
-                |ui| {
-                    ui.label(
-                        RichText::new(&connect_endpoint)
-                            .size(13.0)
-                            .monospace()
-                            .color(TITLE),
-                    );
-                    if lan_ip.is_some() {
+            if let Some(stable_endpoint) = stable_endpoint {
+                setting_row(
+                    ui,
+                    "Connect address",
+                    Some(
+                        "This name stays the same when the IP changes. Both devices must be on the same Wi‑Fi. Use Current IP when a client cannot resolve the name.",
+                    ),
+                    |ui| {
+                        ui.label(
+                            RichText::new(&stable_endpoint)
+                                .size(13.0)
+                                .monospace()
+                                .color(TITLE),
+                        );
                         ui.add_space(6.0);
                         if button_kind(ui, "Copy address", ButtonKind::Primary).clicked() {
-                            ui.ctx().copy_text(connect_endpoint.clone());
-                            ui_state.flash(format!("Copied {connect_endpoint}"));
+                            ui.ctx().copy_text(stable_endpoint.clone());
+                            ui_state.flash(format!("Copied {stable_endpoint}"));
                         }
-                    }
-                },
-            );
+                    },
+                );
+                ui.add_space(4.0);
+                setting_row(
+                    ui,
+                    "Current IP",
+                    Some(
+                        "This session’s IPv4 and port. Use it when the name above does not resolve, or when a client only accepts a numeric address.",
+                    ),
+                    |ui| {
+                        ui.label(
+                            RichText::new(&connect_endpoint)
+                                .size(13.0)
+                                .monospace()
+                                .color(TITLE),
+                        );
+                        if lan_ip.is_some() {
+                            ui.add_space(6.0);
+                            if button_kind(ui, "Copy IP", ButtonKind::Primary).clicked() {
+                                ui.ctx().copy_text(connect_endpoint.clone());
+                                ui_state.flash(format!("Copied {connect_endpoint}"));
+                            }
+                        }
+                    },
+                );
+            } else {
+                setting_row(
+                    ui,
+                    "Connect address",
+                    Some(
+                        "Host:port for other devices on the same Wi‑Fi. Use this IP — not 127.0.0.1 — from a phone or second PC.",
+                    ),
+                    |ui| {
+                        ui.label(
+                            RichText::new(&connect_endpoint)
+                                .size(13.0)
+                                .monospace()
+                                .color(TITLE),
+                        );
+                        if lan_ip.is_some() {
+                            ui.add_space(6.0);
+                            if button_kind(ui, "Copy address", ButtonKind::Primary).clicked() {
+                                ui.ctx().copy_text(connect_endpoint.clone());
+                                ui_state.flash(format!("Copied {connect_endpoint}"));
+                            }
+                        }
+                    },
+                );
+            }
             ui.add_space(4.0);
             let lan_token = crate::ipc::ensure_ipc_token().unwrap_or_default();
             setting_row(

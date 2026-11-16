@@ -893,7 +893,7 @@ impl Canvas {
             );
         }
         // Near-black alpha punch (parity with layered GL path).
-        for px in buf.chunks_exact_mut(4) {
+        for px in buf.as_chunks_mut::<4>().0 {
             if px[0] == 0 && px[1] == 0 && px[2] == 0 && px[3] < 8 {
                 px[3] = 0;
             }
