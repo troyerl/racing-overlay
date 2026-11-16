@@ -77,7 +77,7 @@ pub fn paint(
     );
 
     draw_panel_rect(c, cfg, SECTION, top_rect);
-    draw_panel_rect(c, cfg, SECTION, bot_rect);
+    let dash_radius = draw_panel_rect(c, cfg, SECTION, bot_rect);
     if show_pos {
         draw_position(c, cfg, p9, f, text_scale);
     }
@@ -179,7 +179,7 @@ pub fn paint(
     }
 
     if let Some(fr) = flag_rect {
-        draw_flag(c, cfg, fr, f, ring_cx, text_scale);
+        draw_flag(c, cfg, fr, f, ring_cx, text_scale, dash_radius);
     }
     if let Some(db) = delta_bar {
         draw_delta_bar(c, cfg, db, f);
@@ -1309,6 +1309,7 @@ fn draw_flag(
     f: &TelemetryFrame,
     center_x: f32,
     text_scale: f32,
+    dash_radius: f32,
 ) {
     let Some(flag) = f.flag.as_deref() else {
         return;
@@ -1318,11 +1319,11 @@ fn draw_flag(
     };
     let bg = section_color(cfg, SECTION, bgk, "#ebeef0");
     let fg = section_color(cfg, SECTION, fgk, "#141414");
-    let r = rect.height() * 0.5;
+    let r = dash_radius.clamp(0.0, rect.width().min(rect.height()) * 0.5);
     c.fill_rect(rect, bg, r);
     c.stroke_rect(rect, Rgba::WHITE.with_alpha(45), r, 1.0);
 
-    c.clip_rect(rect, |c| {
+    c.clip_round_rect(rect, r, |c| {
         let hatch = fg.with_alpha(70);
         if flag == "checkered" {
             let sq = rect.height() * 0.5;

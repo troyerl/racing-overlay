@@ -712,6 +712,23 @@ impl Canvas {
         self.surface.canvas().restore();
     }
 
+    /// Clip to a rounded rect so fills such as the dash flag hatch follow the corner radius.
+    pub fn clip_round_rect(&mut self, rect: Rect, radius: f32, f: impl FnOnce(&mut Self)) {
+        self.surface.canvas().save();
+        let r = rect.to_skia();
+        if radius > 0.5 {
+            self.surface.canvas().clip_rrect(
+                skia_safe::RRect::new_rect_xy(r, radius, radius),
+                None,
+                true,
+            );
+        } else {
+            self.surface.canvas().clip_rect(r, None, true);
+        }
+        f(self);
+        self.surface.canvas().restore();
+    }
+
     /// Decode a PNG and draw it centered inside `dest` (aspect-fit, rounded).
     ///
     /// Country flags use a shared display footprint ([`crate::country_flags::FLAG_DISPLAY_ASPECT`])

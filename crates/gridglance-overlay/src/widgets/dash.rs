@@ -312,7 +312,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     );
 
     draw_panel_rect(ui, cfg, SECTION, top_rect);
-    draw_panel_rect(ui, cfg, SECTION, bot_rect);
+    let dash_radius = draw_panel_rect(ui, cfg, SECTION, bot_rect);
     if show_pos {
         draw_position(ui, cfg, p9, f, text_scale);
     }
@@ -421,7 +421,7 @@ pub fn paint(ui: &mut Ui, ctx: &mut WidgetCtx<'_>) {
     }
 
     if let Some(fr) = flag_rect {
-        draw_flag(ui, cfg, fr, f, ring_cx, text_scale);
+        draw_flag(ui, cfg, fr, f, ring_cx, text_scale, dash_radius);
     }
     if let Some(db) = delta_bar {
         draw_delta_bar(ui, cfg, db, f);
@@ -1476,6 +1476,7 @@ fn draw_flag(
     f: &TelemetryFrame,
     center_x: f32,
     text_scale: f32,
+    dash_radius: f32,
 ) {
     let Some(flag) = f.flag.as_deref() else {
         return;
@@ -1485,12 +1486,12 @@ fn draw_flag(
     };
     let bg = cfg.color(SECTION, bgk, "#ebeef0");
     let fg = cfg.color(SECTION, fgk, "#141414");
-    let r = rect.height() * 0.5;
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(r as u8), bg);
+    let r = dash_radius.clamp(0.0, rect.width().min(rect.height()) * 0.5);
+    let cr = egui::CornerRadius::same(r.round().clamp(0.0, 255.0) as u8);
+    ui.painter().rect_filled(rect, cr, bg);
     ui.painter().rect_stroke(
         rect,
-        egui::CornerRadius::same(r as u8),
+        cr,
         Stroke::new(1.0_f32, Color32::from_rgba_unmultiplied(255, 255, 255, 45)),
         StrokeKind::Inside,
     );

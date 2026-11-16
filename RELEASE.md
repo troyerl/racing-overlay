@@ -5,6 +5,10 @@ release workflow reads the **topmost** `## <version>` section below: that versio
 becomes the git tag / installer version, and the bullet points become the GitHub
 Release notes. To cut a release, add a new section to the top and push.
 
+## 2.0.2 - 2026-11-16
+
+- **Dash flag corners.** The flag bar uses the dash panel corner radius instead of a full pill.
+
 ## 2.0.1 - 2026-08-27
 
 - **LAN telemetry listen.** Second-launch activate no longer occupies port 19848,
